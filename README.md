@@ -48,3 +48,37 @@ Plusieurs outils MCP rendent l'etat graphe exploitable sans quitter VS Code :
 
 Chaque enfant recu via `plan_fanout` (ou ajoute a chaud) enregistre un `runtime` distinct (`codex` par defaut). Les outils `job_view`, `status`, `child_info` et les evenements `PLAN` exposent ce champ, facilitant le suivi des instances actives et leur separation logique vis-a-vis de l'orchestrateur (considere comme l'utilisateur dans les transcripts).
 
+## Exposer le serveur MCP via HTTP (cloud)
+
+Le transport STDIO reste actif par defaut. Pour utiliser l'orchestrateur dans un environnement distant (VM, conteneur cloud, etc.), il est possible d'activer un transport HTTP conforme a la specification *Streamable HTTP* :
+
+```bash
+node dist/server.js --http --http-port 4000 --no-stdio
+```
+
+Options disponibles :
+
+- `--http` active le serveur HTTP avec les valeurs par defaut (hote `0.0.0.0`, port `4000`, chemin `/mcp`).
+- `--http-port <port>` / `--http-host <hote>` personnaliser le binding.
+- `--http-path <chemin>` (par defaut `/mcp`).
+- `--http-json` autorise les reponses JSON directes en plus du flux SSE.
+- `--http-stateless` desactive la generation de `mcp-session-id` (mode stateless).
+- `--no-stdio` desactive explicitement le transport STDIO; il est automatiquement supprime si HTTP est actif.
+
+Une fois lance, le serveur repond sur `http://<hote>:<port><chemin>` et supporte les GET (SSE) et POST/DELETE conformes au protocole MCP. Les journaux standard affichent l'URL exposee et les options (JSON/stateless).
+
+### Déploiement Codex Cloud pas-à-pas
+
+Un guide exhaustif (build, packaging, service systemd, configuration Codex) est disponible dans [`docs/codex-cloud-setup.md`](docs/codex-cloud-setup.md).
+
+Résumé rapide :
+
+1. Construire l'orchestrateur en local : `npm ci --omit=dev && npm run build` puis archiver `dist/` et `node_modules/`.
+2. Déployer l'archive sur l'environnement Codex Cloud et lancer `node dist/server.js --http --http-host 0.0.0.0 --http-port 4000 --no-stdio` (ou via systemd).
+3. Déclarer le serveur côté Codex dans `~/.codex/config.toml` via un bloc `[[servers]]` utilisant le transport `streamable-http` pointant vers `https://<domaine>/mcp`.
+4. Vérifier la connectivité avec `curl` (`initialize`, flux SSE, `call_tool`) avant d'activer l'agent Codex.
+
+Le guide fournit également un tableau de dépannage (codes d'erreur fréquents, sessions manquantes, blocages réseau) et des exemples d'en-têtes à passer (`Mcp-Session-Id`).
+
+Pour automatiser l'exposition dans Codex Cloud, la section 9 du guide détaille les scripts « configuration » et « maintenance » à coller directement dans le panneau de l'environnement (capture fournie par l'utilisateur).
+
