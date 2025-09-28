@@ -9,6 +9,7 @@ Ce guide décrit la procédure complète pour exposer l'orchestrateur MCP via HT
 - **Port TCP ouvert** entre Codex Cloud et l'orchestrateur (par défaut `4000`). En production, prévoir un reverse-proxy/TLS (Nginx, Caddy, Cloudflare Tunnel…).
 - **Capacité d'écriture** sur `~/.codex/config.toml` dans l'espace Codex afin de déclarer le serveur MCP distant.
 
+
 ### Vérifier la version livrée
 
 Avant de pousser une archive dans Codex Cloud, confirmer que vous déployez bien la révision `1.3.0` ou ultérieure. Le `package.json` du dépôt référence cette version et exige Node ≥ 18.17 pour supporter le transport HTTP Streamable fourni par le SDK MCP.【F:package.json†L1-L24】
@@ -209,6 +210,7 @@ Vous devez recevoir un `result` JSON contenant la réponse textuelle générée 
 | JSON `error` code `-32000` | Option `--http-json` désactivée alors que le client attend une réponse JSON. Relancer avec `--http-json`. |
 
 En cas de doute, activer les logs détaillés (`DEBUG=orchestrator* node dist/server.js ...`) pour inspecter les requêtes entrantes.
+
 
 ## 9. Scripts Codex Cloud (onglet configuration/maintenance)
 
