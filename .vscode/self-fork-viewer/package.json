@@ -1,0 +1,81 @@
+{
+  "name": "self-fork-orchestrator-viewer",
+  "displayName": "Self Fork Orchestrator Viewer",
+  "description": "Visualise conversations and events from the self-fork orchestrator graph snapshot (autosave).",
+  "version": "0.1.0",
+  "publisher": "local",
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "main": "./extension.js",
+  "activationEvents": [
+    "onCommand:selfForkViewer.open",
+    "onCommand:selfForkViewer.configurePath",
+    "onCommand:selfForkViewer.refresh",
+    "onCommand:selfForkViewer.openConversation",
+    "onUri",
+    "onView:selfForkViewer.jobsView",
+    "onView:selfForkViewer.eventsView",
+    "onCommand:selfForkViewer.openLiveEvents"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "selfForkViewer.open",
+        "title": "Self Fork: Open Viewer"
+      },
+      {
+        "command": "selfForkViewer.openConversation",
+        "title": "Self Fork: Open Conversation"
+      },
+      {
+        "command": "selfForkViewer.configurePath",
+        "title": "Self Fork: Configure Autosave Path"
+      },
+      {
+        "command": "selfForkViewer.refresh",
+        "title": "Self Fork: Refresh Viewer"
+      },
+      {
+        "command": "selfForkViewer.openLiveEvents",
+        "title": "Self Fork: Focus Live Events View"
+      }
+    ],
+    "configuration": {
+      "title": "Self Fork Orchestrator Viewer",
+      "properties": {
+        "selfForkViewer.autosavePath": {
+          "type": "string",
+          "default": "${workspaceFolder}/graph-autosave.json",
+          "description": "Path to the orchestrator autosave JSON file."
+        }
+      }
+    },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "selfForkViewer",
+          "title": "Self Fork",
+          "icon": "./media/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "selfForkViewer": [
+        {
+          "id": "selfForkViewer.jobsView",
+          "name": "Jobs & Children"
+        },
+        {
+          "id": "selfForkViewer.eventsView",
+          "name": "Live Events"
+        }
+      ]
+    }
+  },
+  "scripts": {},
+  "devDependencies": {}
+}

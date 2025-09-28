@@ -1,0 +1,16 @@
+body { font-family: var(--vscode-font-family); color: var(--vscode-foreground); background: var(--vscode-editor-background); }
+header { display: flex; align-items: center; justify-content: space-between; padding: 6px 10px; background: var(--vscode-sideBar-background); border-bottom: 1px solid var(--vscode-panel-border); }
+header .actions button { margin-left: 8px; }
+header .path { font-size: 12px; opacity: 0.8; }
+main { display: grid; grid-template-columns: 320px 1fr; gap: 8px; height: calc(100vh - 44px); }
+section { padding: 8px; overflow: auto; }
+ul { list-style: none; padding-left: 0; }
+li { padding: 4px 6px; border-bottom: 1px solid var(--vscode-panel-border); cursor: pointer; }
+li:hover { background: var(--vscode-list-hoverBackground); }
+.conversation { white-space: pre-wrap; font-family: var(--vscode-editor-font-family); }
+.msg { padding: 6px 8px; margin-bottom: 6px; border: 1px solid var(--vscode-panel-border); border-radius: 4px; }
+.msg.user { background: rgba(100, 150, 255, 0.08); }
+.msg.system { background: rgba(160, 160, 160, 0.08); }
+.msg.assistant { background: rgba(100, 255, 150, 0.08); }
+.events-controls { margin: 6px 0; }
+
