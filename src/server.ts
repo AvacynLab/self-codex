@@ -447,6 +447,19 @@ const GraphStatsShape = {} as const;
 const GraphStatsSchema = z.object(GraphStatsShape);
 type GraphStatsInput = z.infer<typeof GraphStatsSchema>;
 
+const GraphInactivityShape = {
+  idle_threshold_ms: z.number().min(0).optional(),
+  pending_threshold_ms: z.number().min(0).optional(),
+  job_id: z.string().optional(),
+  runtime: z.string().optional(),
+  state: z.string().optional(),
+  include_children_without_messages: z.boolean().optional(),
+  limit: z.number().optional(),
+  format: z.enum(["json", "text"]).optional()
+} as const;
+const GraphInactivitySchema = z.object(GraphInactivityShape);
+type GraphInactivityInput = z.infer<typeof GraphInactivitySchema>;
+
 // job_view
 const JobViewShape = { job_id: z.string(), per_child_limit: z.number().optional(), format: z.enum(["json", "text"]).optional(), include_system: z.boolean().optional() } as const;
 const JobViewSchema = z.object(JobViewShape);
@@ -908,6 +921,110 @@ server.registerTool(
         }
       ]
     };
+  }
+);
+
+server.registerTool(
+  "graph_state_inactivity",
+  {
+    title: "Graph inactivity",
+    description: "Identifie les enfants inactifs ou avec pending prolongé.",
+    inputSchema: GraphInactivityShape
+  },
+  async (input: GraphInactivityInput) => {
+    const idleThreshold = input.idle_threshold_ms ?? 120_000;
+    const pendingThreshold = input.pending_threshold_ms ?? idleThreshold;
+    const includeWithoutMessages = input.include_children_without_messages ?? true;
+    const limit = input.limit && input.limit > 0 ? Math.min(input.limit, 100) : 20;
+    const reports = graphState.findInactiveChildren({
+      idleThresholdMs: idleThreshold,
+      pendingThresholdMs: pendingThreshold,
+      includeChildrenWithoutMessages: includeWithoutMessages
+    });
+    const filtered = reports.filter((report) => {
+      if (input.job_id && report.jobId !== input.job_id) return false;
+      if (input.runtime && report.runtime !== input.runtime) return false;
+      if (input.state && report.state !== input.state) return false;
+      return true;
+    });
+    const ordered = [...filtered].sort((a, b) => {
+      const scoreA = Math.max(a.idleMs ?? 0, a.pendingMs ?? 0);
+      const scoreB = Math.max(b.idleMs ?? 0, b.pendingMs ?? 0);
+      if (scoreA === scoreB) {
+        return a.childId.localeCompare(b.childId);
+      }
+      return scoreB - scoreA;
+    });
+    const limited = ordered.slice(0, limit);
+    const defaultFormat = input.format ?? "json";
+
+    if (defaultFormat === "text") {
+      if (!limited.length) {
+        const idleSec = Math.round(idleThreshold / 1000);
+        const pendingSec = Math.round(pendingThreshold / 1000);
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Aucune inactivité détectée (idle ≥ ${idleSec}s, pending ≥ ${pendingSec}s).`
+            }
+          ]
+        };
+      }
+      const lines = limited.map((report) => {
+        const idleSec = report.idleMs !== null ? Math.round(report.idleMs / 1000) : null;
+        const pendingSec = report.pendingMs !== null ? Math.round(report.pendingMs / 1000) : null;
+        const flagSummary = report.flags
+          .map((flag) => `${flag.type}:${Math.round(flag.valueMs / 1000)}s≥${Math.round(flag.thresholdMs / 1000)}s`)
+          .join(", ");
+        const waiting = report.waitingFor ?? "∅";
+        const job = report.jobId || "∅";
+        return `- ${report.childId} (${report.state}) job=${job} runtime=${report.runtime} idle=${idleSec ?? "∅"}s pending=${
+          pendingSec ?? "∅"
+        }s waiting=${waiting} flags=[${flagSummary}]`;
+      });
+      const header = `Enfants inactifs (idle ≥ ${Math.round(idleThreshold / 1000)}s, pending ≥ ${Math.round(
+        pendingThreshold / 1000
+      )}s) :`;
+      return {
+        content: [
+          {
+            type: "text",
+            text: [header, ...lines].join("\n")
+          }
+        ]
+      };
+    }
+
+    const payload = {
+      format: "json" as const,
+      idle_threshold_ms: idleThreshold,
+      pending_threshold_ms: pendingThreshold,
+      total: filtered.length,
+      returned: limited.length,
+      items: limited.map((report) => ({
+        child_id: report.childId,
+        job_id: report.jobId || null,
+        name: report.name,
+        state: report.state,
+        runtime: report.runtime,
+        waiting_for: report.waitingFor,
+        pending_id: report.pendingId,
+        created_at: report.createdAt,
+        last_activity_ts: report.lastActivityTs,
+        idle_ms: report.idleMs,
+        pending_since: report.pendingSince,
+        pending_ms: report.pendingMs,
+        transcript_size: report.transcriptSize,
+        flags: report.flags.map((flag) => ({
+          type: flag.type,
+          value_ms: flag.valueMs,
+          threshold_ms: flag.thresholdMs
+        }))
+      }))
+    };
+
+    return { content: [{ type: "text", text: j(payload) }] };
   }
 );
 

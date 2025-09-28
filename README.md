@@ -41,6 +41,7 @@ Plusieurs outils MCP rendent l'etat graphe exploitable sans quitter VS Code :
 - `conversation_view` et `events_view` : surfaces respectivement les messages d'un enfant et les evenements recents ou en attente. Les reponses incluent les memes liens cliquables.
 - `events_view_live` : lit directement le bus live (option `min_seq`, tri, filtrage par job/enfant) afin d'eviter la saturation liee aux HEARTBEAT.
 - `graph_prune` : permet de purger manuellement une conversation (`keep_last`) ou les evenements conserves dans le graphe (`max_events`).
+- `graph_state_inactivity` : signale les enfants sans activité récente ou pending trop long (filtres par job/runtime/état, rendu JSON ou texte).
 - `graph_state_autosave` : ecrit periodiquement un snapshot JSON. Le viewer VS Code (`Self Fork: Open Viewer`) consomme ce fichier pour afficher enfants, evenements et conversations.
 
 ### Runtime dedie par enfant

@@ -9,7 +9,8 @@
     "scripts": {
       "build": "tsc && tsc -p graph-forge/tsconfig.json",
       "start": "node dist/server.js --workers 6",
-      "dev": "node --loader ts-node/esm src/server.ts --workers 6"
+      "dev": "node --loader ts-node/esm src/server.ts --workers 6",
+      "test": "npm run build --silent && node --test tests/graphState.test.mjs"
     },
     "dependencies": {
       "@modelcontextprotocol/sdk": "^1.18.1",

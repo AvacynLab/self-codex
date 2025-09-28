@@ -106,6 +106,7 @@ export class GraphState {
             pending_id: "",
             ttl_at: ttl ?? 0,
             system_message: normalizeString(spec.system ?? null),
+            created_at: options.createdAt,
             transcript_size: 0,
             last_ts: 0
         };
@@ -186,6 +187,57 @@ export class GraphState {
             }
         }
         return children;
+    }
+    /**
+     * Retourne les enfants considérés comme inactifs (aucune activité récente ou pending trop long).
+     * Permet d'identifier rapidement les branches du graphe qui nécessitent une intervention humaine.
+     */
+    findInactiveChildren(options) {
+        const now = options.now ?? Date.now();
+        const idleThreshold = Math.max(0, options.idleThresholdMs);
+        const pendingThreshold = Math.max(0, options.pendingThresholdMs ?? idleThreshold);
+        const includeWithoutMessages = options.includeChildrenWithoutMessages ?? true;
+        const reports = [];
+        for (const child of this.listChildSnapshots()) {
+            const flags = [];
+            let lastActivityTs = child.lastTs;
+            if (lastActivityTs === null && includeWithoutMessages) {
+                lastActivityTs = child.createdAt > 0 ? child.createdAt : null;
+            }
+            let idleMs = null;
+            if (lastActivityTs !== null) {
+                idleMs = Math.max(0, now - lastActivityTs);
+                if (idleMs >= idleThreshold) {
+                    flags.push({ type: "idle", valueMs: idleMs, thresholdMs: idleThreshold });
+                }
+            }
+            const pendingSnapshot = child.pendingId ? this.pendingIndex.get(child.pendingId) : undefined;
+            const pendingSince = pendingSnapshot?.createdAt ?? null;
+            const pendingMs = pendingSince !== null ? Math.max(0, now - pendingSince) : null;
+            if (pendingMs !== null && pendingMs >= pendingThreshold) {
+                flags.push({ type: "pending", valueMs: pendingMs, thresholdMs: pendingThreshold });
+            }
+            if (!flags.length) {
+                continue;
+            }
+            reports.push({
+                childId: child.id,
+                jobId: child.jobId,
+                name: child.name,
+                state: child.state,
+                runtime: child.runtime,
+                waitingFor: child.waitingFor,
+                pendingId: child.pendingId,
+                createdAt: child.createdAt,
+                lastActivityTs,
+                idleMs,
+                pendingSince,
+                pendingMs,
+                transcriptSize: child.transcriptSize,
+                flags
+            });
+        }
+        return reports;
     }
     findJobIdByChild(childId) {
         const edges = this.getIncomingEdges(this.childNodeId(childId));
@@ -690,6 +742,7 @@ export class GraphState {
         const pendingId = toNullableString(node.attributes.pending_id);
         const ttlAt = toNullableNumber(node.attributes.ttl_at);
         const systemMessage = toNullableString(node.attributes.system_message);
+        const createdAt = Number(node.attributes.created_at ?? 0);
         const transcriptSize = Number(node.attributes.transcript_size ?? 0);
         const lastTs = toNullableNumber(node.attributes.last_ts);
         return {
@@ -702,6 +755,7 @@ export class GraphState {
             pendingId,
             ttlAt,
             systemMessage,
+            createdAt,
             transcriptSize,
             lastTs
         };
