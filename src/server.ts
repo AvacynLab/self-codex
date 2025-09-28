@@ -1,12 +1,15 @@
-﻿import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { randomUUID } from "crypto";
+import { createServer as createHttpServer } from "node:http";
 import { readFile, writeFile } from "node:fs/promises";
 import { resolve as resolvePath } from "node:path";
 import { pathToFileURL } from "url";
 import { GraphState } from "./graphState.js";
 import { MessageRecord, Role } from "./types.js";
+import { createHttpSessionId, parseOrchestratorRuntimeOptions } from "./serverOptions.js";
 
 /*
 v1.3 - Orchestrateur MCP self-fork avec:
@@ -1890,13 +1893,87 @@ server.registerTool(
   }
 );
 
-// --- STDIO transport ---
+// --- Transports ---
 const isMain = process.argv[1] ? pathToFileURL(process.argv[1]).href === import.meta.url : false;
 
 if (isMain) {
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
-  console.error("[orchestrator] MCP server listening on stdio");
+  let options;
+  try {
+    options = parseOrchestratorRuntimeOptions(process.argv.slice(2));
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`[orchestrator] Échec du parsing des options CLI : ${message}`);
+    process.exit(1);
+  }
+
+  let enableStdio = options.enableStdio;
+  const httpEnabled = options.http.enabled;
+
+  if (!enableStdio && !httpEnabled) {
+    console.error("[orchestrator] Aucun transport activé (stdio ou HTTP requis).");
+    process.exit(1);
+  }
+
+  if (httpEnabled) {
+    if (enableStdio) {
+      console.warn("[orchestrator] HTTP actif : le transport stdio est désactivé pour éviter les conflits.");
+      enableStdio = false;
+    }
+
+    const httpTransport = new StreamableHTTPServerTransport({
+      sessionIdGenerator: options.http.stateless ? undefined : () => createHttpSessionId(),
+      enableJsonResponse: options.http.enableJson,
+    });
+
+    httpTransport.onerror = (error) => {
+      console.error("[orchestrator:http] Erreur transport", error);
+    };
+    httpTransport.onclose = () => {
+      console.error("[orchestrator:http] Session fermée");
+    };
+
+    await server.connect(httpTransport);
+
+    const httpServer = createHttpServer(async (req, res) => {
+      const requestUrl = req.url ? new URL(req.url, `http://${req.headers.host ?? "localhost"}`) : null;
+
+      if (!requestUrl || requestUrl.pathname !== options.http.path) {
+        res.writeHead(404, { "Content-Type": "application/json" }).end(JSON.stringify({ error: "NOT_FOUND" }));
+        return;
+      }
+
+      try {
+        await httpTransport.handleRequest(req, res);
+      } catch (error) {
+        console.error("[orchestrator:http] Erreur requête", error);
+        if (!res.headersSent) {
+          res.writeHead(500, { "Content-Type": "application/json" }).end(JSON.stringify({ error: "INTERNAL_ERROR" }));
+        } else {
+          res.end();
+        }
+      }
+    });
+
+    httpServer.on("error", (error) => {
+      console.error("[orchestrator:http] Erreur serveur", error);
+    });
+    httpServer.on("clientError", (error, socket) => {
+      console.error("[orchestrator:http] Erreur client", error);
+      socket.end("HTTP/1.1 400 Bad Request\r\n\r\n");
+    });
+
+    httpServer.listen(options.http.port, options.http.host, () => {
+      console.error(
+        `[orchestrator] MCP server listening on http://${options.http.host}:${options.http.port}${options.http.path} (json=${options.http.enableJson ? "on" : "off"}, stateless=${options.http.stateless ? "yes" : "no"})`
+      );
+    });
+  }
+
+  if (enableStdio) {
+    const transport = new StdioServerTransport();
+    await server.connect(transport);
+    console.error("[orchestrator] MCP server listening on stdio");
+  }
 }
 
 export { server, graphState, DEFAULT_CHILD_RUNTIME, buildLiveEvents, setDefaultChildRuntime };
