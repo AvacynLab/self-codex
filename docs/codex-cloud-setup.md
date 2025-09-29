@@ -9,6 +9,13 @@ Ce guide décrit la procédure complète pour exposer l'orchestrateur MCP via HT
 - **Port TCP ouvert** entre Codex Cloud et l'orchestrateur (par défaut `4000`). En production, prévoir un reverse-proxy/TLS (Nginx, Caddy, Cloudflare Tunnel…).
 - **Capacité d'écriture** sur `~/.codex/config.toml` dans l'espace Codex afin de déclarer le serveur MCP distant.
 
+
+### Vérifier la version livrée
+
+Avant de pousser une archive dans Codex Cloud, confirmer que vous déployez bien la révision `1.3.0` ou ultérieure. Le `package.json` du dépôt référence cette version et exige Node ≥ 18.17 pour supporter le transport HTTP Streamable fourni par le SDK MCP.【F:package.json†L1-L24】
+
+La build `dist/server.js` générée à partir de `src/server.ts` embarque l'initialisation du transport `StreamableHTTPServerTransport` (chemin `/mcp` par défaut) et le générateur de session HTTP (`createHttpSessionId`).【F:src/server.ts†L1896-L2051】 Cette révision permet donc à Codex d'invoquer directement tous les outils MCP exposés par le serveur via HTTP.
+
 ## 2. Préparer un build reproductible
 
 Exécuter les commandes suivantes en local (ou dans un job CI) pour produire des artefacts prêts à être copiés dans le cloud :
@@ -203,4 +210,125 @@ Vous devez recevoir un `result` JSON contenant la réponse textuelle générée 
 | JSON `error` code `-32000` | Option `--http-json` désactivée alors que le client attend une réponse JSON. Relancer avec `--http-json`. |
 
 En cas de doute, activer les logs détaillés (`DEBUG=orchestrator* node dist/server.js ...`) pour inspecter les requêtes entrantes.
+
+
+## 9. Scripts Codex Cloud (onglet configuration/maintenance)
+
+L'interface Codex Cloud affiche deux blocs de scripts (capture fournie par l'utilisateur) :
+
+- **Script de configuration** — exécuté une fois lors de la création ou du reclonage du conteneur.
+- **Script de maintenance** — exécuté à chaque redémarrage/activation du conteneur.
+
+Les extraits suivants supposent que l'application vit dans `~/apps/self-fork-orchestrator` (adapter au besoin). Ils créent également des utilitaires `bin/` pour gérer le processus et centraliser les journaux.
+
+### Script de configuration (mode manuel)
+
+À coller dans le champ « Script de configuration » après avoir sélectionné le mode **Manuel** :
+
+```bash
+#!/bin/bash
+set -euo pipefail
+
+APP_HOME="${APP_HOME:-$HOME/apps/self-fork-orchestrator}"
+LOG_DIR="${APP_HOME}/logs"
+BIN_DIR="${APP_HOME}/bin"
+
+mkdir -p "$APP_HOME" "$LOG_DIR" "$BIN_DIR"
+cd "$APP_HOME"
+
+if command -v npm >/dev/null 2>&1; then
+  if [ -f package-lock.json ]; then
+    npm ci
+  else
+    npm install
+  fi
+  npm run build
+  npm prune --omit=dev || true
+else
+  echo "npm introuvable (Node.js >= 18 requis)." >&2
+  exit 1
+fi
+
+cat >"$BIN_DIR/orchestrator-stop.sh" <<'STOP'
+#!/bin/bash
+set -euo pipefail
+APP_HOME="${APP_HOME:-$HOME/apps/self-fork-orchestrator}"
+PID_FILE="${APP_HOME}/logs/orchestrator.pid"
+
+if [ -f "$PID_FILE" ]; then
+  PID="$(cat "$PID_FILE")"
+  if kill -0 "$PID" 2>/dev/null; then
+    kill "$PID"
+    for _ in {1..10}; do
+      if kill -0 "$PID" 2>/dev/null; then
+        sleep 0.5
+      else
+        break
+      fi
+    done
+  fi
+  rm -f "$PID_FILE"
+fi
+STOP
+
+cat >"$BIN_DIR/orchestrator-start.sh" <<'START'
+#!/bin/bash
+set -euo pipefail
+
+APP_HOME="${APP_HOME:-$HOME/apps/self-fork-orchestrator}"
+LOG_DIR="${APP_HOME}/logs"
+PID_FILE="${LOG_DIR}/orchestrator.pid"
+PORT="${MCP_HTTP_PORT:-4000}"
+HOST="${MCP_HTTP_HOST:-0.0.0.0}"
+PATH_PART="${MCP_HTTP_PATH:-/mcp}"
+JSON_FLAG="${MCP_HTTP_JSON:-0}"
+STATELESS_FLAG="${MCP_HTTP_STATELESS:-0}"
+
+"${APP_HOME}/bin/orchestrator-stop.sh" || true
+
+mkdir -p "$LOG_DIR"
+cd "$APP_HOME"
+
+CMD=(node dist/server.js --http --http-port "$PORT" --http-host "$HOST" --http-path "$PATH_PART" --no-stdio)
+if [ "$JSON_FLAG" = "1" ]; then
+  CMD+=(--http-json)
+fi
+if [ "$STATELESS_FLAG" = "1" ]; then
+  CMD+=(--http-stateless)
+fi
+
+nohup env NODE_ENV=production "${CMD[@]}" >>"$LOG_DIR/orchestrator.log" 2>&1 &
+echo $! >"$PID_FILE"
+START
+
+chmod +x "$BIN_DIR/orchestrator-start.sh" "$BIN_DIR/orchestrator-stop.sh"
+
+"$BIN_DIR/orchestrator-start.sh"
+```
+
+Ce script :
+
+1. Installe les dépendances Node, compile `dist/` et nettoie les devDependencies inutiles.
+2. Crée deux helpers (`orchestrator-start.sh` / `orchestrator-stop.sh`) pour gérer proprement le processus Node.
+3. Démarre immédiatement le transport HTTP en arrière-plan (`nohup`) et consigne les logs dans `logs/orchestrator.log`.
+
+### Script de maintenance
+
+À coller dans le champ « Script de maintenance » :
+
+```bash
+#!/bin/bash
+set -euo pipefail
+
+APP_HOME="${APP_HOME:-$HOME/apps/self-fork-orchestrator}"
+
+if [ ! -x "${APP_HOME}/bin/orchestrator-start.sh" ]; then
+  echo "Scripts non initialisés : exécuter d'abord le script de configuration." >&2
+  exit 1
+fi
+
+"${APP_HOME}/bin/orchestrator-start.sh"
+```
+
+Lorsqu'un conteneur Codex Cloud est remis en route, ce script relance le serveur MCP (après arrêt éventuel du précédent PID). Les variables `MCP_HTTP_PORT`, `MCP_HTTP_HOST`, `MCP_HTTP_PATH`, `MCP_HTTP_JSON` et `MCP_HTTP_STATELESS` peuvent être définies dans l'environnement Codex pour ajuster le transport sans modifier les scripts.
 

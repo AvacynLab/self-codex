@@ -80,3 +80,6 @@ Résumé rapide :
 
 Le guide fournit également un tableau de dépannage (codes d'erreur fréquents, sessions manquantes, blocages réseau) et des exemples d'en-têtes à passer (`Mcp-Session-Id`).
 
+
+Pour automatiser l'exposition dans Codex Cloud, la section 9 du guide détaille les scripts « configuration » et « maintenance » à coller directement dans le panneau de l'environnement (capture fournie par l'utilisateur).
+
