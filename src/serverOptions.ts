@@ -31,6 +31,22 @@ export interface OrchestratorRuntimeOptions {
   maxEventHistory: number;
   /** Optional path where JSON logs must be mirrored. */
   logFile?: string | null;
+  /**
+   * Maximum number of child runtimes that the orchestrator will execute in
+   * parallel when fan-out plans are scheduled. This parameter is surfaced via
+   * CLI flags so operators can adapt concurrency to the host resources.
+   */
+  parallelism: number;
+  /**
+   * Idle duration (in seconds) after which an inactive child should be
+   * considered for recycling by monitoring tools.
+   */
+  childIdleSec: number;
+  /**
+   * Maximum wall clock duration (in seconds) granted to a child runtime before
+   * it is forcefully terminated.
+   */
+  childTimeoutSec: number;
 }
 
 /**
@@ -46,6 +62,9 @@ interface ParseState {
   httpStateless: boolean;
   maxEventHistory: number;
   logFile: string | null;
+  parallelism: number;
+  childIdleSec: number;
+  childTimeoutSec: number;
 }
 
 const FLAG_WITH_VALUE = new Set([
@@ -53,7 +72,10 @@ const FLAG_WITH_VALUE = new Set([
   "--http-host",
   "--http-path",
   "--max-event-history",
-  "--log-file"
+  "--log-file",
+  "--parallelism",
+  "--child-idle-sec",
+  "--child-timeout-sec"
 ]);
 
 /**
@@ -93,7 +115,10 @@ const DEFAULT_STATE: ParseState = {
   httpEnableJson: false,
   httpStateless: false,
   maxEventHistory: 5000,
-  logFile: null
+  logFile: null,
+  parallelism: 2,
+  childIdleSec: 120,
+  childTimeoutSec: 900
 };
 
 /**
@@ -164,6 +189,15 @@ export function parseOrchestratorRuntimeOptions(argv: string[]): OrchestratorRun
         state.logFile = raw;
         break;
       }
+      case "--parallelism":
+        state.parallelism = parsePositiveInteger(value ?? "", flag);
+        break;
+      case "--child-idle-sec":
+        state.childIdleSec = parsePositiveInteger(value ?? "", flag);
+        break;
+      case "--child-timeout-sec":
+        state.childTimeoutSec = parsePositiveInteger(value ?? "", flag);
+        break;
       default:
         // Ignore unknown flags so the orchestrator remains permissive for
         // future arguments handled elsewhere.
@@ -182,7 +216,10 @@ export function parseOrchestratorRuntimeOptions(argv: string[]): OrchestratorRun
       stateless: state.httpStateless
     },
     maxEventHistory: state.maxEventHistory,
-    logFile: state.logFile
+    logFile: state.logFile,
+    parallelism: state.parallelism,
+    childIdleSec: state.childIdleSec,
+    childTimeoutSec: state.childTimeoutSec
   };
 }
 

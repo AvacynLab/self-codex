@@ -1,40 +1,61 @@
 #!/usr/bin/env node
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
-import { execFile } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, join, resolve } from "node:path";
 
+import {
+  buildCommandPlan,
+  createCommandRunner,
+  ensureBranchAllowed,
+} from "./lib/env-helpers.mjs";
+
+/**
+ * Bootstraps a Codex orchestrator deployment without mutating the repository
+ * workspace. The script mirrors the "no-write" policy captured in AGENTS.md
+ * and is safe to execute on developer machines as well as CI runners.
+ */
 const projectRoot = dirname(fileURLToPath(new URL("../", import.meta.url)));
-const execFileAsync = (cmd, args) =>
-  new Promise((resolvePromise, rejectPromise) => {
-    const child = execFile(cmd, args, { stdio: "inherit", cwd: projectRoot });
-    child.on("error", rejectPromise);
-    child.on("exit", (code) => {
-      if (code === 0) {
-        resolvePromise();
-      } else {
-        rejectPromise(new Error(`${cmd} exited with code ${code}`));
-      }
-    });
+const scriptPath = fileURLToPath(import.meta.url);
+const isTestEnvironment = process.env.CODEX_SCRIPT_TEST === "1";
+const isDryRun = process.env.CODEX_SCRIPT_DRY_RUN === "1";
+const invokedDirectly = (() => {
+  try {
+    return process.argv.length > 1 && resolve(process.argv[1]) === scriptPath;
+  } catch {
+    return false;
+  }
+})();
+
+async function main() {
+  const { runCommand, recordedCommands } = createCommandRunner({
+    projectRoot,
+    dryRun: isDryRun,
   });
-const hasLockFile =
-  existsSync(join(projectRoot, "package-lock.json")) ||
-  existsSync(join(projectRoot, "npm-shrinkwrap.json"));
 
-const installArgs = hasLockFile ? ["ci"] : ["install"];
+  await ensureBranchAllowed(async () => {
+    const result = await runCommand("git", ["rev-parse", "--abbrev-ref", "HEAD"], {
+      captureOutput: true,
+    });
+    return result.stdout;
+  });
 
-console.log(`[setup] Installing dependencies via npm ${installArgs.join(" ")}`);
-await execFileAsync("npm", installArgs);
+  const hasLockFile =
+    existsSync(join(projectRoot, "package-lock.json")) ||
+    existsSync(join(projectRoot, "npm-shrinkwrap.json"));
 
-console.log("[setup] Building TypeScript sources");
-await execFileAsync("npm", ["run", "build"]);
+  for (const step of buildCommandPlan(hasLockFile)) {
+    console.log(`[setup] ${step.description}`);
+    await runCommand(step.command, step.args);
+  }
 
-const configDir = resolve(process.env.HOME ?? "", ".codex");
-mkdirSync(configDir, { recursive: true });
+  const configDir = resolve(process.env.HOME ?? "", ".codex");
+  if (!isDryRun) {
+    mkdirSync(configDir, { recursive: true });
+  }
 
-const serverPath = join(projectRoot, "dist", "server.js");
-const tomlPath = join(configDir, "config.toml");
-const tomlContent = `[[servers]]
+  const serverPath = join(projectRoot, "dist", "server.js");
+  const tomlPath = join(configDir, "config.toml");
+  const tomlContent = `[[servers]]
 name = "self-fork"
 command = "node"
 args = ["${serverPath.replace(/\\/g, "\\\\")}"]
@@ -42,5 +63,20 @@ transport = "stdio"
 # Pour exposer HTTP, utilisez l'adaptateur mcp-proxy et le script npm run start:http.
 `;
 
-writeFileSync(tomlPath, tomlContent, "utf8");
-console.log(`[setup] Configuration Codex écrite dans ${tomlPath}`);
+  if (isDryRun) {
+    console.log(`[setup] (dry-run) would write ${tomlPath}`);
+  } else {
+    writeFileSync(tomlPath, tomlContent, "utf8");
+    console.log(`[setup] Configuration Codex écrite dans ${tomlPath}`);
+  }
+
+  if (isDryRun) {
+    globalThis.CODEX_SCRIPT_COMMANDS = recordedCommands;
+  }
+}
+
+if (!isTestEnvironment && invokedDirectly) {
+  await main();
+}
+
+export { main as runSetupEnvironment };

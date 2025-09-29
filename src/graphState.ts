@@ -49,6 +49,12 @@ export interface ChildSnapshot {
   createdAt: number;
   transcriptSize: number;
   lastTs: number | null;
+  /**
+   * Millisecond-precision timestamp of the latest heartbeat observed for the
+   * child. `null` indicates that the orchestrator never received any
+   * heartbeat.
+   */
+  lastHeartbeatAt: number | null;
 }
 
 export interface JobSnapshot {
@@ -91,6 +97,8 @@ export interface ChildInactivityFlag {
   thresholdMs: number;
 }
 
+export type ChildInactivityAction = "ping" | "cancel" | "retry";
+
 export interface ChildInactivityReport {
   childId: string;
   jobId: string;
@@ -106,6 +114,7 @@ export interface ChildInactivityReport {
   pendingMs: number | null;
   transcriptSize: number;
   flags: ChildInactivityFlag[];
+  suggestedActions: ChildInactivityAction[];
 }
 
 export interface GraphStateMetrics {
@@ -243,7 +252,8 @@ export class GraphState {
       system_message: normalizeString(spec.system ?? null),
       created_at: options.createdAt,
       transcript_size: 0,
-      last_ts: 0
+      last_ts: 0,
+      last_heartbeat_at: 0
     };
     if (spec.goals?.length) {
       attributes.goals = normalizeString(spec.goals.join("\n"));
@@ -282,6 +292,7 @@ export class GraphState {
       systemMessage: string | null;
       runtime: string;
       lastTs: number | null;
+      lastHeartbeatAt: number | null;
     }>
   ): void {
     const nodeId = this.childNodeId(childId);
@@ -312,6 +323,23 @@ export class GraphState {
     if (updates.lastTs !== undefined) {
       attributes.last_ts = updates.lastTs ?? 0;
     }
+    if (updates.lastHeartbeatAt !== undefined) {
+      attributes.last_heartbeat_at = updates.lastHeartbeatAt ?? 0;
+    }
+    this.nodes.set(nodeId, { id: nodeId, attributes });
+  }
+
+  /**
+   * Enregistre un heartbeat provenant d'un enfant. Le timestamp est utilisé
+   * par l'autosave et les outils de supervision pour exposer l'activité
+   * récente même lorsqu'aucun message n'a été échangé.
+   */
+  recordChildHeartbeat(childId: string, heartbeatAt?: number): void {
+    const nodeId = this.childNodeId(childId);
+    const node = this.nodes.get(nodeId);
+    if (!node) return;
+    const attributes = { ...node.attributes };
+    attributes.last_heartbeat_at = heartbeatAt ?? Date.now();
     this.nodes.set(nodeId, { id: nodeId, attributes });
   }
 
@@ -357,7 +385,11 @@ export class GraphState {
 
     for (const child of this.listChildSnapshots()) {
       const flags: ChildInactivityFlag[] = [];
+      const heartbeatTs = child.lastHeartbeatAt;
       let lastActivityTs = child.lastTs;
+      if (lastActivityTs === null && heartbeatTs !== null) {
+        lastActivityTs = heartbeatTs;
+      }
       if (lastActivityTs === null && includeWithoutMessages) {
         lastActivityTs = child.createdAt > 0 ? child.createdAt : null;
       }
@@ -380,6 +412,8 @@ export class GraphState {
         continue;
       }
 
+      const actions = this.suggestActionsForInactivity(child.state, flags);
+
       reports.push({
         childId: child.id,
         jobId: child.jobId,
@@ -394,11 +428,40 @@ export class GraphState {
         pendingSince,
         pendingMs,
         transcriptSize: child.transcriptSize,
-        flags
+        flags,
+        suggestedActions: actions
       });
     }
 
     return reports;
+  }
+
+  /**
+   * Derives a list of non-destructive actions that the operator can apply to
+   * an inactive child. The mapping favours light-touch options first (ping),
+   * then recommends cancelling or retrying depending on the reported flags and
+   * current runtime state. The result intentionally avoids duplicates to keep
+   * JSON responses compact and easy to inspect in dashboards.
+   */
+  private suggestActionsForInactivity(state: string, flags: ChildInactivityFlag[]): ChildInactivityAction[] {
+    const actions = new Set<ChildInactivityAction>();
+
+    for (const flag of flags) {
+      if (flag.type === "idle") {
+        actions.add("ping");
+      }
+
+      if (flag.type === "pending") {
+        const lowered = state.toLowerCase();
+        if (lowered.includes("error") || lowered.includes("fail")) {
+          actions.add("retry");
+        } else {
+          actions.add("cancel");
+        }
+      }
+    }
+
+    return [...actions];
   }
 
   /**
@@ -649,6 +712,9 @@ export class GraphState {
     }
     if (event.childId) {
       this.addEdge(this.childNodeId(event.childId), nodeId, { type: "event" });
+      if (event.kind === "HEARTBEAT") {
+        this.recordChildHeartbeat(event.childId, event.ts);
+      }
     }
 
     // Retention for events
@@ -964,6 +1030,7 @@ export class GraphState {
     const createdAt = Number(node.attributes.created_at ?? 0);
     const transcriptSize = Number(node.attributes.transcript_size ?? 0);
     const lastTs = toNullableNumber(node.attributes.last_ts);
+    const lastHeartbeatAt = toNullableNumber(node.attributes.last_heartbeat_at);
     return {
       id,
       jobId,
@@ -976,7 +1043,8 @@ export class GraphState {
       systemMessage,
       createdAt,
       transcriptSize,
-      lastTs
+      lastTs,
+      lastHeartbeatAt
     };
   }
 }

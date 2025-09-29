@@ -4,7 +4,10 @@ const FLAG_WITH_VALUE = new Set([
     "--http-host",
     "--http-path",
     "--max-event-history",
-    "--log-file"
+    "--log-file",
+    "--parallelism",
+    "--child-idle-sec",
+    "--child-timeout-sec"
 ]);
 /**
  * Ensures a provided numeric string can be converted to a positive integer.
@@ -41,7 +44,10 @@ const DEFAULT_STATE = {
     httpEnableJson: false,
     httpStateless: false,
     maxEventHistory: 5000,
-    logFile: null
+    logFile: null,
+    parallelism: 2,
+    childIdleSec: 120,
+    childTimeoutSec: 900
 };
 /**
  * Parses CLI arguments in order to determine how the orchestrator must expose
@@ -107,6 +113,15 @@ export function parseOrchestratorRuntimeOptions(argv) {
                 state.logFile = raw;
                 break;
             }
+            case "--parallelism":
+                state.parallelism = parsePositiveInteger(value ?? "", flag);
+                break;
+            case "--child-idle-sec":
+                state.childIdleSec = parsePositiveInteger(value ?? "", flag);
+                break;
+            case "--child-timeout-sec":
+                state.childTimeoutSec = parsePositiveInteger(value ?? "", flag);
+                break;
             default:
                 // Ignore unknown flags so the orchestrator remains permissive for
                 // future arguments handled elsewhere.
@@ -124,7 +139,10 @@ export function parseOrchestratorRuntimeOptions(argv) {
             stateless: state.httpStateless
         },
         maxEventHistory: state.maxEventHistory,
-        logFile: state.logFile
+        logFile: state.logFile,
+        parallelism: state.parallelism,
+        childIdleSec: state.childIdleSec,
+        childTimeoutSec: state.childTimeoutSec
     };
 }
 /**

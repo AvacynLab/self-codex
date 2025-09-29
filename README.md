@@ -1,122 +1,196 @@
 # mcp-self-fork-orchestrator
 
-Serveur MCP (STDIO) pour Codex : orchestration de **sous-chats parallèles** (enfants) sans appel LLM côté outil.  
-Codex reste le moteur d'inférence ; l'outil gère l'état, le parallélisme, l'agrégation.
+Serveur MCP focalisé sur le transport **STDIO** pour piloter des clones Codex en
+parallèle. L'orchestrateur assure la planification, l'agrégation des sorties et
+une riche boîte à outils d'ingénierie de graphes sans dépendance réseau.
+
+> ℹ️ Le mode HTTP reste optionnel et isolé. Il est désactivé par défaut afin de
+> privilégier l'usage interne via STDIO (`codex` CLI) et éviter les surfaces
+> d'exposition accidentelles.
 
 ## Installation
 
 ```bash
-npm install    # ou pnpm install / yarn install
-npm run build
+npm install              # n'écrit pas de lockfile (utilise --no-save si nécessaire)
+npm run build            # compile src/ et graph-forge/
 ```
 
-Les scripts de maintenance détectent automatiquement la présence d'un lockfile et
-basculent sur `npm install` lorsqu'aucun fichier `package-lock.json` n'est
-présent.
+Les scripts d'environnement de production doivent rester "sans écriture" pour
+le dépôt : `npm ci` lorsqu'un lockfile est présent, sinon
+`npm install --omit=dev --no-save --no-package-lock`, puis `npm run build` et
+configuration éventuelle de `~/.codex/config.toml`.
 
-## Graph Forge integration
+## Transports disponibles
 
-Le dossier `graph-forge/` fournit une DSL pour decrire des graphes orientes pesees. La build principale compile aussi ce module (`npm run build`).
+- **STDIO (par défaut)** — `npm run start` ou `node dist/server.js`. C'est le
+  mode attendu par Codex CLI.
+- **HTTP optionnel** — `npm run start:http` active le transport streamable HTTP
+  (`--no-stdio`). À réserver aux scénarios cloud avec reverse proxy MCP.
 
-Un nouvel outil MCP `graph_forge_analyze` charge un fichier `.gf` ou une source inline, compile la description, puis execute les analyses demandees (`shortestPath`, `criticalPath`, `stronglyConnected`).
+## Outils runtime enfant (`child_*`)
 
-Exemple (pseudo requete SDK) :
+Chaque outil est validé par zod et loggé en JSONL. Les fichiers d'un enfant sont
+confinés dans `children/<childId>/`.
+
+| Tool | Objectif | Détails clés |
+| --- | --- | --- |
+| `child_create` | Démarre un clone Codex | `initial_payload`, `timeouts`, `metadata` | 
+| `child_send` | Injecte un prompt/signal | Génère un `messageId` unique |
+| `child_status` | Snapshot runtime | `lifecycle`, `lastHeartbeatAt`, ressources |
+| `child_collect` | Récupère messages + artefacts | Parcourt l'outbox et retourne le manifeste |
+| `child_stream` | Paginer stdout/stderr | Curseur `after_sequence`, filtre `streams` |
+| `child_cancel` | SIGINT/SIGTERM gracieux | Supporte `timeout_ms` avant escalation |
+| `child_kill` | Terminaison forcée | SIGKILL configurable |
+| `child_gc` | Nettoyage FS + index | Supprime logs, manifestes et réindexe |
+
+**Exemple `child_create` + `child_collect`**
 
 ```json
 {
-  "tool": "graph_forge_analyze",
+  "tool": "child_create",
   "input": {
-    "path": "graph-forge/examples/pipeline.gf",
-    "analyses": [
-      { "name": "shortestPath", "args": ["Ingest", "Store"] }
-    ]
+    "metadata": { "experiment": "fanout" },
+    "initial_payload": { "type": "prompt", "content": "Analyse le ticket #42" },
+    "timeouts": { "idle_ms": 30000 }
   }
 }
 ```
 
-La reponse retourne un resume du graphe (noeuds, arcs, directives) et les resultats des analyses definies dans le script ou envoyees a la volee.
+```json
+{
+  "tool": "child_collect",
+  "input": { "child_id": "child_123" }
+}
+```
 
+**Paginer le transcript avec `child_stream`**
 
-## Fonctionnalités avancées
+```json
+{
+  "tool": "child_stream",
+  "input": { "child_id": "child_123", "limit": 25, "streams": ["stdout"] }
+}
+```
 
-- **Analyses GraphForge étendues** : le moteur inclut désormais un tri
-  topologique (`topologicalSort`), la détection explicite de cycles
-  (`detectCycles`), des mesures de centralité (`degreeCentrality`,
-  `closenessCentrality`) ainsi que le calcul des *k* plus courts chemins via
-  `kShortestPaths`. Toutes les fonctions acceptent un paramètre
-  `costFunction` (descripteur JSON ou fonction TypeScript) permettant de
-  personnaliser la pondération des arêtes.
-- **Tests unitaires** : la suite Mocha (`npm test`) couvre les nouvelles
-  analyses GraphForge, les métriques GraphState et le parsing CLI.
-- **Journalisation structurée** : l'orchestrateur écrit désormais des lignes
-  JSON (`timestamp`, `level`, `message`, `payload`) sur `stdout` et peut les
-  refléter dans un fichier via `--log-file`.
+## Planification multi-enfants (`plan_*`)
+
+Les plans orchestrent des cohortes d'enfants en fan-out puis agrègent les
+résultats.
+
+1. **`plan_fanout`** — Crée `N` enfants à partir d'un template de prompt et
+   déclenche le premier envoi. `parallelism` et `retry` contrôlent la pression.
+2. **`plan_join`** — Attends la complétion (`all`, `first_success`, `quorum`).
+   Chaque entrée contient `status`, résumé et artefacts découverts.
+3. **`plan_reduce`** — Combine les sorties (`concat`, `merge_json`, `vote`,
+   `custom`). Retourne `aggregate` + `trace` des décisions.
+
+Les exécutions génèrent `run-<timestamp>/fanout.json` pour audit.
+
+### Exemple : fan-out de 3 clones puis vote majoritaire
+
+```json
+{
+  "tool": "plan_fanout",
+  "input": {
+    "children_spec": { "count": 3 },
+    "prompt_template": {
+      "system": "Tu es un relecteur de PR",
+      "user": "{{summary}}\n\nPR: {{pr_link}}"
+    }
+  }
+}
+```
+
+```json
+{
+  "tool": "plan_join",
+  "input": { "children": ["child_a", "child_b", "child_c"], "join_policy": "all" }
+}
+```
+
+```json
+{
+  "tool": "plan_reduce",
+  "input": { "children": ["child_a", "child_b", "child_c"], "reducer": "vote" }
+}
+```
+
+## Templates de prompts (`src/prompts.ts`)
+
+Le moteur de templating extrait les placeholders (`{{variable}}`) et impose que
+les variables fournies correspondent exactement aux placeholders détectés.
+
+```json
+{
+  "system": "Tu es expert CI",
+  "user": "Analyse {{service}} sur le commit {{sha}}",
+  "assistant": "Dis bonjour à {{owner}}"
+}
+```
+
+En fan-out, fournissez `variables` à `plan_fanout` pour injecter des valeurs
+spécifiques à chaque clone (ex. via `children_spec.list`).
+
+## Atelier de graphes MCP
+
+Tous les outils manipulent des DAGs pondérés et sont testés hors ligne.
+
+- `graph_generate` — Construit un graphe depuis une liste de tâches ou un
+  patron (pipeline lint → test → build → package).
+- `graph_mutate` — Opérations idempotentes : ajout/retrait/renommage de nœuds ou
+  d'arêtes, mise à jour des poids/labels.
+- `graph_validate` — Détection de cycles, poids invalides, nœuds inaccessibles
+  avec suggestions d'auto-fix.
+- `graph_summarize` — Couches, degrés, goulets d'étranglement et nœuds critiques.
+- `graph_paths_k_shortest` / `graph_paths_constrained` — K plus courts chemins
+  (Yen) et Dijkstra contraint (évictions, budget de coût).
+- `graph_centrality_betweenness` — Centralité de Brandes pondérée/non pondérée.
+- `graph_simulate` — Simulation temporelle avec `schedule`, `queue` et métriques
+  (makespan, parallélisme, utilisation).
+- `graph_optimize` — Compare plusieurs niveaux de parallélisme et suggère les
+  ajustements les plus pertinents.
+
+**Exemple `graph_simulate`**
+
+```json
+{
+  "tool": "graph_simulate",
+  "input": {
+    "graph": {
+      "name": "pipeline",
+      "nodes": [
+        { "id": "lint", "attributes": { "duration": 1 } },
+        { "id": "test", "attributes": { "duration": 2 } },
+        { "id": "build", "attributes": { "duration": 2 } }
+      ],
+      "edges": [
+        { "from": "lint", "to": "test" },
+        { "from": "test", "to": "build" }
+      ]
+    },
+    "parallelism": 2
+  }
+}
+```
+
+Le résultat expose un planning détaillé, les temps d'attente et un JSON prêt à
+être visualisé en Gantt.
+
+## Tests et qualité
+
+Les tests sont 100 % hors ligne et déterministes.
+
+```bash
+npm run lint   # tsc noEmit sur src/ et graph-forge/
+npm test       # build + mocha (ts-node ESM)
+npm run build  # compilation dist/
+```
+
+Les nouveaux outils ajoutent systématiquement des tests unitaires (mocks enfant,
+planification, algorithmes de graphes, simulation/optimisation).
 
 ## Intégration continue
 
-Un workflow GitHub Actions (`.github/workflows/ci.yml`) reconstruit le projet sur
-chaque `push` et `pull_request` en exécutant successivement :
-
-1. `npm install` (ou `npm ci` si un lockfile existe dans le dépôt cloné).
-2. `npm run build` pour compiler `src/` et `graph-forge/`.
-3. `npm run lint` pour valider les options TypeScript.
-4. `npm test` pour lancer la suite Mocha avec `ts-node`.
-
-Ce pipeline empêche d'introduire des régressions sur les outils MCP et
-documente la version de Node testée (matrice `18.x` et `20.x`).
-
-
-## Orchestrateur : outils graphe et visualisation
-
-Plusieurs outils MCP rendent l'etat graphe exploitable sans quitter VS Code :
-
-- `job_view` : resume un job (etat, enfants) avec un extrait du transcript. Chaque enfant expose un lien `vscode://` ainsi qu'une commande `selfForkViewer.openConversation` pour ouvrir la vue web internee.
-- `conversation_view` et `events_view` : surfaces respectivement les messages d'un enfant et les evenements recents ou en attente. Les reponses incluent les memes liens cliquables.
-- `events_view_live` : lit directement le bus live (option `min_seq`, tri, filtrage par job/enfant) afin d'eviter la saturation liee aux HEARTBEAT.
-- `graph_prune` : permet de purger manuellement une conversation (`keep_last`) ou les evenements conserves dans le graphe (`max_events`).
-- `graph_state_inactivity` : signale les enfants sans activité récente ou pending trop long (filtres par job/runtime/état, rendu JSON ou texte). Le paramètre `inactivityThresholdSec` définit le seuil global en secondes.
-- `graph_state_metrics` : agrège les métriques clés (jobs actifs, enfants en attente, taille de l'historique d'événements, intervalle moyen des heartbeats).
-- `graph_state_autosave` : ecrit periodiquement un snapshot JSON accompagné de métadonnées (`inactivity_threshold_ms`, `event_history_limit`). Le viewer VS Code (`Self Fork: Open Viewer`) consomme ce fichier pour afficher enfants, evenements et conversations.
-
-### Runtime dedie par enfant
-
-Chaque enfant recu via `plan_fanout` (ou ajoute a chaud) enregistre un `runtime` distinct (`codex` par defaut). Les outils `job_view`, `status`, `child_info` et les evenements `PLAN` exposent ce champ, facilitant le suivi des instances actives et leur separation logique vis-a-vis de l'orchestrateur (considere comme l'utilisateur dans les transcripts).
-
-## Exposer le serveur MCP via HTTP (cloud)
-
-Le transport STDIO reste actif par defaut. Pour utiliser l'orchestrateur dans un environnement distant (VM, conteneur cloud, etc.), il est possible d'activer un transport HTTP conforme a la specification *Streamable HTTP* :
-
-```bash
-node dist/server.js --http --http-port 4000 --no-stdio
-```
-
-Options disponibles :
-
-- `--http` active le serveur HTTP avec les valeurs par defaut (hote `0.0.0.0`, port `4000`, chemin `/mcp`).
-- `--http-port <port>` / `--http-host <hote>` personnaliser le binding.
-- `--http-path <chemin>` (par defaut `/mcp`).
-- `--http-json` autorise les reponses JSON directes en plus du flux SSE.
-- `--http-stateless` desactive la generation de `mcp-session-id` (mode stateless).
-- `--no-stdio` desactive explicitement le transport STDIO; il est automatiquement supprime si HTTP est actif.
-- `--max-event-history <n>` limite le nombre d'événements conservés en mémoire (valeur par défaut : `5000`).
-- `--log-file <chemin>` duplique les journaux JSON dans un fichier (écriture thread-safe).
-
-Une fois lance, le serveur repond sur `http://<hote>:<port><chemin>` et supporte les GET (SSE) et POST/DELETE conformes au protocole MCP. Utilisez `npm run start:http` pour démarrer directement en mode HTTP (`node dist/server.js --http --http-host 0.0.0.0 --http-port 4000 --no-stdio`).
-Les journaux standard (JSON Lines) exposent l'URL et les options activées.
-
-> ⚠️ L'agent Codex CLI ne sait pas dialoguer en HTTP : déployez un adaptateur
-> (ex. [`mcp-proxy`](https://github.com/modelcontextprotocol/implementations/tree/main/typescript/packages/mcp-proxy)) pour exposer l'orchestrateur en HTTP tout en conservant la configuration STDIO dans `~/.codex/config.toml`.
-
-### Déploiement Codex Cloud pas-à-pas
-
-Un guide exhaustif (build, packaging, service systemd, configuration Codex) est disponible dans [`docs/codex-cloud-setup.md`](docs/codex-cloud-setup.md).
-
-Résumé rapide :
-
-1. Construire l'orchestrateur en local : `npm install --omit=dev && npm run build` puis archiver `dist/` et `node_modules/`.
-2. Déployer l'archive sur l'environnement Codex Cloud et lancer `node dist/server.js --http --http-host 0.0.0.0 --http-port 4000 --no-stdio` (ou via systemd).
-3. Déclarer le serveur côté Codex dans `~/.codex/config.toml` via un bloc `[[servers]]` utilisant le transport `streamable-http` pointant vers `https://<domaine>/mcp`.
-4. Vérifier la connectivité avec `curl` (`initialize`, flux SSE, `call_tool`) avant d'activer l'agent Codex.
-
-Le guide fournit également un tableau de dépannage (codes d'erreur fréquents, sessions manquantes, blocages réseau) et des exemples d'en-têtes à passer (`Mcp-Session-Id`).
-
+Le pipeline GitHub Actions (matrice Node 18/20/22) enchaîne `npm install`,
+`npm run build`, `npm run lint` puis `npm test`. Toute erreur TypeScript, test ou
+contrat JSON-RPC bloque la livraison.
