@@ -182,7 +182,7 @@ export class ChildSupervisor {
     async kill(childId, options) {
         const runtime = this.requireRuntime(childId);
         this.index.updateState(childId, "stopping");
-        return runtime.shutdown({ signal: "SIGTERM", timeoutMs: options?.timeoutMs ?? 100 });
+        return runtime.shutdown({ signal: "SIGTERM", timeoutMs: options?.timeoutMs ?? 100, force: true });
     }
     /**
      * Waits for the child to exit and returns the shutdown information.

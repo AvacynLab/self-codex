@@ -273,13 +273,19 @@ export class ChildRuntime extends EventEmitter {
      * child is forcefully killed with SIGKILL.
      */
     async shutdown(options = {}) {
-        const { signal = "SIGINT", timeoutMs = 2000 } = options;
+        const { signal = "SIGINT", timeoutMs = 2000, force = false } = options;
         const started = Date.now();
         if (this.closed) {
             const exit = await this.exitPromise;
             return { code: exit.code, signal: exit.signal, forced: exit.forced, durationMs: Date.now() - started };
         }
         this.recordInternal("lifecycle", `shutdown-request:${signal}:${timeoutMs}`);
+        if (force) {
+            // Mark the runtime as forcefully terminated up-front so exit metadata
+            // reflects the caller intent even if the child acknowledges the signal
+            // quickly (observed differences across Node.js 18/20/22).
+            this.forcedKill = true;
+        }
         try {
             this.child.kill(signal);
         }
