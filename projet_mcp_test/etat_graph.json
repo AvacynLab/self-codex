@@ -1,0 +1,27 @@
+{
+  "autosave": {
+    "enabledAt": "2025-02-17T10:12:08Z",
+    "intervalSeconds": 5,
+    "snapshotCount": 4
+  },
+  "jobs": [
+    {
+      "jobId": "job-20250217-001",
+      "tool": "plan_fanout",
+      "status": "HEARTBEAT",
+      "lastEvent": "2025-02-17T10:12:28Z",
+      "children": [
+        {
+          "nodeId": "fanout-child-1",
+          "status": "RUNNING",
+          "lastHeartbeat": "2025-02-17T10:12:26Z"
+        },
+        {
+          "nodeId": "fanout-child-2",
+          "status": "RUNNING",
+          "lastHeartbeat": "2025-02-17T10:12:27Z"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,11 @@
+2025-02-17T10:12:02Z [INFO] Starting MCP workflow bootstrap (project=projet_mcp_test)
+2025-02-17T10:12:03Z [INFO] graph_forge.analyze request => file=graph/pipeline.gf analysis=shortestPath source=Ingestion target=Stockage
+2025-02-17T10:12:03Z [INFO] graph_forge.analyze response <= distance=5 path=[Ingestion,Traitement,Stockage]
+2025-02-17T10:12:05Z [INFO] graph_state.autosave enabled interval=5s output=etat_graph.json
+2025-02-17T10:12:08Z [INFO] plan_fanout dispatched jobId=job-20250217-001 fanout=2
+2025-02-17T10:12:13Z [DEBUG] heartbeat received jobId=job-20250217-001 child=fanout-child-1 lag=0.9s
+2025-02-17T10:12:14Z [DEBUG] heartbeat received jobId=job-20250217-001 child=fanout-child-2 lag=1.0s
+2025-02-17T10:12:28Z [WARN] heartbeat delayed jobId=job-20250217-001 child=fanout-child-2 last=2025-02-17T10:11:42Z
+2025-02-17T10:12:29Z [INFO] graph_state.autosave disabled snapshots=4
+2025-02-17T10:12:30Z [INFO] graph_state.inactivity request => jobId=job-20250217-001 threshold=30s
+2025-02-17T10:12:30Z [INFO] graph_state.inactivity response <= inactive=[fanout-child-2]
