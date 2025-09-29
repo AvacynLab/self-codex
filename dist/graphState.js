@@ -239,6 +239,37 @@ export class GraphState {
         }
         return reports;
     }
+    /**
+     * Collects metrics related to the current in-memory graph. These counters are
+     * later surfaced by the dedicated MCP tool.
+     */
+    collectMetrics() {
+        const jobs = this.listJobs();
+        const children = this.listChildSnapshots();
+        const subscriptions = this.listSubscriptionSnapshots();
+        const messageNodes = this.listNodeRecords().filter((node) => node.attributes.type === "message");
+        const eventNodes = this.listNodeRecords().filter((node) => node.attributes.type === "event");
+        let pendingChildren = 0;
+        for (const child of children) {
+            if (child.pendingId) {
+                pendingChildren += 1;
+            }
+        }
+        const activeJobs = jobs.filter((job) => job.state === "running").length;
+        const completedJobs = jobs.filter((job) => job.state === "completed").length;
+        const activeChildren = children.filter((child) => child.state !== "killed" && child.state !== "completed").length;
+        return {
+            totalJobs: jobs.length,
+            activeJobs,
+            completedJobs,
+            totalChildren: children.length,
+            activeChildren,
+            pendingChildren,
+            eventNodes: eventNodes.length,
+            subscriptions: subscriptions.length,
+            totalMessages: messageNodes.length
+        };
+    }
     findJobIdByChild(childId) {
         const edges = this.getIncomingEdges(this.childNodeId(childId));
         const owningEdge = edges.find((edge) => edge.attributes.type === "owns");
@@ -520,6 +551,9 @@ export class GraphState {
     }
     listEdgeRecords() {
         return this.edges.map((e) => ({ from: e.from, to: e.to, attributes: { ...e.attributes } }));
+    }
+    listSubscriptionSnapshots() {
+        return Array.from(this.subscriptionIndex.values()).map((snapshot) => ({ ...snapshot }));
     }
     neighbors(nodeId, direction = "both", edgeType) {
         const outEdges = direction === "in" ? [] : this.getOutgoingEdges(nodeId);

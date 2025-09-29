@@ -15,7 +15,7 @@ Exécuter les commandes suivantes en local (ou dans un job CI) pour produire des
 
 ```bash
 # Installation dépendances sans polluer les devDependencies
-npm ci --omit=dev
+npm install --omit=dev
 
 # Compilation TypeScript -> dist/
 npm run build
@@ -31,7 +31,7 @@ Le dossier `dist/` contient désormais les bundles JavaScript nécessaires (`ser
    ```
 2. Créer une archive à copier vers Codex Cloud :
    ```bash
-   tar czf self-fork-orchestrator.tar.gz dist package.json package-lock.json node_modules README.md
+   tar czf self-fork-orchestrator.tar.gz dist package.json node_modules README.md
    ```
 3. Transférer l'archive via `scp`, `rsync`, ou tout mécanisme fourni par Codex Cloud.
 
@@ -92,6 +92,8 @@ L'orchestrateur accepte les options suivantes (issues de `parseOrchestratorRunti
 | `--http-json` | Autorise les réponses JSON directes pour les clients compatibles. |
 | `--http-stateless` | Désactive les sessions (`Mcp-Session-Id`) si le client ne supporte pas la reprise. |
 | `--no-stdio` | Désactive explicitement le transport STDIO (automatique dès que `--http` est fourni). |
+| `--max-event-history <n>` | Limite le nombre d'événements conservés en mémoire (défaut : `5000`). |
+| `--log-file <chemin>` | Duplique les journaux structurés dans un fichier JSON Lines. |
 
 Commande de base à lancer manuellement :
 
@@ -99,10 +101,10 @@ Commande de base à lancer manuellement :
 node dist/server.js --http --http-host 0.0.0.0 --http-port 4000 --no-stdio
 ```
 
-La sortie standard doit afficher :
+La sortie standard affiche désormais des lignes JSON :
 
 ```
-[orchestrator] MCP server listening on http://0.0.0.0:4000/mcp (json=off, stateless=no)
+{"timestamp":"2025-02-17T10:00:00.000Z","level":"info","message":"http_listening","payload":{"host":"0.0.0.0","port":4000,"path":"/mcp","json":false,"stateless":false}}
 ```
 
 Adapter `--http-json` ou `--http-stateless` selon la compatibilité du client Codex. Pour restreindre l'accès, placer un reverse-proxy TLS en amont et utiliser les options de protection DNS du transport si nécessaire (`allowedHosts` / `allowedOrigins` via modification du code si besoin).

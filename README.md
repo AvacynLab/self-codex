@@ -6,9 +6,13 @@ Codex reste le moteur d'inférence ; l'outil gère l'état, le parallélisme, l'
 ## Installation
 
 ```bash
-pnpm i    # ou npm i / yarn
-pnpm run build
+npm install    # ou pnpm install / yarn install
+npm run build
 ```
+
+Les scripts de maintenance détectent automatiquement la présence d'un lockfile et
+basculent sur `npm install` lorsqu'aucun fichier `package-lock.json` n'est
+présent.
 
 ## Graph Forge integration
 
@@ -33,6 +37,35 @@ Exemple (pseudo requete SDK) :
 La reponse retourne un resume du graphe (noeuds, arcs, directives) et les resultats des analyses definies dans le script ou envoyees a la volee.
 
 
+## Fonctionnalités avancées
+
+- **Analyses GraphForge étendues** : le moteur inclut désormais un tri
+  topologique (`topologicalSort`), la détection explicite de cycles
+  (`detectCycles`), des mesures de centralité (`degreeCentrality`,
+  `closenessCentrality`) ainsi que le calcul des *k* plus courts chemins via
+  `kShortestPaths`. Toutes les fonctions acceptent un paramètre
+  `costFunction` (descripteur JSON ou fonction TypeScript) permettant de
+  personnaliser la pondération des arêtes.
+- **Tests unitaires** : la suite Mocha (`npm test`) couvre les nouvelles
+  analyses GraphForge, les métriques GraphState et le parsing CLI.
+- **Journalisation structurée** : l'orchestrateur écrit désormais des lignes
+  JSON (`timestamp`, `level`, `message`, `payload`) sur `stdout` et peut les
+  refléter dans un fichier via `--log-file`.
+
+## Intégration continue
+
+Un workflow GitHub Actions (`.github/workflows/ci.yml`) reconstruit le projet sur
+chaque `push` et `pull_request` en exécutant successivement :
+
+1. `npm install` (ou `npm ci` si un lockfile existe dans le dépôt cloné).
+2. `npm run build` pour compiler `src/` et `graph-forge/`.
+3. `npm run lint` pour valider les options TypeScript.
+4. `npm test` pour lancer la suite Mocha avec `ts-node`.
+
+Ce pipeline empêche d'introduire des régressions sur les outils MCP et
+documente la version de Node testée (matrice `18.x` et `20.x`).
+
+
 ## Orchestrateur : outils graphe et visualisation
 
 Plusieurs outils MCP rendent l'etat graphe exploitable sans quitter VS Code :
@@ -41,8 +74,9 @@ Plusieurs outils MCP rendent l'etat graphe exploitable sans quitter VS Code :
 - `conversation_view` et `events_view` : surfaces respectivement les messages d'un enfant et les evenements recents ou en attente. Les reponses incluent les memes liens cliquables.
 - `events_view_live` : lit directement le bus live (option `min_seq`, tri, filtrage par job/enfant) afin d'eviter la saturation liee aux HEARTBEAT.
 - `graph_prune` : permet de purger manuellement une conversation (`keep_last`) ou les evenements conserves dans le graphe (`max_events`).
-- `graph_state_inactivity` : signale les enfants sans activité récente ou pending trop long (filtres par job/runtime/état, rendu JSON ou texte).
-- `graph_state_autosave` : ecrit periodiquement un snapshot JSON. Le viewer VS Code (`Self Fork: Open Viewer`) consomme ce fichier pour afficher enfants, evenements et conversations.
+- `graph_state_inactivity` : signale les enfants sans activité récente ou pending trop long (filtres par job/runtime/état, rendu JSON ou texte). Le paramètre `inactivityThresholdSec` définit le seuil global en secondes.
+- `graph_state_metrics` : agrège les métriques clés (jobs actifs, enfants en attente, taille de l'historique d'événements, intervalle moyen des heartbeats).
+- `graph_state_autosave` : ecrit periodiquement un snapshot JSON accompagné de métadonnées (`inactivity_threshold_ms`, `event_history_limit`). Le viewer VS Code (`Self Fork: Open Viewer`) consomme ce fichier pour afficher enfants, evenements et conversations.
 
 ### Runtime dedie par enfant
 
@@ -64,8 +98,14 @@ Options disponibles :
 - `--http-json` autorise les reponses JSON directes en plus du flux SSE.
 - `--http-stateless` desactive la generation de `mcp-session-id` (mode stateless).
 - `--no-stdio` desactive explicitement le transport STDIO; il est automatiquement supprime si HTTP est actif.
+- `--max-event-history <n>` limite le nombre d'événements conservés en mémoire (valeur par défaut : `5000`).
+- `--log-file <chemin>` duplique les journaux JSON dans un fichier (écriture thread-safe).
 
-Une fois lance, le serveur repond sur `http://<hote>:<port><chemin>` et supporte les GET (SSE) et POST/DELETE conformes au protocole MCP. Les journaux standard affichent l'URL exposee et les options (JSON/stateless).
+Une fois lance, le serveur repond sur `http://<hote>:<port><chemin>` et supporte les GET (SSE) et POST/DELETE conformes au protocole MCP. Utilisez `npm run start:http` pour démarrer directement en mode HTTP (`node dist/server.js --http --http-host 0.0.0.0 --http-port 4000 --no-stdio`).
+Les journaux standard (JSON Lines) exposent l'URL et les options activées.
+
+> ⚠️ L'agent Codex CLI ne sait pas dialoguer en HTTP : déployez un adaptateur
+> (ex. [`mcp-proxy`](https://github.com/modelcontextprotocol/implementations/tree/main/typescript/packages/mcp-proxy)) pour exposer l'orchestrateur en HTTP tout en conservant la configuration STDIO dans `~/.codex/config.toml`.
 
 ### Déploiement Codex Cloud pas-à-pas
 
@@ -73,7 +113,7 @@ Un guide exhaustif (build, packaging, service systemd, configuration Codex) est 
 
 Résumé rapide :
 
-1. Construire l'orchestrateur en local : `npm ci --omit=dev && npm run build` puis archiver `dist/` et `node_modules/`.
+1. Construire l'orchestrateur en local : `npm install --omit=dev && npm run build` puis archiver `dist/` et `node_modules/`.
 2. Déployer l'archive sur l'environnement Codex Cloud et lancer `node dist/server.js --http --http-host 0.0.0.0 --http-port 4000 --no-stdio` (ou via systemd).
 3. Déclarer le serveur côté Codex dans `~/.codex/config.toml` via un bloc `[[servers]]` utilisant le transport `streamable-http` pointant vers `https://<domaine>/mcp`.
 4. Vérifier la connectivité avec `curl` (`initialize`, flux SSE, `call_tool`) avant d'activer l'agent Codex.

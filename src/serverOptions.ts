@@ -27,6 +27,10 @@ export interface OrchestratorRuntimeOptions {
   enableStdio: boolean;
   /** Configuration of the optional HTTP transport. */
   http: HttpRuntimeOptions;
+  /** Maximum number of events retained in memory. */
+  maxEventHistory: number;
+  /** Optional path where JSON logs must be mirrored. */
+  logFile?: string | null;
 }
 
 /**
@@ -40,12 +44,16 @@ interface ParseState {
   httpPath: string;
   httpEnableJson: boolean;
   httpStateless: boolean;
+  maxEventHistory: number;
+  logFile: string | null;
 }
 
 const FLAG_WITH_VALUE = new Set([
   "--http-port",
   "--http-host",
   "--http-path",
+  "--max-event-history",
+  "--log-file"
 ]);
 
 /**
@@ -84,6 +92,8 @@ const DEFAULT_STATE: ParseState = {
   httpPath: "/mcp",
   httpEnableJson: false,
   httpStateless: false,
+  maxEventHistory: 5000,
+  logFile: null
 };
 
 /**
@@ -143,6 +153,17 @@ export function parseOrchestratorRuntimeOptions(argv: string[]): OrchestratorRun
       case "--http":
         state.httpEnabled = true;
         break;
+      case "--max-event-history":
+        state.maxEventHistory = parsePositiveInteger(value ?? "", flag);
+        break;
+      case "--log-file": {
+        const raw = (value ?? "").trim();
+        if (!raw.length) {
+          throw new Error("Le chemin du fichier de log ne peut pas être vide.");
+        }
+        state.logFile = raw;
+        break;
+      }
       default:
         // Ignore unknown flags so the orchestrator remains permissive for
         // future arguments handled elsewhere.
@@ -158,8 +179,10 @@ export function parseOrchestratorRuntimeOptions(argv: string[]): OrchestratorRun
       host: state.httpHost,
       path: state.httpPath,
       enableJson: state.httpEnableJson,
-      stateless: state.httpStateless,
+      stateless: state.httpStateless
     },
+    maxEventHistory: state.maxEventHistory,
+    logFile: state.logFile
   };
 }
 
@@ -170,4 +193,3 @@ export function parseOrchestratorRuntimeOptions(argv: string[]): OrchestratorRun
 export function createHttpSessionId(): string {
   return randomUUID();
 }
-

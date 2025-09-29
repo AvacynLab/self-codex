@@ -57,6 +57,7 @@ export function shortestPath(graph, start, goal, options = {}) {
         throw new Error(`Unknown goal node '${goal}'`);
     }
     const weightKey = options.weightAttribute ?? "weight";
+    const computeCost = buildEdgeCostEvaluator(graph, weightKey, options.costFunction);
     const distances = new Map();
     const previous = new Map();
     const visitedOrder = [];
@@ -79,7 +80,7 @@ export function shortestPath(graph, start, goal, options = {}) {
             break;
         }
         for (const edge of graph.getOutgoing(current.node)) {
-            const weight = resolveWeight(edge.attributes[weightKey]);
+            const weight = computeCost(edge, graph);
             const base = distances.get(current.node) ?? Number.POSITIVE_INFINITY;
             if (!Number.isFinite(base)) {
                 continue;
@@ -119,4 +120,35 @@ function resolveWeight(value) {
         return parsed;
     }
     throw new Error(`Edge weight must be a non-negative number but received '${String(value)}'`);
+}
+function resolveCostDescriptor(edge, descriptor, fallbackKey) {
+    const key = descriptor.attribute || fallbackKey;
+    const raw = edge.attributes[key];
+    if (raw === undefined) {
+        const defaultValue = descriptor.defaultValue ?? 1;
+        if (defaultValue < 0) {
+            throw new Error(`Default cost for attribute '${key}' must be non-negative.`);
+        }
+        return defaultValue * (descriptor.scale ?? 1);
+    }
+    const value = resolveWeight(raw);
+    return value * (descriptor.scale ?? 1);
+}
+export function buildEdgeCostEvaluator(graph, fallbackAttribute, input) {
+    if (!input) {
+        return (edge) => resolveWeight(edge.attributes[fallbackAttribute]);
+    }
+    if (typeof input === "string") {
+        return (edge) => resolveCostDescriptor(edge, { attribute: input }, fallbackAttribute);
+    }
+    if (typeof input === "function") {
+        return (edge) => {
+            const value = input(edge, graph);
+            if (!Number.isFinite(value) || value < 0) {
+                throw new Error("Cost function must return a non-negative finite number");
+            }
+            return value;
+        };
+    }
+    return (edge) => resolveCostDescriptor(edge, input, fallbackAttribute);
 }

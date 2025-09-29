@@ -1,15 +1,16 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { randomUUID } from "crypto";
-import { createServer as createHttpServer } from "node:http";
 import { readFile, writeFile } from "node:fs/promises";
 import { resolve as resolvePath } from "node:path";
 import { pathToFileURL } from "url";
 import { GraphState } from "./graphState.js";
+import { StructuredLogger } from "./logger.js";
+import { EventStore, OrchestratorEvent } from "./eventStore.js";
+import { startHttpServer } from "./httpServer.js";
 import { MessageRecord, Role } from "./types.js";
-import { createHttpSessionId, parseOrchestratorRuntimeOptions } from "./serverOptions.js";
+import { parseOrchestratorRuntimeOptions } from "./serverOptions.js";
 
 /*
 v1.3 - Orchestrateur MCP self-fork avec:
@@ -36,51 +37,15 @@ interface SpawnChildSpec {
 // ---------------------------
 
 const graphState = new GraphState();
+let logger = new StructuredLogger();
+const eventStore = new EventStore({ maxHistory: 5000, logger });
+let lastInactivityThresholdMs = 120_000;
 
 let DEFAULT_CHILD_RUNTIME = "codex";
 
 function setDefaultChildRuntime(runtime: string) {
   DEFAULT_CHILD_RUNTIME = runtime.trim() || "codex";
 }
-
-// ---------------------------
-// Event bus (streaming)
-// ---------------------------
-
-type EventKind =
-  | "PLAN"
-  | "START"
-  | "PROMPT"
-  | "PENDING"
-  | "REPLY_PART"
-  | "REPLY"
-  | "STATUS"
-  | "AGGREGATE"
-  | "KILL"
-  | "HEARTBEAT"
-  | "INFO"
-  | "WARN"
-  | "ERROR";
-
-type EventLevel = "info" | "warn" | "error";
-type EventSource = "orchestrator" | "child" | "system";
-
-interface OrchestratorEvent {
-  seq: number;
-  ts: number;
-  kind: EventKind;
-  source: EventSource;
-  level: EventLevel;
-  jobId?: string;
-  childId?: string;
-  payload?: unknown;
-}
-
-let SEQ = 0;
-const GLOBAL_EVENTS: OrchestratorEvent[] = [];
-const JOB_EVENTS = new Map<string, OrchestratorEvent[]>();
-const MAX_EVENTS_GLOBAL = 5000;
-const MAX_EVENTS_PER_JOB = 1000;
 
 interface Subscription {
   id: string;
@@ -98,41 +63,39 @@ const SUBS = new Map<string, Subscription>();
 const now = () => Date.now();
 const j = (o: unknown) => JSON.stringify(o, null, 2);
 
-function pushEvent(e: Omit<OrchestratorEvent, "seq" | "ts" | "source" | "level"> & Partial<Pick<OrchestratorEvent, "source" | "level">>) {
-  const evt: OrchestratorEvent = {
-    seq: ++SEQ,
-    ts: now(),
-    source: e.source ?? "orchestrator",
-    level: e.level ?? "info",
-    kind: e.kind,
-    jobId: e.jobId,
-    childId: e.childId,
-    payload: e.payload
-  };
-  GLOBAL_EVENTS.push(evt);
-  if (GLOBAL_EVENTS.length > MAX_EVENTS_GLOBAL) GLOBAL_EVENTS.shift();
-
-  if (evt.jobId) {
-    const arr = JOB_EVENTS.get(evt.jobId) ?? [];
-    arr.push(evt);
-    if (arr.length > MAX_EVENTS_PER_JOB) arr.shift();
-    JOB_EVENTS.set(evt.jobId, arr);
-  }
-  graphState.recordEvent({ seq: evt.seq, ts: evt.ts, kind: evt.kind, level: evt.level, jobId: evt.jobId, childId: evt.childId });
-  return evt;
+function pushEvent(
+  event: Omit<OrchestratorEvent, "seq" | "ts" | "source" | "level"> &
+    Partial<Pick<OrchestratorEvent, "source" | "level">>
+): OrchestratorEvent {
+  const emitted = eventStore.emit({
+    kind: event.kind,
+    level: event.level,
+    source: event.source,
+    jobId: event.jobId,
+    childId: event.childId,
+    payload: event.payload
+  });
+  graphState.recordEvent({
+    seq: emitted.seq,
+    ts: emitted.ts,
+    kind: emitted.kind,
+    level: emitted.level,
+    jobId: emitted.jobId,
+    childId: emitted.childId
+  });
+  return emitted;
 }
 
 function listEventsSince(lastSeq: number, jobId?: string, childId?: string): OrchestratorEvent[] {
-  const base = jobId ? (JOB_EVENTS.get(jobId) ?? []) : GLOBAL_EVENTS;
-  return base.filter(e => e.seq > lastSeq && (childId ? e.childId === childId : true));
+  return eventStore.list({ minSeq: lastSeq, jobId, childId });
 }
 
 function buildLiveEvents(input: { job_id?: string; child_id?: string; limit?: number; order?: "asc" | "desc"; min_seq?: number }) {
-  const base = input.job_id ? (JOB_EVENTS.get(input.job_id) ?? []) : GLOBAL_EVENTS;
-  const filtered = base
-    .filter((evt) => (input.child_id ? evt.childId === input.child_id : true))
-    .filter((evt) => (typeof input.min_seq === 'number' ? evt.seq >= input.min_seq : true));
-  const ordered = [...filtered].sort((a, b) => (input.order === 'asc' ? a.seq - b.seq : b.seq - a.seq));
+  const base = eventStore.list({ jobId: input.job_id, childId: input.child_id });
+  const filtered = base.filter((evt) =>
+    typeof input.min_seq === "number" ? evt.seq >= input.min_seq : true
+  );
+  const ordered = [...filtered].sort((a, b) => (input.order === "asc" ? a.seq - b.seq : b.seq - a.seq));
   const limit = input.limit && input.limit > 0 ? Math.min(input.limit, 500) : 100;
   return ordered.slice(0, limit).map((evt) => {
     const deepLink = evt.childId ? `vscode://local.self-fork-orchestrator-viewer/open?child_id=${encodeURIComponent(evt.childId)}` : null;
@@ -162,7 +125,6 @@ function startHeartbeat() {
 function createJob(goal?: string): string {
   const jobId = `job_${randomUUID()}`;
   graphState.createJob(jobId, { goal, createdAt: now(), state: "running" });
-  JOB_EVENTS.set(jobId, []);
   return jobId;
 }
 
@@ -453,6 +415,8 @@ type GraphStatsInput = z.infer<typeof GraphStatsSchema>;
 const GraphInactivityShape = {
   idle_threshold_ms: z.number().min(0).optional(),
   pending_threshold_ms: z.number().min(0).optional(),
+  inactivity_threshold_sec: z.number().min(0).optional(),
+  inactivityThresholdSec: z.number().min(0).optional(),
   job_id: z.string().optional(),
   runtime: z.string().optional(),
   state: z.string().optional(),
@@ -787,12 +751,44 @@ server.registerTool(
     AUTOSAVE_TIMER = setInterval(async () => {
       try {
         const snap = graphState.serialize();
-        await writeFile(AUTOSAVE_PATH!, JSON.stringify(snap, null, 2), "utf8");
-      } catch {
-        // best-effort autosave
+        const metadata = {
+          saved_at: new Date().toISOString(),
+          inactivity_threshold_ms: lastInactivityThresholdMs,
+          event_history_limit: eventStore.getMaxHistory()
+        };
+        await writeFile(
+          AUTOSAVE_PATH!,
+          JSON.stringify({ metadata, snapshot: snap }, null, 2),
+          "utf8"
+        );
+        logger.info("graph_autosave_written", {
+          path: AUTOSAVE_PATH,
+          node_count: snap.nodes.length,
+          edge_count: snap.edges.length
+        });
+      } catch (error) {
+        logger.error("graph_autosave_failed", {
+          path: AUTOSAVE_PATH,
+          message: error instanceof Error ? error.message : String(error)
+        });
       }
     }, interval);
-    return { content: [{ type: "text", text: j({ format: "json", ok: true, status: "started", path: p, interval_ms: interval }) }] };
+    return {
+      content: [
+        {
+          type: "text",
+          text: j({
+            format: "json",
+            ok: true,
+            status: "started",
+            path: p,
+            interval_ms: interval,
+            inactivity_threshold_ms: lastInactivityThresholdMs,
+            event_history_limit: eventStore.getMaxHistory()
+          })
+        }
+      ]
+    };
   }
 );
 
@@ -928,6 +924,51 @@ server.registerTool(
 );
 
 server.registerTool(
+  "graph_state_metrics",
+  {
+    title: "Graph metrics",
+    description: "Expose des métriques synthétiques (jobs actifs, événements, heartbeats).",
+    inputSchema: GraphStatsShape
+  },
+  async () => {
+    const metrics = graphState.collectMetrics();
+    const heartbeatEvents = eventStore.getEventsByKind("HEARTBEAT").sort((a, b) => a.ts - b.ts);
+    let averageHeartbeatMs: number | null = null;
+    if (heartbeatEvents.length > 1) {
+      let total = 0;
+      for (let index = 1; index < heartbeatEvents.length; index += 1) {
+        total += heartbeatEvents[index].ts - heartbeatEvents[index - 1].ts;
+      }
+      averageHeartbeatMs = Math.round(total / (heartbeatEvents.length - 1));
+    }
+
+    const payload = {
+      format: "json" as const,
+      jobs: {
+        total: metrics.totalJobs,
+        active: metrics.activeJobs,
+        completed: metrics.completedJobs
+      },
+      children: {
+        total: metrics.totalChildren,
+        active: metrics.activeChildren,
+        pending: metrics.pendingChildren
+      },
+      events: {
+        total: eventStore.getEventCount(),
+        last_seq: eventStore.getLastSequence(),
+        history_limit: eventStore.getMaxHistory(),
+        average_heartbeat_ms: averageHeartbeatMs
+      },
+      messages: metrics.totalMessages,
+      subscriptions: metrics.subscriptions
+    };
+
+    return { content: [{ type: "text", text: j(payload) }] };
+  }
+);
+
+server.registerTool(
   "graph_state_inactivity",
   {
     title: "Graph inactivity",
@@ -935,10 +976,13 @@ server.registerTool(
     inputSchema: GraphInactivityShape
   },
   async (input: GraphInactivityInput) => {
-    const idleThreshold = input.idle_threshold_ms ?? 120_000;
+    const inactivitySec = input.inactivity_threshold_sec ?? input.inactivityThresholdSec;
+    const inactivityMs = typeof inactivitySec === "number" ? Math.max(0, inactivitySec) * 1000 : undefined;
+    const idleThreshold = input.idle_threshold_ms ?? inactivityMs ?? 120_000;
     const pendingThreshold = input.pending_threshold_ms ?? idleThreshold;
     const includeWithoutMessages = input.include_children_without_messages ?? true;
     const limit = input.limit && input.limit > 0 ? Math.min(input.limit, 100) : 20;
+    lastInactivityThresholdMs = idleThreshold;
     const reports = graphState.findInactiveChildren({
       idleThresholdMs: idleThreshold,
       pendingThresholdMs: pendingThreshold,
@@ -1003,6 +1047,7 @@ server.registerTool(
       format: "json" as const,
       idle_threshold_ms: idleThreshold,
       pending_threshold_ms: pendingThreshold,
+      inactivity_threshold_sec: inactivityMs !== undefined ? inactivityMs / 1000 : Math.round(idleThreshold / 1000),
       total: filtered.length,
       returned: limited.length,
       items: limited.map((report) => ({
@@ -1843,7 +1888,7 @@ server.registerTool(
       id: `sub_${randomUUID()}`,
       jobId: input.job_id,
       childId: input.child_id,
-      lastSeq: typeof input.last_seq === "number" ? input.last_seq : SEQ,
+      lastSeq: typeof input.last_seq === "number" ? input.last_seq : eventStore.getLastSequence(),
       createdAt: now()
     };
     SUBS.set(sub.id, sub);
@@ -1902,78 +1947,66 @@ if (isMain) {
     options = parseOrchestratorRuntimeOptions(process.argv.slice(2));
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    console.error(`[orchestrator] Échec du parsing des options CLI : ${message}`);
+    logger.error("cli_options_invalid", { message });
     process.exit(1);
   }
+
+  if (options.logFile) {
+    logger = new StructuredLogger({ logFile: options.logFile });
+    eventStore.setLogger(logger);
+    logger.info("logger_configured", { log_file: options.logFile });
+  }
+
+  eventStore.setMaxHistory(options.maxEventHistory);
 
   let enableStdio = options.enableStdio;
   const httpEnabled = options.http.enabled;
 
   if (!enableStdio && !httpEnabled) {
-    console.error("[orchestrator] Aucun transport activé (stdio ou HTTP requis).");
+    logger.error("no_transport_enabled", {});
     process.exit(1);
   }
 
+  const cleanup: Array<() => Promise<void>> = [];
+
   if (httpEnabled) {
     if (enableStdio) {
-      console.warn("[orchestrator] HTTP actif : le transport stdio est désactivé pour éviter les conflits.");
+      logger.warn("stdio_disabled_due_to_http");
       enableStdio = false;
     }
 
-    const httpTransport = new StreamableHTTPServerTransport({
-      sessionIdGenerator: options.http.stateless ? undefined : () => createHttpSessionId(),
-      enableJsonResponse: options.http.enableJson,
-    });
-
-    httpTransport.onerror = (error) => {
-      console.error("[orchestrator:http] Erreur transport", error);
-    };
-    httpTransport.onclose = () => {
-      console.error("[orchestrator:http] Session fermée");
-    };
-
-    await server.connect(httpTransport);
-
-    const httpServer = createHttpServer(async (req, res) => {
-      const requestUrl = req.url ? new URL(req.url, `http://${req.headers.host ?? "localhost"}`) : null;
-
-      if (!requestUrl || requestUrl.pathname !== options.http.path) {
-        res.writeHead(404, { "Content-Type": "application/json" }).end(JSON.stringify({ error: "NOT_FOUND" }));
-        return;
-      }
-
-      try {
-        await httpTransport.handleRequest(req, res);
-      } catch (error) {
-        console.error("[orchestrator:http] Erreur requête", error);
-        if (!res.headersSent) {
-          res.writeHead(500, { "Content-Type": "application/json" }).end(JSON.stringify({ error: "INTERNAL_ERROR" }));
-        } else {
-          res.end();
-        }
-      }
-    });
-
-    httpServer.on("error", (error) => {
-      console.error("[orchestrator:http] Erreur serveur", error);
-    });
-    httpServer.on("clientError", (error, socket) => {
-      console.error("[orchestrator:http] Erreur client", error);
-      socket.end("HTTP/1.1 400 Bad Request\r\n\r\n");
-    });
-
-    httpServer.listen(options.http.port, options.http.host, () => {
-      console.error(
-        `[orchestrator] MCP server listening on http://${options.http.host}:${options.http.port}${options.http.path} (json=${options.http.enableJson ? "on" : "off"}, stateless=${options.http.stateless ? "yes" : "no"})`
-      );
-    });
+    try {
+      const handle = await startHttpServer(server, options.http, logger);
+      cleanup.push(handle.close);
+    } catch (error) {
+      logger.error("http_start_failed", { message: error instanceof Error ? error.message : String(error) });
+      process.exit(1);
+    }
   }
 
   if (enableStdio) {
     const transport = new StdioServerTransport();
     await server.connect(transport);
-    console.error("[orchestrator] MCP server listening on stdio");
+    logger.info("stdio_listening");
   }
+
+  logger.info("runtime_started", {
+    stdio: enableStdio,
+    http: httpEnabled,
+    max_event_history: eventStore.getMaxHistory()
+  });
+
+  process.on("SIGINT", async () => {
+    logger.warn("shutdown_signal", { signal: "SIGINT" });
+    for (const closer of cleanup) {
+      try {
+        await closer();
+      } catch (error) {
+        logger.error("transport_close_failed", { message: error instanceof Error ? error.message : String(error) });
+      }
+    }
+    process.exit(0);
+  });
 }
 
 export { server, graphState, DEFAULT_CHILD_RUNTIME, buildLiveEvents, setDefaultChildRuntime };
