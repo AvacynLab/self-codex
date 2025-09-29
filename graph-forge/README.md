@@ -31,7 +31,8 @@ See `src/lexer.ts` and `src/parser.ts` for the grammar and AST, and `src/cli.ts`
 - `src/parser.ts` — Recursive descent parser generating an abstract syntax tree
 - `src/model.ts` — Immutable runtime graph representation and helpers
 - `src/compiler.ts` — Validates ASTs and builds runtime models
-- `src/algorithms/` — Graph algorithms (Dijkstra, Tarjan SCC, critical path)
+- `src/algorithms/` — Graph algorithms (Dijkstra, Tarjan SCC, critical path,
+  topological sort, cycle detection, centrality, k plus courts chemins)
 - `src/cli.ts` — CLI interface to parse `.gf` files and run analyses
 - `test/` — Focused unit tests for tokenizer, parser, and algorithms
 
@@ -45,4 +46,7 @@ npm run build
 ts-node graph-forge/src/cli.ts examples/pipeline.gf --analysis shortestPath Ingest Store
 ```
 
-The CLI can emit JSON or human-readable summaries depending on flags. For more examples inspect the fixtures under `graph-forge/examples` (planned extension).
+The CLI can emit JSON or human-readable summaries depending on flags. Custom
+weighting is available through the `costFunction` option (JSON descriptor or
+TypeScript callback) for `shortestPath` and `kShortestPaths`, enabling analyses
+based on duration, monetary cost, or any edge attribute.

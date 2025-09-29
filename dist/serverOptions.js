@@ -3,6 +3,8 @@ const FLAG_WITH_VALUE = new Set([
     "--http-port",
     "--http-host",
     "--http-path",
+    "--max-event-history",
+    "--log-file"
 ]);
 /**
  * Ensures a provided numeric string can be converted to a positive integer.
@@ -38,6 +40,8 @@ const DEFAULT_STATE = {
     httpPath: "/mcp",
     httpEnableJson: false,
     httpStateless: false,
+    maxEventHistory: 5000,
+    logFile: null
 };
 /**
  * Parses CLI arguments in order to determine how the orchestrator must expose
@@ -92,6 +96,17 @@ export function parseOrchestratorRuntimeOptions(argv) {
             case "--http":
                 state.httpEnabled = true;
                 break;
+            case "--max-event-history":
+                state.maxEventHistory = parsePositiveInteger(value ?? "", flag);
+                break;
+            case "--log-file": {
+                const raw = (value ?? "").trim();
+                if (!raw.length) {
+                    throw new Error("Le chemin du fichier de log ne peut pas être vide.");
+                }
+                state.logFile = raw;
+                break;
+            }
             default:
                 // Ignore unknown flags so the orchestrator remains permissive for
                 // future arguments handled elsewhere.
@@ -106,8 +121,10 @@ export function parseOrchestratorRuntimeOptions(argv) {
             host: state.httpHost,
             path: state.httpPath,
             enableJson: state.httpEnableJson,
-            stateless: state.httpStateless,
+            stateless: state.httpStateless
         },
+        maxEventHistory: state.maxEventHistory,
+        logFile: state.logFile
     };
 }
 /**

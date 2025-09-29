@@ -1,13 +1,31 @@
-﻿import { AttributeValue, GraphModel } from "../model.js";
+import { AttributeValue, GraphEdgeData, GraphModel } from "../model.js";
 
 export interface DijkstraOptions {
   readonly weightAttribute?: string;
+  readonly costFunction?: EdgeCostEvaluator | EdgeCostDescriptor | string;
 }
 
 export interface DijkstraResult {
   readonly distance: number;
   readonly path: string[];
   readonly visitedOrder: string[];
+}
+
+/**
+ * Function applied on edges to compute their traversal cost. The function must
+ * always return a non-negative finite number otherwise the search will abort.
+ */
+export type EdgeCostEvaluator = (edge: GraphEdgeData, graph: GraphModel) => number;
+
+/**
+ * JSON descriptor accepted for the cost function. When provided, the
+ * orchestrator will pick the specified attribute on every edge, fallback to the
+ * optional default value, then apply the optional scale factor.
+ */
+export interface EdgeCostDescriptor {
+  readonly attribute: string;
+  readonly defaultValue?: number;
+  readonly scale?: number;
 }
 
 interface QueueEntry {
@@ -81,6 +99,7 @@ export function shortestPath(graph: GraphModel, start: string, goal: string, opt
   }
 
   const weightKey = options.weightAttribute ?? "weight";
+  const computeCost = buildEdgeCostEvaluator(graph, weightKey, options.costFunction);
   const distances = new Map<string, number>();
   const previous = new Map<string, string | null>();
   const visitedOrder: string[] = [];
@@ -108,7 +127,7 @@ export function shortestPath(graph: GraphModel, start: string, goal: string, opt
     }
 
     for (const edge of graph.getOutgoing(current.node)) {
-      const weight = resolveWeight(edge.attributes[weightKey]);
+      const weight = computeCost(edge, graph);
       const base = distances.get(current.node) ?? Number.POSITIVE_INFINITY;
       if (!Number.isFinite(base)) {
         continue;
@@ -152,4 +171,41 @@ function resolveWeight(value: AttributeValue | undefined): number {
     return parsed;
   }
   throw new Error(`Edge weight must be a non-negative number but received '${String(value)}'`);
+}
+
+function resolveCostDescriptor(edge: GraphEdgeData, descriptor: EdgeCostDescriptor, fallbackKey: string): number {
+  const key = descriptor.attribute || fallbackKey;
+  const raw = edge.attributes[key];
+  if (raw === undefined) {
+    const defaultValue = descriptor.defaultValue ?? 1;
+    if (defaultValue < 0) {
+      throw new Error(`Default cost for attribute '${key}' must be non-negative.`);
+    }
+    return defaultValue * (descriptor.scale ?? 1);
+  }
+  const value = resolveWeight(raw);
+  return value * (descriptor.scale ?? 1);
+}
+
+export function buildEdgeCostEvaluator(
+  graph: GraphModel,
+  fallbackAttribute: string,
+  input?: EdgeCostEvaluator | EdgeCostDescriptor | string
+): EdgeCostEvaluator {
+  if (!input) {
+    return (edge) => resolveWeight(edge.attributes[fallbackAttribute]);
+  }
+  if (typeof input === "string") {
+    return (edge) => resolveCostDescriptor(edge, { attribute: input }, fallbackAttribute);
+  }
+  if (typeof input === "function") {
+    return (edge) => {
+      const value = input(edge, graph);
+      if (!Number.isFinite(value) || value < 0) {
+        throw new Error("Cost function must return a non-negative finite number");
+      }
+      return value;
+    };
+  }
+  return (edge) => resolveCostDescriptor(edge, input, fallbackAttribute);
 }

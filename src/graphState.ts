@@ -108,6 +108,18 @@ export interface ChildInactivityReport {
   flags: ChildInactivityFlag[];
 }
 
+export interface GraphStateMetrics {
+  totalJobs: number;
+  activeJobs: number;
+  completedJobs: number;
+  totalChildren: number;
+  activeChildren: number;
+  pendingChildren: number;
+  eventNodes: number;
+  subscriptions: number;
+  totalMessages: number;
+}
+
 function toNullableString(value: AttributeValue | undefined): string | null {
   if (value === undefined) return null;
   const s = String(value);
@@ -387,6 +399,41 @@ export class GraphState {
     }
 
     return reports;
+  }
+
+  /**
+   * Collects metrics related to the current in-memory graph. These counters are
+   * later surfaced by the dedicated MCP tool.
+   */
+  collectMetrics(): GraphStateMetrics {
+    const jobs = this.listJobs();
+    const children = this.listChildSnapshots();
+    const subscriptions = this.listSubscriptionSnapshots();
+    const messageNodes = this.listNodeRecords().filter((node) => node.attributes.type === "message");
+    const eventNodes = this.listNodeRecords().filter((node) => node.attributes.type === "event");
+
+    let pendingChildren = 0;
+    for (const child of children) {
+      if (child.pendingId) {
+        pendingChildren += 1;
+      }
+    }
+
+    const activeJobs = jobs.filter((job) => job.state === "running").length;
+    const completedJobs = jobs.filter((job) => job.state === "completed").length;
+    const activeChildren = children.filter((child) => child.state !== "killed" && child.state !== "completed").length;
+
+    return {
+      totalJobs: jobs.length,
+      activeJobs,
+      completedJobs,
+      totalChildren: children.length,
+      activeChildren,
+      pendingChildren,
+      eventNodes: eventNodes.length,
+      subscriptions: subscriptions.length,
+      totalMessages: messageNodes.length
+    };
   }
 
   findJobIdByChild(childId: string): string | undefined {
@@ -682,7 +729,11 @@ export class GraphState {
 
   listEdgeRecords(): EdgeRecord[] {
     return this.edges.map((e) => ({ from: e.from, to: e.to, attributes: { ...e.attributes } }));
-    }
+  }
+
+  listSubscriptionSnapshots(): SubscriptionSnapshot[] {
+    return Array.from(this.subscriptionIndex.values()).map((snapshot) => ({ ...snapshot }));
+  }
 
   neighbors(nodeId: string, direction: "out" | "in" | "both" = "both", edgeType?: string): { nodes: NodeRecord[]; edges: EdgeRecord[] } {
     const outEdges = direction === "in" ? [] : this.getOutgoingEdges(nodeId);

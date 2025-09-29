@@ -5,3 +5,7 @@ export * from "./compiler.js";
 export * from "./algorithms/dijkstra.js";
 export * from "./algorithms/tarjan.js";
 export * from "./algorithms/criticalPath.js";
+export * from "./algorithms/topologicalSort.js";
+export * from "./algorithms/cycles.js";
+export * from "./algorithms/centrality.js";
+export * from "./algorithms/kShortestPaths.js";
