@@ -14,7 +14,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        node-version: ["18", "20"]
+        node-version: ["18", "20", "22"]
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -24,8 +24,8 @@ jobs:
         with:
           node-version: ${{ matrix.node-version }}
 
-      - name: Install dependencies
-        run: npm install
+      - name: Install dependencies without writing lockfiles
+        run: npm install --no-save --no-package-lock
 
       - name: Build TypeScript sources
         run: npm run build

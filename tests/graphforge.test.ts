@@ -1,7 +1,9 @@
+/// <reference path="./graph-forge.d.ts" />
 import { describe, it } from "mocha";
 import { expect } from "chai";
 
-import {
+const graphForgeModuleUrl = new URL("../graph-forge/dist/index.js", import.meta.url);
+const {
   GraphModel,
   topologicalSort,
   CycleDetectedError,
@@ -9,10 +11,31 @@ import {
   degreeCentrality,
   closenessCentrality,
   kShortestPaths,
-  shortestPath
-} from "../graph-forge/src/index.js";
+  shortestPath,
+} = (await import(graphForgeModuleUrl.href)) as {
+  GraphModel: new (
+    name: string,
+    nodes: Array<{ id: string; attributes: Record<string, string | number | boolean> }>,
+    edges: Array<{ from: string; to: string; attributes: Record<string, string | number | boolean> }>,
+    directives: Map<string, string | number | boolean>,
+  ) => any;
+  topologicalSort: (graph: any) => string[];
+  CycleDetectedError: new (...args: any[]) => Error;
+  detectCycles: (graph: any, limit: number) => { hasCycle: boolean; cycles: string[][] };
+  degreeCentrality: (graph: any) => Array<{ node: string; outDegree: number }>;
+  closenessCentrality: (graph: any) => Array<{ node: string; reachable: number; score: number }>;
+  kShortestPaths: (graph: any, start: string, goal: string, k: number) => Array<{ path: string[] }>;
+  shortestPath: (
+    graph: any,
+    start: string,
+    goal: string,
+    options?: Record<string, unknown>,
+  ) => { distance: number; path: string[] };
+};
 
-function buildSampleGraph(): GraphModel {
+type RuntimeGraphModel = InstanceType<typeof GraphModel>;
+
+function buildSampleGraph(): RuntimeGraphModel {
   const nodes = [
     { id: "A", attributes: {} },
     { id: "B", attributes: {} },
@@ -49,11 +72,11 @@ describe("GraphForge analyses", () => {
   it("calcule la centralité de degré et de proximité", () => {
     const graph = buildSampleGraph();
     const degrees = degreeCentrality(graph);
-    const entryA = degrees.find((item) => item.node === "A");
+    const entryA = degrees.find((item: { node: string; outDegree: number }) => item.node === "A");
     expect(entryA?.outDegree).to.equal(2);
 
     const closeness = closenessCentrality(graph);
-    const closenessA = closeness.find((item) => item.node === "A");
+    const closenessA = closeness.find((item: { node: string; reachable: number; score: number }) => item.node === "A");
     expect(closenessA?.reachable).to.equal(3);
     expect(closenessA?.score).to.be.greaterThan(0);
   });
@@ -74,7 +97,7 @@ describe("GraphForge analyses", () => {
     expect(fastest.path).to.deep.equal(["A", "C", "D"]);
 
     const weighted = shortestPath(graph, "A", "D", {
-      costFunction: (edge) => Number(edge.attributes.time ?? 1) * 2
+      costFunction: (edge: { attributes: Record<string, unknown> }) => Number(edge.attributes.time ?? 1) * 2,
     });
     expect(weighted.distance).to.equal(6);
   });

@@ -108,7 +108,8 @@ export class GraphState {
             system_message: normalizeString(spec.system ?? null),
             created_at: options.createdAt,
             transcript_size: 0,
-            last_ts: 0
+            last_ts: 0,
+            last_heartbeat_at: 0
         };
         if (spec.goals?.length) {
             attributes.goals = normalizeString(spec.goals.join("\n"));
@@ -164,6 +165,23 @@ export class GraphState {
         if (updates.lastTs !== undefined) {
             attributes.last_ts = updates.lastTs ?? 0;
         }
+        if (updates.lastHeartbeatAt !== undefined) {
+            attributes.last_heartbeat_at = updates.lastHeartbeatAt ?? 0;
+        }
+        this.nodes.set(nodeId, { id: nodeId, attributes });
+    }
+    /**
+     * Enregistre un heartbeat provenant d'un enfant. Le timestamp est utilisé
+     * par l'autosave et les outils de supervision pour exposer l'activité
+     * récente même lorsqu'aucun message n'a été échangé.
+     */
+    recordChildHeartbeat(childId, heartbeatAt) {
+        const nodeId = this.childNodeId(childId);
+        const node = this.nodes.get(nodeId);
+        if (!node)
+            return;
+        const attributes = { ...node.attributes };
+        attributes.last_heartbeat_at = heartbeatAt ?? Date.now();
         this.nodes.set(nodeId, { id: nodeId, attributes });
     }
     getChild(childId) {
@@ -200,7 +218,11 @@ export class GraphState {
         const reports = [];
         for (const child of this.listChildSnapshots()) {
             const flags = [];
+            const heartbeatTs = child.lastHeartbeatAt;
             let lastActivityTs = child.lastTs;
+            if (lastActivityTs === null && heartbeatTs !== null) {
+                lastActivityTs = heartbeatTs;
+            }
             if (lastActivityTs === null && includeWithoutMessages) {
                 lastActivityTs = child.createdAt > 0 ? child.createdAt : null;
             }
@@ -220,6 +242,7 @@ export class GraphState {
             if (!flags.length) {
                 continue;
             }
+            const actions = this.suggestActionsForInactivity(child.state, flags);
             reports.push({
                 childId: child.id,
                 jobId: child.jobId,
@@ -234,10 +257,36 @@ export class GraphState {
                 pendingSince,
                 pendingMs,
                 transcriptSize: child.transcriptSize,
-                flags
+                flags,
+                suggestedActions: actions
             });
         }
         return reports;
+    }
+    /**
+     * Derives a list of non-destructive actions that the operator can apply to
+     * an inactive child. The mapping favours light-touch options first (ping),
+     * then recommends cancelling or retrying depending on the reported flags and
+     * current runtime state. The result intentionally avoids duplicates to keep
+     * JSON responses compact and easy to inspect in dashboards.
+     */
+    suggestActionsForInactivity(state, flags) {
+        const actions = new Set();
+        for (const flag of flags) {
+            if (flag.type === "idle") {
+                actions.add("ping");
+            }
+            if (flag.type === "pending") {
+                const lowered = state.toLowerCase();
+                if (lowered.includes("error") || lowered.includes("fail")) {
+                    actions.add("retry");
+                }
+                else {
+                    actions.add("cancel");
+                }
+            }
+        }
+        return [...actions];
     }
     /**
      * Collects metrics related to the current in-memory graph. These counters are
@@ -473,6 +522,9 @@ export class GraphState {
         }
         if (event.childId) {
             this.addEdge(this.childNodeId(event.childId), nodeId, { type: "event" });
+            if (event.kind === "HEARTBEAT") {
+                this.recordChildHeartbeat(event.childId, event.ts);
+            }
         }
         // Retention for events
         const events = Array.from(this.nodes.values()).filter((n) => n.attributes.type === "event");
@@ -779,6 +831,7 @@ export class GraphState {
         const createdAt = Number(node.attributes.created_at ?? 0);
         const transcriptSize = Number(node.attributes.transcript_size ?? 0);
         const lastTs = toNullableNumber(node.attributes.last_ts);
+        const lastHeartbeatAt = toNullableNumber(node.attributes.last_heartbeat_at);
         return {
             id,
             jobId,
@@ -791,7 +844,8 @@ export class GraphState {
             systemMessage,
             createdAt,
             transcriptSize,
-            lastTs
+            lastTs,
+            lastHeartbeatAt
         };
     }
 }

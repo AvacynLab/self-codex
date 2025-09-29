@@ -1,3 +1,8 @@
+/**
+ * Ces tests vérifient que le parseur d'options CLI expose correctement les
+ * paramètres nécessaires à la planification multi-enfants et garde une
+ * validation stricte sur les entrées utilisateur.
+ */
 import { describe, it } from "mocha";
 import { expect } from "chai";
 
@@ -13,6 +18,9 @@ describe("parseOrchestratorRuntimeOptions", () => {
     expect(result.http.path).to.equal("/mcp");
     expect(result.maxEventHistory).to.equal(5000);
     expect(result.logFile).to.equal(null);
+    expect(result.parallelism).to.equal(2);
+    expect(result.childIdleSec).to.equal(120);
+    expect(result.childTimeoutSec).to.equal(900);
   });
 
   it("accepte les options HTTP explicites", () => {
@@ -43,6 +51,29 @@ describe("parseOrchestratorRuntimeOptions", () => {
   it("active la journalisation fichier lorsque --log-file est fourni", () => {
     const result = parseOrchestratorRuntimeOptions(["--log-file", "./orchestrator.log"]);
     expect(result.logFile).to.equal("./orchestrator.log");
+  });
+
+  it("configure la planification des enfants via les nouveaux flags", () => {
+    const result = parseOrchestratorRuntimeOptions([
+      "--parallelism",
+      "4",
+      "--child-idle-sec",
+      "45",
+      "--child-timeout-sec",
+      "600"
+    ]);
+    expect(result.parallelism).to.equal(4);
+    expect(result.childIdleSec).to.equal(45);
+    expect(result.childTimeoutSec).to.equal(600);
+  });
+
+  it("rejette les valeurs invalides pour les nouveaux flags", () => {
+    expect(() => parseOrchestratorRuntimeOptions(["--parallelism", "0"]))
+      .to.throw("La valeur 0 pour --parallelism doit être un entier positif.");
+    expect(() => parseOrchestratorRuntimeOptions(["--child-idle-sec", "-5"]))
+      .to.throw("La valeur -5 pour --child-idle-sec doit être un entier positif.");
+    expect(() => parseOrchestratorRuntimeOptions(["--child-timeout-sec", "abc"]))
+      .to.throw("La valeur abc pour --child-timeout-sec doit être un entier positif.");
   });
 
   it("rejette un fichier de log vide", () => {

@@ -11,6 +11,79 @@ import { EventStore, OrchestratorEvent } from "./eventStore.js";
 import { startHttpServer } from "./httpServer.js";
 import { MessageRecord, Role } from "./types.js";
 import { parseOrchestratorRuntimeOptions } from "./serverOptions.js";
+import { ChildSupervisor } from "./childSupervisor.js";
+import { UnknownChildError } from "./state/childrenIndex.js";
+import {
+  ChildCancelInputShape,
+  ChildCancelInputSchema,
+  ChildCollectInputShape,
+  ChildCollectInputSchema,
+  ChildCreateInputShape,
+  ChildCreateInputSchema,
+  ChildGcInputShape,
+  ChildGcInputSchema,
+  ChildKillInputShape,
+  ChildKillInputSchema,
+  ChildSendInputShape,
+  ChildSendInputSchema,
+  ChildStreamInputShape,
+  ChildStreamInputSchema,
+  ChildStatusInputShape,
+  ChildStatusInputSchema,
+  ChildToolContext,
+  handleChildCancel,
+  handleChildCollect,
+  handleChildCreate,
+  handleChildGc,
+  handleChildKill,
+  handleChildSend,
+  handleChildStream,
+  handleChildStatus,
+} from "./tools/childTools.js";
+import {
+  PlanFanoutInputSchema,
+  PlanFanoutInputShape,
+  PlanJoinInputSchema,
+  PlanJoinInputShape,
+  PlanReduceInputSchema,
+  PlanReduceInputShape,
+  PlanToolContext,
+  handlePlanFanout,
+  handlePlanJoin,
+  handlePlanReduce,
+} from "./tools/planTools.js";
+import {
+  GraphGenerateInputSchema,
+  GraphGenerateInputShape,
+  GraphMutateInputSchema,
+  GraphMutateInputShape,
+  GraphPathsConstrainedInputSchema,
+  GraphPathsConstrainedInputShape,
+  GraphPathsKShortestInputSchema,
+  GraphPathsKShortestInputShape,
+  GraphCentralityBetweennessInputSchema,
+  GraphCentralityBetweennessInputShape,
+  GraphCriticalPathInputSchema,
+  GraphCriticalPathInputShape,
+  GraphOptimizeInputSchema,
+  GraphOptimizeInputShape,
+  GraphSummarizeInputSchema,
+  GraphSummarizeInputShape,
+  GraphSimulateInputSchema,
+  GraphSimulateInputShape,
+  GraphValidateInputSchema,
+  GraphValidateInputShape,
+  handleGraphGenerate,
+  handleGraphMutate,
+  handleGraphPathsConstrained,
+  handleGraphPathsKShortest,
+  handleGraphCentralityBetweenness,
+  handleGraphCriticalPath,
+  handleGraphOptimize,
+  handleGraphSummarize,
+  handleGraphSimulate,
+  handleGraphValidate,
+} from "./tools/graphTools.js";
 
 /*
 v1.3 - Orchestrateur MCP self-fork avec:
@@ -45,6 +118,114 @@ let DEFAULT_CHILD_RUNTIME = "codex";
 
 function setDefaultChildRuntime(runtime: string) {
   DEFAULT_CHILD_RUNTIME = runtime.trim() || "codex";
+}
+
+const CHILDREN_ROOT = process.env.MCP_CHILDREN_ROOT
+  ? resolvePath(process.cwd(), process.env.MCP_CHILDREN_ROOT)
+  : resolvePath(process.cwd(), "children");
+
+function parseDefaultChildArgs(raw: string | undefined): string[] {
+  if (!raw) {
+    return [];
+  }
+
+  try {
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) {
+      return parsed.map((value) => String(value));
+    }
+    logger.warn("child_default_args_invalid", { raw });
+  } catch (error) {
+    logger.warn("child_default_args_parse_error", {
+      raw,
+      message: error instanceof Error ? error.message : String(error),
+    });
+  }
+
+  return [];
+}
+
+const defaultChildCommand = process.env.MCP_CHILD_COMMAND ?? process.execPath;
+const defaultChildArgs = parseDefaultChildArgs(process.env.MCP_CHILD_ARGS);
+
+const childSupervisor = new ChildSupervisor({
+  childrenRoot: CHILDREN_ROOT,
+  defaultCommand: defaultChildCommand,
+  defaultArgs: defaultChildArgs,
+  defaultEnv: process.env,
+});
+
+function getChildToolContext(): ChildToolContext {
+  return { supervisor: childSupervisor, logger };
+}
+
+function getPlanToolContext(): PlanToolContext {
+  return {
+    supervisor: childSupervisor,
+    graphState,
+    logger,
+    childrenRoot: CHILDREN_ROOT,
+    defaultChildRuntime: DEFAULT_CHILD_RUNTIME,
+    emitEvent: (event) => {
+      pushEvent({
+        kind: event.kind,
+        level: event.level,
+        jobId: event.jobId,
+        childId: event.childId,
+        payload: event.payload,
+      });
+    },
+  };
+}
+
+function childToolError(
+  toolName: string,
+  error: unknown,
+  context: Record<string, unknown> = {},
+) {
+  const message = error instanceof Error ? error.message : String(error);
+  const code = error instanceof UnknownChildError ? "NOT_FOUND" : "CHILD_TOOL_ERROR";
+  logger.error(`${toolName}_failed`, { ...context, message });
+  return {
+    isError: true,
+    content: [{ type: "text" as const, text: j({ error: code, tool: toolName, message }) }],
+  };
+}
+
+function planToolError(
+  toolName: string,
+  error: unknown,
+  context: Record<string, unknown> = {},
+) {
+  const message = error instanceof Error ? error.message : String(error);
+  logger.error(`${toolName}_failed`, { ...context, message });
+  return {
+    isError: true,
+    content: [
+      {
+        type: "text" as const,
+        text: j({ error: "PLAN_TOOL_ERROR", tool: toolName, message }),
+      },
+    ],
+  };
+}
+
+function graphToolError(
+  toolName: string,
+  error: unknown,
+  context: Record<string, unknown> = {},
+) {
+  const message = error instanceof Error ? error.message : String(error);
+  logger.error(`${toolName}_failed`, { ...context, message });
+  return {
+    isError: true,
+    content: [
+      {
+        type: "text" as const,
+        text: j({ error: "GRAPH_TOOL_ERROR", tool: toolName, message }),
+      },
+    ],
+  };
 }
 
 interface Subscription {
@@ -257,15 +438,6 @@ const ChildSpecShape = {
   runtime: z.string().optional()
 } as const;
 
-const PlanFanoutShape = {
-  goal: z.string().optional(),
-  children: z.array(z.object(ChildSpecShape)).optional(),
-  ttl_s: z.number().optional(),
-  max_children: z.number().optional()
-} as const;
-const PlanFanoutSchema = z.object(PlanFanoutShape);
-type PlanFanoutInput = z.infer<typeof PlanFanoutSchema>;
-
 const StartShape = {
   job_id: z.string(),
   children: z.array(z.object(ChildSpecShape)).optional()
@@ -413,6 +585,7 @@ const GraphStatsSchema = z.object(GraphStatsShape);
 type GraphStatsInput = z.infer<typeof GraphStatsSchema>;
 
 const GraphInactivityShape = {
+  scope: z.enum(["children"]).optional(),
   idle_threshold_ms: z.number().min(0).optional(),
   pending_threshold_ms: z.number().min(0).optional(),
   inactivity_threshold_sec: z.number().min(0).optional(),
@@ -976,6 +1149,19 @@ server.registerTool(
     inputSchema: GraphInactivityShape
   },
   async (input: GraphInactivityInput) => {
+    const scope = input.scope ?? "children";
+    if (scope !== "children") {
+      return {
+        isError: true,
+        content: [
+          {
+            type: "text",
+            text: j({ error: "UNSUPPORTED_SCOPE", message: `graph_state_inactivity does not support scope=${scope}` })
+          }
+        ]
+      };
+    }
+
     const inactivitySec = input.inactivity_threshold_sec ?? input.inactivityThresholdSec;
     const inactivityMs = typeof inactivitySec === "number" ? Math.max(0, inactivitySec) * 1000 : undefined;
     const idleThreshold = input.idle_threshold_ms ?? inactivityMs ?? 120_000;
@@ -1026,9 +1212,10 @@ server.registerTool(
           .join(", ");
         const waiting = report.waitingFor ?? "∅";
         const job = report.jobId || "∅";
+        const actions = report.suggestedActions.length ? report.suggestedActions.join("|") : "∅";
         return `- ${report.childId} (${report.state}) job=${job} runtime=${report.runtime} idle=${idleSec ?? "∅"}s pending=${
           pendingSec ?? "∅"
-        }s waiting=${waiting} flags=[${flagSummary}]`;
+        }s waiting=${waiting} actions=${actions} flags=[${flagSummary}]`;
       });
       const header = `Enfants inactifs (idle ≥ ${Math.round(idleThreshold / 1000)}s, pending ≥ ${Math.round(
         pendingThreshold / 1000
@@ -1068,7 +1255,8 @@ server.registerTool(
           type: flag.type,
           value_ms: flag.valueMs,
           threshold_ms: flag.thresholdMs
-        }))
+        })),
+        suggested_actions: report.suggestedActions
       }))
     };
 
@@ -1103,80 +1291,374 @@ server.registerTool(
   }
 );
 
+server.registerTool(
+  "graph_generate",
+  {
+    title: "Graph generate",
+    description: "Genere un graphe de dependances a partir de taches (preset, texte ou JSON).",
+    inputSchema: GraphGenerateInputShape,
+  },
+  async (input: unknown) => {
+    try {
+      const parsed = GraphGenerateInputSchema.parse(input);
+      logger.info("graph_generate_requested", {
+        preset: parsed.preset ?? null,
+        has_tasks: parsed.tasks !== undefined,
+      });
+      const result = handleGraphGenerate(parsed);
+      logger.info("graph_generate_succeeded", {
+        nodes: result.graph.nodes.length,
+        edges: result.graph.edges.length,
+      });
+      return {
+        content: [{ type: "text" as const, text: j({ tool: "graph_generate", result }) }],
+        structuredContent: result,
+      };
+    } catch (error) {
+      return graphToolError("graph_generate", error);
+    }
+  },
+);
+
+server.registerTool(
+  "graph_mutate",
+  {
+    title: "Graph mutate",
+    description: "Applique des operations idempotentes (add/remove/rename) sur un graphe.",
+    inputSchema: GraphMutateInputShape,
+  },
+  async (input: unknown) => {
+    try {
+      const parsed = GraphMutateInputSchema.parse(input);
+      logger.info("graph_mutate_requested", {
+        operations: parsed.operations.length,
+      });
+      const result = handleGraphMutate(parsed);
+      const changed = result.applied.filter((entry) => entry.changed).length;
+      logger.info("graph_mutate_succeeded", {
+        operations: parsed.operations.length,
+        changed,
+      });
+      return {
+        content: [{ type: "text" as const, text: j({ tool: "graph_mutate", result }) }],
+        structuredContent: result,
+      };
+    } catch (error) {
+      return graphToolError("graph_mutate", error);
+    }
+  },
+);
+
+server.registerTool(
+  "graph_validate",
+  {
+    title: "Graph validate",
+    description: "Analyse un graphe (cycles, noeuds isoles, poids) et retourne erreurs/avertissements.",
+    inputSchema: GraphValidateInputShape,
+  },
+  async (input) => {
+    try {
+      const parsed = GraphValidateInputSchema.parse(input);
+      logger.info("graph_validate_requested", {
+        strict_weights: parsed.strict_weights ?? false,
+        cycle_limit: parsed.cycle_limit,
+      });
+      const result = handleGraphValidate(parsed);
+      logger.info("graph_validate_completed", {
+        ok: result.ok,
+        errors: result.errors.length,
+        warnings: result.warnings.length,
+      });
+      return {
+        content: [{ type: "text" as const, text: j({ tool: "graph_validate", result }) }],
+        structuredContent: result,
+      };
+    } catch (error) {
+      return graphToolError("graph_validate", error);
+    }
+  },
+);
+
+server.registerTool(
+  "graph_summarize",
+  {
+    title: "Graph summarize",
+    description: "Resume un graphe (layers, metriques, centralites).",
+    inputSchema: GraphSummarizeInputShape,
+  },
+  async (input) => {
+    try {
+      const parsed = GraphSummarizeInputSchema.parse(input);
+      logger.info("graph_summarize_requested", {
+        include_centrality: parsed.include_centrality,
+      });
+      const result = handleGraphSummarize(parsed);
+      logger.info("graph_summarize_succeeded", {
+        nodes: result.metrics.node_count,
+        edges: result.metrics.edge_count,
+      });
+      return {
+        content: [{ type: "text" as const, text: j({ tool: "graph_summarize", result }) }],
+        structuredContent: result,
+      };
+    } catch (error) {
+      return graphToolError("graph_summarize", error);
+    }
+  },
+);
+
+server.registerTool(
+  "graph_paths_k_shortest",
+  {
+    title: "Graph k-shortest paths",
+    description: "Calcule les k plus courts chemins (Yen) entre deux noeuds.",
+    inputSchema: GraphPathsKShortestInputShape,
+  },
+  async (input) => {
+    try {
+      const parsed = GraphPathsKShortestInputSchema.parse(input);
+      logger.info("graph_paths_k_shortest_requested", {
+        from: parsed.from,
+        to: parsed.to,
+        k: parsed.k,
+        weight_attribute: parsed.weight_attribute,
+        max_deviation: parsed.max_deviation ?? null,
+      });
+      const result = handleGraphPathsKShortest(parsed);
+      logger.info("graph_paths_k_shortest_succeeded", {
+        returned_k: result.returned_k,
+      });
+      return {
+        content: [{ type: "text" as const, text: j({ tool: "graph_paths_k_shortest", result }) }],
+        structuredContent: result,
+      };
+    } catch (error) {
+      return graphToolError("graph_paths_k_shortest", error);
+    }
+  },
+);
+
+server.registerTool(
+  "graph_paths_constrained",
+  {
+    title: "Graph constrained path",
+    description: "Recherche un chemin optimal en excluant certains noeuds/arcs.",
+    inputSchema: GraphPathsConstrainedInputShape,
+  },
+  async (input) => {
+    try {
+      const parsed = GraphPathsConstrainedInputSchema.parse(input);
+      logger.info("graph_paths_constrained_requested", {
+        from: parsed.from,
+        to: parsed.to,
+        avoid_nodes: parsed.avoid_nodes.length,
+        avoid_edges: parsed.avoid_edges.length,
+        max_cost: parsed.max_cost ?? null,
+      });
+      const result = handleGraphPathsConstrained(parsed);
+      logger.info("graph_paths_constrained_completed", {
+        status: result.status,
+        reason: result.reason,
+        cost: result.cost,
+      });
+      return {
+        content: [{ type: "text" as const, text: j({ tool: "graph_paths_constrained", result }) }],
+        structuredContent: result,
+      };
+    } catch (error) {
+      return graphToolError("graph_paths_constrained", error);
+    }
+  },
+);
+
+server.registerTool(
+  "graph_centrality_betweenness",
+  {
+    title: "Graph betweenness centrality",
+    description: "Calcule les scores de centralite de Brandes (pondere ou non).",
+    inputSchema: GraphCentralityBetweennessInputShape,
+  },
+  async (input) => {
+    try {
+      const parsed = GraphCentralityBetweennessInputSchema.parse(input);
+      logger.info("graph_centrality_betweenness_requested", {
+        weighted: parsed.weighted,
+        normalise: parsed.normalise,
+        top_k: parsed.top_k,
+      });
+      const result = handleGraphCentralityBetweenness(parsed);
+      logger.info("graph_centrality_betweenness_succeeded", {
+        top_count: result.top.length,
+      });
+      return {
+        content: [{ type: "text" as const, text: j({ tool: "graph_centrality_betweenness", result }) }],
+        structuredContent: result,
+      };
+    } catch (error) {
+      return graphToolError("graph_centrality_betweenness", error);
+    }
+  },
+);
+
+server.registerTool(
+  "graph_critical_path",
+  {
+    title: "Graph critical path",
+    description: "Analyse le chemin critique et expose les marges/slacks.",
+    inputSchema: GraphCriticalPathInputShape,
+  },
+  async (input) => {
+    try {
+      const parsed = GraphCriticalPathInputSchema.parse(input);
+      logger.info("graph_critical_path_requested", {
+        duration_attribute: parsed.duration_attribute,
+        fallback_duration_attribute: parsed.fallback_duration_attribute ?? null,
+      });
+      const result = handleGraphCriticalPath(parsed);
+      logger.info("graph_critical_path_succeeded", {
+        duration: result.duration,
+        path_length: result.critical_path.length,
+      });
+      return {
+        content: [{ type: "text" as const, text: j({ tool: "graph_critical_path", result }) }],
+        structuredContent: result,
+      };
+    } catch (error) {
+      return graphToolError("graph_critical_path", error);
+    }
+  },
+);
+
+server.registerTool(
+  "graph_simulate",
+  {
+    title: "Graph simulate",
+    description: "Simule l'execution du graphe et retourne un planning détaillé.",
+    inputSchema: GraphSimulateInputShape,
+  },
+  async (input) => {
+    try {
+      const parsed = GraphSimulateInputSchema.parse(input);
+      logger.info("graph_simulate_requested", {
+        parallelism: parsed.parallelism,
+        duration_attribute: parsed.duration_attribute,
+      });
+      const result = handleGraphSimulate(parsed);
+      logger.info("graph_simulate_succeeded", {
+        makespan: result.metrics.makespan,
+        queue_events: result.metrics.queue_events,
+      });
+      return {
+        content: [{ type: "text" as const, text: j({ tool: "graph_simulate", result }) }],
+        structuredContent: result,
+      };
+    } catch (error) {
+      return graphToolError("graph_simulate", error);
+    }
+  },
+);
+
+server.registerTool(
+  "graph_optimize",
+  {
+    title: "Graph optimize",
+    description: "Analyse un graphe planifié et propose des leviers de réduction du makespan.",
+    inputSchema: GraphOptimizeInputShape,
+  },
+  async (input) => {
+    try {
+      const parsed = GraphOptimizeInputSchema.parse(input);
+      logger.info("graph_optimize_requested", {
+        parallelism: parsed.parallelism,
+        max_parallelism: parsed.max_parallelism,
+        explore_count: parsed.explore_parallelism?.length ?? 0,
+      });
+      const result = handleGraphOptimize(parsed);
+      const bestMakespan = result.projections.reduce(
+        (acc, projection) => Math.min(acc, projection.makespan),
+        Number.POSITIVE_INFINITY,
+      );
+      logger.info("graph_optimize_completed", {
+        suggestions: result.suggestions.length,
+        best_makespan: Number.isFinite(bestMakespan) ? bestMakespan : null,
+      });
+      return {
+        content: [{ type: "text" as const, text: j({ tool: "graph_optimize", result }) }],
+        structuredContent: result,
+      };
+    } catch (error) {
+      return graphToolError("graph_optimize", error);
+    }
+  },
+);
+
 // plan_fanout
 server.registerTool(
-
   "plan_fanout",
-
-  { title: "Plan fan-out", description: "Planifie des enfants en parallele, retourne job_id et child_ids.", inputSchema: PlanFanoutShape },
-
-  async (input: PlanFanoutInput) => {
-
-    pruneExpired();
-
-    const { goal, children = [], ttl_s, max_children = 6 } = input;
-
-
-
-    let planned: SpawnChildSpec[] = children.map((child) => ({ ...child, runtime: child.runtime ?? "codex" }));
-
-    if (!planned.length && goal) {
-
-      planned = [
-
-        {
-          name: "planner",
-          system: `Tu es ${DEFAULT_CHILD_RUNTIME} (instance planificatrice). L'orchestrateur agit comme l'utilisateur et attend un plan concis, hierarchise et actionnable.`,
-          goals: [goal],
-          runtime: DEFAULT_CHILD_RUNTIME
-        },
-
-        {
-          name: "researcher",
-          system: `Tu es ${DEFAULT_CHILD_RUNTIME} (instance analyste). L'orchestrateur est l'utilisateur ; collecte, verifie et synthetise les informations cles sans digresser.`,
-          goals: [goal],
-          runtime: DEFAULT_CHILD_RUNTIME
-        },
-
-        {
-          name: "implementer",
-          system: `Tu es ${DEFAULT_CHILD_RUNTIME} (instance mise en oeuvre). L'orchestrateur est l'utilisateur ; propose un patch concret, pret a etre applique et teste.`,
-          goals: [goal],
-          runtime: DEFAULT_CHILD_RUNTIME
-        },
-
-      ];
-
+  {
+    title: "Plan fan-out",
+    description: "Planifie des enfants en parallele, retourne job_id et child_ids.",
+    inputSchema: PlanFanoutInputShape,
+  },
+  async (input) => {
+    try {
+      pruneExpired();
+      const parsed = PlanFanoutInputSchema.parse(input);
+      const result = await handlePlanFanout(getPlanToolContext(), parsed);
+      startHeartbeat();
+      return {
+        content: [
+          { type: "text" as const, text: j({ tool: "plan_fanout", result }) },
+        ],
+        structuredContent: result,
+      };
+    } catch (error) {
+      return planToolError("plan_fanout", error);
     }
+  },
+);
 
-
-
-    const slice = planned.slice(0, max_children).map((spec) => ({ ...spec, runtime: spec.runtime ?? DEFAULT_CHILD_RUNTIME }));
-
-    const jobId = createJob(goal ?? undefined);
-
-    const childIds: string[] = [];
-
-    for (const spec of slice) {
-
-      const childId = createChild(jobId, spec, ttl_s);
-
-      childIds.push(childId);
-
+server.registerTool(
+  "plan_join",
+  {
+    title: "Plan join",
+    description: "Attend les reponses des enfants selon une politique de quorum ou de premiere reussite.",
+    inputSchema: PlanJoinInputShape,
+  },
+  async (input) => {
+    try {
+      pruneExpired();
+      const parsed = PlanJoinInputSchema.parse(input);
+      const result = await handlePlanJoin(getPlanToolContext(), parsed);
+      return {
+        content: [{ type: "text" as const, text: j({ tool: "plan_join", result }) }],
+        structuredContent: result,
+      };
+    } catch (error) {
+      return planToolError("plan_join", error);
     }
+  },
+);
 
-
-
-    startHeartbeat();
-
-    const evt = pushEvent({ kind: "PLAN", jobId, payload: { planned: slice.map((s) => ({ name: s.name, runtime: s.runtime ?? "codex" })), childIds } });
-
-
-
-    return { content: [{ type: "text", text: j({ job_id: jobId, child_ids: childIds, planned: slice, event_seq: evt.seq }) }] };
-
-  }
-
+server.registerTool(
+  "plan_reduce",
+  {
+    title: "Plan reduce",
+    description: "Combine les sorties des enfants (concat, merge_json, vote, custom).",
+    inputSchema: PlanReduceInputShape,
+  },
+  async (input) => {
+    try {
+      const parsed = PlanReduceInputSchema.parse(input);
+      const result = await handlePlanReduce(getPlanToolContext(), parsed);
+      return {
+        content: [{ type: "text" as const, text: j({ tool: "plan_reduce", result }) }],
+        structuredContent: result,
+      };
+    } catch (error) {
+      return planToolError("plan_reduce", error);
+    }
+  },
 );
 
 
@@ -1235,6 +1717,180 @@ server.registerTool(
 
   }
 
+);
+
+
+
+// child runtime management (process-based)
+server.registerTool(
+  "child_create",
+  {
+    title: "Child create",
+    description: "Démarre un runtime enfant sandboxé (Codex) et peut envoyer un payload initial.",
+    inputSchema: ChildCreateInputShape,
+  },
+  async (input) => {
+    try {
+      const parsed = ChildCreateInputSchema.parse(input);
+      const result = await handleChildCreate(getChildToolContext(), parsed);
+      return {
+        content: [{ type: "text" as const, text: j({ tool: "child_create", result }) }],
+        structuredContent: result,
+      };
+    } catch (error) {
+      return childToolError("child_create", error, { child_id: input.child_id ?? null });
+    }
+  },
+);
+
+server.registerTool(
+  "child_send",
+  {
+    title: "Child send",
+    description: "Envoie un message JSON arbitraire à un runtime enfant.",
+    inputSchema: ChildSendInputShape,
+  },
+  async (input) => {
+    try {
+      const parsed = ChildSendInputSchema.parse(input);
+      const result = await handleChildSend(getChildToolContext(), parsed);
+      return {
+        content: [{ type: "text" as const, text: j({ tool: "child_send", result }) }],
+        structuredContent: result,
+      };
+    } catch (error) {
+      return childToolError("child_send", error, { child_id: input.child_id });
+    }
+  },
+);
+
+server.registerTool(
+  "child_status",
+  {
+    title: "Child status",
+    description: "Expose l'état runtime/index d'un enfant (pid, heartbeats, retries…).",
+    inputSchema: ChildStatusInputShape,
+  },
+  (input) => {
+    try {
+      const parsed = ChildStatusInputSchema.parse(input);
+      const result = handleChildStatus(getChildToolContext(), parsed);
+      return {
+        content: [{ type: "text" as const, text: j({ tool: "child_status", result }) }],
+        structuredContent: result,
+      };
+    } catch (error) {
+      return childToolError("child_status", error, { child_id: input.child_id });
+    }
+  },
+);
+
+server.registerTool(
+  "child_collect",
+  {
+    title: "Child collect",
+    description: "Collecte les messages et artefacts produits par un enfant.",
+    inputSchema: ChildCollectInputShape,
+  },
+  async (input) => {
+    try {
+      const parsed = ChildCollectInputSchema.parse(input);
+      const result = await handleChildCollect(getChildToolContext(), parsed);
+      return {
+        content: [{ type: "text" as const, text: j({ tool: "child_collect", result }) }],
+        structuredContent: result,
+      };
+    } catch (error) {
+      return childToolError("child_collect", error, { child_id: input.child_id });
+    }
+  },
+);
+
+server.registerTool(
+  "child_stream",
+  {
+    title: "Child stream",
+    description: "Pagine les messages stdout/stderr enregistrés pour un enfant.",
+    inputSchema: ChildStreamInputShape,
+  },
+  (input) => {
+    try {
+      const parsed = ChildStreamInputSchema.parse(input);
+      const result = handleChildStream(getChildToolContext(), parsed);
+      return {
+        content: [{ type: "text" as const, text: j({ tool: "child_stream", result }) }],
+        structuredContent: result,
+      };
+    } catch (error) {
+      return childToolError("child_stream", error, {
+        child_id: input.child_id,
+        after_sequence: input.after_sequence ?? null,
+      });
+    }
+  },
+);
+
+server.registerTool(
+  "child_cancel",
+  {
+    title: "Child cancel",
+    description: "Demande un arrêt gracieux (SIGINT/SIGTERM) avec timeout optionnel.",
+    inputSchema: ChildCancelInputShape,
+  },
+  async (input) => {
+    try {
+      const parsed = ChildCancelInputSchema.parse(input);
+      const result = await handleChildCancel(getChildToolContext(), parsed);
+      return {
+        content: [{ type: "text" as const, text: j({ tool: "child_cancel", result }) }],
+        structuredContent: result,
+      };
+    } catch (error) {
+      return childToolError("child_cancel", error, { child_id: input.child_id });
+    }
+  },
+);
+
+server.registerTool(
+  "child_kill",
+  {
+    title: "Child kill",
+    description: "Force la terminaison d'un enfant après le délai indiqué.",
+    inputSchema: ChildKillInputShape,
+  },
+  async (input) => {
+    try {
+      const parsed = ChildKillInputSchema.parse(input);
+      const result = await handleChildKill(getChildToolContext(), parsed);
+      return {
+        content: [{ type: "text" as const, text: j({ tool: "child_kill", result }) }],
+        structuredContent: result,
+      };
+    } catch (error) {
+      return childToolError("child_kill", error, { child_id: input.child_id });
+    }
+  },
+);
+
+server.registerTool(
+  "child_gc",
+  {
+    title: "Child gc",
+    description: "Nettoie les métadonnées d'un enfant terminé.",
+    inputSchema: ChildGcInputShape,
+  },
+  (input) => {
+    try {
+      const parsed = ChildGcInputSchema.parse(input);
+      const result = handleChildGc(getChildToolContext(), parsed);
+      return {
+        content: [{ type: "text" as const, text: j({ tool: "child_gc", result }) }],
+        structuredContent: result,
+      };
+    } catch (error) {
+      return childToolError("child_gc", error, { child_id: input.child_id });
+    }
+  },
 );
 
 
