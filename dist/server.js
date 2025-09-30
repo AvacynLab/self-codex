@@ -2,8 +2,8 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { randomUUID } from "crypto";
-import { readFile, writeFile } from "node:fs/promises";
-import { resolve as resolvePath } from "node:path";
+import { readFile, writeFile, mkdir } from "node:fs/promises";
+import { resolve as resolvePath, dirname as pathDirname } from "node:path";
 import { pathToFileURL } from "url";
 import { GraphState } from "./graphState.js";
 import { StructuredLogger } from "./logger.js";
@@ -14,7 +14,11 @@ import { ChildSupervisor } from "./childSupervisor.js";
 import { UnknownChildError } from "./state/childrenIndex.js";
 import { ChildCancelInputShape, ChildCancelInputSchema, ChildCollectInputShape, ChildCollectInputSchema, ChildCreateInputShape, ChildCreateInputSchema, ChildGcInputShape, ChildGcInputSchema, ChildKillInputShape, ChildKillInputSchema, ChildSendInputShape, ChildSendInputSchema, ChildStreamInputShape, ChildStreamInputSchema, ChildStatusInputShape, ChildStatusInputSchema, handleChildCancel, handleChildCollect, handleChildCreate, handleChildGc, handleChildKill, handleChildSend, handleChildStream, handleChildStatus, } from "./tools/childTools.js";
 import { PlanFanoutInputSchema, PlanFanoutInputShape, PlanJoinInputSchema, PlanJoinInputShape, PlanReduceInputSchema, PlanReduceInputShape, handlePlanFanout, handlePlanJoin, handlePlanReduce, } from "./tools/planTools.js";
-import { GraphGenerateInputSchema, GraphGenerateInputShape, GraphMutateInputSchema, GraphMutateInputShape, GraphPathsConstrainedInputSchema, GraphPathsConstrainedInputShape, GraphPathsKShortestInputSchema, GraphPathsKShortestInputShape, GraphCentralityBetweennessInputSchema, GraphCentralityBetweennessInputShape, GraphCriticalPathInputSchema, GraphCriticalPathInputShape, GraphOptimizeInputSchema, GraphOptimizeInputShape, GraphSummarizeInputSchema, GraphSummarizeInputShape, GraphSimulateInputSchema, GraphSimulateInputShape, GraphValidateInputSchema, GraphValidateInputShape, handleGraphGenerate, handleGraphMutate, handleGraphPathsConstrained, handleGraphPathsKShortest, handleGraphCentralityBetweenness, handleGraphCriticalPath, handleGraphOptimize, handleGraphSummarize, handleGraphSimulate, handleGraphValidate, } from "./tools/graphTools.js";
+import { GraphGenerateInputSchema, GraphGenerateInputShape, GraphMutateInputSchema, GraphMutateInputShape, GraphPathsConstrainedInputSchema, GraphPathsConstrainedInputShape, GraphPathsKShortestInputSchema, GraphPathsKShortestInputShape, GraphCentralityBetweennessInputSchema, GraphCentralityBetweennessInputShape, GraphCriticalPathInputSchema, GraphCriticalPathInputShape, GraphOptimizeInputSchema, GraphOptimizeInputShape, GraphOptimizeMooInputSchema, GraphOptimizeMooInputShape, GraphCausalAnalyzeInputSchema, GraphCausalAnalyzeInputShape, GraphPartitionInputSchema, GraphPartitionInputShape, GraphSummarizeInputSchema, GraphSummarizeInputShape, GraphSimulateInputSchema, GraphSimulateInputShape, GraphValidateInputSchema, GraphValidateInputShape, handleGraphGenerate, handleGraphMutate, handleGraphPathsConstrained, handleGraphPathsKShortest, handleGraphCentralityBetweenness, handleGraphCriticalPath, handleGraphOptimize, handleGraphOptimizeMoo, handleGraphCausalAnalyze, handleGraphPartition, handleGraphSummarize, handleGraphSimulate, handleGraphValidate, } from "./tools/graphTools.js";
+import { renderMermaidFromGraph } from "./viz/mermaid.js";
+import { renderDotFromGraph } from "./viz/dot.js";
+import { renderGraphmlFromGraph } from "./viz/graphml.js";
+import { snapshotToGraphDescriptor } from "./viz/snapshot.js";
 // ---------------------------
 // Stores en memoire
 // ---------------------------
@@ -383,8 +387,26 @@ const PollSchema = z.object(PollShape);
 const UnsubscribeShape = { subscription_id: z.string() };
 const UnsubscribeSchema = z.object(UnsubscribeShape);
 // Graph export/save/load
-const GraphExportShape = { format: z.enum(["json"]).optional() };
-const GraphExportSchema = z.object(GraphExportShape);
+const GraphExportShape = {
+    format: z.enum(["json", "mermaid", "dot", "graphml"]).default("json"),
+    direction: z.enum(["LR", "TB"]).optional(),
+    label_attribute: z.string().min(1).optional(),
+    weight_attribute: z.string().min(1).optional(),
+    max_label_length: z.number().int().min(8).max(160).optional(),
+    inline: z.boolean().default(true),
+    path: z.string().min(1).optional(),
+    pretty: z.boolean().default(true),
+    truncate: z.number().int().min(256).max(16384).optional(),
+};
+const GraphExportSchema = z.object(GraphExportShape).superRefine((input, ctx) => {
+    if (!input.inline && !input.path) {
+        ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: "when inline=false a path must be provided",
+            path: ["path"],
+        });
+    }
+});
 const GraphSaveShape = { path: z.string() };
 const GraphSaveSchema = z.object(GraphSaveShape);
 const GraphLoadShape = { path: z.string() };
@@ -520,9 +542,110 @@ server.registerTool("job_view", { title: "Job view", description: "Vue d'ensembl
     return { content: [{ type: "text", text: j({ format: "json", job: { id: job.id, state: job.state }, children }) }] };
 });
 // graph_export
-server.registerTool("graph_export", { title: "Graph export", description: "Exporte l'etat graphe en JSON.", inputSchema: GraphExportShape }, async (_input) => {
-    const snap = graphState.serialize();
-    return { content: [{ type: "text", text: j({ format: "json", data: snap }) }] };
+server.registerTool("graph_export", { title: "Graph export", description: "Exporte l'etat graphe en JSON.", inputSchema: GraphExportShape }, async (input) => {
+    try {
+        const parsed = GraphExportSchema.parse(input);
+        const snapshot = graphState.serialize();
+        const descriptor = snapshotToGraphDescriptor(snapshot, {
+            labelAttribute: parsed.label_attribute,
+        });
+        let payloadString = "";
+        let structuredPayload = null;
+        switch (parsed.format) {
+            case "json": {
+                structuredPayload = {
+                    snapshot,
+                    descriptor,
+                };
+                payloadString = JSON.stringify(structuredPayload, null, parsed.pretty ? 2 : 0);
+                break;
+            }
+            case "mermaid": {
+                payloadString = renderMermaidFromGraph(descriptor, {
+                    direction: parsed.direction ?? "LR",
+                    labelAttribute: parsed.label_attribute,
+                    weightAttribute: parsed.weight_attribute,
+                    maxLabelLength: parsed.max_label_length,
+                });
+                break;
+            }
+            case "dot": {
+                payloadString = renderDotFromGraph(descriptor, {
+                    labelAttribute: parsed.label_attribute,
+                    weightAttribute: parsed.weight_attribute,
+                });
+                break;
+            }
+            case "graphml": {
+                payloadString = renderGraphmlFromGraph(descriptor, {
+                    labelAttribute: parsed.label_attribute,
+                    weightAttribute: parsed.weight_attribute,
+                });
+                break;
+            }
+        }
+        const bytes = Buffer.byteLength(payloadString, "utf8");
+        const maxPreview = parsed.truncate ?? 4096;
+        const notes = [];
+        let absolutePath = null;
+        if (parsed.path) {
+            const cwd = process.cwd();
+            const absolute = resolvePath(cwd, parsed.path);
+            if (!absolute.toLowerCase().startsWith(cwd.toLowerCase())) {
+                return {
+                    isError: true,
+                    content: [
+                        {
+                            type: "text",
+                            text: j({ error: "BAD_PATH", message: "Path must be inside workspace" }),
+                        },
+                    ],
+                };
+            }
+            await mkdir(pathDirname(absolute), { recursive: true });
+            await writeFile(absolute, payloadString, "utf8");
+            absolutePath = absolute;
+        }
+        const inline = parsed.inline ?? true;
+        let preview = payloadString;
+        let truncated = false;
+        if (payloadString.length > maxPreview) {
+            preview = payloadString.slice(0, maxPreview);
+            truncated = true;
+            notes.push("content_truncated");
+        }
+        const result = {
+            format: parsed.format,
+            bytes,
+            inline,
+            truncated,
+            path: absolutePath,
+            notes,
+        };
+        if (inline) {
+            if (parsed.format === "json") {
+                result.payload = structuredPayload;
+            }
+            else {
+                result.preview = preview;
+            }
+        }
+        else {
+            result.preview = preview;
+        }
+        return {
+            content: [
+                {
+                    type: "text",
+                    text: j({ tool: "graph_export", result }),
+                },
+            ],
+            structuredContent: result,
+        };
+    }
+    catch (error) {
+        return graphToolError("graph_export", error);
+    }
 });
 // graph_state_save
 server.registerTool("graph_state_save", { title: "Graph save", description: "Sauvegarde l'etat graphe dans un fichier JSON.", inputSchema: GraphSaveShape }, async (input) => {
@@ -1143,6 +1266,32 @@ server.registerTool("graph_centrality_betweenness", {
         return graphToolError("graph_centrality_betweenness", error);
     }
 });
+server.registerTool("graph_partition", {
+    title: "Graph partition",
+    description: "Partitionne le graphe en communautés ou minimise les coupures.",
+    inputSchema: GraphPartitionInputShape,
+}, async (input) => {
+    try {
+        const parsed = GraphPartitionInputSchema.parse(input);
+        logger.info("graph_partition_requested", {
+            k: parsed.k,
+            objective: parsed.objective,
+            seed: parsed.seed ?? null,
+        });
+        const result = handleGraphPartition(parsed);
+        logger.info("graph_partition_succeeded", {
+            partition_count: result.partition_count,
+            cut_edges: result.cut_edges,
+        });
+        return {
+            content: [{ type: "text", text: j({ tool: "graph_partition", result }) }],
+            structuredContent: result,
+        };
+    }
+    catch (error) {
+        return graphToolError("graph_partition", error);
+    }
+});
 server.registerTool("graph_critical_path", {
     title: "Graph critical path",
     description: "Analyse le chemin critique et expose les marges/slacks.",
@@ -1218,6 +1367,57 @@ server.registerTool("graph_optimize", {
     }
     catch (error) {
         return graphToolError("graph_optimize", error);
+    }
+});
+server.registerTool("graph_optimize_moo", {
+    title: "Graph optimize multi-objectifs",
+    description: "Explore les pareto fronts pour plusieurs objectifs (makespan/coût/risque).",
+    inputSchema: GraphOptimizeMooInputShape,
+}, async (input) => {
+    try {
+        const parsed = GraphOptimizeMooInputSchema.parse(input);
+        logger.info("graph_optimize_moo_requested", {
+            candidates: parsed.parallelism_candidates.length,
+            objectives: parsed.objectives.length,
+        });
+        const result = handleGraphOptimizeMoo(parsed);
+        logger.info("graph_optimize_moo_completed", {
+            pareto_count: result.pareto_front.length,
+            scalarized: result.scalarization ? true : false,
+        });
+        return {
+            content: [{ type: "text", text: j({ tool: "graph_optimize_moo", result }) }],
+            structuredContent: result,
+        };
+    }
+    catch (error) {
+        return graphToolError("graph_optimize_moo", error);
+    }
+});
+server.registerTool("graph_causal_analyze", {
+    title: "Graph causal analysis",
+    description: "Analyse causale: ordre topo, cycles et coupure minimale.",
+    inputSchema: GraphCausalAnalyzeInputShape,
+}, async (input) => {
+    try {
+        const parsed = GraphCausalAnalyzeInputSchema.parse(input);
+        logger.info("graph_causal_analyze_requested", {
+            max_cycles: parsed.max_cycles,
+            compute_min_cut: parsed.compute_min_cut,
+        });
+        const result = handleGraphCausalAnalyze(parsed);
+        logger.info("graph_causal_analyze_completed", {
+            acyclic: result.acyclic,
+            cycles: result.cycles.length,
+            min_cut_size: result.min_cut?.size ?? null,
+        });
+        return {
+            content: [{ type: "text", text: j({ tool: "graph_causal_analyze", result }) }],
+            structuredContent: result,
+        };
+    }
+    catch (error) {
+        return graphToolError("graph_causal_analyze", error);
     }
 });
 // plan_fanout

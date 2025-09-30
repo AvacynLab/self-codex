@@ -18,6 +18,8 @@ describe("child supervisor", () => {
       childrenRoot,
       defaultCommand: process.execPath,
       defaultArgs: [mockRunnerPath, "--role", "friendly"],
+      idleTimeoutMs: 150,
+      idleCheckIntervalMs: 25,
     });
 
     try {
@@ -26,7 +28,7 @@ describe("child supervisor", () => {
         manifestExtras: { scenario: "unit-test" },
       });
 
-      expect(created.childId).to.match(/^child_/);
+      expect(created.childId).to.match(/^child-\d{13}-[a-f0-9]{6}$/);
       expect(created.readyMessage).to.not.equal(null);
       expect(created.index.state).to.equal("starting");
 
@@ -85,6 +87,8 @@ describe("child supervisor", () => {
       childrenRoot,
       defaultCommand: process.execPath,
       defaultArgs: [stubbornRunnerPath],
+      idleTimeoutMs: 150,
+      idleCheckIntervalMs: 25,
     });
 
     try {
@@ -94,6 +98,31 @@ describe("child supervisor", () => {
       const shutdown = await supervisor.kill(created.childId, { timeoutMs: 100 });
       expect(shutdown.forced).to.equal(true);
       await supervisor.waitForExit(created.childId);
+    } finally {
+      await supervisor.disposeAll();
+      await rm(childrenRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("marks children as idle after the configured inactivity window", async () => {
+    const childrenRoot = await mkdtemp(path.join(tmpdir(), "supervisor-idle-"));
+    const supervisor = new ChildSupervisor({
+      childrenRoot,
+      defaultCommand: process.execPath,
+      defaultArgs: [mockRunnerPath, "--role", "friendly"],
+      idleTimeoutMs: 80,
+      idleCheckIntervalMs: 20,
+    });
+
+    try {
+      const created = await supervisor.createChild();
+      expect(created.readyMessage).to.not.equal(null);
+
+      await new Promise((resolve) => setTimeout(resolve, 120));
+
+      const snapshot = supervisor.childrenIndex.getChild(created.childId);
+      expect(snapshot?.lastHeartbeatAt).to.be.a("number");
+      expect(snapshot?.state).to.equal("idle");
     } finally {
       await supervisor.disposeAll();
       await rm(childrenRoot, { recursive: true, force: true });

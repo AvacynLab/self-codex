@@ -81,7 +81,31 @@ describe("graph tools", () => {
       const repeated = handleGraphMutate(
         GraphMutateInputSchema.parse({ graph: mutated.graph, operations: input.operations }),
       );
-      expect(repeated.graph).to.deep.equal(mutated.graph);
+      expect(repeated.graph.graph_version).to.equal(mutated.graph.graph_version);
+      expect(repeated.graph.graph_id).to.equal(mutated.graph.graph_id);
+      expect(repeated.graph.nodes).to.deep.equal(mutated.graph.nodes);
+      expect(repeated.graph.edges).to.deep.equal(mutated.graph.edges);
+    });
+
+    it("keeps the graph version when mutations cancel out", () => {
+      const base = handleGraphGenerate({ name: "baseline", preset: "lint_test_build_package" });
+      const input = GraphMutateInputSchema.parse({
+        graph: base.graph,
+        operations: [
+          // Ajout puis suppression de la même arête pour simuler une mutation
+          // qui laisse l'état du graphe identique. Cela vérifie que le diff
+          // structuré ne déclenche pas d'incrément de version inutile.
+          { op: "add_edge", edge: { from: "lint", to: "package", weight: 1 } },
+          { op: "remove_edge", from: "lint", to: "package" },
+        ],
+      });
+
+      const result = handleGraphMutate(input);
+
+      expect(result.graph.graph_version).to.equal(base.graph.graph_version);
+      expect(result.graph.graph_id).to.equal(base.graph.graph_id);
+      expect(result.graph.edges).to.deep.equal(base.graph.edges);
+      expect(result.applied.map((entry) => entry.changed)).to.deep.equal([true, true]);
     });
   });
 

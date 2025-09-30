@@ -16,12 +16,32 @@ export class ChildSupervisor {
     runtimes = new Map();
     messageCounters = new Map();
     exitEvents = new Map();
+    watchdogs = new Map();
+    idleTimeoutMs;
+    idleCheckIntervalMs;
     constructor(options) {
         this.childrenRoot = options.childrenRoot;
         this.defaultCommand = options.defaultCommand;
         this.defaultArgs = options.defaultArgs ? [...options.defaultArgs] : [];
         this.defaultEnv = { ...(options.defaultEnv ?? {}) };
         this.index = options.index ?? new ChildrenIndex();
+        const configuredIdle = options.idleTimeoutMs ?? 120_000;
+        this.idleTimeoutMs = configuredIdle > 0 ? configuredIdle : 0;
+        const defaultInterval = Math.max(250, Math.min(5_000, this.idleTimeoutMs || 5_000));
+        const configuredInterval = options.idleCheckIntervalMs;
+        const interval = configuredInterval ?? defaultInterval;
+        this.idleCheckIntervalMs = interval > 0 ? Math.min(interval, Math.max(250, this.idleTimeoutMs || interval)) : defaultInterval;
+    }
+    /**
+     * Generates a stable child identifier following the `child-<timestamp>-<id>`
+     * convention required by the brief. A compact suffix is produced from a
+     * UUID in order to minimise directory name length while retaining sufficient
+     * entropy.
+     */
+    static generateChildId() {
+        const timestamp = Date.now();
+        const randomSuffix = randomUUID().replace(/-/g, "").slice(0, 6).toLowerCase();
+        return `child-${timestamp}-${randomSuffix}`;
     }
     /**
      * Access to the shared {@link ChildrenIndex}. Mainly used by tests to assert
@@ -49,9 +69,11 @@ export class ChildSupervisor {
                 this.index.updateState(childId, "error");
             }
         });
+        this.scheduleIdleWatchdog(childId);
         runtime
             .waitForExit()
             .then((event) => {
+            this.clearIdleWatchdog(childId);
             const result = {
                 code: event.code,
                 signal: event.signal,
@@ -70,6 +92,7 @@ export class ChildSupervisor {
             .catch((error) => {
             // The exit promise should never reject, but we keep a defensive path
             // to ensure the index is not left in an inconsistent state.
+            this.clearIdleWatchdog(childId);
             const fallback = {
                 code: null,
                 signal: null,
@@ -90,7 +113,7 @@ export class ChildSupervisor {
      * Spawns a new child runtime and registers it inside the supervisor index.
      */
     async createChild(options = {}) {
-        const childId = options.childId ?? `child_${randomUUID()}`;
+        const childId = options.childId ?? ChildSupervisor.generateChildId();
         if (this.runtimes.has(childId)) {
             throw new Error(`A runtime is already registered for ${childId}`);
         }
@@ -214,6 +237,7 @@ export class ChildSupervisor {
         this.runtimes.delete(childId);
         this.messageCounters.delete(childId);
         this.exitEvents.delete(childId);
+        this.clearIdleWatchdog(childId);
     }
     /**
      * Stops all running children. Used as a best-effort cleanup helper in tests.
@@ -230,6 +254,10 @@ export class ChildSupervisor {
         this.runtimes.clear();
         this.messageCounters.clear();
         this.exitEvents.clear();
+        for (const timer of this.watchdogs.values()) {
+            clearInterval(timer);
+        }
+        this.watchdogs.clear();
     }
     requireRuntime(childId) {
         const runtime = this.runtimes.get(childId);
@@ -250,5 +278,53 @@ export class ChildSupervisor {
         const next = current + 1;
         this.messageCounters.set(childId, next);
         return next;
+    }
+    /**
+     * Periodically inspects the last heartbeat of the child to infer idleness.
+     * When the inactivity window exceeds {@link idleTimeoutMs} the lifecycle
+     * state transitions to `idle` so higher level tools can recycle the clone.
+     */
+    scheduleIdleWatchdog(childId) {
+        if (this.idleTimeoutMs <= 0) {
+            return;
+        }
+        const existing = this.watchdogs.get(childId);
+        if (existing) {
+            clearInterval(existing);
+        }
+        const interval = Math.min(this.idleCheckIntervalMs, this.idleTimeoutMs || this.idleCheckIntervalMs);
+        const timer = setInterval(() => {
+            const snapshot = this.index.getChild(childId);
+            if (!snapshot) {
+                this.clearIdleWatchdog(childId);
+                return;
+            }
+            if (["terminated", "killed", "error"].includes(snapshot.state)) {
+                this.clearIdleWatchdog(childId);
+                return;
+            }
+            if (snapshot.state === "stopping" || snapshot.state === "running") {
+                return;
+            }
+            if (snapshot.lastHeartbeatAt === null) {
+                return;
+            }
+            const inactiveFor = Date.now() - snapshot.lastHeartbeatAt;
+            if (inactiveFor >= this.idleTimeoutMs && snapshot.state !== "idle") {
+                this.index.updateState(childId, "idle");
+            }
+        }, interval);
+        if (typeof timer.unref === "function") {
+            timer.unref();
+        }
+        this.watchdogs.set(childId, timer);
+    }
+    /** Clears the watchdog timer associated with the provided child identifier. */
+    clearIdleWatchdog(childId) {
+        const timer = this.watchdogs.get(childId);
+        if (timer) {
+            clearInterval(timer);
+            this.watchdogs.delete(childId);
+        }
     }
 }

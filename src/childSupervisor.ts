@@ -41,6 +41,16 @@ export interface ChildSupervisorOptions {
    * the orchestrator. When omitted, a fresh instance is created.
    */
   index?: ChildrenIndex;
+  /**
+   * Maximum period of inactivity tolerated before the child is marked idle. A
+   * non-positive value disables the watchdog.
+   */
+  idleTimeoutMs?: number;
+  /**
+   * Interval at which the idle watchdog checks for inactivity. When omitted a
+   * conservative default derived from {@link idleTimeoutMs} is used.
+   */
+  idleCheckIntervalMs?: number;
 }
 
 /**
@@ -120,6 +130,9 @@ export class ChildSupervisor {
   private readonly runtimes = new Map<string, ChildRuntime>();
   private readonly messageCounters = new Map<string, number>();
   private readonly exitEvents = new Map<string, ChildShutdownResult>();
+  private readonly watchdogs = new Map<string, NodeJS.Timeout>();
+  private readonly idleTimeoutMs: number;
+  private readonly idleCheckIntervalMs: number;
 
   constructor(options: ChildSupervisorOptions) {
     this.childrenRoot = options.childrenRoot;
@@ -127,6 +140,25 @@ export class ChildSupervisor {
     this.defaultArgs = options.defaultArgs ? [...options.defaultArgs] : [];
     this.defaultEnv = { ...(options.defaultEnv ?? {}) };
     this.index = options.index ?? new ChildrenIndex();
+
+    const configuredIdle = options.idleTimeoutMs ?? 120_000;
+    this.idleTimeoutMs = configuredIdle > 0 ? configuredIdle : 0;
+    const defaultInterval = Math.max(250, Math.min(5_000, this.idleTimeoutMs || 5_000));
+    const configuredInterval = options.idleCheckIntervalMs;
+    const interval = configuredInterval ?? defaultInterval;
+    this.idleCheckIntervalMs = interval > 0 ? Math.min(interval, Math.max(250, this.idleTimeoutMs || interval)) : defaultInterval;
+  }
+
+  /**
+   * Generates a stable child identifier following the `child-<timestamp>-<id>`
+   * convention required by the brief. A compact suffix is produced from a
+   * UUID in order to minimise directory name length while retaining sufficient
+   * entropy.
+   */
+  private static generateChildId(): string {
+    const timestamp = Date.now();
+    const randomSuffix = randomUUID().replace(/-/g, "").slice(0, 6).toLowerCase();
+    return `child-${timestamp}-${randomSuffix}`;
   }
 
   /**
@@ -156,9 +188,12 @@ export class ChildSupervisor {
       }
     });
 
+    this.scheduleIdleWatchdog(childId);
+
     runtime
       .waitForExit()
       .then((event) => {
+        this.clearIdleWatchdog(childId);
         const result: ChildShutdownResult = {
           code: event.code,
           signal: event.signal,
@@ -177,6 +212,7 @@ export class ChildSupervisor {
       .catch((error) => {
         // The exit promise should never reject, but we keep a defensive path
         // to ensure the index is not left in an inconsistent state.
+        this.clearIdleWatchdog(childId);
         const fallback: ChildShutdownResult = {
           code: null,
           signal: null,
@@ -198,7 +234,7 @@ export class ChildSupervisor {
    * Spawns a new child runtime and registers it inside the supervisor index.
    */
   async createChild(options: CreateChildOptions = {}): Promise<CreateChildResult> {
-    const childId = options.childId ?? `child_${randomUUID()}`;
+    const childId = options.childId ?? ChildSupervisor.generateChildId();
 
     if (this.runtimes.has(childId)) {
       throw new Error(`A runtime is already registered for ${childId}`);
@@ -346,6 +382,7 @@ export class ChildSupervisor {
     this.runtimes.delete(childId);
     this.messageCounters.delete(childId);
     this.exitEvents.delete(childId);
+    this.clearIdleWatchdog(childId);
   }
 
   /**
@@ -365,6 +402,10 @@ export class ChildSupervisor {
     this.runtimes.clear();
     this.messageCounters.clear();
     this.exitEvents.clear();
+    for (const timer of this.watchdogs.values()) {
+      clearInterval(timer);
+    }
+    this.watchdogs.clear();
   }
 
   private requireRuntime(childId: string): ChildRuntime {
@@ -388,5 +429,63 @@ export class ChildSupervisor {
     const next = current + 1;
     this.messageCounters.set(childId, next);
     return next;
+  }
+
+  /**
+   * Periodically inspects the last heartbeat of the child to infer idleness.
+   * When the inactivity window exceeds {@link idleTimeoutMs} the lifecycle
+   * state transitions to `idle` so higher level tools can recycle the clone.
+   */
+  private scheduleIdleWatchdog(childId: string): void {
+    if (this.idleTimeoutMs <= 0) {
+      return;
+    }
+
+    const existing = this.watchdogs.get(childId);
+    if (existing) {
+      clearInterval(existing);
+    }
+
+    const interval = Math.min(this.idleCheckIntervalMs, this.idleTimeoutMs || this.idleCheckIntervalMs);
+    const timer = setInterval(() => {
+      const snapshot = this.index.getChild(childId);
+      if (!snapshot) {
+        this.clearIdleWatchdog(childId);
+        return;
+      }
+
+      if (["terminated", "killed", "error"].includes(snapshot.state)) {
+        this.clearIdleWatchdog(childId);
+        return;
+      }
+
+      if (snapshot.state === "stopping" || snapshot.state === "running") {
+        return;
+      }
+
+      if (snapshot.lastHeartbeatAt === null) {
+        return;
+      }
+
+      const inactiveFor = Date.now() - snapshot.lastHeartbeatAt;
+      if (inactiveFor >= this.idleTimeoutMs && snapshot.state !== "idle") {
+        this.index.updateState(childId, "idle");
+      }
+    }, interval);
+
+    if (typeof timer.unref === "function") {
+      timer.unref();
+    }
+
+    this.watchdogs.set(childId, timer);
+  }
+
+  /** Clears the watchdog timer associated with the provided child identifier. */
+  private clearIdleWatchdog(childId: string): void {
+    const timer = this.watchdogs.get(childId);
+    if (timer) {
+      clearInterval(timer);
+      this.watchdogs.delete(childId);
+    }
   }
 }

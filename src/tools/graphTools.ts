@@ -1,4 +1,11 @@
+import { createHash } from "node:crypto";
+
 import { z } from "zod";
+
+import { GraphComputationCache } from "../graph/cache.js";
+import { buildGraphAttributeIndex } from "../graph/index.js";
+import { partitionGraph, type GraphPartitionObjective } from "../graph/partition.js";
+import type { NormalisedGraph } from "../graph/types.js";
 
 interface GraphForgeModelInstance {
   listNodes(): Array<{ id: string }>;
@@ -11,6 +18,17 @@ interface GraphForgeEdgeCostDescriptor {
   readonly attribute: string;
   readonly defaultValue?: number;
   readonly scale?: number;
+}
+
+interface GraphForgeConstrainedResult {
+  readonly status: "found" | "start_or_goal_excluded" | "unreachable" | "max_cost_exceeded";
+  readonly distance: number;
+  readonly path: string[];
+  readonly visitedOrder: string[];
+  readonly filteredNodes: string[];
+  readonly filteredEdges: Array<{ from: string; to: string }>;
+  readonly violations: string[];
+  readonly notes: string[];
 }
 
 type GraphForgeModule = {
@@ -49,7 +67,21 @@ type GraphForgeModule = {
       readonly normalise?: boolean;
     },
   ) => Array<{ node: string; score: number }>;
+  readonly constrainedShortestPath: (
+    graph: GraphForgeModelInstance,
+    start: string,
+    goal: string,
+    options?: {
+      readonly weightAttribute?: string;
+      readonly costFunction?: GraphForgeEdgeCostDescriptor | string | ((edge: unknown, graph: unknown) => number);
+      readonly avoidNodes?: Iterable<string>;
+      readonly avoidEdges?: Iterable<{ from: string; to: string }>;
+      readonly maxCost?: number;
+    },
+  ) => GraphForgeConstrainedResult;
 };
+
+const computationCache = new GraphComputationCache(128);
 
 const graphForgeModuleUrl = new URL("../../graph-forge/dist/index.js", import.meta.url);
 const {
@@ -57,6 +89,7 @@ const {
   betweennessCentrality,
   kShortestPaths,
   shortestPath,
+  constrainedShortestPath,
 } = (await import(graphForgeModuleUrl.href)) as GraphForgeModule;
 
 
@@ -98,6 +131,8 @@ export const GraphDescriptorSchema = z.object({
   nodes: z.array(GraphNodeSchema),
   edges: z.array(GraphEdgeSchema),
   metadata: GraphAttributeRecordSchema.optional(),
+  graph_id: z.string().min(1).optional(),
+  graph_version: z.number().int().positive().optional(),
 });
 
 /**
@@ -105,26 +140,8 @@ export const GraphDescriptorSchema = z.object({
  * schemata above. Every node keeps its insertion order to ensure deterministic
  * summaries and serialisations.
  */
-interface NormalisedGraphDescriptor {
-  name: string;
-  nodes: NormalisedNode[];
-  edges: NormalisedEdge[];
-  metadata: Record<string, string | number | boolean>;
-}
-
-interface NormalisedNode {
-  id: string;
-  label?: string;
-  attributes: Record<string, string | number | boolean>;
-}
-
-interface NormalisedEdge {
-  from: string;
-  to: string;
-  label?: string;
-  weight?: number;
-  attributes: Record<string, string | number | boolean>;
-}
+type NormalisedNode = NormalisedGraph["nodes"][number];
+type NormalisedEdge = NormalisedGraph["edges"][number];
 
 /** Blueprint describing a single task when generating a graph. */
 const TaskDescriptorSchema = z.object({
@@ -198,6 +215,8 @@ export interface GraphDescriptorPayload extends Record<string, unknown> {
   nodes: GraphNodePayload[];
   edges: GraphEdgePayload[];
   metadata?: Record<string, string | number | boolean>;
+  graph_id?: string;
+  graph_version?: number;
 }
 
 export interface GraphGenerateResult extends Record<string, unknown> {
@@ -275,8 +294,10 @@ export function handleGraphGenerate(
     }
   }
 
-  const descriptor: NormalisedGraphDescriptor = {
+  const descriptor: NormalisedGraph = {
     name: input.name,
+    graphId: "",
+    graphVersion: 1,
     nodes: [],
     edges: [],
     metadata: {},
@@ -336,6 +357,8 @@ export function handleGraphGenerate(
     }
   }
 
+  ensureGraphIdentity(descriptor);
+
   return {
     graph: serialiseDescriptor(descriptor),
     task_count: tasks.filter((task) => !task.synthetic).length,
@@ -382,6 +405,7 @@ export interface GraphMutateResult extends Record<string, unknown> {
 /** Apply idempotent graph operations, returning the mutated graph. */
 export function handleGraphMutate(input: GraphMutateInput): GraphMutateResult {
   const descriptor = normaliseDescriptor(input.graph);
+  const initialPayload = serialiseDescriptor(descriptor);
   const applied: GraphMutationRecord[] = [];
 
   for (const operation of input.operations) {
@@ -408,6 +432,17 @@ export function handleGraphMutate(input: GraphMutateInput): GraphMutateResult {
         applied.push(applySetEdgeAttribute(descriptor, operation.from, operation.to, operation.key, operation.value));
         break;
     }
+  }
+  const mutatedPayloadBeforeIdentity = serialiseDescriptor(descriptor);
+  const netChanged = !graphPayloadEquals(initialPayload, mutatedPayloadBeforeIdentity);
+
+  ensureGraphIdentity(descriptor, {
+    preferId: input.graph.graph_id ?? descriptor.graphId,
+    preferVersion: input.graph.graph_version ?? descriptor.graphVersion,
+    mutated: netChanged,
+  });
+  if (netChanged) {
+    computationCache.invalidateGraph(descriptor.graphId);
   }
 
   return { graph: serialiseDescriptor(descriptor), applied };
@@ -597,15 +632,33 @@ export interface GraphSummarizeResult extends Record<string, unknown> {
     average_in_degree: number;
     average_out_degree: number;
     density: number;
+    entrypoints: string[];
+    sinks: string[];
+    isolated: string[];
+    hubs: string[];
   };
   critical_nodes: { node: string; score: number }[];
+  structure: {
+    degree_summary: {
+      average_in: number;
+      average_out: number;
+      min_in: number;
+      max_in: number;
+      min_out: number;
+      max_out: number;
+    };
+    components: string[][];
+  };
   notes: string[];
 }
 
 /** Provide a human readable summary for the provided graph. */
 export function handleGraphSummarize(input: GraphSummarizeInput): GraphSummarizeResult {
   const descriptor = normaliseDescriptor(input.graph);
-  const { adjacency, indegree, outdegree } = buildAdjacencyInfo(descriptor);
+  const attributeIndex = buildGraphAttributeIndex(descriptor);
+  const adjacency = attributeIndex.adjacency;
+  const indegree = attributeIndex.indegree;
+  const outdegree = attributeIndex.outdegree;
 
   const layers = computeLayers(adjacency, indegree);
 
@@ -641,8 +694,23 @@ export function handleGraphSummarize(input: GraphSummarizeInput): GraphSummarize
       average_in_degree: Number(averageIn.toFixed(3)),
       average_out_degree: Number(averageOut.toFixed(3)),
       density: Number(density.toFixed(5)),
+      entrypoints: attributeIndex.entrypoints,
+      sinks: attributeIndex.sinks,
+      isolated: attributeIndex.isolated,
+      hubs: attributeIndex.hubs,
     },
     critical_nodes,
+    structure: {
+      degree_summary: {
+        average_in: attributeIndex.degreeSummary.averageIn,
+        average_out: attributeIndex.degreeSummary.averageOut,
+        min_in: attributeIndex.degreeSummary.minIn,
+        max_in: attributeIndex.degreeSummary.maxIn,
+        min_out: attributeIndex.degreeSummary.minOut,
+        max_out: attributeIndex.degreeSummary.maxOut,
+      },
+      components: attributeIndex.components,
+    },
     notes,
   };
 }
@@ -723,44 +791,55 @@ export function handleGraphPathsKShortest(
   assertNodeExists(descriptor, input.from, "start");
   assertNodeExists(descriptor, input.to, "goal");
 
-  const graph = descriptorToGraphModel(descriptor);
-  const costConfig = normaliseCostConfig(input.cost);
-  const results = kShortestPaths(graph, input.from, input.to, input.k, {
-    weightAttribute: input.weight_attribute,
-    costFunction: costConfig,
-    maxDeviation: input.max_deviation,
-  });
-
-  const formatted: GraphPathsKShortestEntry[] = results.map(
-    (entry, index): GraphPathsKShortestEntry => ({
-      rank: index + 1,
-      nodes: [...entry.path],
-      cost: Number(entry.distance.toFixed(6)),
-    }),
-  );
-
-  const notes: string[] = [];
-  if (!formatted.length) {
-    notes.push("no_path_found");
-  } else if (formatted.length < input.k) {
-    notes.push("fewer_paths_than_requested");
-  }
-  if (typeof input.max_deviation === "number") {
-    notes.push("max_deviation_filter_active");
-  }
-
-  return {
+  const variant = {
     from: input.from,
     to: input.to,
-    requested_k: input.k,
-    returned_k: formatted.length,
+    k: input.k,
     weight_attribute: input.weight_attribute,
-    cost_attribute: typeof input.cost === "string" ? input.cost : input.cost?.attribute ?? null,
+    cost: input.cost ?? null,
     max_deviation: input.max_deviation ?? null,
-    baseline_cost: formatted[0]?.cost ?? null,
-    paths: formatted,
-    notes,
   };
+
+  return withCachedComputation(descriptor, "graph_paths_k_shortest", variant, () => {
+    const graph = descriptorToGraphModel(descriptor);
+    const costConfig = normaliseCostConfig(input.cost);
+    const results = kShortestPaths(graph, input.from, input.to, input.k, {
+      weightAttribute: input.weight_attribute,
+      costFunction: costConfig,
+      maxDeviation: input.max_deviation,
+    });
+
+    const formatted: GraphPathsKShortestEntry[] = results.map(
+      (entry, index): GraphPathsKShortestEntry => ({
+        rank: index + 1,
+        nodes: [...entry.path],
+        cost: Number(entry.distance.toFixed(6)),
+      }),
+    );
+
+    const notes: string[] = [];
+    if (!formatted.length) {
+      notes.push("no_path_found");
+    } else if (formatted.length < input.k) {
+      notes.push("fewer_paths_than_requested");
+    }
+    if (typeof input.max_deviation === "number") {
+      notes.push("max_deviation_filter_active");
+    }
+
+    return {
+      from: input.from,
+      to: input.to,
+      requested_k: input.k,
+      returned_k: formatted.length,
+      weight_attribute: input.weight_attribute,
+      cost_attribute: typeof input.cost === "string" ? input.cost : input.cost?.attribute ?? null,
+      max_deviation: input.max_deviation ?? null,
+      baseline_cost: formatted[0]?.cost ?? null,
+      paths: formatted,
+      notes,
+    };
+  });
 }
 
 /** Input payload accepted by `graph_paths_constrained`. */
@@ -811,100 +890,85 @@ export function handleGraphPathsConstrained(
   assertNodeExists(descriptor, input.from, "start");
   assertNodeExists(descriptor, input.to, "goal");
 
-  const avoidNodes = new Set(input.avoid_nodes);
-  const avoidEdges = new Set(input.avoid_edges.map((edge) => `${edge.from}->${edge.to}`));
-
-  const filteredNodes = descriptor.nodes.filter((node) => !avoidNodes.has(node.id));
-  const filteredEdges = descriptor.edges.filter((edge) => {
-    if (avoidNodes.has(edge.from) || avoidNodes.has(edge.to)) {
-      return false;
-    }
-    return !avoidEdges.has(`${edge.from}->${edge.to}`);
-  });
-
-  const removedNodeCount = descriptor.nodes.length - filteredNodes.length;
-  const removedEdgeCount = descriptor.edges.length - filteredEdges.length;
-
-  const violations: string[] = [];
-  if (avoidNodes.has(input.from)) {
-    violations.push(`start node '${input.from}' is excluded by avoid_nodes`);
-  }
-  if (avoidNodes.has(input.to)) {
-    violations.push(`goal node '${input.to}' is excluded by avoid_nodes`);
-  }
-  if (violations.length > 0) {
-    return {
-      status: "unreachable",
-      reason: "START_OR_GOAL_EXCLUDED",
-      path: [],
-      cost: null,
-      visited: [],
-      weight_attribute: input.weight_attribute,
-      cost_attribute: typeof input.cost === "string" ? input.cost : input.cost?.attribute ?? null,
-      filtered: { nodes: removedNodeCount, edges: removedEdgeCount },
-      violations,
-      notes: ["start_or_goal_excluded"],
-    };
-  }
-
-  const filteredDescriptor: NormalisedGraphDescriptor = {
-    name: descriptor.name,
-    nodes: filteredNodes,
-    edges: filteredEdges,
-    metadata: descriptor.metadata,
-  };
-
-  const graph = descriptorToGraphModel(filteredDescriptor);
-  const costConfig = normaliseCostConfig(input.cost);
-  const result = shortestPath(graph, input.from, input.to, {
-    weightAttribute: input.weight_attribute,
-    costFunction: costConfig,
-  });
-
-  if (!result.path.length) {
-    return {
-      status: "unreachable",
-      reason: "NO_PATH",
-      path: [],
-      cost: null,
-      visited: result.visitedOrder,
-      weight_attribute: input.weight_attribute,
-      cost_attribute: typeof input.cost === "string" ? input.cost : input.cost?.attribute ?? null,
-      filtered: { nodes: removedNodeCount, edges: removedEdgeCount },
-      violations,
-      notes: removedNodeCount + removedEdgeCount > 0 ? ["constraints_pruned_graph"] : [],
-    };
-  }
-
-  const totalCost = Number(result.distance.toFixed(6));
-  if (typeof input.max_cost === "number" && totalCost > input.max_cost) {
-    return {
-      status: "cost_exceeded",
-      reason: "MAX_COST_EXCEEDED",
-      path: [...result.path],
-      cost: totalCost,
-      visited: result.visitedOrder,
-      weight_attribute: input.weight_attribute,
-      cost_attribute: typeof input.cost === "string" ? input.cost : input.cost?.attribute ?? null,
-      filtered: { nodes: removedNodeCount, edges: removedEdgeCount },
-      violations,
-      max_cost: input.max_cost,
-      notes: ["cost_budget_exceeded"],
-    };
-  }
-
-  return {
-    status: "found",
-    reason: null,
-    path: [...result.path],
-    cost: totalCost,
-    visited: result.visitedOrder,
+  const variant = {
+    from: input.from,
+    to: input.to,
     weight_attribute: input.weight_attribute,
-    cost_attribute: typeof input.cost === "string" ? input.cost : input.cost?.attribute ?? null,
-    filtered: { nodes: removedNodeCount, edges: removedEdgeCount },
-    violations,
-    notes: removedNodeCount + removedEdgeCount > 0 ? ["constraints_pruned_graph"] : [],
+    cost: input.cost ?? null,
+    avoid_nodes: [...input.avoid_nodes].sort(),
+    avoid_edges: input.avoid_edges
+      .map((edge) => `${edge.from}->${edge.to}`)
+      .sort(),
+    max_cost: input.max_cost ?? null,
   };
+
+  return withCachedComputation(descriptor, "graph_paths_constrained", variant, () => {
+    const graph = descriptorToGraphModel(descriptor);
+    const costConfig = normaliseCostConfig(input.cost);
+    const constrained = constrainedShortestPath(graph, input.from, input.to, {
+      weightAttribute: input.weight_attribute,
+      costFunction: costConfig,
+      avoidNodes: input.avoid_nodes,
+      avoidEdges: input.avoid_edges,
+      maxCost: input.max_cost,
+    });
+
+    const removedNodeCount = constrained.filteredNodes.length;
+    const removedEdgeCount = constrained.filteredEdges.length;
+    const costAttribute = typeof input.cost === "string" ? input.cost : input.cost?.attribute ?? null;
+    const basePayload = {
+      weight_attribute: input.weight_attribute,
+      cost_attribute: costAttribute,
+      filtered: { nodes: removedNodeCount, edges: removedEdgeCount },
+      violations: constrained.violations,
+      notes: constrained.notes,
+    } as const;
+
+    if (constrained.status === "start_or_goal_excluded") {
+      return {
+        status: "unreachable" as const,
+        reason: "START_OR_GOAL_EXCLUDED" as const,
+        path: [],
+        cost: null,
+        visited: constrained.visitedOrder,
+        ...basePayload,
+      };
+    }
+
+    if (constrained.status === "unreachable") {
+      return {
+        status: "unreachable" as const,
+        reason: "NO_PATH" as const,
+        path: [],
+        cost: null,
+        visited: constrained.visitedOrder,
+        ...basePayload,
+      };
+    }
+
+    if (constrained.status === "max_cost_exceeded") {
+      const totalCost = Number.isFinite(constrained.distance) ? Number(constrained.distance.toFixed(6)) : null;
+      return {
+        status: "cost_exceeded" as const,
+        reason: "MAX_COST_EXCEEDED" as const,
+        path: [...constrained.path],
+        cost: totalCost,
+        visited: constrained.visitedOrder,
+        max_cost: input.max_cost,
+        ...basePayload,
+      };
+    }
+
+    const totalCost = Number(constrained.distance.toFixed(6));
+    return {
+      status: "found" as const,
+      reason: null,
+      path: [...constrained.path],
+      cost: totalCost,
+      visited: constrained.visitedOrder,
+      ...basePayload,
+    };
+  });
 }
 
 /** Input payload accepted by `graph_centrality_betweenness`. */
@@ -946,27 +1010,40 @@ export function handleGraphCentralityBetweenness(
   input: GraphCentralityBetweennessInput,
 ): GraphCentralityBetweennessResult {
   const descriptor = normaliseDescriptor(input.graph);
-  const graph = descriptorToGraphModel(descriptor);
-  const costConfig = normaliseCostConfig(input.cost);
-
-  const scores = betweennessCentrality(graph, {
+  const variant = {
     weighted: input.weighted,
-    weightAttribute: input.weight_attribute,
-    costFunction: costConfig,
+    weight_attribute: input.weight_attribute,
+    cost: input.cost ?? null,
     normalise: input.normalise,
-  });
+  };
 
-  const sorted: Array<{ node: string; score: number }> = scores
-    .map((entry): { node: string; score: number } => ({
-      node: entry.node,
-      score: Number(entry.score.toFixed(6)),
-    }))
-    .sort((a, b) => {
-      if (b.score !== a.score) {
-        return b.score - a.score;
-      }
-      return a.node.localeCompare(b.node);
-    });
+  const sorted: Array<{ node: string; score: number }> = withCachedComputation(
+    descriptor,
+    "graph_centrality_betweenness",
+    variant,
+    () => {
+      const graph = descriptorToGraphModel(descriptor);
+      const costConfig = normaliseCostConfig(input.cost);
+      const scores = betweennessCentrality(graph, {
+        weighted: input.weighted,
+        weightAttribute: input.weight_attribute,
+        costFunction: costConfig,
+        normalise: input.normalise,
+      });
+
+      return scores
+        .map((entry): { node: string; score: number } => ({
+          node: entry.node,
+          score: Number(entry.score.toFixed(6)),
+        }))
+        .sort((a, b) => {
+          if (b.score !== a.score) {
+            return b.score - a.score;
+          }
+          return a.node.localeCompare(b.node);
+        });
+    },
+  );
 
   const top = sorted.slice(0, Math.min(input.top_k, sorted.length));
   const statistics = computeScoreStatistics(sorted);
@@ -981,6 +1058,66 @@ export function handleGraphCentralityBetweenness(
     top,
     statistics,
     notes,
+  };
+}
+
+const GraphPartitionObjectiveSchema = z.enum(["min-cut", "community"]);
+
+/** Input payload accepted by `graph_partition`. */
+export const GraphPartitionInputSchema = z.object({
+  graph: GraphDescriptorSchema,
+  k: z.number().int().min(1, "k must be at least 1").max(32, "k larger than 32 is not supported").default(2),
+  objective: GraphPartitionObjectiveSchema.default("community"),
+  seed: z.number().int().nonnegative().optional(),
+  max_iterations: z.number().int().positive().max(100).default(12),
+});
+
+export const GraphPartitionInputShape = GraphPartitionInputSchema.shape;
+
+export type GraphPartitionInput = z.infer<typeof GraphPartitionInputSchema>;
+
+export interface GraphPartitionAssignment extends Record<string, unknown> {
+  node: string;
+  partition: number;
+}
+
+export interface GraphPartitionToolResult extends Record<string, unknown> {
+  graph: GraphDescriptorPayload;
+  objective: GraphPartitionObjective;
+  requested_k: number;
+  partition_count: number;
+  cut_edges: number;
+  assignments: GraphPartitionAssignment[];
+  seed_nodes: string[];
+  iterations: number;
+  notes: string[];
+}
+
+/** Partition the graph using a heuristic min-cut/community strategy. */
+export function handleGraphPartition(input: GraphPartitionInput): GraphPartitionToolResult {
+  const descriptor = normaliseDescriptor(input.graph);
+  const attributeIndex = buildGraphAttributeIndex(descriptor);
+  const result = partitionGraph(descriptor, attributeIndex, {
+    k: input.k,
+    objective: input.objective,
+    seed: input.seed,
+    maxIterations: input.max_iterations,
+  });
+
+  const assignments: GraphPartitionAssignment[] = Array.from(result.assignments.entries())
+    .map(([node, partition]) => ({ node, partition }))
+    .sort((a, b) => (a.node < b.node ? -1 : a.node > b.node ? 1 : 0));
+
+  return {
+    graph: serialiseDescriptor(descriptor),
+    objective: input.objective,
+    requested_k: input.k,
+    partition_count: result.partitionCount,
+    cut_edges: result.cutEdges,
+    assignments,
+    seed_nodes: result.seedNodes,
+    iterations: result.iterations,
+    notes: result.notes,
   };
 }
 
@@ -1060,7 +1197,84 @@ function parseTextTasks(source: string): TaskDefinition[] {
   return tasks;
 }
 
-function normaliseDescriptor(graph: z.infer<typeof GraphDescriptorSchema>): NormalisedGraphDescriptor {
+function sortAttributes(values: Record<string, string | number | boolean>): Record<string, string | number | boolean> {
+  const entries = Object.entries(values).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  const sorted: Record<string, string | number | boolean> = {};
+  for (const [key, value] of entries) {
+    sorted[key] = value;
+  }
+  return sorted;
+}
+
+function computeGraphFingerprint(descriptor: NormalisedGraph): string {
+  const hash = createHash("sha1");
+  const payload = {
+    name: descriptor.name,
+    nodes: descriptor.nodes
+      .map((node) => ({
+        id: node.id,
+        label: node.label ?? null,
+        attributes: sortAttributes(node.attributes),
+      }))
+      .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)),
+    edges: descriptor.edges
+      .map((edge) => ({
+        from: edge.from,
+        to: edge.to,
+        label: edge.label ?? null,
+        weight: typeof edge.weight === "number" ? Number(edge.weight.toFixed(8)) : null,
+        attributes: sortAttributes(edge.attributes),
+      }))
+      .sort((a, b) => {
+        if (a.from === b.from) {
+          return a.to < b.to ? -1 : a.to > b.to ? 1 : 0;
+        }
+        return a.from < b.from ? -1 : 1;
+      }),
+    metadata: sortAttributes(descriptor.metadata),
+  };
+  hash.update(JSON.stringify(payload));
+  return hash.digest("hex").slice(0, 16);
+}
+
+function ensureGraphIdentity(
+  descriptor: NormalisedGraph,
+  options: { preferId?: string | null; preferVersion?: number | null; mutated?: boolean } = {},
+): void {
+  const preferredId = options.preferId ?? descriptor.graphId;
+  if (preferredId && preferredId.trim().length > 0) {
+    descriptor.graphId = preferredId;
+  } else {
+    const fingerprint = computeGraphFingerprint({ ...descriptor, graphId: "", graphVersion: 1 });
+    descriptor.graphId = `graph-${fingerprint}`;
+  }
+
+  const preferredVersion = options.preferVersion ?? descriptor.graphVersion;
+  if (options.mutated && typeof preferredVersion === "number" && Number.isFinite(preferredVersion)) {
+    descriptor.graphVersion = Math.max(1, Math.floor(preferredVersion) + 1);
+  } else if (typeof preferredVersion === "number" && Number.isFinite(preferredVersion) && preferredVersion >= 1) {
+    descriptor.graphVersion = Math.floor(preferredVersion);
+  } else if (!(typeof descriptor.graphVersion === "number" && Number.isFinite(descriptor.graphVersion) && descriptor.graphVersion >= 1)) {
+    descriptor.graphVersion = 1;
+  }
+}
+
+function withCachedComputation<T>(
+  descriptor: NormalisedGraph,
+  operation: string,
+  variant: unknown,
+  compute: () => T,
+): T {
+  const cached = computationCache.get<T>(descriptor.graphId, descriptor.graphVersion, operation, variant);
+  if (cached !== undefined) {
+    return cached;
+  }
+  const result = compute();
+  computationCache.set(descriptor.graphId, descriptor.graphVersion, operation, variant, result);
+  return result;
+}
+
+function normaliseDescriptor(graph: z.infer<typeof GraphDescriptorSchema>): NormalisedGraph {
   const nodes = graph.nodes.map((node) => ({
     id: node.id,
     label: node.label,
@@ -1081,10 +1295,19 @@ function normaliseDescriptor(graph: z.infer<typeof GraphDescriptorSchema>): Norm
     }),
   }));
   const metadata = filterAttributes(graph.metadata ?? {});
-  return { name: graph.name, nodes, edges, metadata };
+  const descriptor: NormalisedGraph = {
+    name: graph.name,
+    graphId: graph.graph_id ?? "",
+    graphVersion: graph.graph_version ?? 1,
+    nodes,
+    edges,
+    metadata,
+  };
+  ensureGraphIdentity(descriptor, { preferId: graph.graph_id ?? null, preferVersion: graph.graph_version ?? null });
+  return descriptor;
 }
 
-function serialiseDescriptor(descriptor: NormalisedGraphDescriptor): GraphDescriptorPayload {
+function serialiseDescriptor(descriptor: NormalisedGraph): GraphDescriptorPayload {
   return {
     name: descriptor.name,
     nodes: descriptor.nodes.map((node) => ({
@@ -1100,7 +1323,130 @@ function serialiseDescriptor(descriptor: NormalisedGraphDescriptor): GraphDescri
       attributes: { ...edge.attributes },
     })),
     metadata: { ...descriptor.metadata },
+    graph_id: descriptor.graphId,
+    graph_version: descriptor.graphVersion,
   };
+}
+
+/**
+ * Normalises an attribute record so structural comparisons ignore insertion
+ * order. Only primitive attribute values are kept because higher-level types
+ * are filtered earlier in the toolchain.
+ */
+function normaliseAttributesForEquality(
+  attributes: Record<string, unknown> | undefined,
+): Record<string, string | number | boolean> {
+  if (!attributes) {
+    return {};
+  }
+
+  const filtered: Record<string, string | number | boolean> = {};
+  for (const [key, value] of Object.entries(attributes)) {
+    if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+      filtered[key] = value;
+    }
+  }
+  return sortAttributes(filtered);
+}
+
+/** Performs a shallow equality check on two sorted attribute dictionaries. */
+function shallowRecordEquals(
+  left: Record<string, string | number | boolean>,
+  right: Record<string, string | number | boolean>,
+): boolean {
+  const leftKeys = Object.keys(left);
+  const rightKeys = Object.keys(right);
+  if (leftKeys.length !== rightKeys.length) {
+    return false;
+  }
+  for (const key of leftKeys) {
+    if (!(key in right)) {
+      return false;
+    }
+    if (left[key] !== right[key]) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * Detects whether two graph payloads are structurally equivalent. The
+ * comparison is order-insensitive for nodes, edges and attribute entries so it
+ * matches the logical graph state instead of superficial JSON string output.
+ */
+function graphPayloadEquals(a: GraphDescriptorPayload, b: GraphDescriptorPayload): boolean {
+  if ((a.name ?? "") !== (b.name ?? "")) {
+    return false;
+  }
+
+  if (
+    !shallowRecordEquals(
+      normaliseAttributesForEquality(a.metadata),
+      normaliseAttributesForEquality(b.metadata),
+    )
+  ) {
+    return false;
+  }
+
+  if (a.nodes.length !== b.nodes.length) {
+    return false;
+  }
+
+  const nodesById = new Map<string, (typeof b.nodes)[number]>();
+  for (const node of b.nodes) {
+    nodesById.set(node.id, node);
+  }
+  for (const node of a.nodes) {
+    const peer = nodesById.get(node.id);
+    if (!peer) {
+      return false;
+    }
+    if ((node.label ?? null) !== (peer.label ?? null)) {
+      return false;
+    }
+    if (
+      !shallowRecordEquals(
+        normaliseAttributesForEquality(node.attributes),
+        normaliseAttributesForEquality(peer.attributes),
+      )
+    ) {
+      return false;
+    }
+  }
+
+  if (a.edges.length !== b.edges.length) {
+    return false;
+  }
+
+  const edgesByKey = new Map<string, (typeof b.edges)[number]>();
+  for (const edge of b.edges) {
+    edgesByKey.set(`${edge.from}->${edge.to}`, edge);
+  }
+  for (const edge of a.edges) {
+    const peer = edgesByKey.get(`${edge.from}->${edge.to}`);
+    if (!peer) {
+      return false;
+    }
+    const leftWeight = typeof edge.weight === "number" ? Number(edge.weight) : null;
+    const rightWeight = typeof peer.weight === "number" ? Number(peer.weight) : null;
+    if (leftWeight !== rightWeight) {
+      return false;
+    }
+    if ((edge.label ?? null) !== (peer.label ?? null)) {
+      return false;
+    }
+    if (
+      !shallowRecordEquals(
+        normaliseAttributesForEquality(edge.attributes),
+        normaliseAttributesForEquality(peer.attributes),
+      )
+    ) {
+      return false;
+    }
+  }
+
+  return true;
 }
 
 function filterAttributes(values: Record<string, unknown>): Record<string, string | number | boolean> {
@@ -1113,7 +1459,7 @@ function filterAttributes(values: Record<string, unknown>): Record<string, strin
   return filtered;
 }
 
-function descriptorToGraphModel(descriptor: NormalisedGraphDescriptor): GraphForgeModelInstance {
+function descriptorToGraphModel(descriptor: NormalisedGraph): GraphForgeModelInstance {
   return new GraphModel(
     descriptor.name,
     descriptor.nodes.map((node) => ({ id: node.id, attributes: { ...node.attributes } })),
@@ -1147,7 +1493,7 @@ function normaliseCostConfig(
 }
 
 function assertNodeExists(
-  descriptor: NormalisedGraphDescriptor,
+  descriptor: NormalisedGraph,
   id: string,
   role: "start" | "goal",
 ): void {
@@ -1195,7 +1541,7 @@ function dedupe(values: string[]): string[] {
   return result;
 }
 
-function applyAddNode(descriptor: NormalisedGraphDescriptor, node: z.infer<typeof GraphNodeSchema>): GraphMutationRecord {
+function applyAddNode(descriptor: NormalisedGraph, node: z.infer<typeof GraphNodeSchema>): GraphMutationRecord {
   const existing = descriptor.nodes.find((entry) => entry.id === node.id);
   if (existing) {
     const mergedAttributes = { ...existing.attributes, ...filterAttributes(node.attributes ?? {}) };
@@ -1214,7 +1560,7 @@ function applyAddNode(descriptor: NormalisedGraphDescriptor, node: z.infer<typeo
   return { op: "add_node", description: `node '${node.id}' created`, changed: true };
 }
 
-function applyRemoveNode(descriptor: NormalisedGraphDescriptor, id: string): GraphMutationRecord {
+function applyRemoveNode(descriptor: NormalisedGraph, id: string): GraphMutationRecord {
   const initialNodeCount = descriptor.nodes.length;
   descriptor.nodes = descriptor.nodes.filter((node) => node.id !== id);
   if (descriptor.nodes.length === initialNodeCount) {
@@ -1228,7 +1574,7 @@ function applyRemoveNode(descriptor: NormalisedGraphDescriptor, id: string): Gra
 }
 
 function applyRenameNode(
-  descriptor: NormalisedGraphDescriptor,
+  descriptor: NormalisedGraph,
   id: string,
   newId: string,
 ): GraphMutationRecord {
@@ -1257,7 +1603,7 @@ function applyRenameNode(
 }
 
 function applyAddEdge(
-  descriptor: NormalisedGraphDescriptor,
+  descriptor: NormalisedGraph,
   edge: z.infer<typeof GraphEdgeSchema>,
 ): GraphMutationRecord {
   const exists = descriptor.edges.find((entry) => entry.from === edge.from && entry.to === edge.to);
@@ -1289,7 +1635,7 @@ function applyAddEdge(
 }
 
 function applyRemoveEdge(
-  descriptor: NormalisedGraphDescriptor,
+  descriptor: NormalisedGraph,
   from: string,
   to: string,
 ): GraphMutationRecord {
@@ -1302,7 +1648,7 @@ function applyRemoveEdge(
 }
 
 function applySetNodeAttribute(
-  descriptor: NormalisedGraphDescriptor,
+  descriptor: NormalisedGraph,
   id: string,
   key: string,
   value: string | number | boolean | null,
@@ -1318,12 +1664,15 @@ function applySetNodeAttribute(
     }
     return { op: "set_node_attribute", description: `attribute '${key}' absent on '${id}'`, changed: false };
   }
+  if (node.attributes[key] === value) {
+    return { op: "set_node_attribute", description: `attribute '${key}' unchanged on '${id}'`, changed: false };
+  }
   node.attributes[key] = value;
   return { op: "set_node_attribute", description: `attribute '${key}' set on '${id}'`, changed: true };
 }
 
 function applySetEdgeAttribute(
-  descriptor: NormalisedGraphDescriptor,
+  descriptor: NormalisedGraph,
   from: string,
   to: string,
   key: string,
@@ -1339,6 +1688,12 @@ function applySetEdgeAttribute(
       return { op: "set_edge_attribute", description: `attribute '${key}' removed from edge`, changed: true };
     }
     return { op: "set_edge_attribute", description: `attribute '${key}' absent on edge`, changed: false };
+  }
+  const currentValue = edge.attributes[key];
+  const weightMatches = key === "weight" && typeof value === "number" ? edge.weight === value : true;
+  const labelMatches = key === "label" && typeof value === "string" ? edge.label === value : true;
+  if (currentValue === value && weightMatches && labelMatches) {
+    return { op: "set_edge_attribute", description: `attribute '${key}' unchanged on edge`, changed: false };
   }
   edge.attributes[key] = value;
   if (key === "weight" && typeof value === "number") {
@@ -1410,7 +1765,7 @@ interface WeightedEdge {
   weight: number;
 }
 
-function buildAdjacencyInfo(descriptor: NormalisedGraphDescriptor): AdjacencyInfo {
+function buildAdjacencyInfo(descriptor: NormalisedGraph): AdjacencyInfo {
   const adjacency = new Map<string, string[]>();
   const indegree = new Map<string, number>();
   const outdegree = new Map<string, number>();
@@ -1487,7 +1842,7 @@ function detectCyclesInternal(
   return { hasCycle: cycles.length > 0, cycles };
 }
 
-function buildWeightedAdjacency(descriptor: NormalisedGraphDescriptor): Map<string, WeightedEdge[]> {
+function buildWeightedAdjacency(descriptor: NormalisedGraph): Map<string, WeightedEdge[]> {
   const adjacency = new Map<string, WeightedEdge[]>();
   for (const node of descriptor.nodes) {
     adjacency.set(node.id, []);
@@ -1511,88 +1866,90 @@ function normaliseEdgeWeight(edge: NormalisedEdge): number {
   return weight < 0 ? 0 : weight;
 }
 
-function computeBetweennessScores(descriptor: NormalisedGraphDescriptor): { node: string; score: number }[] {
-  const nodes = descriptor.nodes.map((node) => node.id);
-  const adjacency = buildWeightedAdjacency(descriptor);
-  const scores = new Map<string, number>();
-  for (const id of nodes) {
-    scores.set(id, 0);
-  }
-
-  const epsilon = 1e-9;
-
-  for (const source of nodes) {
-    const stack: string[] = [];
-    const predecessors = new Map<string, string[]>();
-    const sigma = new Map<string, number>();
-    const distance = new Map<string, number>();
-
+function computeBetweennessScores(descriptor: NormalisedGraph): { node: string; score: number }[] {
+  return withCachedComputation(descriptor, "graph_summarize_betweenness", "default", () => {
+    const nodes = descriptor.nodes.map((node) => node.id);
+    const adjacency = buildWeightedAdjacency(descriptor);
+    const scores = new Map<string, number>();
     for (const id of nodes) {
-      predecessors.set(id, []);
-      sigma.set(id, 0);
-      distance.set(id, Number.POSITIVE_INFINITY);
+      scores.set(id, 0);
     }
-    sigma.set(source, 1);
-    distance.set(source, 0);
 
-    const queue: { node: string; priority: number }[] = [{ node: source, priority: 0 }];
+    const epsilon = 1e-9;
 
-    while (queue.length) {
-      queue.sort((a, b) => a.priority - b.priority);
-      const current = queue.shift()!;
-      const v = current.node;
-      if ((distance.get(v) ?? Number.POSITIVE_INFINITY) + epsilon < current.priority) {
-        continue;
+    for (const source of nodes) {
+      const stack: string[] = [];
+      const predecessors = new Map<string, string[]>();
+      const sigma = new Map<string, number>();
+      const distance = new Map<string, number>();
+
+      for (const id of nodes) {
+        predecessors.set(id, []);
+        sigma.set(id, 0);
+        distance.set(id, Number.POSITIVE_INFINITY);
       }
-      stack.push(v);
-      for (const edge of adjacency.get(v) ?? []) {
-        const weight = edge.weight;
-        if (!Number.isFinite(weight)) {
+      sigma.set(source, 1);
+      distance.set(source, 0);
+
+      const queue: { node: string; priority: number }[] = [{ node: source, priority: 0 }];
+
+      while (queue.length) {
+        queue.sort((a, b) => a.priority - b.priority);
+        const current = queue.shift()!;
+        const v = current.node;
+        if ((distance.get(v) ?? Number.POSITIVE_INFINITY) + epsilon < current.priority) {
           continue;
         }
-        const tentative = (distance.get(v) ?? Number.POSITIVE_INFINITY) + weight;
-        const targetDistance = distance.get(edge.to) ?? Number.POSITIVE_INFINITY;
-        if (tentative + epsilon < targetDistance) {
-          distance.set(edge.to, tentative);
-          queue.push({ node: edge.to, priority: tentative });
-          sigma.set(edge.to, sigma.get(v)!);
-          predecessors.set(edge.to, [v]);
-        } else if (Math.abs(tentative - targetDistance) <= epsilon) {
-          sigma.set(edge.to, (sigma.get(edge.to) ?? 0) + (sigma.get(v) ?? 0));
-          const list = predecessors.get(edge.to)!;
-          if (!list.includes(v)) {
-            list.push(v);
+        stack.push(v);
+        for (const edge of adjacency.get(v) ?? []) {
+          const weight = edge.weight;
+          if (!Number.isFinite(weight)) {
+            continue;
+          }
+          const tentative = (distance.get(v) ?? Number.POSITIVE_INFINITY) + weight;
+          const targetDistance = distance.get(edge.to) ?? Number.POSITIVE_INFINITY;
+          if (tentative + epsilon < targetDistance) {
+            distance.set(edge.to, tentative);
+            queue.push({ node: edge.to, priority: tentative });
+            sigma.set(edge.to, sigma.get(v)!);
+            predecessors.set(edge.to, [v]);
+          } else if (Math.abs(tentative - targetDistance) <= epsilon) {
+            sigma.set(edge.to, (sigma.get(edge.to) ?? 0) + (sigma.get(v) ?? 0));
+            const list = predecessors.get(edge.to)!;
+            if (!list.includes(v)) {
+              list.push(v);
+            }
           }
         }
       }
-    }
 
-    const delta = new Map<string, number>();
-    for (const id of nodes) {
-      delta.set(id, 0);
-    }
-
-    while (stack.length) {
-      const w = stack.pop()!;
-      const wSigma = sigma.get(w) ?? 1;
-      for (const v of predecessors.get(w) ?? []) {
-        const share = (sigma.get(v)! / wSigma) * (1 + (delta.get(w) ?? 0));
-        delta.set(v, (delta.get(v) ?? 0) + share);
+      const delta = new Map<string, number>();
+      for (const id of nodes) {
+        delta.set(id, 0);
       }
-      if (w !== source) {
-        scores.set(w, (scores.get(w) ?? 0) + (delta.get(w) ?? 0));
+
+      while (stack.length) {
+        const w = stack.pop()!;
+        const wSigma = sigma.get(w) ?? 1;
+        for (const v of predecessors.get(w) ?? []) {
+          const share = (sigma.get(v)! / wSigma) * (1 + (delta.get(w) ?? 0));
+          delta.set(v, (delta.get(v) ?? 0) + share);
+        }
+        if (w !== source) {
+          scores.set(w, (scores.get(w) ?? 0) + (delta.get(w) ?? 0));
+        }
       }
     }
-  }
 
-  if (nodes.length > 2) {
-    const factor = 1 / ((nodes.length - 1) * (nodes.length - 2));
-    for (const id of nodes) {
-      scores.set(id, (scores.get(id) ?? 0) * factor);
+    if (nodes.length > 2) {
+      const factor = 1 / ((nodes.length - 1) * (nodes.length - 2));
+      for (const id of nodes) {
+        scores.set(id, (scores.get(id) ?? 0) * factor);
+      }
     }
-  }
 
-  return nodes.map((id) => ({ node: id, score: scores.get(id) ?? 0 }));
+    return nodes.map((id) => ({ node: id, score: scores.get(id) ?? 0 }));
+  });
 }
 
 const GraphSimulateInputShapeInternal = {
@@ -1734,6 +2091,45 @@ export function handleGraphCriticalPath(
 }
 
 /** Input payload accepted by `graph_optimize`. */
+const GraphOptimizeObjectiveSchema = z.discriminatedUnion("type", [
+  z.object({
+    type: z.literal("makespan"),
+  }),
+  z.object({
+    type: z.literal("cost"),
+    attribute: z.string().min(1).default("cost"),
+    default_value: z
+      .number()
+      .finite()
+      .nonnegative("default_value must be non-negative")
+      .default(0),
+    parallel_penalty: z
+      .number()
+      .finite()
+      .nonnegative("parallel_penalty must be non-negative")
+      .default(0),
+  }),
+  z.object({
+    type: z.literal("risk"),
+    attribute: z.string().min(1).default("risk"),
+    default_value: z
+      .number()
+      .finite()
+      .nonnegative("default_value must be non-negative")
+      .default(0),
+    parallel_penalty: z
+      .number()
+      .finite()
+      .nonnegative("parallel_penalty must be non-negative")
+      .default(0),
+    concurrency_penalty: z
+      .number()
+      .finite()
+      .nonnegative("concurrency_penalty must be non-negative")
+      .default(0),
+  }),
+]);
+
 const GraphOptimizeInputShapeInternal = {
   graph: GraphDescriptorSchema,
   parallelism: z
@@ -1756,6 +2152,7 @@ const GraphOptimizeInputShapeInternal = {
     .finite()
     .positive("default duration must be strictly positive")
     .default(1),
+  objective: GraphOptimizeObjectiveSchema.default({ type: "makespan" }),
 };
 
 export const GraphOptimizeInputSchema = z
@@ -1773,6 +2170,7 @@ export const GraphOptimizeInputSchema = z
 export const GraphOptimizeInputShape = GraphOptimizeInputShapeInternal;
 
 export type GraphOptimizeInput = z.infer<typeof GraphOptimizeInputSchema>;
+export type GraphOptimizeObjective = z.infer<typeof GraphOptimizeObjectiveSchema>;
 
 export interface GraphOptimizationProjection extends Record<string, unknown> {
   parallelism: number;
@@ -1780,6 +2178,8 @@ export interface GraphOptimizationProjection extends Record<string, unknown> {
   utilisation: number;
   total_wait_time: number;
   average_concurrency: number;
+  objective_value: number;
+  objective_label: string;
 }
 
 export interface GraphOptimizationSuggestion extends Record<string, unknown> {
@@ -1789,11 +2189,19 @@ export interface GraphOptimizationSuggestion extends Record<string, unknown> {
     baseline_makespan?: number;
     projected_makespan?: number;
     improvement?: number;
+    baseline_objective?: number;
+    projected_objective?: number;
+    objective_label?: string;
   };
   details?: Record<string, unknown>;
 }
 
 export interface GraphOptimizeResult extends Record<string, unknown> {
+  objective: {
+    type: GraphOptimizeObjective["type"];
+    label: string;
+    attribute?: string;
+  };
   baseline: GraphSimulateResult;
   projections: GraphOptimizationProjection[];
   suggestions: GraphOptimizationSuggestion[];
@@ -1807,7 +2215,7 @@ export interface GraphOptimizeResult extends Record<string, unknown> {
 
 /** Result of the pre-processing stage executed before any simulation. */
 interface SimulationContext {
-  descriptor: NormalisedGraphDescriptor;
+  descriptor: NormalisedGraph;
   adjacency: Map<string, string[]>;
   indegree: Map<string, number>;
   incoming: Map<string, string[]>;
@@ -1890,7 +2298,7 @@ function buildSimulationContext(
 
 /** Resolve durations for each node while tracking fallback usage. */
 function resolveDurations(
-  descriptor: NormalisedGraphDescriptor,
+  descriptor: NormalisedGraph,
   options: {
     durationAttribute: string;
     fallbackDurationAttribute?: string;
@@ -1952,7 +2360,7 @@ function pickDuration(
 
 /** Compute deterministic topological order (raises when encountering a cycle). */
 function computeTopologicalOrder(
-  descriptor: NormalisedGraphDescriptor,
+  descriptor: NormalisedGraph,
   adjacency: Map<string, string[]>,
   indegree: Map<string, number>,
 ): string[] {
@@ -2340,6 +2748,45 @@ export function handleGraphSimulate(input: GraphSimulateInput): GraphSimulateRes
   };
 }
 
+/** Compute the scalar objective value for a given simulation candidate. */
+function evaluateOptimizeObjective(
+  objective: GraphOptimizeObjective,
+  context: {
+    descriptor: NormalisedGraph;
+    simulation: SimulationOutput;
+    parallelism: number;
+  },
+): { value: number; label: string; attribute?: string } {
+  switch (objective.type) {
+    case "makespan":
+      return { value: context.simulation.metrics.makespan, label: "makespan" };
+    case "cost": {
+      const attribute = objective.attribute ?? "cost";
+      const base = accumulateNodeAttribute(
+        context.descriptor,
+        attribute,
+        objective.default_value ?? 0,
+      );
+      const penalty = (objective.parallel_penalty ?? 0) * context.parallelism;
+      const value = Number((base + penalty).toFixed(6));
+      return { value, label: "cost", attribute };
+    }
+    case "risk": {
+      const attribute = objective.attribute ?? "risk";
+      const base = accumulateNodeAttribute(
+        context.descriptor,
+        attribute,
+        objective.default_value ?? 0,
+      );
+      const parallelPenalty = (objective.parallel_penalty ?? 0) * Math.max(0, context.parallelism - 1);
+      const concurrencyPenalty =
+        (objective.concurrency_penalty ?? 0) * context.simulation.metrics.max_concurrency;
+      const value = Number((base + parallelPenalty + concurrencyPenalty).toFixed(6));
+      return { value, label: "risk", attribute };
+    }
+  }
+}
+
 /** Explore optimisation levers on top of the baseline simulation. */
 export function handleGraphOptimize(input: GraphOptimizeInput): GraphOptimizeResult {
   const context = buildSimulationContext({
@@ -2358,6 +2805,13 @@ export function handleGraphOptimize(input: GraphOptimizeInput): GraphOptimizeRes
     metrics: baselineOutput.metrics,
     warnings: baselineWarnings,
   };
+  const baselineObjective = evaluateOptimizeObjective(input.objective, {
+    descriptor: context.descriptor,
+    simulation: baselineOutput,
+    parallelism: input.parallelism,
+  });
+  const objectiveValues = new Map<number, number>();
+  objectiveValues.set(input.parallelism, baselineObjective.value);
 
   const candidateSet = new Set<number>();
   candidateSet.add(input.parallelism);
@@ -2382,23 +2836,32 @@ export function handleGraphOptimize(input: GraphOptimizeInput): GraphOptimizeRes
       output = simulateGraph(context, candidate);
       simulations.set(candidate, output);
     }
+    const evaluation = evaluateOptimizeObjective(input.objective, {
+      descriptor: context.descriptor,
+      simulation: output,
+      parallelism: candidate,
+    });
+    objectiveValues.set(candidate, evaluation.value);
     projections.push({
       parallelism: candidate,
       makespan: output.metrics.makespan,
       utilisation: output.metrics.utilisation,
       total_wait_time: output.metrics.total_wait_time,
       average_concurrency: output.metrics.average_concurrency,
+      objective_value: evaluation.value,
+      objective_label: evaluation.attribute ?? evaluation.label,
     });
   }
 
   let bestCandidate = input.parallelism;
-  let bestMakespan = baseline.metrics.makespan;
+  let bestValue = baselineObjective.value;
   for (const projection of projections) {
     if (projection.parallelism === input.parallelism) {
       continue;
     }
-    if (projection.makespan + 1e-6 < bestMakespan) {
-      bestMakespan = projection.makespan;
+    const candidateValue = objectiveValues.get(projection.parallelism)!;
+    if (candidateValue + 1e-6 < bestValue) {
+      bestValue = candidateValue;
       bestCandidate = projection.parallelism;
     }
   }
@@ -2406,13 +2869,27 @@ export function handleGraphOptimize(input: GraphOptimizeInput): GraphOptimizeRes
   const suggestions: GraphOptimizationSuggestion[] = [];
   if (bestCandidate !== input.parallelism) {
     const bestSimulation = simulations.get(bestCandidate)!;
+    const projectedValue = objectiveValues.get(bestCandidate)!;
+    const objectiveLabel = baselineObjective.attribute ?? baselineObjective.label;
+    const improvement = Number((baselineObjective.value - projectedValue).toFixed(6));
+    let description: string;
+    if (input.objective.type === "makespan") {
+      description = `Augmenter le parallélisme a ${bestCandidate} réduit le makespan de ${baseline.metrics.makespan.toFixed(2)} a ${bestSimulation.metrics.makespan.toFixed(2)}.`;
+    } else if (input.objective.type === "cost") {
+      description = `Augmenter le parallélisme a ${bestCandidate} réduit le coût total (${objectiveLabel}) de ${baselineObjective.value.toFixed(2)} a ${projectedValue.toFixed(2)}.`;
+    } else {
+      description = `Augmenter le parallélisme a ${bestCandidate} réduit le risque agrégé (${objectiveLabel}) de ${baselineObjective.value.toFixed(2)} a ${projectedValue.toFixed(2)}.`;
+    }
     suggestions.push({
       type: "increase_parallelism",
-      description: `Augmenter le parallélisme a ${bestCandidate} réduit le makespan de ${baseline.metrics.makespan.toFixed(2)} a ${bestMakespan.toFixed(2)}.`,
+      description,
       impact: {
         baseline_makespan: baseline.metrics.makespan,
-        projected_makespan: bestMakespan,
-        improvement: Number((baseline.metrics.makespan - bestMakespan).toFixed(6)),
+        projected_makespan: bestSimulation.metrics.makespan,
+        baseline_objective: baselineObjective.value,
+        projected_objective: projectedValue,
+        improvement,
+        objective_label: objectiveLabel,
       },
       details: {
         baseline_queue_events: baseline.metrics.queue_events,
@@ -2454,6 +2931,11 @@ export function handleGraphOptimize(input: GraphOptimizeInput): GraphOptimizeRes
   const warnings = Array.from(new Set([...baseline.warnings]));
 
   return {
+    objective: {
+      type: input.objective.type,
+      label: baselineObjective.label,
+      attribute: baselineObjective.attribute,
+    },
     baseline,
     projections,
     suggestions,
@@ -2464,4 +2946,841 @@ export function handleGraphOptimize(input: GraphOptimizeInput): GraphOptimizeRes
     },
     warnings,
   };
+}
+
+/** Descriptor for a single optimisation objective used by `graph_optimize_moo`. */
+const GraphOptimizeMooObjectiveSchema = z.discriminatedUnion("type", [
+  z.object({
+    type: z.literal("makespan"),
+    label: z.string().min(1).optional(),
+  }),
+  z.object({
+    type: z.literal("cost"),
+    label: z.string().min(1).optional(),
+    attribute: z.string().min(1).default("cost"),
+    default_value: z
+      .number()
+      .finite()
+      .nonnegative("default_value must be non-negative")
+      .default(0),
+    parallel_penalty: z
+      .number()
+      .finite()
+      .nonnegative("parallel_penalty must be non-negative")
+      .default(0),
+  }),
+  z.object({
+    type: z.literal("risk"),
+    label: z.string().min(1).optional(),
+    attribute: z.string().min(1).default("risk"),
+    default_value: z
+      .number()
+      .finite()
+      .nonnegative("default_value must be non-negative")
+      .default(0),
+    parallel_penalty: z
+      .number()
+      .finite()
+      .nonnegative("parallel_penalty must be non-negative")
+      .default(0),
+    concurrency_penalty: z
+      .number()
+      .finite()
+      .nonnegative("concurrency_penalty must be non-negative")
+      .default(0),
+  }),
+]);
+
+const GraphOptimizeMooInputShapeInternal = {
+  graph: GraphDescriptorSchema,
+  parallelism_candidates: z
+    .array(
+      z
+        .number()
+        .int("parallelism_candidates entries must be integers")
+        .min(1, "parallelism must be at least 1")
+        .max(64, "parallelism larger than 64 is not supported"),
+    )
+    .min(1, "at least one parallelism candidate must be provided"),
+  objectives: z
+    .array(GraphOptimizeMooObjectiveSchema)
+    .min(2, "at least two objectives must be provided"),
+  duration_attribute: z.string().min(1).default("duration"),
+  fallback_duration_attribute: z.string().min(1).optional(),
+  default_duration: z
+    .number()
+    .finite()
+    .positive("default_duration must be strictly positive")
+    .default(1),
+  scalarization: z
+    .object({
+      method: z.literal("weighted_sum"),
+      weights: z.record(z.string().min(1), z.number().finite().nonnegative()),
+    })
+    .optional(),
+} as const;
+
+/** Input payload accepted by `graph_optimize_moo`. */
+export const GraphOptimizeMooInputSchema = z
+  .object(GraphOptimizeMooInputShapeInternal)
+  .superRefine((input, ctx) => {
+    const keys = new Set<string>();
+    for (const objective of input.objectives) {
+      const key = objective.label ?? objective.type;
+      if (keys.has(key)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `duplicate objective label '${key}' detected`,
+          path: ["objectives"],
+        });
+      }
+      keys.add(key);
+    }
+    if (input.scalarization) {
+      for (const objective of input.objectives) {
+        const key = objective.label ?? objective.type;
+        if (!(key in input.scalarization.weights)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: `missing scalarization weight for objective '${key}'`,
+            path: ["scalarization", "weights", key],
+          });
+        }
+      }
+    }
+  });
+
+export const GraphOptimizeMooInputShape = GraphOptimizeMooInputShapeInternal;
+
+export type GraphOptimizeMooInput = z.infer<typeof GraphOptimizeMooInputSchema>;
+
+export interface GraphOptimizeMooCandidate extends Record<string, unknown> {
+  parallelism: number;
+  objectives: Record<string, number>;
+  metrics: GraphSimulateMetrics;
+  warnings: string[];
+  is_pareto: boolean;
+}
+
+export interface GraphOptimizeMooScalarization extends Record<string, unknown> {
+  method: "weighted_sum";
+  weights: Record<string, number>;
+  ranking: Array<{ parallelism: number; score: number }>;
+}
+
+export interface GraphOptimizeMooResult extends Record<string, unknown> {
+  objective_details: Array<{ key: string; type: string; label: string }>;
+  candidates: GraphOptimizeMooCandidate[];
+  pareto_front: GraphOptimizeMooCandidate[];
+  scalarization?: GraphOptimizeMooScalarization;
+  notes: string[];
+}
+
+/**
+ * Explore the design space with several objective functions and surface the
+ * Pareto frontier. Each objective is minimised; a solution is kept when no
+ * other candidate strictly improves all tracked objectives at once.
+ */
+export function handleGraphOptimizeMoo(
+  input: GraphOptimizeMooInput,
+): GraphOptimizeMooResult {
+  const context = buildSimulationContext({
+    graph: input.graph,
+    duration_attribute: input.duration_attribute,
+    fallback_duration_attribute: input.fallback_duration_attribute,
+    default_duration: input.default_duration,
+  });
+
+  const objectives = normaliseMooObjectives(input.objectives);
+  const uniqueParallelism = Array.from(new Set(input.parallelism_candidates)).sort((a, b) => a - b);
+  const simulations = new Map<number, SimulationOutput>();
+  const notes: string[] = [];
+
+  if (uniqueParallelism.length !== input.parallelism_candidates.length) {
+    notes.push("duplicate_parallelism_candidates_removed");
+  }
+
+  const candidates: GraphOptimizeMooCandidate[] = [];
+  for (const parallelism of uniqueParallelism) {
+    let simulation = simulations.get(parallelism);
+    if (!simulation) {
+      simulation = simulateGraph(context, parallelism);
+      simulations.set(parallelism, simulation);
+    }
+
+    const objectiveValues = evaluateMooObjectives(objectives, {
+      descriptor: context.descriptor,
+      simulation,
+      parallelism,
+    });
+
+    const combinedWarnings = Array.from(
+      new Set([...context.warnings, ...simulation.warnings]),
+    );
+
+    candidates.push({
+      parallelism,
+      objectives: objectiveValues,
+      metrics: simulation.metrics,
+      warnings: combinedWarnings,
+      is_pareto: false,
+    });
+  }
+
+  const pareto = computeParetoFront(objectives, candidates);
+  for (const candidate of candidates) {
+    candidate.is_pareto = pareto.includes(candidate);
+  }
+
+  let scalarization: GraphOptimizeMooScalarization | undefined;
+  if (input.scalarization) {
+    const totalWeight = objectives.reduce(
+      (sum, objective) => sum + (input.scalarization!.weights[objective.key] ?? 0),
+      0,
+    );
+    if (totalWeight <= 0) {
+      notes.push("scalarization_weights_sum_zero");
+    } else {
+      const normalisedWeights: Record<string, number> = {};
+      for (const objective of objectives) {
+        const raw = input.scalarization!.weights[objective.key] ?? 0;
+        normalisedWeights[objective.key] = raw / totalWeight;
+      }
+      const ranking = candidates
+        .map((candidate) => {
+          let score = 0;
+          for (const objective of objectives) {
+            score += normalisedWeights[objective.key] * candidate.objectives[objective.key];
+          }
+          return {
+            parallelism: candidate.parallelism,
+            score: Number(score.toFixed(6)),
+          };
+        })
+        .sort((a, b) => a.score - b.score || a.parallelism - b.parallelism);
+      scalarization = {
+        method: "weighted_sum",
+        weights: normalisedWeights,
+        ranking,
+      };
+    }
+  }
+
+  if (pareto.length === 0) {
+    notes.push("no_pareto_candidate");
+  }
+
+  return {
+    objective_details: objectives.map((objective) => ({
+      key: objective.key,
+      type: objective.type,
+      label: objective.label,
+    })),
+    candidates,
+    pareto_front: pareto,
+    scalarization,
+    notes,
+  };
+}
+
+/** Input payload accepted by `graph_causal_analyze`. */
+export const GraphCausalAnalyzeInputSchema = z.object({
+  graph: GraphDescriptorSchema,
+  max_cycles: z
+    .number()
+    .int("max_cycles must be an integer")
+    .positive("max_cycles must be strictly positive")
+    .max(50, "max_cycles larger than 50 is not supported")
+    .default(20),
+  include_transitive_closure: z.boolean().default(true),
+  compute_min_cut: z.boolean().default(true),
+});
+
+export const GraphCausalAnalyzeInputShape = GraphCausalAnalyzeInputSchema.shape;
+
+export type GraphCausalAnalyzeInput = z.infer<typeof GraphCausalAnalyzeInputSchema>;
+
+export interface GraphCausalFeedbackSuggestion extends Record<string, unknown> {
+  remove: { from: string; to: string };
+  score: number;
+  reason: string;
+}
+
+export interface GraphCausalAnalyzeResult extends Record<string, unknown> {
+  acyclic: boolean;
+  entrypoints: string[];
+  sinks: string[];
+  topological_order: string[];
+  ancestors: Record<string, string[]>;
+  descendants: Record<string, string[]>;
+  min_cut: { size: number; edges: Array<{ from: string; to: string }> } | null;
+  cycles: string[][];
+  feedback_arc_suggestions: GraphCausalFeedbackSuggestion[];
+  notes: string[];
+}
+
+/**
+ * Perform a causal inspection of the graph. When the structure is acyclic the
+ * helper returns a deterministic topological ordering, ancestor/descendant
+ * closures, and a minimal edge cut separating entrypoints from sinks. When
+ * cycles are present it reports them and surfaces candidate edges to remove in
+ * order to break the feedback loops.
+ */
+export function handleGraphCausalAnalyze(
+  input: GraphCausalAnalyzeInput,
+): GraphCausalAnalyzeResult {
+  const descriptor = normaliseDescriptor(input.graph);
+  const { adjacency, indegree } = buildAdjacencyInfo(descriptor);
+  const incoming = buildIncomingMap(descriptor);
+  const entrypoints = Array.from(indegree.entries())
+    .filter(([, value]) => value === 0)
+    .map(([id]) => id)
+    .sort();
+  const sinks = descriptor.nodes
+    .filter((node) => (adjacency.get(node.id) ?? []).length === 0)
+    .map((node) => node.id)
+    .sort();
+
+  const cycleInfo = detectCyclesInternal(adjacency, input.max_cycles);
+  const notes: string[] = [];
+
+  if (cycleInfo.hasCycle) {
+    notes.push(`cycles_detected (${cycleInfo.cycles.length})`);
+  }
+
+  let topologicalOrder: string[] = [];
+  if (!cycleInfo.hasCycle) {
+    topologicalOrder = computeTopologicalOrder(descriptor, adjacency, indegree);
+  }
+
+  const ancestors = input.include_transitive_closure
+    ? cycleInfo.hasCycle
+      ? computeAncestorsWithBfs(descriptor, incoming)
+      : computeAncestorsFromOrder(topologicalOrder, incoming)
+    : new Map<string, string[]>();
+
+  const descendants = input.include_transitive_closure
+    ? cycleInfo.hasCycle
+      ? computeDescendantsWithBfs(descriptor, adjacency)
+      : computeDescendantsFromOrder(topologicalOrder, adjacency)
+    : new Map<string, string[]>();
+
+  const minCut = !cycleInfo.hasCycle && input.compute_min_cut
+    ? computeMinimumEdgeCut(descriptor, adjacency, indegree, entrypoints, sinks)
+    : null;
+
+  const feedback = cycleInfo.hasCycle
+    ? computeFeedbackArcSuggestions(cycleInfo.cycles, descriptor)
+    : [];
+
+  if (cycleInfo.hasCycle && feedback.length === 0) {
+    notes.push("no_feedback_arc_suggestion");
+  }
+  if (!cycleInfo.hasCycle && entrypoints.length === 0) {
+    notes.push("no_entrypoint_detected");
+  }
+  if (!cycleInfo.hasCycle && sinks.length === 0) {
+    notes.push("no_sink_detected");
+  }
+
+  return {
+    acyclic: !cycleInfo.hasCycle,
+    entrypoints,
+    sinks,
+    topological_order: topologicalOrder,
+    ancestors: mapToSortedRecord(ancestors),
+    descendants: mapToSortedRecord(descendants),
+    min_cut: minCut,
+    cycles: cycleInfo.cycles.map((cycle) => [...cycle]),
+    feedback_arc_suggestions: feedback,
+    notes,
+  };
+}
+
+interface NormalisedMooObjective {
+  key: string;
+  type: "makespan" | "cost" | "risk";
+  label: string;
+  attribute?: string;
+  defaultValue?: number;
+  parallelPenalty?: number;
+  concurrencyPenalty?: number;
+}
+
+function normaliseMooObjectives(
+  objectives: Array<z.infer<typeof GraphOptimizeMooObjectiveSchema>>,
+): NormalisedMooObjective[] {
+  return objectives.map((objective) => {
+    switch (objective.type) {
+      case "makespan":
+        return {
+          key: objective.label ?? "makespan",
+          type: "makespan",
+          label: objective.label ?? "makespan",
+        } satisfies NormalisedMooObjective;
+      case "cost":
+        return {
+          key: objective.label ?? "cost",
+          type: "cost",
+          label: objective.label ?? "cost",
+          attribute: objective.attribute,
+          defaultValue: objective.default_value,
+          parallelPenalty: objective.parallel_penalty,
+        } satisfies NormalisedMooObjective;
+      case "risk":
+        return {
+          key: objective.label ?? "risk",
+          type: "risk",
+          label: objective.label ?? "risk",
+          attribute: objective.attribute,
+          defaultValue: objective.default_value,
+          parallelPenalty: objective.parallel_penalty,
+          concurrencyPenalty: objective.concurrency_penalty,
+        } satisfies NormalisedMooObjective;
+    }
+  });
+}
+
+function evaluateMooObjectives(
+  objectives: NormalisedMooObjective[],
+  context: {
+    descriptor: NormalisedGraph;
+    simulation: SimulationOutput;
+    parallelism: number;
+  },
+): Record<string, number> {
+  const values: Record<string, number> = {};
+  for (const objective of objectives) {
+    switch (objective.type) {
+      case "makespan":
+        values[objective.key] = context.simulation.metrics.makespan;
+        break;
+      case "cost": {
+        const base = accumulateNodeAttribute(
+          context.descriptor,
+          objective.attribute!,
+          objective.defaultValue ?? 0,
+        );
+        const penalty = (objective.parallelPenalty ?? 0) * context.parallelism;
+        values[objective.key] = Number((base + penalty).toFixed(6));
+        break;
+      }
+      case "risk": {
+        const base = accumulateNodeAttribute(
+          context.descriptor,
+          objective.attribute!,
+          objective.defaultValue ?? 0,
+        );
+        const parallelPenalty = (objective.parallelPenalty ?? 0) * Math.max(0, context.parallelism - 1);
+        const concurrencyPenalty =
+          (objective.concurrencyPenalty ?? 0) * context.simulation.metrics.max_concurrency;
+        values[objective.key] = Number((base + parallelPenalty + concurrencyPenalty).toFixed(6));
+        break;
+      }
+    }
+  }
+  return values;
+}
+
+function computeParetoFront(
+  objectives: NormalisedMooObjective[],
+  candidates: GraphOptimizeMooCandidate[],
+): GraphOptimizeMooCandidate[] {
+  const front: GraphOptimizeMooCandidate[] = [];
+  for (const candidate of candidates) {
+    let dominated = false;
+    for (const other of candidates) {
+      if (other === candidate) {
+        continue;
+      }
+      if (dominates(other, candidate, objectives)) {
+        dominated = true;
+        break;
+      }
+    }
+    if (!dominated) {
+      front.push(candidate);
+    }
+  }
+  return front;
+}
+
+function dominates(
+  candidate: GraphOptimizeMooCandidate,
+  other: GraphOptimizeMooCandidate,
+  objectives: NormalisedMooObjective[],
+): boolean {
+  let strictlyBetter = false;
+  for (const objective of objectives) {
+    const a = candidate.objectives[objective.key];
+    const b = other.objectives[objective.key];
+    if (a > b + 1e-9) {
+      return false;
+    }
+    if (a + 1e-9 < b) {
+      strictlyBetter = true;
+    }
+  }
+  return strictlyBetter;
+}
+
+function accumulateNodeAttribute(
+  descriptor: NormalisedGraph,
+  attribute: string,
+  defaultValue: number,
+): number {
+  let total = 0;
+  for (const node of descriptor.nodes) {
+    const value = coerceNonNegativeNumber(node.attributes[attribute]);
+    total += typeof value === "number" ? value : defaultValue;
+  }
+  return Number(total.toFixed(6));
+}
+
+function coerceNonNegativeNumber(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value) && value >= 0) {
+    return value;
+  }
+  if (typeof value === "string") {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed) && parsed >= 0) {
+      return parsed;
+    }
+  }
+  return null;
+}
+
+function buildIncomingMap(
+  descriptor: NormalisedGraph,
+): Map<string, string[]> {
+  const incoming = new Map<string, string[]>();
+  for (const node of descriptor.nodes) {
+    incoming.set(node.id, []);
+  }
+  for (const edge of descriptor.edges) {
+    if (!incoming.has(edge.to)) {
+      incoming.set(edge.to, []);
+    }
+    incoming.get(edge.to)!.push(edge.from);
+  }
+  for (const list of incoming.values()) {
+    list.sort();
+  }
+  return incoming;
+}
+
+function computeAncestorsFromOrder(
+  order: string[],
+  incoming: Map<string, string[]>,
+): Map<string, string[]> {
+  const result = new Map<string, string[]>();
+  const memo = new Map<string, Set<string>>();
+  for (const nodeId of order) {
+    const parents = incoming.get(nodeId) ?? [];
+    const aggregate = new Set<string>();
+    for (const parent of parents) {
+      aggregate.add(parent);
+      const parentSet = memo.get(parent);
+      if (parentSet) {
+        for (const ancestor of parentSet) {
+          aggregate.add(ancestor);
+        }
+      }
+    }
+    const sorted = Array.from(aggregate).sort();
+    memo.set(nodeId, aggregate);
+    result.set(nodeId, sorted);
+  }
+  return result;
+}
+
+function computeDescendantsFromOrder(
+  order: string[],
+  adjacency: Map<string, string[]>,
+): Map<string, string[]> {
+  const result = new Map<string, string[]>();
+  const memo = new Map<string, Set<string>>();
+  for (let index = order.length - 1; index >= 0; index -= 1) {
+    const nodeId = order[index];
+    const children = adjacency.get(nodeId) ?? [];
+    const aggregate = new Set<string>();
+    for (const child of children) {
+      aggregate.add(child);
+      const childSet = memo.get(child);
+      if (childSet) {
+        for (const descendant of childSet) {
+          aggregate.add(descendant);
+        }
+      }
+    }
+    const sorted = Array.from(aggregate).sort();
+    memo.set(nodeId, aggregate);
+    result.set(nodeId, sorted);
+  }
+  return result;
+}
+
+function computeAncestorsWithBfs(
+  descriptor: NormalisedGraph,
+  incoming: Map<string, string[]>,
+): Map<string, string[]> {
+  const result = new Map<string, string[]>();
+  for (const node of descriptor.nodes) {
+    const visited = new Set<string>();
+    const queue = [...(incoming.get(node.id) ?? [])];
+    while (queue.length > 0) {
+      const current = queue.shift()!;
+      if (visited.has(current)) {
+        continue;
+      }
+      visited.add(current);
+      for (const parent of incoming.get(current) ?? []) {
+        if (!visited.has(parent)) {
+          queue.push(parent);
+        }
+      }
+    }
+    result.set(node.id, Array.from(visited).sort());
+  }
+  return result;
+}
+
+function computeDescendantsWithBfs(
+  descriptor: NormalisedGraph,
+  adjacency: Map<string, string[]>,
+): Map<string, string[]> {
+  const result = new Map<string, string[]>();
+  for (const node of descriptor.nodes) {
+    const visited = new Set<string>();
+    const queue = [...(adjacency.get(node.id) ?? [])];
+    while (queue.length > 0) {
+      const current = queue.shift()!;
+      if (visited.has(current)) {
+        continue;
+      }
+      visited.add(current);
+      for (const next of adjacency.get(current) ?? []) {
+        if (!visited.has(next)) {
+          queue.push(next);
+        }
+      }
+    }
+    result.set(node.id, Array.from(visited).sort());
+  }
+  return result;
+}
+
+function mapToSortedRecord(
+  map: Map<string, string[]>,
+): Record<string, string[]> {
+  const record: Record<string, string[]> = {};
+  for (const [key, value] of map.entries()) {
+    record[key] = [...value];
+  }
+  return record;
+}
+
+function computeMinimumEdgeCut(
+  descriptor: NormalisedGraph,
+  adjacency: Map<string, string[]>,
+  indegree: Map<string, number>,
+  entrypoints: string[],
+  sinks: string[],
+): { size: number; edges: Array<{ from: string; to: string }> } | null {
+  if (entrypoints.length === 0 || sinks.length === 0) {
+    return null;
+  }
+
+  const nodes = descriptor.nodes.map((node) => node.id);
+  const index = new Map<string, number>();
+  nodes.forEach((id, idx) => index.set(id, idx));
+  const source = nodes.length;
+  const target = nodes.length + 1;
+
+  const capacity = new Map<number, Map<number, number>>();
+  const neighbours = new Map<number, Set<number>>();
+
+  const addEdge = (from: number, to: number, cap: number) => {
+    if (!capacity.has(from)) {
+      capacity.set(from, new Map());
+    }
+    if (!capacity.has(to)) {
+      capacity.set(to, new Map());
+    }
+    const current = capacity.get(from)!.get(to) ?? 0;
+    capacity.get(from)!.set(to, current + cap);
+    if (!capacity.get(to)!.has(from)) {
+      capacity.get(to)!.set(from, 0);
+    }
+    if (!neighbours.has(from)) {
+      neighbours.set(from, new Set());
+    }
+    if (!neighbours.has(to)) {
+      neighbours.set(to, new Set());
+    }
+    neighbours.get(from)!.add(to);
+    neighbours.get(to)!.add(from);
+  };
+
+  const bigCapacity = nodes.length || 1;
+  for (const entry of entrypoints) {
+    const idx = index.get(entry);
+    if (idx !== undefined) {
+      addEdge(source, idx, bigCapacity);
+    }
+  }
+  for (const sink of sinks) {
+    const idx = index.get(sink);
+    if (idx !== undefined) {
+      addEdge(idx, target, bigCapacity);
+    }
+  }
+  for (const edge of descriptor.edges) {
+    const fromIdx = index.get(edge.from);
+    const toIdx = index.get(edge.to);
+    if (fromIdx === undefined || toIdx === undefined) {
+      continue;
+    }
+    addEdge(fromIdx, toIdx, 1);
+  }
+
+  const bfs = (): { parent: Map<number, number>; bottleneck: number } | null => {
+    const parent = new Map<number, number>();
+    const visited = new Set<number>();
+    const queue: Array<{ node: number; flow: number }> = [{ node: source, flow: Number.POSITIVE_INFINITY }];
+    visited.add(source);
+    while (queue.length > 0) {
+      const { node, flow } = queue.shift()!;
+      for (const neighbour of neighbours.get(node) ?? []) {
+        if (visited.has(neighbour)) {
+          continue;
+        }
+        const residual = capacity.get(node)?.get(neighbour) ?? 0;
+        if (residual <= 0) {
+          continue;
+        }
+        parent.set(neighbour, node);
+        const nextFlow = Math.min(flow, residual);
+        if (neighbour === target) {
+          return { parent, bottleneck: nextFlow };
+        }
+        visited.add(neighbour);
+        queue.push({ node: neighbour, flow: nextFlow });
+      }
+    }
+    return null;
+  };
+
+  let maxFlow = 0;
+  while (true) {
+    const path = bfs();
+    if (!path) {
+      break;
+    }
+    let current = target;
+    while (current !== source) {
+      const prev = path.parent.get(current)!;
+      const residual = capacity.get(prev)!.get(current)!;
+      capacity.get(prev)!.set(current, residual - path.bottleneck);
+      const reverseResidual = capacity.get(current)!.get(prev)!;
+      capacity.get(current)!.set(prev, reverseResidual + path.bottleneck);
+      current = prev;
+    }
+    maxFlow += path.bottleneck;
+    if (maxFlow > nodes.length) {
+      break;
+    }
+  }
+
+  const reachable = new Set<number>();
+  const stack: number[] = [source];
+  reachable.add(source);
+  while (stack.length > 0) {
+    const node = stack.pop()!;
+    for (const neighbour of neighbours.get(node) ?? []) {
+      if (reachable.has(neighbour)) {
+        continue;
+      }
+      const residual = capacity.get(node)?.get(neighbour) ?? 0;
+      if (residual > 0) {
+        reachable.add(neighbour);
+        stack.push(neighbour);
+      }
+    }
+  }
+
+  const cutEdges: Array<{ from: string; to: string }> = [];
+  for (const edge of descriptor.edges) {
+    const fromIdx = index.get(edge.from);
+    const toIdx = index.get(edge.to);
+    if (fromIdx === undefined || toIdx === undefined) {
+      continue;
+    }
+    if (reachable.has(fromIdx) && !reachable.has(toIdx)) {
+      cutEdges.push({ from: edge.from, to: edge.to });
+    }
+  }
+
+  cutEdges.sort((a, b) => {
+    if (a.from === b.from) {
+      return a.to.localeCompare(b.to);
+    }
+    return a.from.localeCompare(b.from);
+  });
+
+  return { size: cutEdges.length, edges: cutEdges };
+}
+
+function computeFeedbackArcSuggestions(
+  cycles: string[][],
+  descriptor: NormalisedGraph,
+): GraphCausalFeedbackSuggestion[] {
+  const counter = new Map<string, { from: string; to: string; count: number }>();
+  for (const cycle of cycles) {
+    if (cycle.length < 2) {
+      continue;
+    }
+    for (let index = 0; index < cycle.length - 1; index += 1) {
+      const from = cycle[index];
+      const to = cycle[index + 1];
+      const key = `${from}->${to}`;
+      const entry = counter.get(key) ?? { from, to, count: 0 };
+      entry.count += 1;
+      counter.set(key, entry);
+    }
+  }
+
+  const weightLookup = new Map<string, number>();
+  for (const edge of descriptor.edges) {
+    const key = `${edge.from}->${edge.to}`;
+    if (typeof edge.weight === "number") {
+      weightLookup.set(key, edge.weight);
+    } else if (typeof edge.attributes.weight === "number") {
+      weightLookup.set(key, Number(edge.attributes.weight));
+    }
+  }
+
+  const suggestions = Array.from(counter.values())
+    .map((entry) => {
+      const weight = weightLookup.get(`${entry.from}->${entry.to}`) ?? 1;
+      return {
+        remove: { from: entry.from, to: entry.to },
+        score: entry.count,
+        reason:
+          entry.count > 1
+            ? `edge participates in ${entry.count} cycles (weight=${weight})`
+            : `edge closes a cycle (weight=${weight})`,
+      } satisfies GraphCausalFeedbackSuggestion;
+    })
+    .sort((a, b) => {
+      if (b.score !== a.score) {
+        return b.score - a.score;
+      }
+      if (a.remove.from === b.remove.from) {
+        return a.remove.to.localeCompare(b.remove.to);
+      }
+      return a.remove.from.localeCompare(b.remove.from);
+    });
+
+  return suggestions.slice(0, 10);
 }
