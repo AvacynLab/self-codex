@@ -1,0 +1,11 @@
+{
+  "instructions": "Trier les tâches par priorité décroissante et échéance croissante en ajoutant un rang.",
+  "language": "JavaScript",
+  "artefacts": [
+    "module.mjs",
+    "README.md",
+    "test.mjs",
+    "input.json",
+    "expected_output.json"
+  ]
+}

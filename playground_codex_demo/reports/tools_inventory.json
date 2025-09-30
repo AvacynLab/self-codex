@@ -1,0 +1,21 @@
+{
+  "tools": [
+    {
+      "name": "graph-forge.compile",
+      "description": "Compilation DSL locale pour générer le graphe de pipeline.",
+      "status": "substitute"
+    },
+    {
+      "name": "graph-forge.algorithms",
+      "description": "k-chemins, chemins contraints, centralités exécutés via les modules Graph Forge.",
+      "status": "substitute"
+    },
+    {
+      "name": "graph-forge.simulation",
+      "description": "Simulation et optimisation artisanales (parallélisme limité, Pareto).",
+      "status": "substitute"
+    }
+  ],
+  "status": "partially_substituted",
+  "notes": "Les tools MCP natifs restent indisponibles ; le script run_graph_analyses.mjs fournit une exécution locale équivalente." 
+}

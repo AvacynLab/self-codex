@@ -1,0 +1,28 @@
+{
+  "constraints": {
+    "minCoverage": 85,
+    "maxRuntime": 12
+  },
+  "metrics": [
+    {
+      "name": "ui-regression",
+      "coverage": 88,
+      "runtime": 11
+    },
+    {
+      "name": "api-contract",
+      "coverage": 82,
+      "runtime": 13
+    },
+    {
+      "name": "load-tests",
+      "coverage": 79,
+      "runtime": 10
+    },
+    {
+      "name": "smoke",
+      "coverage": 93,
+      "runtime": 6
+    }
+  ]
+}

@@ -1,0 +1,24 @@
+{
+  "items": [
+    {
+      "title": "Stabiliser lint",
+      "priority": 2,
+      "dueDays": 5
+    },
+    {
+      "title": "Refactor build",
+      "priority": 3,
+      "dueDays": 7
+    },
+    {
+      "title": "Couverture API",
+      "priority": 3,
+      "dueDays": 4
+    },
+    {
+      "title": "Optimiser bundle",
+      "priority": 1,
+      "dueDays": 3
+    }
+  ]
+}
