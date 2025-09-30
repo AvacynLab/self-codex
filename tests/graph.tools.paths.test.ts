@@ -63,6 +63,8 @@ describe("graph path tools", () => {
     expect(avoidResult.status).to.equal("found");
     expect(avoidResult.path).to.deep.equal(["A", "C", "D"]);
     expect(avoidResult.cost).to.equal(2);
+    expect(avoidResult.filtered).to.deep.equal({ nodes: 1, edges: 4 });
+    expect(avoidResult.notes).to.include("constraints_pruned_graph");
 
     const budgetInput = GraphPathsConstrainedInputSchema.parse({
       graph: baseGraph,
@@ -74,6 +76,24 @@ describe("graph path tools", () => {
     expect(budgetResult.status).to.equal("cost_exceeded");
     expect(budgetResult.reason).to.equal("MAX_COST_EXCEEDED");
     expect(budgetResult.cost).to.be.greaterThan(1);
+    expect(budgetResult.notes).to.include("cost_budget_exceeded");
+  });
+
+  it("supports excluding individual edges while keeping neighbouring nodes", () => {
+    const input = GraphPathsConstrainedInputSchema.parse({
+      graph: baseGraph,
+      from: "A",
+      to: "D",
+      avoid_edges: [{ from: "A", to: "B" }],
+    });
+
+    const result = handleGraphPathsConstrained(input);
+
+    expect(result.status).to.equal("found");
+    expect(result.path).to.deep.equal(["A", "C", "D"]);
+    expect(result.filtered).to.deep.equal({ nodes: 0, edges: 1 });
+    expect(result.violations).to.deep.equal([]);
+    expect(result.notes).to.include("constraints_pruned_graph");
   });
 
   it("computes betweenness scores with deterministic ordering", () => {
