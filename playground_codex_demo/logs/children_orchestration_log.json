@@ -1,0 +1,294 @@
+[
+  {
+    "tool": "plan_fanout",
+    "input": {
+      "template": "json-transform-module",
+      "children": [
+        {
+          "id": "child-alpha",
+          "language": "JavaScript",
+          "transformation": "Trier les tâches par priorité décroissante et échéance croissante en ajoutant un rang."
+        },
+        {
+          "id": "child-beta",
+          "language": "JavaScript",
+          "transformation": "Identifier les métriques qui violent la couverture minimale de 85% ou un runtime supérieur à 12 minutes."
+        },
+        {
+          "id": "child-gamma",
+          "language": "JavaScript",
+          "transformation": "Comparer la durée moyenne par stage (lint/test/build/package) pour repérer le goulet d'étranglement."
+        }
+      ]
+    },
+    "output": {
+      "assignedChildren": [
+        {
+          "id": "child-alpha",
+          "status": "prepared"
+        },
+        {
+          "id": "child-beta",
+          "status": "prepared"
+        },
+        {
+          "id": "child-gamma",
+          "status": "prepared"
+        }
+      ]
+    },
+    "verdict": "SIMULATED_OK",
+    "artefacts": []
+  },
+  {
+    "tool": "child_create",
+    "input": {
+      "childId": "child-alpha",
+      "tools_allow": [
+        "fs"
+      ],
+      "idleSec": 60,
+      "totalSec": 300
+    },
+    "output": {
+      "workdir": "children/child-alpha/workspace",
+      "inbox": "children/child-alpha/inbox",
+      "outbox": "children/child-alpha/outbox"
+    },
+    "verdict": "SIMULATED_OK",
+    "artefacts": []
+  },
+  {
+    "tool": "child_send",
+    "input": {
+      "childId": "child-alpha",
+      "payload": {
+        "instructions": "Trier les tâches par priorité décroissante et échéance croissante en ajoutant un rang.",
+        "language": "JavaScript",
+        "artefacts": [
+          "module.mjs",
+          "README.md",
+          "test.mjs",
+          "input.json",
+          "expected_output.json"
+        ]
+      }
+    },
+    "output": {
+      "acknowledgement": "received"
+    },
+    "verdict": "SIMULATED_OK",
+    "artefacts": []
+  },
+  {
+    "tool": "child_status",
+    "input": {
+      "childId": "child-alpha"
+    },
+    "output": {
+      "state": "ready",
+      "lastLog": "Test OK pour child-alpha"
+    },
+    "verdict": "SIMULATED_OK",
+    "artefacts": []
+  },
+  {
+    "tool": "child_collect",
+    "input": {
+      "childId": "child-alpha"
+    },
+    "output": {
+      "artefacts": {
+        "module": "children/child-alpha/workspace/module.mjs",
+        "test": "children/child-alpha/workspace/test.mjs",
+        "output": "children/child-alpha/outbox/output.json"
+      }
+    },
+    "verdict": "SIMULATED_OK",
+    "artefacts": [
+      "children/child-alpha/workspace/module.mjs",
+      "children/child-alpha/workspace/test.mjs",
+      "children/child-alpha/outbox/output.json"
+    ]
+  },
+  {
+    "tool": "child_create",
+    "input": {
+      "childId": "child-beta",
+      "tools_allow": [
+        "fs"
+      ],
+      "idleSec": 60,
+      "totalSec": 300
+    },
+    "output": {
+      "workdir": "children/child-beta/workspace",
+      "inbox": "children/child-beta/inbox",
+      "outbox": "children/child-beta/outbox"
+    },
+    "verdict": "SIMULATED_OK",
+    "artefacts": []
+  },
+  {
+    "tool": "child_send",
+    "input": {
+      "childId": "child-beta",
+      "payload": {
+        "instructions": "Identifier les métriques qui violent la couverture minimale de 85% ou un runtime supérieur à 12 minutes.",
+        "language": "JavaScript",
+        "artefacts": [
+          "module.mjs",
+          "README.md",
+          "test.mjs",
+          "input.json",
+          "expected_output.json"
+        ]
+      }
+    },
+    "output": {
+      "acknowledgement": "received"
+    },
+    "verdict": "SIMULATED_OK",
+    "artefacts": []
+  },
+  {
+    "tool": "child_status",
+    "input": {
+      "childId": "child-beta"
+    },
+    "output": {
+      "state": "ready",
+      "lastLog": "Test OK pour child-beta"
+    },
+    "verdict": "SIMULATED_OK",
+    "artefacts": []
+  },
+  {
+    "tool": "child_collect",
+    "input": {
+      "childId": "child-beta"
+    },
+    "output": {
+      "artefacts": {
+        "module": "children/child-beta/workspace/module.mjs",
+        "test": "children/child-beta/workspace/test.mjs",
+        "output": "children/child-beta/outbox/output.json"
+      }
+    },
+    "verdict": "SIMULATED_OK",
+    "artefacts": [
+      "children/child-beta/workspace/module.mjs",
+      "children/child-beta/workspace/test.mjs",
+      "children/child-beta/outbox/output.json"
+    ]
+  },
+  {
+    "tool": "child_create",
+    "input": {
+      "childId": "child-gamma",
+      "tools_allow": [
+        "fs"
+      ],
+      "idleSec": 60,
+      "totalSec": 300
+    },
+    "output": {
+      "workdir": "children/child-gamma/workspace",
+      "inbox": "children/child-gamma/inbox",
+      "outbox": "children/child-gamma/outbox"
+    },
+    "verdict": "SIMULATED_OK",
+    "artefacts": []
+  },
+  {
+    "tool": "child_send",
+    "input": {
+      "childId": "child-gamma",
+      "payload": {
+        "instructions": "Comparer la durée moyenne par stage (lint/test/build/package) pour repérer le goulet d'étranglement.",
+        "language": "JavaScript",
+        "artefacts": [
+          "module.mjs",
+          "README.md",
+          "test.mjs",
+          "input.json",
+          "expected_output.json"
+        ]
+      }
+    },
+    "output": {
+      "acknowledgement": "received"
+    },
+    "verdict": "SIMULATED_OK",
+    "artefacts": []
+  },
+  {
+    "tool": "child_status",
+    "input": {
+      "childId": "child-gamma"
+    },
+    "output": {
+      "state": "ready",
+      "lastLog": "Test OK pour child-gamma"
+    },
+    "verdict": "SIMULATED_OK",
+    "artefacts": []
+  },
+  {
+    "tool": "child_collect",
+    "input": {
+      "childId": "child-gamma"
+    },
+    "output": {
+      "artefacts": {
+        "module": "children/child-gamma/workspace/module.mjs",
+        "test": "children/child-gamma/workspace/test.mjs",
+        "output": "children/child-gamma/outbox/output.json"
+      }
+    },
+    "verdict": "SIMULATED_OK",
+    "artefacts": [
+      "children/child-gamma/workspace/module.mjs",
+      "children/child-gamma/workspace/test.mjs",
+      "children/child-gamma/outbox/output.json"
+    ]
+  },
+  {
+    "tool": "plan_join",
+    "input": {
+      "joinPolicy": "all",
+      "expected": [
+        "child-alpha",
+        "child-beta",
+        "child-gamma"
+      ]
+    },
+    "output": {
+      "completed": [
+        "child-alpha",
+        "child-beta",
+        "child-gamma"
+      ]
+    },
+    "verdict": "SIMULATED_OK",
+    "artefacts": []
+  },
+  {
+    "tool": "plan_reduce",
+    "input": {
+      "reducer": "merge_json",
+      "mergeOrder": [
+        "child-alpha",
+        "child-beta",
+        "child-gamma"
+      ]
+    },
+    "output": {
+      "mergedReport": "reports/children_merge.json"
+    },
+    "verdict": "SIMULATED_OK",
+    "artefacts": [
+      "reports/children_merge.json"
+    ]
+  }
+]

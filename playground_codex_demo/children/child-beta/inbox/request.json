@@ -1,0 +1,11 @@
+{
+  "instructions": "Identifier les métriques qui violent la couverture minimale de 85% ou un runtime supérieur à 12 minutes.",
+  "language": "JavaScript",
+  "artefacts": [
+    "module.mjs",
+    "README.md",
+    "test.mjs",
+    "input.json",
+    "expected_output.json"
+  ]
+}

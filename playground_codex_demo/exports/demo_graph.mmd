@@ -1,0 +1,21 @@
+flowchart TD
+  lint_core[Lint coeur]
+  lint_ui[Lint UI]
+  lint_api[Lint API]
+  test_unit[Tests unitaires]
+  test_integration[Tests d'intégration]
+  build_bundle[Build]
+  docs_generate[Documentation]
+  package_artifacts[Packaging]
+  deploy_stage[Déploiement staging]
+  lint_core --> |3| test_unit
+  lint_ui --> |2| test_unit
+  lint_api --> |2| test_unit
+  test_unit --> |5| test_integration
+  test_unit --> |5| build_bundle
+  test_integration --> |8| build_bundle
+  build_bundle --> |6| docs_generate
+  build_bundle --> |6| package_artifacts
+  docs_generate --> |3| package_artifacts
+  package_artifacts --> |4| deploy_stage
+  docs_generate --> |3| deploy_stage
