@@ -3,9 +3,10 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import { randomUUID } from "crypto";
 import { readFile, writeFile, mkdir } from "node:fs/promises";
-import { resolve as resolvePath, dirname as pathDirname } from "node:path";
+import { resolve as resolvePath, dirname as pathDirname, basename as pathBasename } from "node:path";
 import { pathToFileURL } from "url";
 import { GraphState } from "./graphState.js";
+import { GraphTransactionManager, GraphVersionConflictError } from "./graph/tx.js";
 import { StructuredLogger } from "./logger.js";
 import { EventStore } from "./eventStore.js";
 import { startHttpServer } from "./httpServer.js";
@@ -14,7 +15,7 @@ import { ChildSupervisor } from "./childSupervisor.js";
 import { UnknownChildError } from "./state/childrenIndex.js";
 import { ChildCancelInputShape, ChildCancelInputSchema, ChildCollectInputShape, ChildCollectInputSchema, ChildCreateInputShape, ChildCreateInputSchema, ChildGcInputShape, ChildGcInputSchema, ChildKillInputShape, ChildKillInputSchema, ChildSendInputShape, ChildSendInputSchema, ChildStreamInputShape, ChildStreamInputSchema, ChildStatusInputShape, ChildStatusInputSchema, handleChildCancel, handleChildCollect, handleChildCreate, handleChildGc, handleChildKill, handleChildSend, handleChildStream, handleChildStatus, } from "./tools/childTools.js";
 import { PlanFanoutInputSchema, PlanFanoutInputShape, PlanJoinInputSchema, PlanJoinInputShape, PlanReduceInputSchema, PlanReduceInputShape, handlePlanFanout, handlePlanJoin, handlePlanReduce, } from "./tools/planTools.js";
-import { GraphGenerateInputSchema, GraphGenerateInputShape, GraphMutateInputSchema, GraphMutateInputShape, GraphPathsConstrainedInputSchema, GraphPathsConstrainedInputShape, GraphPathsKShortestInputSchema, GraphPathsKShortestInputShape, GraphCentralityBetweennessInputSchema, GraphCentralityBetweennessInputShape, GraphCriticalPathInputSchema, GraphCriticalPathInputShape, GraphOptimizeInputSchema, GraphOptimizeInputShape, GraphOptimizeMooInputSchema, GraphOptimizeMooInputShape, GraphCausalAnalyzeInputSchema, GraphCausalAnalyzeInputShape, GraphPartitionInputSchema, GraphPartitionInputShape, GraphSummarizeInputSchema, GraphSummarizeInputShape, GraphSimulateInputSchema, GraphSimulateInputShape, GraphValidateInputSchema, GraphValidateInputShape, handleGraphGenerate, handleGraphMutate, handleGraphPathsConstrained, handleGraphPathsKShortest, handleGraphCentralityBetweenness, handleGraphCriticalPath, handleGraphOptimize, handleGraphOptimizeMoo, handleGraphCausalAnalyze, handleGraphPartition, handleGraphSummarize, handleGraphSimulate, handleGraphValidate, } from "./tools/graphTools.js";
+import { GraphGenerateInputSchema, GraphGenerateInputShape, GraphMutateInputSchema, GraphMutateInputShape, GraphPathsConstrainedInputSchema, GraphPathsConstrainedInputShape, GraphPathsKShortestInputSchema, GraphPathsKShortestInputShape, GraphCentralityBetweennessInputSchema, GraphCentralityBetweennessInputShape, GraphCriticalPathInputSchema, GraphCriticalPathInputShape, GraphOptimizeInputSchema, GraphOptimizeInputShape, GraphOptimizeMooInputSchema, GraphOptimizeMooInputShape, GraphCausalAnalyzeInputSchema, GraphCausalAnalyzeInputShape, GraphPartitionInputSchema, GraphPartitionInputShape, GraphSummarizeInputSchema, GraphSummarizeInputShape, GraphSimulateInputSchema, GraphSimulateInputShape, GraphValidateInputSchema, GraphValidateInputShape, handleGraphGenerate, handleGraphMutate, handleGraphPathsConstrained, handleGraphPathsKShortest, handleGraphCentralityBetweenness, handleGraphCriticalPath, handleGraphOptimize, handleGraphOptimizeMoo, handleGraphCausalAnalyze, handleGraphPartition, handleGraphSummarize, handleGraphSimulate, handleGraphValidate, normaliseGraphPayload, serialiseNormalisedGraph, } from "./tools/graphTools.js";
 import { renderMermaidFromGraph } from "./viz/mermaid.js";
 import { renderDotFromGraph } from "./viz/dot.js";
 import { renderGraphmlFromGraph } from "./viz/graphml.js";
@@ -23,6 +24,12 @@ import { snapshotToGraphDescriptor } from "./viz/snapshot.js";
 // Stores en memoire
 // ---------------------------
 const graphState = new GraphState();
+/**
+ * Transaction manager guarding graph mutations. Every server-side mutation is
+ * funneled through this instance to guarantee optimistic concurrency checks and
+ * deterministic version bumps.
+ */
+const graphTransactions = new GraphTransactionManager();
 let logger = new StructuredLogger();
 const eventStore = new EventStore({ maxHistory: 5000, logger });
 let lastInactivityThresholdMs = 120_000;
@@ -1115,24 +1122,80 @@ server.registerTool("graph_mutate", {
     description: "Applique des operations idempotentes (add/remove/rename) sur un graphe.",
     inputSchema: GraphMutateInputShape,
 }, async (input) => {
+    let graphIdForError = null;
+    let graphVersionForError = null;
     try {
         const parsed = GraphMutateInputSchema.parse(input);
+        graphIdForError = parsed.graph.graph_id ?? null;
+        graphVersionForError = parsed.graph.graph_version ?? null;
         logger.info("graph_mutate_requested", {
             operations: parsed.operations.length,
+            graph_id: graphIdForError,
+            version: graphVersionForError,
         });
-        const result = handleGraphMutate(parsed);
-        const changed = result.applied.filter((entry) => entry.changed).length;
-        logger.info("graph_mutate_succeeded", {
-            operations: parsed.operations.length,
-            changed,
-        });
-        return {
-            content: [{ type: "text", text: j({ tool: "graph_mutate", result }) }],
-            structuredContent: result,
-        };
+        const baseGraph = normaliseGraphPayload(parsed.graph);
+        const tx = graphTransactions.begin(baseGraph);
+        let committed;
+        try {
+            const mutateInput = { ...parsed, graph: serialiseNormalisedGraph(tx.workingCopy) };
+            const intermediate = handleGraphMutate(mutateInput);
+            committed = graphTransactions.commit(tx.txId, normaliseGraphPayload(intermediate.graph));
+            const finalGraph = serialiseNormalisedGraph(committed.graph);
+            const result = { ...intermediate, graph: finalGraph };
+            const changed = result.applied.filter((entry) => entry.changed).length;
+            logger.info("graph_mutate_succeeded", {
+                operations: parsed.operations.length,
+                changed,
+                graph_id: committed.graphId,
+                version: committed.version,
+                committed_at: committed.committedAt,
+            });
+            return {
+                content: [{ type: "text", text: j({ tool: "graph_mutate", result }) }],
+                structuredContent: result,
+            };
+        }
+        catch (error) {
+            if (!committed) {
+                try {
+                    graphTransactions.rollback(tx.txId);
+                    logger.warn("graph_mutate_rolled_back", {
+                        graph_id: tx.graphId,
+                        base_version: tx.baseVersion,
+                        reason: error instanceof Error ? error.message : String(error),
+                    });
+                }
+                catch (rollbackError) {
+                    logger.error("graph_mutate_rollback_failed", {
+                        graph_id: tx.graphId,
+                        message: rollbackError instanceof Error ? rollbackError.message : String(rollbackError),
+                    });
+                }
+            }
+            throw error;
+        }
     }
     catch (error) {
-        return graphToolError("graph_mutate", error);
+        if (error instanceof GraphVersionConflictError) {
+            logger.warn("graph_mutate_conflict", {
+                graph_id: graphIdForError,
+                version: graphVersionForError,
+                message: error.message,
+            });
+            return {
+                isError: true,
+                content: [
+                    {
+                        type: "text",
+                        text: j({ error: "GRAPH_VERSION_CONFLICT", tool: "graph_mutate", message: error.message }),
+                    },
+                ],
+            };
+        }
+        return graphToolError("graph_mutate", error, {
+            graph_id: graphIdForError,
+            version: graphVersionForError ?? undefined,
+        });
     }
 });
 server.registerTool("graph_validate", {

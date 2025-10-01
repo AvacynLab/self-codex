@@ -1,3 +1,4 @@
+import { applyAll, createInlineSubgraphRule, createRerouteAvoidRule, createSplitParallelRule, type RewriteApplicationResult, type RewriteRule } from "./rewrite.js";
 import { NormalisedGraph } from "./types.js";
 
 /**
@@ -87,6 +88,13 @@ export interface AdaptiveEvaluationResult {
   insights: EdgeReinforcementInsight[];
   edgesToPrune: string[];
   edgesToBoost: string[];
+}
+
+/** Options controlling the adaptive rewriting integration. */
+export interface AdaptiveRewriteOptions {
+  stopOnNoChange?: boolean;
+  additionalRules?: RewriteRule[];
+  avoidLabels?: string[];
 }
 
 const DEFAULT_OPTIONS: Required<Pick<
@@ -316,6 +324,41 @@ export function deriveWeightMultipliers(
   }
 
   return multipliers;
+}
+
+/**
+ * Apply the default rewrite rules using the adaptive evaluation outcome as a
+ * signal to decide which branches should be transformed.
+ */
+export function applyAdaptiveRewrites(
+  graph: NormalisedGraph,
+  evaluation: AdaptiveEvaluationResult,
+  options: AdaptiveRewriteOptions = {},
+): RewriteApplicationResult {
+  const boostTargets = new Set(evaluation.edgesToBoost);
+  const pruneTargets = new Set<string>();
+  for (const key of evaluation.edgesToPrune) {
+    const [, target] = key.split("→");
+    if (target) {
+      pruneTargets.add(target);
+    }
+  }
+  const avoidLabels = options.avoidLabels ? new Set(options.avoidLabels) : undefined;
+  const baseRules: RewriteRule[] = [];
+  if (boostTargets.size > 0) {
+    baseRules.push(createSplitParallelRule(boostTargets));
+  } else {
+    baseRules.push(createSplitParallelRule());
+  }
+  baseRules.push(createInlineSubgraphRule());
+  baseRules.push(
+    createRerouteAvoidRule({
+      avoidNodeIds: pruneTargets.size > 0 ? pruneTargets : undefined,
+      avoidLabels,
+    }),
+  );
+  const rules = baseRules.concat(options.additionalRules ?? []);
+  return applyAll(graph, rules, options.stopOnNoChange ?? true);
 }
 
 function edgeKey(from: string, to: string): string {

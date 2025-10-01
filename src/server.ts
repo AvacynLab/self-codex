@@ -6,6 +6,7 @@ import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { resolve as resolvePath, dirname as pathDirname, basename as pathBasename } from "node:path";
 import { pathToFileURL } from "url";
 import { GraphState } from "./graphState.js";
+import { GraphTransactionManager, GraphVersionConflictError } from "./graph/tx.js";
 import { LoggerOptions, StructuredLogger } from "./logger.js";
 import { EventStore, OrchestratorEvent } from "./eventStore.js";
 import { startHttpServer } from "./httpServer.js";
@@ -99,6 +100,8 @@ import {
   handleGraphSummarize,
   handleGraphSimulate,
   handleGraphValidate,
+  normaliseGraphPayload,
+  serialiseNormalisedGraph,
 } from "./tools/graphTools.js";
 import { renderMermaidFromGraph } from "./viz/mermaid.js";
 import { renderDotFromGraph } from "./viz/dot.js";
@@ -130,6 +133,12 @@ interface SpawnChildSpec {
 // ---------------------------
 
 const graphState = new GraphState();
+/**
+ * Transaction manager guarding graph mutations. Every server-side mutation is
+ * funneled through this instance to guarantee optimistic concurrency checks and
+ * deterministic version bumps.
+ */
+const graphTransactions = new GraphTransactionManager();
 
 function parseSizeEnv(raw: string | undefined): number | undefined {
   if (!raw) {
@@ -2004,23 +2013,86 @@ server.registerTool(
     inputSchema: GraphMutateInputShape,
   },
   async (input: unknown) => {
+    let graphIdForError: string | null = null;
+    let graphVersionForError: number | null = null;
     try {
       const parsed = GraphMutateInputSchema.parse(input);
+      graphIdForError = parsed.graph.graph_id ?? null;
+      graphVersionForError = parsed.graph.graph_version ?? null;
       logger.info("graph_mutate_requested", {
         operations: parsed.operations.length,
+        graph_id: graphIdForError,
+        version: graphVersionForError,
       });
-      const result = handleGraphMutate(parsed);
-      const changed = result.applied.filter((entry) => entry.changed).length;
-      logger.info("graph_mutate_succeeded", {
-        operations: parsed.operations.length,
-        changed,
-      });
-      return {
-        content: [{ type: "text" as const, text: j({ tool: "graph_mutate", result }) }],
-        structuredContent: result,
-      };
+
+      const baseGraph = normaliseGraphPayload(parsed.graph);
+      const tx = graphTransactions.begin(baseGraph);
+      let committed: ReturnType<typeof graphTransactions.commit> | undefined;
+      try {
+        const mutateInput = {
+          ...parsed,
+          graph: serialiseNormalisedGraph(tx.workingCopy),
+        };
+        const intermediate = handleGraphMutate(mutateInput);
+        committed = graphTransactions.commit(tx.txId, normaliseGraphPayload(intermediate.graph));
+        const finalGraph = serialiseNormalisedGraph(committed.graph);
+        const result = { ...intermediate, graph: finalGraph };
+        const changed = result.applied.filter((entry) => entry.changed).length;
+
+        logger.info("graph_mutate_succeeded", {
+          operations: parsed.operations.length,
+          changed,
+          graph_id: committed.graphId,
+          version: committed.version,
+          committed_at: committed.committedAt,
+        });
+
+        return {
+          content: [{ type: "text" as const, text: j({ tool: "graph_mutate", result }) }],
+          structuredContent: result,
+        };
+      } catch (error) {
+        if (!committed) {
+          try {
+            graphTransactions.rollback(tx.txId);
+            logger.warn("graph_mutate_rolled_back", {
+              graph_id: tx.graphId,
+              base_version: tx.baseVersion,
+              reason: error instanceof Error ? error.message : String(error),
+            });
+          } catch (rollbackError) {
+            logger.error("graph_mutate_rollback_failed", {
+              graph_id: tx.graphId,
+              message:
+                rollbackError instanceof Error
+                  ? rollbackError.message
+                  : String(rollbackError),
+            });
+          }
+        }
+        throw error;
+      }
     } catch (error) {
-      return graphToolError("graph_mutate", error);
+      if (error instanceof GraphVersionConflictError) {
+        logger.warn("graph_mutate_conflict", {
+          graph_id: graphIdForError,
+          version: graphVersionForError,
+          message: error.message,
+        });
+        return {
+          isError: true,
+          content: [
+            {
+              type: "text" as const,
+              text: j({ error: "GRAPH_VERSION_CONFLICT", tool: "graph_mutate", message: error.message }),
+            },
+          ],
+        };
+      }
+      return graphToolError("graph_mutate", error, {
+        graph_id: graphIdForError,
+        version: graphVersionForError ?? undefined,
+      });
     }
   },
 );

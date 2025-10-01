@@ -34,8 +34,14 @@ export function renderDotFromGraph(
   for (const edge of parsed.edges) {
     const attrs: string[] = [];
     const label = buildEdgeLabel(edge, options.weightAttribute);
-    if (label) {
-      attrs.push(`label=\"${label}\"`);
+    const hyperAnnotation = buildHyperEdgeAnnotation(edge);
+    const combinedLabel = hyperAnnotation
+      ? label
+        ? `${label} ${hyperAnnotation}`
+        : hyperAnnotation
+      : label;
+    if (combinedLabel) {
+      attrs.push(`label=\"${combinedLabel}\"`);
     }
     const weight = resolveWeight(edge, options.weightAttribute);
     if (weight !== null) {
@@ -84,6 +90,36 @@ function buildEdgeLabel(
     return null;
   }
   return escapeString(typeof raw === "string" ? raw : String(raw));
+}
+
+function buildHyperEdgeAnnotation(edge: GraphDescriptorPayload["edges"][number]): string | null {
+  const identifier = edge.attributes?.hyper_edge_id;
+  if (typeof identifier !== "string") {
+    return null;
+  }
+  const trimmed = identifier.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  let annotation = `[H:${trimmed}`;
+  const pairIndex = edge.attributes?.hyper_edge_pair_index;
+  if (typeof pairIndex === "number" && Number.isFinite(pairIndex)) {
+    annotation += `#${pairIndex}`;
+  }
+  const sourceCardinality = edge.attributes?.hyper_edge_source_cardinality;
+  const targetCardinality = edge.attributes?.hyper_edge_target_cardinality;
+  if (
+    typeof sourceCardinality === "number" &&
+    Number.isFinite(sourceCardinality) &&
+    typeof targetCardinality === "number" &&
+    Number.isFinite(targetCardinality)
+  ) {
+    annotation += ` ${sourceCardinality}->${targetCardinality}`;
+  }
+  annotation += "]";
+
+  return escapeString(annotation);
 }
 
 function resolveWeight(

@@ -44,7 +44,13 @@ export function renderMermaidFromGraph(
     const fromId = idMap.get(edge.from) ?? normaliseId(edge.from, idMap, usedIds);
     const toId = idMap.get(edge.to) ?? normaliseId(edge.to, idMap, usedIds);
     const label = buildEdgeLabel(edge, options.weightAttribute, maxLength);
-    const segment = label ? ` -- "${label}" --> ` : " --> ";
+    const hyperAnnotation = buildHyperEdgeAnnotation(edge);
+    const combinedLabel = hyperAnnotation
+      ? label
+        ? `${label} ${hyperAnnotation}`
+        : hyperAnnotation
+      : label;
+    const segment = combinedLabel ? ` -- "${combinedLabel}" --> ` : " --> ";
     lines.push(`${fromId}${segment}${toId}`);
   }
 
@@ -116,6 +122,36 @@ function buildEdgeLabel(
   }
   const text = typeof raw === "string" ? raw : String(raw);
   return truncateLabel(text.trim(), maxLength);
+}
+
+function buildHyperEdgeAnnotation(edge: GraphDescriptorPayload["edges"][number]): string | null {
+  const identifier = edge.attributes?.hyper_edge_id;
+  if (typeof identifier !== "string") {
+    return null;
+  }
+  const trimmed = identifier.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  let annotation = `[H:${trimmed}`;
+  const pairIndex = edge.attributes?.hyper_edge_pair_index;
+  if (typeof pairIndex === "number" && Number.isFinite(pairIndex)) {
+    annotation += `#${pairIndex}`;
+  }
+  const sourceCardinality = edge.attributes?.hyper_edge_source_cardinality;
+  const targetCardinality = edge.attributes?.hyper_edge_target_cardinality;
+  if (
+    typeof sourceCardinality === "number" &&
+    Number.isFinite(sourceCardinality) &&
+    typeof targetCardinality === "number" &&
+    Number.isFinite(targetCardinality)
+  ) {
+    annotation += ` ${sourceCardinality}->${targetCardinality}`;
+  }
+  annotation += "]";
+
+  return escapeLabel(annotation);
 }
 
 function truncateLabel(label: string, maxLength: number): string {
