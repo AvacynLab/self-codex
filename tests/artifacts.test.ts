@@ -1,14 +1,15 @@
 import { describe, it } from "mocha";
 import { expect } from "chai";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { createHash } from "node:crypto";
 
 import {
+  hashFile,
   readArtifact,
+  scanArtifacts,
   writeArtifact,
-  listArtifacts,
 } from "../src/artifacts.js";
 import { PathResolutionError } from "../src/paths.js";
 
@@ -40,6 +41,23 @@ describe("artifacts", () => {
       });
 
       expect(contents).to.equal("hello");
+
+      const manifestPath = path.join(childrenRoot, "child-a", "outbox", "manifest.json");
+      const rawManifest = await readFile(manifestPath, "utf8");
+      const parsedManifest = JSON.parse(rawManifest) as {
+        version: number;
+        entries: Array<{ path: string; size: number; mimeType: string; sha256: string }>;
+      };
+
+      expect(parsedManifest.version).to.equal(1);
+      expect(parsedManifest.entries).to.deep.equal([
+        {
+          path: path.join("out", "result.txt"),
+          size: 5,
+          mimeType: "text/plain",
+          sha256: manifest.sha256,
+        },
+      ]);
     } finally {
       await rm(childrenRoot, { recursive: true, force: true });
     }
@@ -68,7 +86,7 @@ describe("artifacts", () => {
     }
   });
 
-  it("lists artifacts recursively", async () => {
+  it("scans artifacts recursively and refreshes the manifest", async () => {
     const childrenRoot = await mkdtemp(path.join(tmpdir(), "artifacts-"));
 
     try {
@@ -87,11 +105,43 @@ describe("artifacts", () => {
         mimeType: "text/plain",
       });
 
-      const manifests = await listArtifacts(childrenRoot, "child-a");
+      const manifests = await scanArtifacts(childrenRoot, "child-a");
       expect(manifests.map((entry) => entry.path)).to.deep.equal([
         path.join("logs", "a.txt"),
         path.join("logs", "deep", "b.txt"),
       ]);
+
+      const outboxDir = path.join(childrenRoot, "child-a", "outbox");
+      const manifestPath = path.join(outboxDir, "manifest.json");
+      const before = JSON.parse(await readFile(manifestPath, "utf8")) as {
+        entries: Array<{ path: string; sha256: string; size: number }>;
+      };
+
+      // Mutate one file to ensure `scanArtifacts` recomputes hashes and sizes.
+      await writeFile(path.join(outboxDir, "logs", "deep", "b.txt"), "updated");
+
+      const refreshed = await scanArtifacts(childrenRoot, "child-a");
+      const updatedEntry = refreshed.find((item) => item.path === path.join("logs", "deep", "b.txt"));
+      expect(updatedEntry?.size).to.equal("updated".length);
+      expect(updatedEntry?.sha256).to.not.equal(before.entries.find((item) => item.path === path.join("logs", "deep", "b.txt"))?.sha256);
+    } finally {
+      await rm(childrenRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("hashes files deterministically", async () => {
+    const childrenRoot = await mkdtemp(path.join(tmpdir(), "artifacts-"));
+
+    try {
+      const outboxDir = path.join(childrenRoot, "child-a", "outbox");
+      await mkdir(path.join(outboxDir, "tmp"), { recursive: true });
+      const targetFile = path.join(outboxDir, "tmp", "data.bin");
+      const payload = Buffer.alloc(1024, 0xab);
+      await writeFile(targetFile, payload);
+
+      const digest = await hashFile(targetFile);
+      const expected = createHash("sha256").update(payload).digest("hex");
+      expect(digest).to.equal(expected);
     } finally {
       await rm(childrenRoot, { recursive: true, force: true });
     }

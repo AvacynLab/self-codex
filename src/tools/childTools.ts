@@ -14,6 +14,9 @@ import {
 } from "../childSupervisor.js";
 import { ChildRecordSnapshot } from "../state/childrenIndex.js";
 import { StructuredLogger } from "../logger.js";
+import { SandboxExecutionResult, getSandboxRegistry } from "../sim/sandbox.js";
+import { PromptTemplateSchema } from "../prompts.js";
+import { LoopAlert, LoopDetector } from "../guard/loopDetector.js";
 
 /**
  * Dependencies required by the child tool handlers. The orchestrator injects
@@ -25,6 +28,8 @@ export interface ChildToolContext {
   supervisor: ChildSupervisor;
   /** Structured logger leveraged to keep an audit trail for the tools. */
   logger: StructuredLogger;
+  /** Optional guard responsible for detecting tight conversational loops. */
+  loopDetector?: LoopDetector;
 }
 
 /**
@@ -36,21 +41,11 @@ export interface ChildToolContext {
  * provided.
  */
 /**
- * Schema describing prompt segments accepted when spawning a child. Each
- * segment can either be a single string or an array of strings that will be
- * rendered sequentially by the orchestrator. The structure mirrors the
- * templating helpers used by the planning tools so the manifest can capture
- * the exact bootstrap instructions sent to the runtime.
+ * Schema describing prompt segments accepted when spawning a child. We reuse
+ * the shared blueprint from {@link PromptTemplateSchema} to guarantee the
+ * manifest mirrors the plan tools validation rules.
  */
-const PromptSegmentSchema = z.union([z.string(), z.array(z.string())]);
-
-const PromptSchema = z
-  .object({
-    system: PromptSegmentSchema.optional(),
-    user: PromptSegmentSchema.optional(),
-    assistant: PromptSegmentSchema.optional(),
-  })
-  .strict();
+const PromptSchema = PromptTemplateSchema;
 
 /**
  * Schema describing timeout overrides granted to the child. Values are kept as
@@ -136,6 +131,7 @@ export async function handleChildCreate(
     env: input.env,
     metadata: input.metadata,
     manifestExtras: buildManifestExtras(input),
+    toolsAllow: input.tools_allow ?? null,
     waitForReady: input.wait_for_ready,
     readyType: input.ready_type,
     readyTimeoutMs: input.ready_timeout_ms,
@@ -191,9 +187,6 @@ function buildManifestExtras(
   if (input.prompt) {
     extras.prompt = input.prompt;
   }
-  if (input.tools_allow) {
-    extras.tools_allow = input.tools_allow;
-  }
   if (input.timeouts) {
     extras.timeouts = input.timeouts;
   }
@@ -206,6 +199,26 @@ function buildManifestExtras(
 
 /** Schema for the `child_send` tool. */
 const ChildSendExpectationSchema = z.enum(["stream", "final"]);
+
+const ChildSendSandboxSchema = z
+  .object({
+    enabled: z.boolean().optional(),
+    action: z.string().min(1).default("dry-run"),
+    payload: z.unknown().optional(),
+    timeout_ms: z
+      .number()
+      .int()
+      .positive()
+      .max(60_000)
+      .optional()
+      .refine((value) => value === undefined || Number.isFinite(value), {
+        message: "sandbox.timeout_ms must be finite",
+      }),
+    allow_failure: z.boolean().optional(),
+    require_handler: z.boolean().optional(),
+    metadata: z.record(z.unknown()).optional(),
+  })
+  .strict();
 
 const ChildSendInputBaseSchema = z.object({
   child_id: z.string().min(1),
@@ -220,6 +233,7 @@ const ChildSendInputBaseSchema = z.object({
     .refine((value) => value === undefined || Number.isFinite(value), {
       message: "timeout_ms must be finite",
     }),
+  sandbox: ChildSendSandboxSchema.optional(),
 });
 
 export const ChildSendInputSchema = ChildSendInputBaseSchema.refine(
@@ -231,11 +245,68 @@ export const ChildSendInputSchema = ChildSendInputBaseSchema.refine(
 );
 export const ChildSendInputShape = ChildSendInputBaseSchema.shape;
 
+/**
+ * Tracks the most recent loop signature associated with each child. We reuse the
+ * cached value when the next response is observed so the alternating exchange
+ * is recorded against the same identifier on both sides.
+ */
+const pendingLoopSignatures = new Map<string, string>();
+
+/** Maximum number of characters preserved when logging payload excerpts. */
+const MAX_LOG_EXCERPT_LENGTH = 1_024;
+
+/**
+ * Serialises an arbitrary payload for cognitive logging. The helper clamps the
+ * resulting string to avoid gigantic entries while remaining deterministic so
+ * tests can assert the captured excerpts.
+ */
+function serialiseForLog(value: unknown): string {
+  try {
+    const serialised = JSON.stringify(value);
+    if (!serialised) {
+      return "";
+    }
+    if (serialised.length <= MAX_LOG_EXCERPT_LENGTH) {
+      return serialised;
+    }
+    return `${serialised.slice(0, MAX_LOG_EXCERPT_LENGTH)}…`;
+  } catch (error) {
+    return `[unserialisable:${error instanceof Error ? error.message : String(error)}]`;
+  }
+}
+
+/**
+ * Extracts a concise representation of a child message, preferring parsed JSON
+ * payloads when available. Raw lines are truncated to avoid polluting the log
+ * history with very large excerpts.
+ */
+function childMessageExcerpt(message: ChildRuntimeMessage | null): string | null {
+  if (!message) {
+    return null;
+  }
+  if (message.parsed !== null && message.parsed !== undefined) {
+    return serialiseForLog(message.parsed);
+  }
+  return message.raw.length <= MAX_LOG_EXCERPT_LENGTH
+    ? message.raw
+    : `${message.raw.slice(0, MAX_LOG_EXCERPT_LENGTH)}…`;
+}
+
+/** Converts an arbitrary error value into a readable string. */
+function errorMessage(error: unknown): string {
+  if (error instanceof Error) {
+    return error.message;
+  }
+  return String(error);
+}
+
 /** Shape returned by {@link handleChildSend}. */
 export interface ChildSendResult extends Record<string, unknown> {
   child_id: string;
   message: SendResult;
   awaited_message: ChildRuntimeMessage | null;
+  sandbox_result: SandboxExecutionResult | null;
+  loop_alert: LoopAlert | null;
 }
 
 /**
@@ -247,6 +318,84 @@ export async function handleChildSend(
 ): Promise<ChildSendResult> {
   context.logger.info("child_send", { child_id: input.child_id });
 
+  context.logger.logCognitive({
+    actor: "orchestrator",
+    phase: "prompt",
+    childId: input.child_id,
+    content: serialiseForLog(input.payload),
+    metadata: {
+      expect: input.expect ?? null,
+      sandbox: input.sandbox ?? null,
+    },
+  });
+
+  const childSnapshot = context.supervisor.childrenIndex.getChild(input.child_id);
+  const metadataRecord = toRecord(childSnapshot?.metadata);
+  const highRisk = isHighRiskTask(metadataRecord);
+  const sandboxConfig = input.sandbox;
+  const sandboxEnabled = highRisk ? sandboxConfig?.enabled !== false : sandboxConfig?.enabled === true;
+  let sandboxResult: SandboxExecutionResult | null = null;
+  const loopDetector = context.loopDetector ?? null;
+  const loopTaskId = extractTaskIdentifier(metadataRecord);
+  const loopTaskType = extractTaskType(metadataRecord);
+  let loopAlert: LoopAlert | null = null;
+  const allowedTools = context.supervisor.getAllowedTools(input.child_id);
+  const requestedTool = extractRequestedTool(input.payload);
+  if (requestedTool && allowedTools.length > 0 && !allowedTools.includes(requestedTool)) {
+    throw new Error(
+      `Tool "${requestedTool}" is not allowed for child ${input.child_id}. Allowed tools: ${allowedTools.join(", ")}`,
+    );
+  }
+
+  if (sandboxEnabled) {
+    const registry = getSandboxRegistry();
+    const actionName = (sandboxConfig?.action ?? "dry-run").trim() || "dry-run";
+    const requestPayload = sandboxConfig?.payload ?? input.payload;
+    const baseMetadata = toRecord(sandboxConfig?.metadata) ?? {};
+    const sandboxMetadata: Record<string, unknown> = {
+      ...baseMetadata,
+      child_id: input.child_id,
+      high_risk: highRisk,
+    };
+    if (!registry.has(actionName)) {
+      if (sandboxConfig?.require_handler) {
+        throw new Error(`Sandbox handler "${actionName}" is not registered`);
+      }
+      const now = Date.now();
+      sandboxResult = {
+        action: actionName,
+        status: "skipped",
+        startedAt: now,
+        finishedAt: now,
+        durationMs: 0,
+        reason: "handler_missing",
+        metadata: sandboxMetadata,
+      };
+      context.logger.warn("child_send_sandbox_missing_handler", {
+        child_id: input.child_id,
+        action: actionName,
+      });
+    } else {
+      const timeoutOverride = sandboxConfig?.timeout_ms;
+      sandboxResult = await registry.execute({
+        action: actionName,
+        payload: requestPayload,
+        metadata: sandboxMetadata,
+        timeoutMs: timeoutOverride,
+      });
+      context.logger.info("child_send_sandbox", {
+        child_id: input.child_id,
+        action: actionName,
+        status: sandboxResult.status,
+        duration_ms: sandboxResult.durationMs,
+      });
+      if (sandboxResult.status !== "ok" && sandboxConfig?.allow_failure !== true) {
+        const reason = sandboxResult.reason ?? sandboxResult.error?.message ?? sandboxResult.status;
+        throw new Error(`Sandbox action "${actionName}" failed before child_send: ${reason}`);
+      }
+    }
+  }
+
   let baselineSequence = 0;
   if (input.expect) {
     const snapshot = context.supervisor.stream(input.child_id, { limit: 1 });
@@ -255,8 +404,33 @@ export async function handleChildSend(
 
   const message = await context.supervisor.send(input.child_id, input.payload);
 
+  const loopSignature = loopDetector
+    ? rememberLoopSignature(input.child_id, metadataRecord, input.payload)
+    : null;
+
+  if (loopDetector && loopSignature) {
+    loopAlert = mergeLoopAlerts(
+      loopAlert,
+      loopDetector.recordInteraction({
+        from: "orchestrator",
+        to: `child:${input.child_id}`,
+        signature: loopSignature,
+        childId: input.child_id,
+        taskId: loopTaskId ?? undefined,
+        taskType: loopTaskType,
+      }),
+      context,
+    );
+  }
+
   if (!input.expect) {
-    return { child_id: input.child_id, message, awaited_message: null };
+    return {
+      child_id: input.child_id,
+      message,
+      awaited_message: null,
+      sandbox_result: sandboxResult,
+      loop_alert: loopAlert,
+    };
   }
 
   const timeoutMs = input.timeout_ms ?? (input.expect === "final" ? 8_000 : 2_000);
@@ -268,13 +442,62 @@ export async function handleChildSend(
       (msg) => msg.sequence >= baselineSequence && matcher(msg),
       timeoutMs,
     );
+    if (loopDetector && loopSignature) {
+      loopAlert = mergeLoopAlerts(
+        loopAlert,
+        loopDetector.recordInteraction({
+          from: `child:${input.child_id}`,
+          to: "orchestrator",
+          signature: loopSignature,
+          childId: input.child_id,
+          taskId: loopTaskId ?? undefined,
+          taskType: loopTaskType,
+        }),
+        context,
+      );
+      const duration = Math.max(1, awaited.receivedAt - message.sentAt);
+      loopDetector.recordTaskObservation({
+        taskType: loopTaskType,
+        durationMs: duration,
+        success: true,
+      });
+    }
+    context.logger.logCognitive({
+      actor: `child:${input.child_id}`,
+      phase: "resume",
+      childId: input.child_id,
+      content: childMessageExcerpt(awaited),
+      metadata: {
+        stream: awaited.stream,
+        sequence: awaited.sequence,
+      },
+    });
     return {
       child_id: input.child_id,
       message,
       awaited_message: cloneChildMessage(awaited),
+      sandbox_result: sandboxResult,
+      loop_alert: loopAlert,
     };
   } catch (error) {
-    const reason = error instanceof Error ? error.message : String(error);
+    if (loopDetector && loopSignature) {
+      loopDetector.recordTaskObservation({
+        taskType: loopTaskType,
+        durationMs: Math.max(1, Date.now() - message.sentAt),
+        success: false,
+      });
+    }
+    const reason = errorMessage(error);
+    context.logger.logCognitive({
+      actor: `child:${input.child_id}`,
+      phase: "resume",
+      childId: input.child_id,
+      content: reason,
+      metadata: {
+        status: "error",
+        expect: input.expect ?? null,
+      },
+    });
     throw new Error(
       `child_send awaited a ${input.expect} message but failed after ${timeoutMs}ms: ${reason}`,
     );
@@ -322,6 +545,199 @@ function cloneChildMessage(message: ChildRuntimeMessage): ChildRuntimeMessage {
   const parsedClone =
     message.parsed === null ? null : JSON.parse(JSON.stringify(message.parsed));
   return { ...message, parsed: parsedClone };
+}
+
+function toRecord(value: unknown): Record<string, unknown> | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+  return value as Record<string, unknown>;
+}
+
+/**
+ * Extracts a stable signature representing the current task identifier so loop
+ * alerts can mention the relevant job or instruction when available.
+ */
+function extractTaskIdentifier(metadata?: Record<string, unknown>): string | null {
+  if (!metadata) {
+    return null;
+  }
+  const candidates = [metadata.task_id, metadata.taskId, metadata.job_id, metadata.jobId];
+  for (const candidate of candidates) {
+    if (typeof candidate === "string" && candidate.trim()) {
+      return candidate.trim();
+    }
+  }
+  return null;
+}
+
+/**
+ * Resolves the logical task category leveraged by the loop detector telemetry.
+ */
+function extractTaskType(metadata?: Record<string, unknown>): string {
+  if (metadata) {
+    const candidates = [metadata.task_type, metadata.taskType, metadata.role, metadata.mode];
+    for (const candidate of candidates) {
+      if (typeof candidate === "string" && candidate.trim()) {
+        return candidate.trim();
+      }
+    }
+  }
+  return "child_send";
+}
+
+/**
+ * Normalises a payload so the loop detector can match alternating exchanges
+ * regardless of direction. Strings are truncated and JSON payloads are reduced
+ * to their `type`/`name` fields to avoid leaking sensitive data in alerts.
+ */
+function summariseLoopPayload(payload: unknown): string {
+  if (payload === null || payload === undefined) {
+    return "null";
+  }
+  if (typeof payload === "string") {
+    return payload.slice(0, 48);
+  }
+  if (typeof payload === "number" || typeof payload === "boolean") {
+    return String(payload);
+  }
+  if (Array.isArray(payload)) {
+    return `array:${payload.length}`;
+  }
+  if (typeof payload === "object") {
+    const record = payload as Record<string, unknown>;
+    const typeLike = record.type ?? record.name ?? record.action ?? record.kind;
+    if (typeof typeLike === "string" && typeLike.trim()) {
+      return typeLike.trim().slice(0, 48);
+    }
+    return `object:${Object.keys(record)
+      .sort()
+      .slice(0, 3)
+      .join(",")}`;
+  }
+  return "unknown";
+}
+
+/**
+ * Computes and caches the signature associated with the latest outbound
+ * payload. The helper intentionally keeps the signature compact while
+ * leveraging metadata hints to reduce false positives (different jobs sharing
+ * a child will not collide).
+ */
+function rememberLoopSignature(
+  childId: string,
+  metadata: Record<string, unknown> | undefined,
+  payload: unknown,
+): string {
+  const taskId = extractTaskIdentifier(metadata) ?? "default";
+  const taskType = extractTaskType(metadata);
+  const payloadSummary = summariseLoopPayload(payload);
+  const signature = `child:${childId}|task:${taskType}|id:${taskId}|payload:${payloadSummary}`;
+  pendingLoopSignatures.set(childId, signature);
+  return signature;
+}
+
+/**
+ * Merges two loop alerts and logs the most severe one. The return value is the
+ * alert that should be surfaced to callers.
+ */
+function mergeLoopAlerts(
+  existing: LoopAlert | null,
+  candidate: LoopAlert | null,
+  context: ChildToolContext,
+): LoopAlert | null {
+  const alert = chooseMostSevereAlert(existing, candidate);
+  if (alert && (!existing || alert !== existing)) {
+    context.logger.warn("loop_detector_alert", {
+      child_ids: alert.childIds,
+      participants: alert.participants,
+      recommendation: alert.recommendation,
+      reason: alert.reason,
+      occurrences: alert.occurrences,
+    });
+  }
+  return alert;
+}
+
+/**
+ * Chooses the most severe alert between the provided candidates.
+ */
+function chooseMostSevereAlert(first: LoopAlert | null, second: LoopAlert | null): LoopAlert | null {
+  if (!first) {
+    return second;
+  }
+  if (!second) {
+    return first;
+  }
+  if (first.recommendation === "kill" && second.recommendation !== "kill") {
+    return first;
+  }
+  if (second.recommendation === "kill" && first.recommendation !== "kill") {
+    return second;
+  }
+  return second.lastTimestamp >= first.lastTimestamp ? second : first;
+}
+
+/** Clears any cached loop signature for a child. */
+function clearLoopSignature(childId: string): void {
+  pendingLoopSignatures.delete(childId);
+}
+
+/**
+ * Derives the tool identifier requested in the payload. The helper inspects the
+ * most common fields used by Codex payloads so both present and legacy formats
+ * are supported without leaking implementation details to the tests.
+ */
+function extractRequestedTool(payload: unknown): string | null {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    return null;
+  }
+
+  const record = payload as Record<string, unknown>;
+
+  const direct = record.tool;
+  if (typeof direct === "string" && direct.trim()) {
+    return direct.trim();
+  }
+
+  if (typeof record.type === "string") {
+    const typeValue = record.type.toLowerCase();
+    if ((typeValue === "tool" || typeValue === "call_tool") && typeof record.name === "string" && record.name.trim()) {
+      return record.name.trim();
+    }
+  }
+
+  const alt = record.tool_name ?? record.toolName;
+  if (typeof alt === "string" && alt.trim()) {
+    return alt.trim();
+  }
+
+  return null;
+}
+
+function isHighRiskTask(metadata?: Record<string, unknown>): boolean {
+  if (!metadata) {
+    return false;
+  }
+  const direct = [metadata.risk, metadata.risk_level, metadata.severity, metadata.safety];
+  for (const candidate of direct) {
+    if (typeof candidate === "string" && candidate.trim().toLowerCase() === "high") {
+      return true;
+    }
+  }
+  const booleanFlag = metadata.high_risk;
+  if (booleanFlag === true || (typeof booleanFlag === "string" && booleanFlag.toLowerCase() === "true")) {
+    return true;
+  }
+  const tags = metadata.tags;
+  if (Array.isArray(tags)) {
+    for (const tag of tags) {
+      if (typeof tag === "string" && tag.toLowerCase().includes("high-risk")) {
+        return true;
+      }
+    }
+  }
+  return false;
 }
 
 const FINAL_MESSAGE_TYPES = new Set([
@@ -462,6 +878,8 @@ export async function handleChildCancel(
     timeoutMs: input.timeout_ms,
   });
 
+  clearLoopSignature(input.child_id);
+
   return { child_id: input.child_id, shutdown };
 }
 
@@ -487,6 +905,7 @@ export async function handleChildKill(
 ): Promise<ChildKillResult> {
   context.logger.warn("child_kill", { child_id: input.child_id, timeout_ms: input.timeout_ms ?? null });
   const shutdown = await context.supervisor.kill(input.child_id, { timeoutMs: input.timeout_ms });
+  clearLoopSignature(input.child_id);
   return { child_id: input.child_id, shutdown };
 }
 
@@ -511,5 +930,6 @@ export function handleChildGc(
 ): ChildGcResult {
   context.logger.info("child_gc", { child_id: input.child_id });
   context.supervisor.gc(input.child_id);
+  clearLoopSignature(input.child_id);
   return { child_id: input.child_id, removed: true };
 }

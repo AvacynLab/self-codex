@@ -3,16 +3,21 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import { randomUUID } from "crypto";
 import { readFile, writeFile, mkdir } from "node:fs/promises";
-import { resolve as resolvePath, dirname as pathDirname } from "node:path";
+import { resolve as resolvePath, dirname as pathDirname, basename as pathBasename } from "node:path";
 import { pathToFileURL } from "url";
 import { GraphState } from "./graphState.js";
-import { StructuredLogger } from "./logger.js";
+import { LoggerOptions, StructuredLogger } from "./logger.js";
 import { EventStore, OrchestratorEvent } from "./eventStore.js";
 import { startHttpServer } from "./httpServer.js";
 import { MessageRecord, Role } from "./types.js";
 import { parseOrchestratorRuntimeOptions } from "./serverOptions.js";
 import { ChildSupervisor } from "./childSupervisor.js";
-import { UnknownChildError } from "./state/childrenIndex.js";
+import { ChildRecordSnapshot, UnknownChildError } from "./state/childrenIndex.js";
+import { ChildCollectedOutputs, ChildRuntimeStatus } from "./childRuntime.js";
+import { MetaCritic, ReviewKind } from "./agents/metaCritic.js";
+import { SharedMemoryStore } from "./memory/store.js";
+import { selectMemoryContext } from "./memory/attention.js";
+import { LoopDetector } from "./guard/loopDetector.js";
 import {
   ChildCancelInputShape,
   ChildCancelInputSchema,
@@ -123,9 +128,84 @@ interface SpawnChildSpec {
 // ---------------------------
 
 const graphState = new GraphState();
-let logger = new StructuredLogger();
+
+function parseSizeEnv(raw: string | undefined): number | undefined {
+  if (!raw) {
+    return undefined;
+  }
+  const cleaned = raw.trim().toLowerCase();
+  if (!cleaned.length) {
+    return undefined;
+  }
+  const match = cleaned.match(/^(\d+)([kmg]?b?)?$/);
+  if (!match) {
+    return undefined;
+  }
+  const base = Number(match[1]);
+  if (!Number.isFinite(base)) {
+    return undefined;
+  }
+  const unit = match[2];
+  switch (unit) {
+    case "k":
+    case "kb":
+      return base * 1024;
+    case "m":
+    case "mb":
+      return base * 1024 * 1024;
+    case "g":
+    case "gb":
+      return base * 1024 * 1024 * 1024;
+    default:
+      return base;
+  }
+}
+
+function parseCountEnv(raw: string | undefined): number | undefined {
+  if (!raw) {
+    return undefined;
+  }
+  const num = Number(raw);
+  if (!Number.isFinite(num) || num <= 0) {
+    return undefined;
+  }
+  return Math.floor(num);
+}
+
+function parseRedactEnv(raw: string | undefined): Array<string> {
+  if (!raw) {
+    return [];
+  }
+  return raw
+    .split(",")
+    .map((value) => value.trim())
+    .filter((value) => value.length > 0);
+}
+
+const baseLoggerOptions: LoggerOptions = {
+  logFile: process.env.MCP_LOG_FILE ?? undefined,
+  maxFileSizeBytes: parseSizeEnv(process.env.MCP_LOG_ROTATE_SIZE),
+  maxFileCount: parseCountEnv(process.env.MCP_LOG_ROTATE_KEEP),
+  redactSecrets: parseRedactEnv(process.env.MCP_LOG_REDACT),
+};
+
+let activeLoggerOptions: LoggerOptions = { ...baseLoggerOptions };
+let logger = new StructuredLogger(activeLoggerOptions);
 const eventStore = new EventStore({ maxHistory: 5000, logger });
+
+if (activeLoggerOptions.logFile) {
+  logger.info("logger_configured", {
+    log_file: activeLoggerOptions.logFile,
+    max_size_bytes: activeLoggerOptions.maxFileSizeBytes ?? null,
+    max_file_count: activeLoggerOptions.maxFileCount ?? null,
+    redacted_tokens: activeLoggerOptions.redactSecrets?.length ?? 0,
+    source: "env",
+  });
+}
+const memoryStore = new SharedMemoryStore();
+const metaCritic = new MetaCritic();
 let lastInactivityThresholdMs = 120_000;
+const loopDetector = new LoopDetector();
 
 let DEFAULT_CHILD_RUNTIME = "codex";
 
@@ -168,8 +248,339 @@ const childSupervisor = new ChildSupervisor({
   defaultEnv: process.env,
 });
 
+function extractMetadataGoals(metadata: Record<string, unknown> | undefined): string[] {
+  if (!metadata) {
+    return [];
+  }
+
+  const collected: string[] = [];
+  const candidateKeys = ["goal", "goals", "objective", "objectives", "mission", "target"];
+  for (const key of candidateKeys) {
+    const value = metadata[key];
+    if (typeof value === "string") {
+      collected.push(value);
+    } else if (Array.isArray(value)) {
+      for (const entry of value) {
+        if (typeof entry === "string") {
+          collected.push(entry);
+        }
+      }
+    }
+  }
+
+  return Array.from(
+    new Set(
+      collected
+        .map((goal) => goal.toString().trim())
+        .filter((goal) => goal.length > 0),
+    ),
+  );
+}
+
+function extractMetadataTags(metadata: Record<string, unknown> | undefined): string[] {
+  if (!metadata) {
+    return [];
+  }
+
+  const tags = new Set<string>();
+  const candidateKeys = ["tags", "labels", "topics", "areas", "keywords"];
+  for (const key of candidateKeys) {
+    const value = metadata[key];
+    if (typeof value === "string") {
+      tags.add(value);
+    } else if (Array.isArray(value)) {
+      for (const entry of value) {
+        if (typeof entry === "string") {
+          tags.add(entry);
+        }
+      }
+    }
+  }
+
+  for (const [key, value] of Object.entries(metadata)) {
+    if (typeof value === "string" && /tag|topic|domain|area|category/i.test(key)) {
+      tags.add(value);
+    } else if (Array.isArray(value) && /tag|topic|domain|area|category/i.test(key)) {
+      for (const entry of value) {
+        if (typeof entry === "string") {
+          tags.add(entry);
+        }
+      }
+    }
+  }
+
+  return Array.from(tags)
+    .map((tag) => tag.toString().trim().toLowerCase())
+    .filter((tag) => tag.length > 0);
+}
+
+function renderPromptForMemory(prompt: unknown): string {
+  if (!prompt || typeof prompt !== "object") {
+    return "";
+  }
+
+  const segments: string[] = [];
+  const record = prompt as Record<string, unknown>;
+  for (const key of ["system", "user", "assistant"]) {
+    const value = record[key];
+    if (typeof value === "string") {
+      segments.push(value);
+    } else if (Array.isArray(value)) {
+      for (const entry of value) {
+        if (typeof entry === "string") {
+          segments.push(entry);
+        }
+      }
+    }
+  }
+
+  return segments.join(" ").slice(0, 512);
+}
+
+type ChildCreatePrompt = z.infer<typeof ChildCreateInputSchema>["prompt"];
+
+/**
+ * Normalises arbitrary identifiers (job labels, slugs…) into a compact
+ * lowercase string compatible with the graph node naming scheme. Non-alphanumeric
+ * characters are replaced to avoid creating invalid node IDs.
+ */
+function sanitiseIdentifier(raw: unknown, fallback: string): string {
+  if (typeof raw !== "string") {
+    return fallback;
+  }
+  const trimmed = raw.trim().toLowerCase();
+  if (trimmed.length === 0) {
+    return fallback;
+  }
+  const collapsed = trimmed.replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "");
+  if (collapsed.length === 0) {
+    return fallback;
+  }
+  return collapsed.slice(0, 64);
+}
+
+/**
+ * Looks up the first string value associated with one of the provided metadata
+ * keys. The helper keeps the extraction logic readable when multiple aliases
+ * may be supplied by callers.
+ */
+function pickMetadataString(
+  metadata: Record<string, unknown> | undefined,
+  keys: string[],
+): string | undefined {
+  if (!metadata) {
+    return undefined;
+  }
+  for (const key of keys) {
+    const value = metadata[key];
+    if (typeof value === "string" && value.trim().length > 0) {
+      return value;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Derives a stable job identifier for ad-hoc children spawned outside of plan
+ * executions. The identifier is prefixed to avoid clashing with planner
+ * generated jobs while still reflecting operator-provided hints when available.
+ */
+function deriveManualJobId(childId: string, metadata: Record<string, unknown> | undefined): string {
+  const explicit = pickMetadataString(metadata, ["job_id", "jobId", "job", "jobSlug", "jobName"]);
+  const base = sanitiseIdentifier(explicit, childId);
+  return `manual-${base}`;
+}
+
+/**
+ * Extracts a human-friendly child name from metadata while falling back to the
+ * technical identifier when no label is provided.
+ */
+function deriveManualChildName(childId: string, metadata: Record<string, unknown> | undefined): string {
+  const candidate = pickMetadataString(metadata, ["name", "label", "title", "alias", "child_name"]);
+  if (!candidate) {
+    return childId;
+  }
+  const trimmed = candidate.trim();
+  return trimmed.length > 0 ? trimmed.slice(0, 120) : childId;
+}
+
+/**
+ * Normalises a prompt segment (string or string array) into a single string.
+ * Empty entries are ignored so transcripts remain concise.
+ */
+function normalisePromptSegment(segment: string | string[] | undefined): string | undefined {
+  if (!segment) {
+    return undefined;
+  }
+  if (typeof segment === "string") {
+    const trimmed = segment.trim();
+    return trimmed.length > 0 ? trimmed : undefined;
+  }
+  const parts = segment
+    .map((value) => (typeof value === "string" ? value.trim() : ""))
+    .filter((value) => value.length > 0);
+  if (parts.length === 0) {
+    return undefined;
+  }
+  return parts.join("\n");
+}
+
+/**
+ * Extracts the system prompt string, if any, so a synthetic transcript entry
+ * can be recorded when we materialise ad-hoc children in the graph.
+ */
+function deriveSystemPrompt(prompt: ChildCreatePrompt | undefined): string | undefined {
+  if (!prompt) {
+    return undefined;
+  }
+  return normalisePromptSegment(prompt.system);
+}
+
+/**
+ * Derives a runtime label used by the dashboard. Metadata wins over the
+ * underlying executable name which itself falls back to the configured default.
+ */
+function deriveRuntimeLabel(
+  metadata: Record<string, unknown> | undefined,
+  runtimeStatus: ChildRuntimeStatus,
+): string {
+  const metadataRuntime = pickMetadataString(metadata, ["runtime", "model", "engine", "llm"]);
+  if (metadataRuntime) {
+    return metadataRuntime.trim();
+  }
+  const command = runtimeStatus.command ?? "";
+  const commandBasename = command.length > 0 ? pathBasename(command) : "";
+  if (commandBasename.length > 0) {
+    return commandBasename;
+  }
+  return DEFAULT_CHILD_RUNTIME;
+}
+
+interface ManualChildGraphOptions {
+  /** Unique identifier assigned to the child runtime. */
+  childId: string;
+  /** Snapshot returned by the supervisor index. */
+  snapshot: ChildRecordSnapshot;
+  /** Metadata persisted alongside the manifest (may include labels/goals). */
+  metadata: Record<string, unknown> | undefined;
+  /** Prompt blueprint submitted during creation, if any. */
+  prompt: ChildCreatePrompt | undefined;
+  /** Low-level runtime status (command, spawn time…). */
+  runtimeStatus: ChildRuntimeStatus;
+  /** Timestamp reported by `child_create` for the start of the child. */
+  startedAt: number;
+}
+
+/**
+ * Ensures ad-hoc child creations appear in the graph by synthesising a job and
+ * child node when the planner did not pre-register them. This keeps the
+ * dashboard consistent regardless of how the runtime was spawned.
+ */
+function ensureChildVisibleInGraph(options: ManualChildGraphOptions): void {
+  const { childId, snapshot, metadata, prompt, runtimeStatus, startedAt } = options;
+  const existing = graphState.getChild(childId);
+  if (existing) {
+    graphState.syncChildIndexSnapshot(snapshot);
+    return;
+  }
+
+  const goals = extractMetadataGoals(metadata);
+  const jobId = deriveManualJobId(childId, metadata);
+  const createdAtCandidates = [snapshot.startedAt, startedAt, Date.now()].filter(
+    (value): value is number => typeof value === "number" && Number.isFinite(value) && value > 0,
+  );
+  const createdAt = createdAtCandidates.length > 0 ? createdAtCandidates[0]! : Date.now();
+
+  if (!graphState.getJob(jobId)) {
+    graphState.createJob(jobId, { createdAt, goal: goals[0], state: "running" });
+  } else if (goals[0]) {
+    graphState.patchJob(jobId, { goal: goals[0] });
+  }
+
+  const runtimeLabel = deriveRuntimeLabel(metadata, runtimeStatus);
+  const systemPrompt = deriveSystemPrompt(prompt);
+  const spec: SpawnChildSpec = {
+    name: deriveManualChildName(childId, metadata),
+    runtime: runtimeLabel,
+    goals: goals.length > 0 ? goals.slice(0, 5) : undefined,
+    system: systemPrompt,
+  };
+
+  graphState.createChild(jobId, childId, spec, { createdAt, ttlAt: null });
+  graphState.patchChild(childId, {
+    state: snapshot.state,
+    runtime: runtimeLabel,
+    lastHeartbeatAt: snapshot.lastHeartbeatAt,
+    startedAt: snapshot.startedAt,
+    waitingFor: null,
+    pendingId: null,
+  });
+  graphState.syncChildIndexSnapshot(snapshot);
+}
+
+function summariseChildOutputs(outputs: ChildCollectedOutputs): {
+  text: string;
+  tags: string[];
+  kind: ReviewKind;
+} {
+  const parts: string[] = [];
+  const tags = new Set<string>(["child"]);
+  let kind: ReviewKind = "text";
+
+  const codeExtensions = new Set(["ts", "tsx", "js", "jsx", "py", "go", "rs", "java", "cs", "json", "mjs"]);
+  for (const artifact of outputs.artifacts) {
+    const ext = artifact.path.split(".").pop()?.toLowerCase();
+    if (ext) {
+      tags.add(ext);
+      if (codeExtensions.has(ext)) {
+        kind = "code";
+      }
+    }
+  }
+
+  for (const message of outputs.messages) {
+    tags.add(message.stream);
+    const parsed = message.parsed;
+    if (parsed && typeof parsed === "object") {
+      const record = parsed as Record<string, unknown>;
+      if (typeof record.content === "string") {
+        parts.push(record.content);
+        continue;
+      }
+      if (typeof record.text === "string") {
+        parts.push(record.text);
+        continue;
+      }
+      parts.push(JSON.stringify(record));
+    } else if (typeof parsed === "string") {
+      parts.push(parsed);
+    } else if (typeof message.raw === "string") {
+      parts.push(message.raw);
+    }
+  }
+
+  if (kind !== "code") {
+    const joined = parts.join(" ").toLowerCase();
+    if (/\betape\b|\bétape\b|\bplan\b|\bphase\b/.test(joined)) {
+      kind = "plan";
+    }
+  }
+
+  let text = parts.join("\n").slice(0, 2_000).trim();
+  if (!text) {
+    text = outputs.artifacts
+      .map((artifact) => `${artifact.path} (${artifact.size ?? 0} bytes)`)
+      .join("; ");
+  }
+  if (!text) {
+    text = "(aucune sortie)";
+  }
+
+  return { text, tags: Array.from(tags), kind };
+}
+
 function getChildToolContext(): ChildToolContext {
-  return { supervisor: childSupervisor, logger };
+  return { supervisor: childSupervisor, logger, loopDetector };
 }
 
 function getPlanToolContext(): PlanToolContext {
@@ -1962,10 +2373,49 @@ server.registerTool(
   async (input) => {
     try {
       const parsed = ChildCreateInputSchema.parse(input);
-      const result = await handleChildCreate(getChildToolContext(), parsed);
+      const metadata = parsed.metadata ?? {};
+      const goals = extractMetadataGoals(metadata);
+      const tags = extractMetadataTags(metadata);
+      const contextSelection = selectMemoryContext(memoryStore, {
+        tags,
+        goals,
+        query: renderPromptForMemory(parsed.prompt),
+        limit: 4,
+      });
+
+      if (goals.length > 0) {
+        memoryStore.upsertKeyValue("orchestrator.last_goals", goals, {
+          tags: goals,
+          importance: 0.6,
+          metadata: { source: "child_create" },
+        });
+      }
+
+      const enrichedInput = { ...parsed } as z.infer<typeof ChildCreateInputSchema>;
+      if (contextSelection.episodes.length > 0 || contextSelection.keyValues.length > 0) {
+        enrichedInput.manifest_extras = {
+          ...(parsed.manifest_extras ?? {}),
+          memory_context: contextSelection,
+        };
+      }
+
+      const result = await handleChildCreate(getChildToolContext(), enrichedInput);
+      ensureChildVisibleInGraph({
+        childId: result.child_id,
+        snapshot: result.index_snapshot,
+        metadata: result.index_snapshot.metadata,
+        prompt: enrichedInput.prompt,
+        runtimeStatus: result.runtime_status,
+        startedAt: result.started_at,
+      });
+      const payload =
+        contextSelection.episodes.length > 0 || contextSelection.keyValues.length > 0
+          ? { ...result, memory_context: contextSelection }
+          : result;
+
       return {
-        content: [{ type: "text" as const, text: j({ tool: "child_create", result }) }],
-        structuredContent: result,
+        content: [{ type: "text" as const, text: j({ tool: "child_create", result: payload }) }],
+        structuredContent: payload,
       };
     } catch (error) {
       return childToolError("child_create", error, { child_id: input.child_id ?? null });
@@ -2005,6 +2455,7 @@ server.registerTool(
     try {
       const parsed = ChildStatusInputSchema.parse(input);
       const result = handleChildStatus(getChildToolContext(), parsed);
+      graphState.syncChildIndexSnapshot(result.index_snapshot);
       return {
         content: [{ type: "text" as const, text: j({ tool: "child_status", result }) }],
         structuredContent: result,
@@ -2026,9 +2477,51 @@ server.registerTool(
     try {
       const parsed = ChildCollectInputSchema.parse(input);
       const result = await handleChildCollect(getChildToolContext(), parsed);
+
+      const summary = summariseChildOutputs(result.outputs);
+      const review = metaCritic.review(summary.text, summary.kind, []);
+      logger.logCognitive({
+        actor: "meta-critic",
+        phase: "score",
+        childId: parsed.child_id,
+        score: review.overall,
+        content: review.feedback.join(" | "),
+        metadata: {
+          verdict: review.verdict,
+          suggestions: review.suggestions.slice(0, 3),
+        },
+      });
+      const childSnapshot = childSupervisor.childrenIndex.getChild(parsed.child_id);
+      const metadataTags = extractMetadataTags(childSnapshot?.metadata);
+      const tags = new Set<string>([...summary.tags, ...metadataTags, parsed.child_id]);
+      const goals = extractMetadataGoals(childSnapshot?.metadata);
+
+      const episode = memoryStore.recordEpisode({
+        goal: goals.length > 0 ? goals.join(" | ") : `Collecte ${parsed.child_id}`,
+        decision: "Synthèse des sorties enfant",
+        outcome: summary.text.slice(0, 512),
+        tags: Array.from(tags),
+        importance: review.overall,
+        metadata: {
+          child_id: parsed.child_id,
+          review,
+          artifact_count: result.outputs.artifacts.length,
+        },
+      });
+
+      const payload = {
+        ...result,
+        review,
+        memory_snapshot: {
+          episode_id: episode.id,
+          tags: episode.tags,
+          stored_at: episode.createdAt,
+        },
+      };
+
       return {
-        content: [{ type: "text" as const, text: j({ tool: "child_collect", result }) }],
-        structuredContent: result,
+        content: [{ type: "text" as const, text: j({ tool: "child_collect", result: payload }) }],
+        structuredContent: payload,
       };
     } catch (error) {
       return childToolError("child_collect", error, { child_id: input.child_id });
@@ -2838,9 +3331,16 @@ if (isMain) {
   }
 
   if (options.logFile) {
-    logger = new StructuredLogger({ logFile: options.logFile });
+    activeLoggerOptions = { ...activeLoggerOptions, logFile: options.logFile };
+    logger = new StructuredLogger(activeLoggerOptions);
     eventStore.setLogger(logger);
-    logger.info("logger_configured", { log_file: options.logFile });
+    logger.info("logger_configured", {
+      log_file: options.logFile,
+      max_size_bytes: activeLoggerOptions.maxFileSizeBytes ?? null,
+      max_file_count: activeLoggerOptions.maxFileCount ?? null,
+      redacted_tokens: activeLoggerOptions.redactSecrets?.length ?? 0,
+      source: "cli",
+    });
   }
 
   eventStore.setMaxHistory(options.maxEventHistory);

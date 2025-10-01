@@ -1,0 +1,16 @@
+[
+  {
+    "run_id": "sbx-001",
+    "handler": "risk_probing",
+    "duration_ms": 420,
+    "status": "success",
+    "notes": "Plan validé"
+  },
+  {
+    "run_id": "sbx-002",
+    "handler": "destructive_guard",
+    "duration_ms": 1975,
+    "status": "failure",
+    "notes": "Tentative de suppression bloquée"
+  }
+]

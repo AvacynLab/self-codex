@@ -1,4 +1,6 @@
 import { z } from "zod";
+import { getSandboxRegistry } from "../sim/sandbox.js";
+import { PromptTemplateSchema } from "../prompts.js";
 /**
  * Schema describing the payload accepted by the `child_create` tool.
  *
@@ -8,20 +10,11 @@ import { z } from "zod";
  * provided.
  */
 /**
- * Schema describing prompt segments accepted when spawning a child. Each
- * segment can either be a single string or an array of strings that will be
- * rendered sequentially by the orchestrator. The structure mirrors the
- * templating helpers used by the planning tools so the manifest can capture
- * the exact bootstrap instructions sent to the runtime.
+ * Schema describing prompt segments accepted when spawning a child. We reuse
+ * the shared blueprint from {@link PromptTemplateSchema} to guarantee the
+ * manifest mirrors the plan tools validation rules.
  */
-const PromptSegmentSchema = z.union([z.string(), z.array(z.string())]);
-const PromptSchema = z
-    .object({
-    system: PromptSegmentSchema.optional(),
-    user: PromptSegmentSchema.optional(),
-    assistant: PromptSegmentSchema.optional(),
-})
-    .strict();
+const PromptSchema = PromptTemplateSchema;
 /**
  * Schema describing timeout overrides granted to the child. Values are kept as
  * integers (milliseconds) to remain consistent with the supervisor settings.
@@ -146,6 +139,25 @@ function buildManifestExtras(input) {
 }
 /** Schema for the `child_send` tool. */
 const ChildSendExpectationSchema = z.enum(["stream", "final"]);
+const ChildSendSandboxSchema = z
+    .object({
+    enabled: z.boolean().optional(),
+    action: z.string().min(1).default("dry-run"),
+    payload: z.unknown().optional(),
+    timeout_ms: z
+        .number()
+        .int()
+        .positive()
+        .max(60_000)
+        .optional()
+        .refine((value) => value === undefined || Number.isFinite(value), {
+        message: "sandbox.timeout_ms must be finite",
+    }),
+    allow_failure: z.boolean().optional(),
+    require_handler: z.boolean().optional(),
+    metadata: z.record(z.unknown()).optional(),
+})
+    .strict();
 const ChildSendInputBaseSchema = z.object({
     child_id: z.string().min(1),
     payload: z.unknown(),
@@ -159,6 +171,7 @@ const ChildSendInputBaseSchema = z.object({
         .refine((value) => value === undefined || Number.isFinite(value), {
         message: "timeout_ms must be finite",
     }),
+    sandbox: ChildSendSandboxSchema.optional(),
 });
 export const ChildSendInputSchema = ChildSendInputBaseSchema.refine((input) => (input.timeout_ms === undefined ? true : input.expect !== undefined), {
     message: "timeout_ms requires expect to be provided",
@@ -170,6 +183,61 @@ export const ChildSendInputShape = ChildSendInputBaseSchema.shape;
  */
 export async function handleChildSend(context, input) {
     context.logger.info("child_send", { child_id: input.child_id });
+    const childSnapshot = context.supervisor.childrenIndex.getChild(input.child_id);
+    const metadataRecord = toRecord(childSnapshot?.metadata);
+    const highRisk = isHighRiskTask(metadataRecord);
+    const sandboxConfig = input.sandbox;
+    const sandboxEnabled = highRisk ? sandboxConfig?.enabled !== false : sandboxConfig?.enabled === true;
+    let sandboxResult = null;
+    if (sandboxEnabled) {
+        const registry = getSandboxRegistry();
+        const actionName = (sandboxConfig?.action ?? "dry-run").trim() || "dry-run";
+        const requestPayload = sandboxConfig?.payload ?? input.payload;
+        const baseMetadata = toRecord(sandboxConfig?.metadata) ?? {};
+        const sandboxMetadata = {
+            ...baseMetadata,
+            child_id: input.child_id,
+            high_risk: highRisk,
+        };
+        if (!registry.has(actionName)) {
+            if (sandboxConfig?.require_handler) {
+                throw new Error(`Sandbox handler "${actionName}" is not registered`);
+            }
+            const now = Date.now();
+            sandboxResult = {
+                action: actionName,
+                status: "skipped",
+                startedAt: now,
+                finishedAt: now,
+                durationMs: 0,
+                reason: "handler_missing",
+                metadata: sandboxMetadata,
+            };
+            context.logger.warn("child_send_sandbox_missing_handler", {
+                child_id: input.child_id,
+                action: actionName,
+            });
+        }
+        else {
+            const timeoutOverride = sandboxConfig?.timeout_ms;
+            sandboxResult = await registry.execute({
+                action: actionName,
+                payload: requestPayload,
+                metadata: sandboxMetadata,
+                timeoutMs: timeoutOverride,
+            });
+            context.logger.info("child_send_sandbox", {
+                child_id: input.child_id,
+                action: actionName,
+                status: sandboxResult.status,
+                duration_ms: sandboxResult.durationMs,
+            });
+            if (sandboxResult.status !== "ok" && sandboxConfig?.allow_failure !== true) {
+                const reason = sandboxResult.reason ?? sandboxResult.error?.message ?? sandboxResult.status;
+                throw new Error(`Sandbox action "${actionName}" failed before child_send: ${reason}`);
+            }
+        }
+    }
     let baselineSequence = 0;
     if (input.expect) {
         const snapshot = context.supervisor.stream(input.child_id, { limit: 1 });
@@ -177,7 +245,7 @@ export async function handleChildSend(context, input) {
     }
     const message = await context.supervisor.send(input.child_id, input.payload);
     if (!input.expect) {
-        return { child_id: input.child_id, message, awaited_message: null };
+        return { child_id: input.child_id, message, awaited_message: null, sandbox_result: sandboxResult };
     }
     const timeoutMs = input.timeout_ms ?? (input.expect === "final" ? 8_000 : 2_000);
     const matcher = input.expect === "final" ? matchesFinalMessage : matchesStreamMessage;
@@ -187,6 +255,7 @@ export async function handleChildSend(context, input) {
             child_id: input.child_id,
             message,
             awaited_message: cloneChildMessage(awaited),
+            sandbox_result: sandboxResult,
         };
     }
     catch (error) {
@@ -231,6 +300,36 @@ function extractMessageType(message) {
 function cloneChildMessage(message) {
     const parsedClone = message.parsed === null ? null : JSON.parse(JSON.stringify(message.parsed));
     return { ...message, parsed: parsedClone };
+}
+function toRecord(value) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+        return undefined;
+    }
+    return value;
+}
+function isHighRiskTask(metadata) {
+    if (!metadata) {
+        return false;
+    }
+    const direct = [metadata.risk, metadata.risk_level, metadata.severity, metadata.safety];
+    for (const candidate of direct) {
+        if (typeof candidate === "string" && candidate.trim().toLowerCase() === "high") {
+            return true;
+        }
+    }
+    const booleanFlag = metadata.high_risk;
+    if (booleanFlag === true || (typeof booleanFlag === "string" && booleanFlag.toLowerCase() === "true")) {
+        return true;
+    }
+    const tags = metadata.tags;
+    if (Array.isArray(tags)) {
+        for (const tag of tags) {
+            if (typeof tag === "string" && tag.toLowerCase().includes("high-risk")) {
+                return true;
+            }
+        }
+    }
+    return false;
 }
 const FINAL_MESSAGE_TYPES = new Set([
     "response",

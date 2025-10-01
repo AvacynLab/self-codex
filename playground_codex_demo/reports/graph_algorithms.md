@@ -22,3 +22,24 @@
 - package_artifacts : 0.000
 - deploy_stage : 0.000
 
+## Stratégies multi-hypothèses
+- Hypothèse A : prioriser `lint_core` → `test_unit` → `build_bundle` (score 0.82).
+- Hypothèse B : insérer une revue docs avant `docs_generate` (score 0.74).
+- Hypothèse C : détour par `qa_manual` (score 0.41, rejetée).
+- Fusion finale : Hypothèses A + B (convergence 0.88) → plan retenu pour fan-out.
+
+## Optimisation mono-objectif (makespan)
+- Baseline : 35.
+- Parallélisme étendu : 32.
+- Build incrémental + docs précompilées : 30 (**sélectionnée**).
+
+## Optimisation multi-objectif (makespan/cost)
+- Scénario S1 : (makespan 35, coût 28.4) — dominé.
+- Scénario S2 : (makespan 32, coût 27.1) — Pareto.
+- Scénario S3 : (makespan 30, coût 26.3) — Pareto, meilleur compromis pondéré.
+
+## Simulation & heatmap
+- Makespan simulé : 35 (voir `reports/scheduling_results.md`).
+- Parallélisme maximal respecté : 3.
+- Journal détaillé : `../logs/simulation_events.json`.
+

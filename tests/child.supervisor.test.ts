@@ -64,7 +64,7 @@ describe("child supervisor", () => {
       expect(collected.artifacts).to.deep.include({
         path: "reports/outcome.txt",
         size: "analysis".length,
-        mimeType: "application/octet-stream",
+        mimeType: "text/plain",
         sha256: collected.artifacts.find((item) => item.path === "reports/outcome.txt")?.sha256 ?? "",
       });
 

@@ -7,15 +7,35 @@
     },
     {
       "name": "graph-forge.algorithms",
-      "description": "k-chemins, chemins contraints, centralités exécutés via les modules Graph Forge.",
+      "description": "k-chemins, chemins contraints, centralités, stratégies multi-hypothèses.",
       "status": "substitute"
     },
     {
       "name": "graph-forge.simulation",
-      "description": "Simulation et optimisation artisanales (parallélisme limité, Pareto).",
+      "description": "Simulation, optimisation mono-obj et multi-obj, heatmap export.",
       "status": "substitute"
+    },
+    {
+      "name": "memory.attention",
+      "description": "Sélection de contexte réduit pour les enfants et persistance des épisodes.",
+      "status": "documented"
+    },
+    {
+      "name": "agents.metaCritic",
+      "description": "Critique automatique des sorties + calibration des scores.",
+      "status": "documented"
+    },
+    {
+      "name": "sim.sandbox",
+      "description": "Pré-exécution haute criticité (handlers risk_probing/destructive_guard).",
+      "status": "documented"
+    },
+    {
+      "name": "monitor.dashboard",
+      "description": "Streaming SSE → heatmap JSON (attente, tokens, alertes boucle).",
+      "status": "documented"
     }
   ],
   "status": "partially_substituted",
-  "notes": "Les tools MCP natifs restent indisponibles ; le script run_graph_analyses.mjs fournit une exécution locale équivalente." 
+  "notes": "Les tools MCP natifs restent indisponibles ; les scripts locaux rejouent la logique en environnement isolé."
 }

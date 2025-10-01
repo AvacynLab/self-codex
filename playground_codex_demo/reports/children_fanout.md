@@ -368,3 +368,14 @@
 | child-gamma | Comparer la durée moyenne par stage (lint/test/build/package) pour repérer le goulet d'étranglement. | [output](../children/child-gamma/outbox/output.json) |
 
 Le fichier `children_merge.json` propose un agrégat direct des sorties pour faciliter les analyses ultérieures.
+
+### Mémoire, critiques et sandbox
+
+- Les souvenirs injectés dans chaque enfant sont détaillés dans
+  [`memory_attention.md`](memory_attention.md) et la structure brute dans
+  `../logs/memory_store.json`.
+- Les critiques MetaCritic, réflexions et scores qualitatifs sont regroupés
+  dans [`cognitive_feedback.md`](cognitive_feedback.md) avec les actions de
+  suivi proposées.
+- Les exécutions sandbox précédant les envois `high_risk` sont listées dans
+  [`sandbox_runs.md`](sandbox_runs.md).

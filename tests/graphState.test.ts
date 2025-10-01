@@ -2,6 +2,7 @@ import { describe, it } from "mocha";
 import { expect } from "chai";
 
 import { GraphState } from "../src/graphState.js";
+import { ChildRecordSnapshot } from "../src/state/childrenIndex.js";
 
 describe("GraphState", () => {
   it("identifie un enfant inactif au-delà du seuil fourni", () => {
@@ -57,5 +58,80 @@ describe("GraphState", () => {
     expect(metrics.totalChildren).to.equal(1);
     expect(metrics.totalMessages).to.equal(1);
     expect(metrics.subscriptions).to.equal(0);
+  });
+
+  it("synchronise les métadonnées issues de l'index enfants", () => {
+    const state = new GraphState();
+    const baseTs = 3_000_000;
+    state.createJob("job_sync", { createdAt: baseTs, state: "running" });
+    state.createChild("job_sync", "child_sync", { name: "Sync" }, { createdAt: baseTs, ttlAt: null });
+
+    const snapshot: ChildRecordSnapshot = {
+      childId: "child_sync",
+      pid: 4242,
+      workdir: "/tmp/child_sync",
+      state: "running",
+      startedAt: baseTs + 10,
+      lastHeartbeatAt: baseTs + 20,
+      retries: 2,
+      metadata: {},
+      endedAt: null,
+      exitCode: null,
+      exitSignal: null,
+      forcedTermination: false,
+      stopReason: null,
+    };
+
+    state.syncChildIndexSnapshot(snapshot);
+
+    const synced = state.getChild("child_sync");
+    expect(synced?.pid).to.equal(4242);
+    expect(synced?.workdir).to.equal("/tmp/child_sync");
+    expect(synced?.retries).to.equal(2);
+    expect(synced?.startedAt).to.equal(baseTs + 10);
+    expect(synced?.lastHeartbeatAt).to.equal(baseTs + 20);
+    expect(synced?.endedAt).to.be.null;
+    expect(synced?.exitCode).to.be.null;
+    expect(synced?.exitSignal).to.be.null;
+    expect(synced?.forcedTermination).to.equal(false);
+
+    const terminatedSnapshot: ChildRecordSnapshot = {
+      ...snapshot,
+      state: "terminated",
+      endedAt: baseTs + 120,
+      exitCode: 0,
+      exitSignal: "SIGTERM",
+      forcedTermination: true,
+      stopReason: "timeout",
+    };
+
+    state.syncChildIndexSnapshot(terminatedSnapshot);
+    const terminated = state.getChild("child_sync");
+    expect(terminated?.endedAt).to.equal(baseTs + 120);
+    expect(terminated?.exitCode).to.equal(0);
+    expect(terminated?.exitSignal).to.equal("SIGTERM");
+    expect(terminated?.forcedTermination).to.equal(true);
+    expect(terminated?.stopReason).to.equal("timeout");
+  });
+
+  it("ignore les instantanés inconnus sans lever d'erreur", () => {
+    const state = new GraphState();
+    const orphanSnapshot: ChildRecordSnapshot = {
+      childId: "child_missing",
+      pid: 1337,
+      workdir: "/tmp/ghost",
+      state: "starting",
+      startedAt: Date.now(),
+      lastHeartbeatAt: null,
+      retries: 0,
+      metadata: {},
+      endedAt: null,
+      exitCode: null,
+      exitSignal: null,
+      forcedTermination: false,
+      stopReason: null,
+    };
+
+    expect(() => state.syncChildIndexSnapshot(orphanSnapshot)).to.not.throw();
   });
 });

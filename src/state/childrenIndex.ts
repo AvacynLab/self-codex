@@ -25,11 +25,11 @@ export interface ChildRecordSnapshot {
   pid: number;
   workdir: string;
   state: ChildLifecycleState;
-  createdAt: number;
+  startedAt: number;
   lastHeartbeatAt: number | null;
   retries: number;
   metadata: Record<string, unknown>;
-  stoppedAt: number | null;
+  endedAt: number | null;
   exitCode: number | null;
   exitSignal: NodeJS.Signals | null;
   forcedTermination: boolean;
@@ -44,7 +44,7 @@ export interface RegisterChildOptions {
   pid: number;
   workdir: string;
   state?: ChildLifecycleState;
-  createdAt?: number;
+  startedAt?: number;
   metadata?: Record<string, unknown>;
 }
 
@@ -62,6 +62,89 @@ export interface ChildExitDetails {
 interface MutableChildRecord extends ChildRecordSnapshot {}
 
 /**
+ * Shape persisted when serialising the index for checkpointing.
+ */
+export interface SerializedChildRecord {
+  state: ChildLifecycleState;
+  lastHeartbeatAt?: number | null;
+  retries?: number;
+  endedAt?: number | null;
+  exitCode?: number | null;
+  exitSignal?: NodeJS.Signals | null;
+  forcedTermination?: boolean;
+  startedAt?: number;
+  metadata?: Record<string, unknown>;
+  stopReason?: string | null;
+}
+
+function isSerializedChildRecord(value: unknown): value is SerializedChildRecord {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+
+  const candidate = value as Record<string, unknown>;
+  if (typeof candidate.state !== "string") {
+    return false;
+  }
+
+  const lifecycleStates: ChildLifecycleState[] = [
+    "starting",
+    "ready",
+    "running",
+    "idle",
+    "stopping",
+    "terminated",
+    "killed",
+    "error",
+  ];
+
+  if (!lifecycleStates.includes(candidate.state as ChildLifecycleState)) {
+    return false;
+  }
+
+  const isNumberOrNull = (v: unknown): v is number | null => v === null || typeof v === "number";
+  const isStringOrNull = (v: unknown): v is string | null => v === null || typeof v === "string";
+
+  if (!isNumberOrNull(candidate.lastHeartbeatAt ?? null)) {
+    return false;
+  }
+
+  if (typeof candidate.retries !== "number" && candidate.retries !== undefined) {
+    return false;
+  }
+
+  if (!isNumberOrNull(candidate.endedAt ?? null)) {
+    return false;
+  }
+
+  if (!isNumberOrNull(candidate.exitCode ?? null)) {
+    return false;
+  }
+
+  if (!isStringOrNull(candidate.exitSignal ?? null)) {
+    return false;
+  }
+
+  if (typeof candidate.forcedTermination !== "boolean" && candidate.forcedTermination !== undefined) {
+    return false;
+  }
+
+  if (candidate.metadata !== undefined && (typeof candidate.metadata !== "object" || candidate.metadata === null)) {
+    return false;
+  }
+
+  if (!isNumberOrNull(candidate.startedAt ?? null)) {
+    return false;
+  }
+
+  if (!isStringOrNull(candidate.stopReason ?? null)) {
+    return false;
+  }
+
+  return true;
+}
+
+/**
  * Raised whenever an operation targets an unknown child identifier.
  */
 export class UnknownChildError extends Error {
@@ -75,6 +158,19 @@ export class UnknownChildError extends Error {
 }
 
 /**
+ * Raised when attempting to register a child twice.
+ */
+export class DuplicateChildError extends Error {
+  public readonly childId: string;
+
+  constructor(childId: string) {
+    super(`Child already registered: ${childId}`);
+    this.name = "DuplicateChildError";
+    this.childId = childId;
+  }
+}
+
+/**
  * Deep clones a mutable record to ensure callers cannot mutate internal state.
  */
 function cloneRecord(record: MutableChildRecord): ChildRecordSnapshot {
@@ -83,11 +179,11 @@ function cloneRecord(record: MutableChildRecord): ChildRecordSnapshot {
     pid: record.pid,
     workdir: record.workdir,
     state: record.state,
-    createdAt: record.createdAt,
+    startedAt: record.startedAt,
     lastHeartbeatAt: record.lastHeartbeatAt,
     retries: record.retries,
     metadata: { ...record.metadata },
-    stoppedAt: record.stoppedAt,
+    endedAt: record.endedAt,
     exitCode: record.exitCode,
     exitSignal: record.exitSignal,
     forcedTermination: record.forcedTermination,
@@ -109,18 +205,22 @@ export class ChildrenIndex {
    * Registers a new child and returns the public snapshot.
    */
   registerChild(options: RegisterChildOptions): ChildRecordSnapshot {
-    const createdAt = options.createdAt ?? Date.now();
+    if (this.children.has(options.childId)) {
+      throw new DuplicateChildError(options.childId);
+    }
+
+    const startedAt = options.startedAt ?? Date.now();
 
     const record: MutableChildRecord = {
       childId: options.childId,
       pid: options.pid,
       workdir: options.workdir,
       state: options.state ?? "starting",
-      createdAt,
+      startedAt,
       lastHeartbeatAt: null,
       retries: 0,
       metadata: { ...(options.metadata ?? {}) },
-      stoppedAt: null,
+      endedAt: null,
       exitCode: null,
       exitSignal: null,
       forcedTermination: false,
@@ -184,8 +284,8 @@ export class ChildrenIndex {
     const record = this.requireChild(childId);
     record.exitCode = details.code;
     record.exitSignal = details.signal;
-    record.stoppedAt = details.at ?? Date.now();
-    record.lastHeartbeatAt = record.stoppedAt;
+    record.endedAt = details.at ?? Date.now();
+    record.lastHeartbeatAt = record.endedAt;
     record.forcedTermination = details.forced ?? false;
     record.stopReason = details.reason ?? null;
 
@@ -233,18 +333,21 @@ export class ChildrenIndex {
   /**
    * Serialises the index into a minimal structure usable by GraphState.
    */
-  serialize(): Record<string, unknown> {
+  serialize(): Record<string, SerializedChildRecord> {
     const entries = Array.from(this.children.entries()).map(([childId, record]) => [
       childId,
       {
         state: record.state,
         lastHeartbeatAt: record.lastHeartbeatAt,
         retries: record.retries,
-        stoppedAt: record.stoppedAt,
+        endedAt: record.endedAt,
         exitCode: record.exitCode,
         exitSignal: record.exitSignal,
         forcedTermination: record.forcedTermination,
-      },
+        startedAt: record.startedAt,
+        metadata: { ...record.metadata },
+        stopReason: record.stopReason,
+      } satisfies SerializedChildRecord,
     ]);
 
     return Object.fromEntries(entries);
@@ -253,11 +356,11 @@ export class ChildrenIndex {
   /**
    * Restores the index from a serialised structure.
    */
-  restore(snapshot: Record<string, unknown>): void {
+  restore(snapshot: Record<string, SerializedChildRecord | unknown>): void {
     this.children.clear();
 
     for (const [childId, raw] of Object.entries(snapshot)) {
-      if (typeof raw !== "object" || raw === null) {
+      if (!isSerializedChildRecord(raw)) {
         continue;
       }
 
@@ -265,16 +368,16 @@ export class ChildrenIndex {
         childId,
         pid: -1,
         workdir: "",
-        state: "starting",
-        createdAt: Date.now(),
-        lastHeartbeatAt: typeof (raw as any).lastHeartbeatAt === "number" ? (raw as any).lastHeartbeatAt : null,
-        retries: typeof (raw as any).retries === "number" ? (raw as any).retries : 0,
-        metadata: {},
-        stoppedAt: typeof (raw as any).stoppedAt === "number" ? (raw as any).stoppedAt : null,
-        exitCode: typeof (raw as any).exitCode === "number" ? (raw as any).exitCode : null,
-        exitSignal: typeof (raw as any).exitSignal === "string" ? ((raw as any).exitSignal as NodeJS.Signals) : null,
-        forcedTermination: Boolean((raw as any).forcedTermination),
-        stopReason: null,
+        state: raw.state,
+        startedAt: raw.startedAt ?? Date.now(),
+        lastHeartbeatAt: raw.lastHeartbeatAt ?? null,
+        retries: raw.retries ?? 0,
+        metadata: { ...(raw.metadata ?? {}) },
+        endedAt: raw.endedAt ?? null,
+        exitCode: raw.exitCode ?? null,
+        exitSignal: raw.exitSignal ?? null,
+        forcedTermination: raw.forcedTermination ?? false,
+        stopReason: raw.stopReason ?? null,
       };
 
       this.children.set(childId, record);

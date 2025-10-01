@@ -3,7 +3,9 @@ import { expect } from "chai";
 
 import {
   PromptTemplatingError,
+  PromptTemplateInput,
   extractTemplateVariables,
+  parsePromptTemplate,
   renderPromptTemplate,
 } from "../src/prompts.js";
 
@@ -56,5 +58,24 @@ describe("prompts", () => {
         { variables: { name: null as unknown as string } },
       ),
     ).to.throw(PromptTemplatingError);
+  });
+
+  it("validates template structure via zod", () => {
+    expect(() =>
+      parsePromptTemplate({} as PromptTemplateInput),
+    ).to.throw(PromptTemplatingError, /at least one segment/);
+
+    expect(() =>
+      parsePromptTemplate({ system: ["ok"], extra: "nope" } as PromptTemplateInput),
+    ).to.throw(PromptTemplatingError);
+  });
+
+  it("rejects unsupported variable types", () => {
+    expect(() =>
+      renderPromptTemplate(
+        { user: "Value {{payload}}" },
+        { variables: { payload: { nested: true } as unknown as string } },
+      ),
+    ).to.throw(PromptTemplatingError, /Invalid prompt variables/);
   });
 });
