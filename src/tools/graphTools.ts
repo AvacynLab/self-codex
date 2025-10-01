@@ -402,6 +402,25 @@ export interface GraphMutateResult extends Record<string, unknown> {
   applied: GraphMutationRecord[];
 }
 
+/**
+ * Convert a serialised graph payload (typically exchanged with tools) into the
+ * internal normalised representation leveraged by the transaction manager.
+ *
+ * The helper intentionally reuses the same normalisation routine as the graph
+ * tools to preserve ordering guarantees and ensure cache keys remain stable.
+ */
+export function normaliseGraphPayload(payload: GraphDescriptorPayload): NormalisedGraph {
+  return normaliseDescriptor(payload as z.infer<typeof GraphDescriptorSchema>);
+}
+
+/**
+ * Serialise a normalised graph so it can be returned to clients or chained into
+ * other tooling primitives without exposing the internal structure.
+ */
+export function serialiseNormalisedGraph(descriptor: NormalisedGraph): GraphDescriptorPayload {
+  return serialiseDescriptor(descriptor);
+}
+
 /** Apply idempotent graph operations, returning the mutated graph. */
 export function handleGraphMutate(input: GraphMutateInput): GraphMutateResult {
   const descriptor = normaliseDescriptor(input.graph);

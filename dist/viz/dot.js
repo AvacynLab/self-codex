@@ -1,4 +1,5 @@
 import { GraphDescriptorSchema } from "../tools/graphTools.js";
+/** Options that tweak the DOT serialisation. */
 /**
  * Render a graph descriptor as a GraphViz DOT document.
  *
@@ -18,8 +19,10 @@ export function renderDotFromGraph(descriptor, options = {}) {
     for (const edge of parsed.edges) {
         const attrs = [];
         const label = buildEdgeLabel(edge, options.weightAttribute);
-        if (label) {
-            attrs.push(`label=\"${label}\"`);
+        const hyperAnnotation = buildHyperEdgeAnnotation(edge);
+        const combinedLabel = hyperAnnotation ? label ? `${label} ${hyperAnnotation}` : hyperAnnotation : label;
+        if (combinedLabel) {
+            attrs.push(`label=\"${combinedLabel}\"`);
         }
         const weight = resolveWeight(edge, options.weightAttribute);
         if (weight !== null) {
@@ -60,6 +63,28 @@ function buildEdgeLabel(edge, weightAttribute) {
     }
     return escapeString(typeof raw === "string" ? raw : String(raw));
 }
+function buildHyperEdgeAnnotation(edge) {
+    const identifier = edge.attributes?.hyper_edge_id;
+    if (typeof identifier !== "string") {
+        return null;
+    }
+    const trimmed = identifier.trim();
+    if (!trimmed) {
+        return null;
+    }
+    let annotation = `[H:${trimmed}`;
+    const pairIndex = edge.attributes?.hyper_edge_pair_index;
+    if (typeof pairIndex === "number" && Number.isFinite(pairIndex)) {
+        annotation += `#${pairIndex}`;
+    }
+    const sourceCardinality = edge.attributes?.hyper_edge_source_cardinality;
+    const targetCardinality = edge.attributes?.hyper_edge_target_cardinality;
+    if (typeof sourceCardinality === "number" && Number.isFinite(sourceCardinality) && typeof targetCardinality === "number" && Number.isFinite(targetCardinality)) {
+        annotation += ` ${sourceCardinality}->${targetCardinality}`;
+    }
+    annotation += "]";
+    return escapeString(annotation);
+}
 function resolveWeight(edge, weightAttribute) {
     if (typeof edge.weight === "number" && Number.isFinite(edge.weight)) {
         return Number(edge.weight.toFixed(6));
@@ -85,5 +110,11 @@ function escapeId(id) {
     return `"${escapeString(id)}"`;
 }
 function escapeString(value) {
-    return value.replace(/"/g, '\\"');
+    // DOT interprets backslashes and quotes, so we normalise the string to a
+    // printable subset while keeping debugging details readable.
+    return value
+        .replace(/\\/g, "\\\\")
+        .replace(/\r\n|\r|\n/g, "\\n")
+        .replace(/"/g, '\\"')
+        .replace(/[\u0000-\u001f]/g, " ");
 }

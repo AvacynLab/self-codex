@@ -226,6 +226,20 @@ export const GraphMutateInputSchema = z.object({
         .min(1, "at least one operation must be provided"),
 });
 export const GraphMutateInputShape = GraphMutateInputSchema.shape;
+/**
+ * Convert a serialised graph payload (typically exchanged with tools) into the
+ * internal normalised representation leveraged by the transaction manager.
+ */
+export function normaliseGraphPayload(payload) {
+    return normaliseDescriptor(payload);
+}
+/**
+ * Serialise a normalised graph so it can be returned to clients or chained into
+ * other tooling primitives without exposing the internal structure.
+ */
+export function serialiseNormalisedGraph(descriptor) {
+    return serialiseDescriptor(descriptor);
+}
 /** Apply idempotent graph operations, returning the mutated graph. */
 export function handleGraphMutate(input) {
     const descriptor = normaliseDescriptor(input.graph);
