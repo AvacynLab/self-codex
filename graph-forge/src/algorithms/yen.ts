@@ -126,7 +126,20 @@ function computeCost(graph: GraphModel, path: string[], evaluator: EdgeCostEvalu
     if (!edge) {
       return Number.POSITIVE_INFINITY;
     }
-    total += evaluator(edge, graph);
+
+    const edgeCost = evaluator(edge, graph);
+    total += edgeCost;
+
+    // Guard against `Infinity` creeping in when the caller provides extremely
+    // large weights. Deterministic finite totals keep the subsequent sorting
+    // and deviation filters predictable, which is especially important for the
+    // heavy-weight regression tests.
+    if (!Number.isFinite(total)) {
+      throw new Error(
+        "Accumulated path cost overflowed while computing k-shortest paths; " +
+          "ensure weights stay within finite bounds.",
+      );
+    }
   }
   return total;
 }

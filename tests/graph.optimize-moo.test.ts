@@ -48,6 +48,21 @@ describe("graph_optimize_moo", () => {
       { parallelism: 2, makespan: 12, cost: 18 },
       { parallelism: 3, makespan: 10, cost: 20 },
     ]);
+
+    // None of the Pareto solutions should dominate the others. The middle
+    // point trades makespan for cost, ensuring the optimiser keeps the full
+    // frontier instead of collapsing to the two extremes.
+    for (let i = 0; i < objectiveSummaries.length; i += 1) {
+      for (let j = 0; j < objectiveSummaries.length; j += 1) {
+        if (i === j) {
+          continue;
+        }
+        const a = objectiveSummaries[i];
+        const b = objectiveSummaries[j];
+        const aDominates = a.makespan <= b.makespan && a.cost <= b.cost && (a.makespan < b.makespan || a.cost < b.cost);
+        expect(aDominates).to.equal(false);
+      }
+    }
   });
 
   it("applies weighted scalarisation on top of the Pareto set", () => {

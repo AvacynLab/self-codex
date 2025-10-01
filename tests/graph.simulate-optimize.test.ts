@@ -1,8 +1,10 @@
 import { expect } from "chai";
 
 import {
+  GraphCriticalPathInputSchema,
   GraphOptimizeInputSchema,
   GraphSimulateInputSchema,
+  handleGraphCriticalPath,
   handleGraphOptimize,
   handleGraphSimulate,
 } from "../src/tools/graphTools.js";
@@ -55,6 +57,40 @@ describe("graph simulate & optimize", () => {
     expect(schedule.C.critical).to.equal(false);
     expect(schedule.D.waiting_time).to.equal(0);
     expect(simulation.warnings).to.deep.equal([]);
+  });
+
+  it("keeps simulation makespan aligned with the critical path duration", () => {
+    const graph: GraphDescriptorPayload = {
+      name: "parallel_chain",
+      nodes: [
+        { id: "start", attributes: { duration: 1 } },
+        { id: "branch_a", attributes: { duration: 4 } },
+        { id: "branch_b", attributes: { duration: 2 } },
+        { id: "merge", attributes: { duration: 3 } },
+      ],
+      edges: [
+        { from: "start", to: "branch_a", attributes: {} },
+        { from: "start", to: "branch_b", attributes: {} },
+        { from: "branch_a", to: "merge", attributes: {} },
+        { from: "branch_b", to: "merge", attributes: {} },
+      ],
+    };
+
+    const simulation = handleGraphSimulate(
+      GraphSimulateInputSchema.parse({ graph, parallelism: 2, duration_attribute: "duration" }),
+    );
+    const critical = handleGraphCriticalPath(
+      GraphCriticalPathInputSchema.parse({ graph, duration_attribute: "duration" }),
+    );
+
+    expect(simulation.metrics.makespan).to.equal(critical.duration);
+
+    const criticalNodes = [...critical.critical_path].sort();
+    const flagged = simulation.schedule
+      .filter((entry) => entry.critical)
+      .map((entry) => entry.node_id)
+      .sort();
+    expect(flagged).to.deep.equal(criticalNodes);
   });
 
   it("suggests parallelism improvements and exposes queue diagnostics", () => {

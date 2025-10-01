@@ -65,4 +65,52 @@ describe("sandbox registry", () => {
     expect(skipped.status).to.equal("skipped");
     expect(skipped.reason).to.equal("handler_missing");
   });
+
+  it("isole les payloads/metadata et capture les erreurs levées", async () => {
+    const registry = new SandboxRegistry({ defaultTimeoutMs: 100 });
+    const payload = { nested: { value: 1 } };
+    const metadata = { nested: { label: "demo" } };
+    let payloadMutationBlocked = false;
+    let metadataMutationBlocked = false;
+
+    registry.register("mutate", (request) => {
+      try {
+        (request.payload as { nested: { value: number } }).nested.value = 42;
+      } catch {
+        payloadMutationBlocked = true;
+      }
+      try {
+        (request.metadata as { nested: { label: string } }).nested.label = "patched";
+      } catch {
+        metadataMutationBlocked = true;
+      }
+      throw new Error("boom");
+    });
+
+    const result = await registry.execute({ action: "mutate", payload, metadata });
+    expect(result.status).to.equal("error");
+    expect(result.reason).to.equal("boom");
+    expect(payloadMutationBlocked).to.equal(true);
+    expect(metadataMutationBlocked).to.equal(true);
+    expect(payload.nested.value).to.equal(1);
+    expect(metadata.nested.label).to.equal("demo");
+  });
+
+  it("signale correctement les timeouts et propage l'abort aux handlers", async () => {
+    const registry = new SandboxRegistry({ defaultTimeoutMs: 20 });
+    let observedAbort = false;
+
+    registry.register("slow", async (request) => {
+      request.signal.addEventListener("abort", () => {
+        observedAbort = true;
+      });
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      return { outcome: "success" };
+    });
+
+    const timedOut = await registry.execute({ action: "slow", payload: null, timeoutMs: 5 });
+    expect(timedOut.status).to.equal("timeout");
+    expect(timedOut.reason).to.equal("timeout_after_5ms");
+    expect(observedAbort).to.equal(true);
+  });
 });

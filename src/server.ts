@@ -14,7 +14,9 @@ import { parseOrchestratorRuntimeOptions } from "./serverOptions.js";
 import { ChildSupervisor } from "./childSupervisor.js";
 import { ChildRecordSnapshot, UnknownChildError } from "./state/childrenIndex.js";
 import { ChildCollectedOutputs, ChildRuntimeStatus } from "./childRuntime.js";
-import { MetaCritic, ReviewKind } from "./agents/metaCritic.js";
+import { MetaCritic, ReviewKind, ReviewResult } from "./agents/metaCritic.js";
+import { reflect, ReflectionResult } from "./agents/selfReflect.js";
+import { scoreCode, scorePlan, scoreText, ScoreCodeInput, ScorePlanInput, ScoreTextInput } from "./quality/scoring.js";
 import { SharedMemoryStore } from "./memory/store.js";
 import { selectMemoryContext } from "./memory/attention.js";
 import { LoopDetector } from "./guard/loopDetector.js";
@@ -182,6 +184,34 @@ function parseRedactEnv(raw: string | undefined): Array<string> {
     .filter((value) => value.length > 0);
 }
 
+function parseBooleanEnv(raw: string | undefined, defaultValue: boolean): boolean {
+  if (raw === undefined) {
+    return defaultValue;
+  }
+  const normalised = raw.trim().toLowerCase();
+  if (!normalised.length) {
+    return defaultValue;
+  }
+  if (["0", "false", "no", "off"].includes(normalised)) {
+    return false;
+  }
+  if (["1", "true", "yes", "on"].includes(normalised)) {
+    return true;
+  }
+  return defaultValue;
+}
+
+function parseQualityThresholdEnv(raw: string | undefined, fallback: number): number {
+  if (raw === undefined) {
+    return fallback;
+  }
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed)) {
+    return fallback;
+  }
+  return Math.min(100, Math.max(0, Math.round(parsed)));
+}
+
 const baseLoggerOptions: LoggerOptions = {
   logFile: process.env.MCP_LOG_FILE ?? undefined,
   maxFileSizeBytes: parseSizeEnv(process.env.MCP_LOG_ROTATE_SIZE),
@@ -206,6 +236,11 @@ const memoryStore = new SharedMemoryStore();
 const metaCritic = new MetaCritic();
 let lastInactivityThresholdMs = 120_000;
 const loopDetector = new LoopDetector();
+const REFLECTION_PRIORITY_KINDS: ReadonlySet<ReviewKind> = new Set(["code", "plan", "text"]);
+
+let reflectionEnabled = parseBooleanEnv(process.env.MCP_ENABLE_REFLECTION, true);
+let qualityGateEnabled = parseBooleanEnv(process.env.MCP_QUALITY_GATE, true);
+let qualityGateThreshold = parseQualityThresholdEnv(process.env.MCP_QUALITY_THRESHOLD, 70);
 
 let DEFAULT_CHILD_RUNTIME = "codex";
 
@@ -577,6 +612,95 @@ function summariseChildOutputs(outputs: ChildCollectedOutputs): {
   }
 
   return { text, tags: Array.from(tags), kind };
+}
+
+function countMatches(pattern: RegExp, text: string): number {
+  const matches = text.match(pattern);
+  return matches ? matches.length : 0;
+}
+
+function deriveCodeQualitySignals(summaryText: string): ScoreCodeInput {
+  const tokens = summaryText.split(/\s+/).filter((token) => token.length > 0);
+  const testsSignals = countMatches(/\b(test|describe|it|expect)\b/gi, summaryText);
+  const lintSignals =
+    countMatches(/\b(?:lint|eslint|tsc|warning|erreur|error|exception)\b/gi, summaryText) +
+    countMatches(/\b(fail|échec)\b/gi, summaryText);
+  const complexityEstimate = tokens.length === 0 ? 5 : Math.ceil(tokens.length / 40);
+
+  return {
+    testsPassed: Math.min(testsSignals, 6),
+    lintErrors: Math.min(lintSignals, 10),
+    complexity: Math.min(complexityEstimate, 100),
+  };
+}
+
+function deriveTextQualitySignals(summaryText: string, reviewScore: number): ScoreTextInput {
+  const condensed = summaryText.replace(/\s+/g, " ").trim();
+  const sentences = condensed.split(/[.!?]+/).map((part) => part.trim()).filter((part) => part.length > 0);
+  const words = condensed.length > 0 ? condensed.split(/\s+/) : [];
+  const averageSentenceLength = sentences.length > 0 ? words.length / sentences.length : words.length;
+  const readability = Math.min(100, Math.max(20, 120 - averageSentenceLength * 3));
+  const bulletMatches = countMatches(/\n\s*(?:[-*•]|\d+\.)/g, summaryText);
+  const sectionMatches = countMatches(/\n\s*[A-Za-zÀ-ÿ0-9]+\s*:/g, summaryText);
+  const structure = Math.min(1, bulletMatches / 5 + sectionMatches / 6 + (sentences.length > 3 ? 0.2 : 0));
+
+  return {
+    factsOK: Math.min(1, Math.max(0, reviewScore)),
+    readability,
+    structure: Math.min(1, Math.max(0, structure)),
+  };
+}
+
+function derivePlanQualitySignals(summaryText: string, reviewScore: number): ScorePlanInput {
+  const lines = summaryText.split(/\n+/).map((line) => line.trim());
+  const nonEmpty = lines.filter((line) => line.length > 0);
+  const stepLines = nonEmpty.filter((line) => /^(?:\d+\.|[-*•])/.test(line));
+  const lower = summaryText.toLowerCase();
+  const coherence = Math.min(1, stepLines.length / Math.max(nonEmpty.length, 1));
+  const coverage = Math.min(1, stepLines.length / 6 + (summaryText.length > 400 ? 0.25 : 0));
+  let risk = reviewScore < 0.5 ? 0.8 : reviewScore < 0.7 ? 0.55 : 0.35;
+  if (!/fallback|plan\s*b|mitigation|contingence|secours/.test(lower)) {
+    risk += 0.2;
+  }
+  risk += Math.min(countMatches(/\brisque|bloquant|retard|incident\b/gi, summaryText) * 0.1, 0.3);
+
+  return {
+    coherence: Math.min(1, Math.max(0, coherence)),
+    coverage: Math.min(1, Math.max(0, coverage)),
+    risk: Math.min(1, Math.max(0, risk)),
+  };
+}
+
+interface QualityAssessmentComputation {
+  score: number;
+  rubric: Record<string, number>;
+  metrics: Record<string, number>;
+}
+
+function computeQualityAssessment(
+  kind: ReviewKind,
+  summaryText: string,
+  review: ReviewResult,
+): QualityAssessmentComputation | null {
+  switch (kind) {
+    case "code": {
+      const signals = deriveCodeQualitySignals(summaryText);
+      const result = scoreCode(signals);
+      return { score: result.score, rubric: result.rubric, metrics: signals };
+    }
+    case "text": {
+      const signals = deriveTextQualitySignals(summaryText, review.overall);
+      const result = scoreText(signals);
+      return { score: result.score, rubric: result.rubric, metrics: signals };
+    }
+    case "plan": {
+      const signals = derivePlanQualitySignals(summaryText, review.overall);
+      const result = scorePlan(signals);
+      return { score: result.score, rubric: result.rubric, metrics: signals };
+    }
+    default:
+      return null;
+  }
 }
 
 function getChildToolContext(): ChildToolContext {
@@ -2491,10 +2615,91 @@ server.registerTool(
           suggestions: review.suggestions.slice(0, 3),
         },
       });
+      let reflectionSummary: ReflectionResult | null = null;
+      const shouldReflect = reflectionEnabled || REFLECTION_PRIORITY_KINDS.has(summary.kind);
+      if (shouldReflect) {
+        try {
+          reflectionSummary = await reflect({
+            kind: summary.kind,
+            input: summary.text,
+            output: summary.text,
+            meta: {
+              score: review.overall,
+              artifacts: result.outputs.artifacts.length,
+              messages: result.outputs.messages.length,
+            },
+          });
+          logger.logCognitive({
+            actor: "self-reflect",
+            phase: "resume",
+            childId: parsed.child_id,
+            content: reflectionSummary.insights.slice(0, 3).join(" | "),
+            metadata: {
+              kind: summary.kind,
+              next_steps: reflectionSummary.nextSteps.slice(0, 2),
+              risks: reflectionSummary.risks.slice(0, 2),
+            },
+          });
+        } catch (error) {
+          logger.warn("self_reflection_failed", {
+            child_id: parsed.child_id,
+            message: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+
+      const qualityComputation = computeQualityAssessment(summary.kind, summary.text, review);
+      let qualityAssessment:
+        | (QualityAssessmentComputation & {
+            kind: ReviewKind;
+            gate: { enabled: boolean; threshold: number; needs_revision: boolean };
+          })
+        | null = null;
+      if (qualityComputation) {
+        const needsRevision = qualityGateEnabled && qualityComputation.score < qualityGateThreshold;
+        qualityAssessment = {
+          ...qualityComputation,
+          kind: summary.kind,
+          gate: {
+            enabled: qualityGateEnabled,
+            threshold: qualityGateThreshold,
+            needs_revision: needsRevision,
+          },
+        };
+        logger.logCognitive({
+          actor: "quality-scorer",
+          phase: "score",
+          childId: parsed.child_id,
+          score: qualityComputation.score / 100,
+          content: `quality-${summary.kind}`,
+          metadata: {
+            threshold: qualityGateThreshold,
+            needs_revision: needsRevision,
+            rubric: qualityComputation.rubric,
+          },
+        });
+      }
       const childSnapshot = childSupervisor.childrenIndex.getChild(parsed.child_id);
       const metadataTags = extractMetadataTags(childSnapshot?.metadata);
       const tags = new Set<string>([...summary.tags, ...metadataTags, parsed.child_id]);
       const goals = extractMetadataGoals(childSnapshot?.metadata);
+
+      const episodeMetadata: Record<string, unknown> = {
+        child_id: parsed.child_id,
+        review,
+        artifact_count: result.outputs.artifacts.length,
+      };
+      if (reflectionSummary) {
+        episodeMetadata.reflection = reflectionSummary;
+      }
+      if (qualityAssessment) {
+        episodeMetadata.quality = {
+          kind: qualityAssessment.kind,
+          score: qualityAssessment.score,
+          rubric: qualityAssessment.rubric,
+          gate: qualityAssessment.gate,
+        };
+      }
 
       const episode = memoryStore.recordEpisode({
         goal: goals.length > 0 ? goals.join(" | ") : `Collecte ${parsed.child_id}`,
@@ -2502,14 +2707,10 @@ server.registerTool(
         outcome: summary.text.slice(0, 512),
         tags: Array.from(tags),
         importance: review.overall,
-        metadata: {
-          child_id: parsed.child_id,
-          review,
-          artifact_count: result.outputs.artifacts.length,
-        },
+        metadata: episodeMetadata,
       });
 
-      const payload = {
+      const payload: Record<string, unknown> = {
         ...result,
         review,
         memory_snapshot: {
@@ -2518,6 +2719,19 @@ server.registerTool(
           stored_at: episode.createdAt,
         },
       };
+      if (reflectionSummary) {
+        payload.reflection = reflectionSummary;
+      }
+      if (qualityAssessment) {
+        payload.quality_assessment = {
+          kind: qualityAssessment.kind,
+          score: qualityAssessment.score,
+          rubric: qualityAssessment.rubric,
+          metrics: qualityAssessment.metrics,
+          gate: qualityAssessment.gate,
+        };
+        payload.needs_revision = qualityAssessment.gate.needs_revision;
+      }
 
       return {
         content: [{ type: "text" as const, text: j({ tool: "child_collect", result: payload }) }],
@@ -3329,6 +3543,10 @@ if (isMain) {
     logger.error("cli_options_invalid", { message });
     process.exit(1);
   }
+
+  reflectionEnabled = options.enableReflection;
+  qualityGateEnabled = options.enableQualityGate;
+  qualityGateThreshold = options.qualityThreshold;
 
   if (options.logFile) {
     activeLoggerOptions = { ...activeLoggerOptions, logFile: options.logFile };

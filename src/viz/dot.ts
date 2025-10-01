@@ -116,5 +116,11 @@ function escapeId(id: string): string {
 }
 
 function escapeString(value: string): string {
-  return value.replace(/"/g, '\\"');
+  // DOT interprets backslashes and quotes, so we normalise the string to a
+  // printable subset while keeping debugging details readable.
+  return value
+    .replace(/\\/g, "\\\\")
+    .replace(/\r\n|\r|\n/g, "\\n")
+    .replace(/"/g, '\\"')
+    .replace(/[\u0000-\u001f]/g, " ");
 }

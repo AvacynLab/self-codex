@@ -46,6 +46,33 @@ describe("graph-forge k-shortest paths", () => {
       ["A", "C", "D"],
     ]);
   });
+
+  it("handles very large but finite edge weights without overflowing", () => {
+    const heavy = new GraphModel(
+      "heavy",
+      [
+        { id: "S", attributes: {} },
+        { id: "M", attributes: {} },
+        { id: "T", attributes: {} },
+      ],
+      [
+        { from: "S", to: "M", attributes: { weight: 500_000 } },
+        { from: "M", to: "T", attributes: { weight: 600_000 } },
+        { from: "S", to: "T", attributes: { weight: 1_500_000 } },
+      ],
+      new Map(),
+    );
+
+    const results = kShortestPaths(heavy, "S", "T", 2);
+    expect(results).to.have.length(2);
+
+    const [best, alternative] = results;
+
+    expect(best.distance).to.equal(1_100_000);
+    expect(best.path).to.deep.equal(["S", "M", "T"]);
+    expect(alternative.distance).to.equal(1_500_000);
+    expect(alternative.path).to.deep.equal(["S", "T"]);
+  });
 });
 
 function buildSampleGraph(): RuntimeGraphModel {

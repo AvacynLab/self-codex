@@ -94,4 +94,38 @@ describe("LoopDetector", () => {
     expect(timeout).to.be.at.most(Math.round(80_000 * 1.2));
     expect(timeout).to.be.at.least(40_000);
   });
+
+  it("identifies a synthetic A↔B cycle across children and resets after mitigation", () => {
+    const detector = new LoopDetector({
+      loopWindowMs: 1_000,
+      maxAlternations: 2,
+      warnAtAlternations: 1,
+    });
+    const base = Date.now();
+
+    const send = (from: string, to: string, offset: number) =>
+      detector.recordInteraction({
+        from,
+        to,
+        signature: "handoff::sync",
+        childId: from,
+        taskId: "handoff",
+        taskType: "coordination",
+        timestamp: base + offset,
+      });
+
+    expect(send("child-A", "child-B", 0)).to.equal(null);
+    const warn = send("child-B", "child-A", 100);
+    expect(warn).to.not.equal(null);
+    expect(warn!.recommendation).to.equal("warn");
+    expect(warn!.participants).to.have.members(["child-A", "child-B"]);
+
+    const kill = send("child-A", "child-B", 200);
+    expect(kill).to.not.equal(null);
+    expect(kill!.recommendation).to.equal("kill");
+    expect(kill!.occurrences).to.equal(2);
+
+    // After a kill alert, the detector should reset state for the signature before re-raising warnings.
+    expect(send("child-B", "child-A", 500)).to.equal(null);
+  });
 });

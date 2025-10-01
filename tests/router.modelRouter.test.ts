@@ -1,7 +1,9 @@
 import { describe, it } from "mocha";
 import { expect } from "chai";
+import { z } from "zod";
 
 import { ModelRouter, RoutingTaskDescriptor } from "../src/router/modelRouter.js";
+import type { SpecialistConfig } from "../src/router/modelRouter.js";
 
 describe("ModelRouter", () => {
   function createRouter() {
@@ -84,5 +86,38 @@ describe("ModelRouter", () => {
 
     expect(decision.model).to.equal("math-guru");
     expect(decision.reason).to.include("score:");
+  });
+
+  it("rejects invalid specialist configurations when updating the routing table", () => {
+    const router = createRouter();
+    expect(() => {
+      router.registerSpecialist({
+        // Missing identifier and invalid capacity to trigger schema validation.
+        id: "",
+        maxTokens: -10,
+      } as unknown as SpecialistConfig);
+    }).to.throw(z.ZodError);
+  });
+
+  it("refuses to route when both specialists and the fallback model are unavailable", () => {
+    const router = createRouter();
+    router.setAvailability("vision-pro", false);
+    router.setAvailability("code-smith", false);
+    router.setAvailability("math-guru", false);
+    router.setAvailability("codex-general", false);
+
+    expect(() => router.route({ kind: "vision" })).to.throw(
+      "No available model could satisfy the request and fallback 'codex-general' is unavailable.",
+    );
+  });
+
+  it("falls back to Codex when the relevant specialist is temporarily unavailable", () => {
+    const router = createRouter();
+    router.setAvailability("vision-pro", false);
+
+    const decision = router.route({ kind: "vision" });
+
+    expect(decision.model).to.equal("codex-general");
+    expect(decision.reason).to.equal("fallback");
   });
 });

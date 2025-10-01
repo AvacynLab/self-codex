@@ -36,6 +36,89 @@ function normalise(inputs: string[] | undefined): string[] {
   return Array.from(unique).filter((entry) => entry.length > 0);
 }
 
+/** Canonical form used to detect duplicated or contradictory goals. */
+function canonicalGoal(goal: string): string {
+  return goal.toLowerCase().replace(/\s+/g, " ").trim();
+}
+
+/**
+ * Assigns a coarse sentiment to an episode outcome so conflicting narratives
+ * (e.g. "échec" vs. "succès") can be filtered out when assembling context.
+ */
+function classifyOutcome(outcome: string): "positive" | "negative" | "neutral" {
+  const text = outcome.toLowerCase();
+  const negativeHints = ["fail", "échec", "incident", "erreur", "crash", "bloqué"];
+  const positiveHints = ["succès", "réussi", "passed", "résolu", "stable", "ok"];
+  if (negativeHints.some((hint) => text.includes(hint))) {
+    return "negative";
+  }
+  if (positiveHints.some((hint) => text.includes(hint))) {
+    return "positive";
+  }
+  return "neutral";
+}
+
+interface EpisodeCandidate {
+  episode: MemoryEpisode;
+  score: number;
+}
+
+/**
+ * Removes contradictory episodes by keeping the highest scoring outcome for a
+ * given goal/sentiment. Neutral entries are always allowed as they usually
+ * carry descriptive context rather than directives.
+ */
+function filterContradictoryEpisodes(candidates: EpisodeCandidate[], limit: number): EpisodeCandidate[] {
+  const selected = new Map<string, EpisodeCandidate>();
+
+  for (const entry of candidates) {
+    if (selected.size >= limit) {
+      break;
+    }
+    const goalKey = canonicalGoal(entry.episode.goal);
+    const sentiment = classifyOutcome(entry.episode.outcome);
+    const compositeKey = `${goalKey}:${sentiment}`;
+
+    if (!selected.has(compositeKey)) {
+      selected.set(compositeKey, entry);
+      continue;
+    }
+
+    const existing = selected.get(compositeKey)!;
+    if (entry.score > existing.score) {
+      selected.set(compositeKey, entry);
+    }
+  }
+
+  // Once specific sentiment slots are filled, merge them back while avoiding
+  // contradictory sentiment mixes for the same goal.
+  const final: EpisodeCandidate[] = [];
+  const goalSentiment = new Map<string, "positive" | "negative" | "neutral">();
+  for (const entry of candidates) {
+    if (final.length >= limit) {
+      break;
+    }
+    const goalKey = canonicalGoal(entry.episode.goal);
+    const sentiment = classifyOutcome(entry.episode.outcome);
+    const compositeKey = `${goalKey}:${sentiment}`;
+
+    const winner = selected.get(compositeKey);
+    if (!winner || winner.episode.id !== entry.episode.id) {
+      continue;
+    }
+
+    const previousSentiment = goalSentiment.get(goalKey);
+    if (previousSentiment && previousSentiment !== sentiment && sentiment !== "neutral" && previousSentiment !== "neutral") {
+      continue;
+    }
+
+    goalSentiment.set(goalKey, sentiment);
+    final.push(entry);
+  }
+
+  return final;
+}
+
 /**
  * Combines tag based and semantic searches to gather the most relevant context
  * for a new child runtime. The selection deliberately stays compact to avoid
@@ -74,11 +157,12 @@ export function selectMemoryContext(store: SharedMemoryStore, query: AttentionQu
     }
   }
 
-  const rankedEpisodes = Array.from(episodeCandidates.values())
+  const scoredEpisodes = Array.from(episodeCandidates.values())
     .filter((entry) => entry.score >= minimumScore)
-    .sort((a, b) => b.score - a.score || b.episode.createdAt - a.episode.createdAt)
-    .slice(0, limit)
-    .map((entry) => entry.episode);
+    .sort((a, b) => b.score - a.score || b.episode.createdAt - a.episode.createdAt);
+
+  const filteredEpisodes = filterContradictoryEpisodes(scoredEpisodes, limit);
+  const rankedEpisodes = filteredEpisodes.map((entry) => entry.episode);
 
   if (rankedEpisodes.length === 0 && episodeCandidates.size > 0) {
     // Ensure at least one episode is returned even if all scores were below the threshold.

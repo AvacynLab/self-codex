@@ -271,11 +271,24 @@ export function pruneWeakBranches(
   graph: NormalisedGraph,
   evaluation: AdaptiveEvaluationResult,
 ): NormalisedGraph {
-  const edges = graph.edges.filter((edge) => !evaluation.edgesToPrune.includes(edgeKey(edge.from, edge.to)));
+  const edgesToRemove = new Set(evaluation.edgesToPrune);
+  let removedEdges = 0;
+
+  const retainedEdges = graph.edges.filter((edge) => {
+    const shouldRemove = edgesToRemove.has(edgeKey(edge.from, edge.to));
+    if (shouldRemove) {
+      removedEdges += 1;
+    }
+    return !shouldRemove;
+  });
+
+  // Keep the structure immutable while ensuring repeated pruning rounds are
+  // idempotent: once the weak edges disappeared we simply retain the current
+  // version number so subsequent passes do not drift.
   return {
     ...graph,
-    edges,
-    graphVersion: graph.graphVersion + (evaluation.edgesToPrune.length > 0 ? 1 : 0),
+    edges: removedEdges > 0 ? retainedEdges : [...graph.edges],
+    graphVersion: graph.graphVersion + (removedEdges > 0 ? 1 : 0),
   };
 }
 

@@ -21,6 +21,7 @@ import {
 import { writeArtifact } from "../src/artifacts.js";
 
 const mockRunnerPath = fileURLToPath(new URL("./fixtures/mock-runner.js", import.meta.url));
+const stubbornRunnerPath = fileURLToPath(new URL("./fixtures/stubborn-runner.js", import.meta.url));
 
 function createPlanContext(options: {
   childrenRoot: string;
@@ -315,6 +316,89 @@ describe("plan tools", () => {
       expect(messages).to.include("plan_join_completed");
       expect(messages).to.include("plan_reduce");
       expect(messages).to.include("plan_reduce_completed");
+    } finally {
+      await logger.flush();
+      await supervisor.disposeAll();
+      await rm(childrenRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("satisfies quorum joins when a stubborn child times out", async function () {
+    this.timeout(10000);
+    const childrenRoot = await mkdtemp(path.join(tmpdir(), "plan-tools-quorum-"));
+    const supervisor = new ChildSupervisor({
+      childrenRoot,
+      defaultCommand: process.execPath,
+      defaultArgs: [mockRunnerPath],
+    });
+    const graphState = new GraphState();
+    const orchestratorLog = path.join(childrenRoot, "tmp", "orchestrator.log");
+    const logger = new StructuredLogger({ logFile: orchestratorLog });
+    const events: Array<{ kind: string; payload?: unknown }> = [];
+    const context = createPlanContext({ childrenRoot, supervisor, graphState, logger, events });
+
+    try {
+      const fanout = await handlePlanFanout(
+        context,
+        PlanFanoutInputSchema.parse({
+          goal: "Valider un quorum",
+          prompt_template: {
+            system: "Clone {{child_name}}",
+            user: "But: {{goal}}",
+          },
+          children_spec: {
+            list: [
+              { name: "alpha" },
+              { name: "beta" },
+              {
+                name: "gamma",
+                command: process.execPath,
+                args: [stubbornRunnerPath],
+              },
+            ],
+          },
+        }),
+      );
+
+      // The stubborn runner acknowledges prompts without emitting a terminal
+      // response, forcing the join helper to handle the timeout branch while
+      // the other clones succeed immediately.
+
+      const responsive = fanout.child_ids.slice(0, 2);
+      for (const childId of responsive) {
+        // Confirm each cooperative child produced the initial prompt response so
+        // quorum accounting observes two terminal messages before the timeout.
+        await supervisor.waitForMessage(
+          childId,
+          (message) => {
+            const parsed = message.parsed as { type?: string } | null;
+            return message.stream === "stdout" && parsed?.type === "response";
+          },
+          2000,
+        );
+      }
+
+      const join = await handlePlanJoin(
+        context,
+        PlanJoinInputSchema.parse({
+          children: fanout.child_ids,
+          join_policy: "quorum",
+          quorum_count: 2,
+          timeout_sec: 1,
+        }),
+      );
+
+      expect(join.policy).to.equal("quorum");
+      expect(join.quorum_threshold).to.equal(2);
+      expect(join.satisfied).to.equal(true);
+      expect(join.success_count).to.equal(2);
+      expect(join.failure_count).to.equal(1);
+
+      const statuses = new Map(join.results.map((result) => [result.child_id, result.status]));
+      expect(statuses.get(responsive[0])).to.equal("success");
+      expect(statuses.get(responsive[1])).to.equal("success");
+      const stubbornId = fanout.child_ids[2];
+      expect(statuses.get(stubbornId)).to.equal("timeout");
     } finally {
       await logger.flush();
       await supervisor.disposeAll();

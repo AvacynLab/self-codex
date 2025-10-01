@@ -86,6 +86,37 @@ describe("artifacts", () => {
     }
   });
 
+  it("rejects reading artifacts with sandbox escaping paths", async () => {
+    const childrenRoot = await mkdtemp(path.join(tmpdir(), "artifacts-"));
+
+    try {
+      await writeArtifact({
+        childrenRoot,
+        childId: "child-a",
+        relativePath: "reports/a.txt",
+        data: "ok",
+        mimeType: "text/plain",
+      });
+
+      let error: unknown;
+      try {
+        await readArtifact({
+          childrenRoot,
+          childId: "child-a",
+          relativePath: "../sneaky.txt",
+        });
+      } catch (err) {
+        error = err;
+      }
+
+      // The guard must mirror writeArtifact protections so a malicious caller
+      // cannot exfiltrate data from neighbouring workspaces.
+      expect(error).to.be.instanceOf(PathResolutionError);
+    } finally {
+      await rm(childrenRoot, { recursive: true, force: true });
+    }
+  });
+
   it("scans artifacts recursively and refreshes the manifest", async () => {
     const childrenRoot = await mkdtemp(path.join(tmpdir(), "artifacts-"));
 
