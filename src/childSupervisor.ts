@@ -5,9 +5,11 @@ import {
   ChildMessageStreamOptions,
   ChildMessageStreamResult,
   ChildRuntime,
+  ChildRuntimeLimits,
   ChildRuntimeMessage,
   ChildRuntimeStatus,
   ChildShutdownResult,
+  ChildSpawnRetryOptions,
   startChildRuntime,
 } from "./childRuntime.js";
 import { ChildrenIndex, ChildRecordSnapshot } from "./state/childrenIndex.js";
@@ -69,6 +71,12 @@ export interface CreateChildOptions {
   metadata?: Record<string, unknown>;
   /** Additional manifest fields (handy for tooling). */
   manifestExtras?: Record<string, unknown>;
+  /** Declarative limits applied to the child runtime (tokens, time, etc.). */
+  limits?: ChildRuntimeLimits | null;
+  /** Tools explicitly allowed for this child instance. */
+  toolsAllow?: string[] | null;
+  /** Custom retry strategy applied to the initial spawn. */
+  spawnRetry?: ChildSpawnRetryOptions;
   /**
    * When true (default) the supervisor waits for a JSON message whose `type`
    * equals {@link readyType} before resolving the creation call. This provides
@@ -252,6 +260,9 @@ export class ChildSupervisor {
       env,
       metadata: options.metadata,
       manifestExtras: options.manifestExtras,
+      limits: options.limits ?? null,
+      toolsAllow: options.toolsAllow ?? null,
+      spawnRetry: options.spawnRetry,
     });
 
     const snapshot = this.index.registerChild({
@@ -330,6 +341,15 @@ export class ChildSupervisor {
     const runtime = this.requireRuntime(childId);
     const index = this.requireIndex(childId);
     return { runtime: runtime.getStatus(), index };
+  }
+
+  /**
+   * Returns the set of tools explicitly allowed for the targeted child. An
+   * empty array means the child is unrestricted.
+   */
+  getAllowedTools(childId: string): readonly string[] {
+    const runtime = this.requireRuntime(childId);
+    return runtime.toolsAllow;
   }
 
   /**

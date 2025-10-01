@@ -40,3 +40,15 @@ Les entrées exhaustives (inputs exacts, sorties condensées, verdicts, artefact
 | child_collect | SIMULATED_OK | Artefacts collectés (3) | children/child-gamma/workspace/module.mjs<br>children/child-gamma/workspace/test.mjs<br>children/child-gamma/outbox/output.json |
 | plan_join | SIMULATED_OK | 3 enfants synchronisés | — |
 | plan_reduce | SIMULATED_OK | Fusion enregistrée dans reports/children_merge.json | reports/children_merge.json |
+
+## Mémoire, critiques & sandbox
+
+| Module | Verdict | Résumé | Artefacts |
+| --- | --- | --- | --- |
+| memory.store.persist | SIMULATED_OK | 2 épisodes sauvegardés (lint, QA) | logs/memory_store.json |
+| memory.attention.select | SIMULATED_OK | Contexte réduit injecté dans 3 enfants | reports/memory_attention.md |
+| agents.metaCritic.review | SIMULATED_OK | Scores 0.78–0.86 avec feedback ciblé | reports/cognitive_feedback.md |
+| agents.selfReflect.run | SIMULATED_OK | Post-mortems générés et archivés | reports/cognitive_feedback.md |
+| quality.scoring.evaluate | SIMULATED_OK | Seuils lint/tests validés | reports/cognitive_feedback.md |
+| sim.sandbox.execute | SIMULATED_OK | 2 exécutions (1 succès, 1 échec contrôlé) | logs/sandbox_runs.json |
+| monitor.dashboard.stream | SIMULATED_OK | Heatmap consolidée (tokens/attentes/alertes) | logs/dashboard_heatmap.json |

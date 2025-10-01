@@ -576,3 +576,263 @@ planification, algorithmes de graphes, simulation/optimisation).
 Le pipeline GitHub Actions (matrice Node 18/20/22) enchaîne `npm install`,
 `npm run build`, `npm run lint` puis `npm test`. Toute erreur TypeScript, test ou
 contrat JSON-RPC bloque la livraison.
+
+## Annexe — Exemples détaillés par outil
+
+Cette annexe regroupe des exemples prêts à l'emploi pour **chaque** outil afin
+de faciliter l'intégration MCP et la rédaction de recettes. Les réponses
+présentées sont tronquées pour la lisibilité, mais respectent le format réel
+(`{ type: "text", text: JSON.stringify(...) }`).
+
+### Outils enfants (`child_*`)
+
+```json
+{
+  "tool": "child_status",
+  "input": { "child_id": "child_alpha" }
+}
+```
+
+```json
+{
+  "tool": "child_cancel",
+  "input": { "child_id": "child_alpha", "timeout_ms": 1500 }
+}
+```
+
+```json
+{
+  "tool": "child_kill",
+  "input": { "child_id": "child_alpha" }
+}
+```
+
+```json
+{
+  "tool": "child_gc",
+  "input": { "child_id": "child_alpha" }
+}
+```
+
+### Planification (`plan_*`)
+
+```json
+{
+  "tool": "plan_fanout",
+  "input": {
+    "children_spec": { "list": [
+      { "id": "alpha", "prompt": { "system": "reviewer", "user": "{{snippet}}" }, "variables": { "snippet": "PR #42" } },
+      { "id": "beta",  "prompt": { "system": "tester",  "user": "{{snippet}}" }, "variables": { "snippet": "PR #42" } }
+    ] },
+    "parallelism": 2,
+    "retry": { "max": 1, "backoff_ms": 500 }
+  }
+}
+```
+
+```json
+{
+  "tool": "plan_join",
+  "input": { "children": ["alpha", "beta"], "join_policy": "first_success" }
+}
+```
+
+```json
+{
+  "tool": "plan_reduce",
+  "input": { "children": ["alpha", "beta"], "reducer": { "kind": "vote", "threshold": 0.6 } }
+}
+```
+
+### Outils de graphes
+
+```json
+{
+  "tool": "graph_paths_constrained",
+  "input": {
+    "graph": { "name": "pipeline", "nodes": [...], "edges": [...] },
+    "start": "lint_core",
+    "goal": "deploy_stage",
+    "avoid_nodes": ["test_manual"],
+    "max_cost": 22
+  }
+}
+```
+
+```json
+{
+  "tool": "graph_centrality_betweenness",
+  "input": {
+    "graph": { "name": "pipeline", "nodes": [...], "edges": [...] },
+    "weighted": true,
+    "weight_attribute": "duration"
+  }
+}
+```
+
+```json
+{
+  "tool": "graph_simulate",
+  "input": {
+    "graph": { "name": "pipeline", "nodes": [...], "edges": [...] },
+    "max_parallelism": 3,
+    "start_at": "2025-10-01T08:00:00Z"
+  }
+}
+```
+
+```json
+{
+  "tool": "graph_critical_path",
+  "input": {
+    "graph": { "name": "pipeline", "nodes": [...], "edges": [...] },
+    "weight_attribute": "duration"
+  }
+}
+```
+
+```json
+{
+  "tool": "graph_optimize",
+  "input": {
+    "graph": { "name": "pipeline", "nodes": [...], "edges": [...] },
+    "objective": "makespan",
+    "scenarios": [
+      { "id": "baseline" },
+      { "id": "extra_parallelism", "max_parallelism": 4 },
+      { "id": "fast_docs", "overrides": { "nodes": [{ "id": "docs_generate", "attributes": { "duration": 2 }}] } }
+    ]
+  }
+}
+```
+
+```json
+{
+  "tool": "graph_optimize_moo",
+  "input": {
+    "graph": { "name": "pipeline", "nodes": [...], "edges": [...] },
+    "objectives": ["makespan", "cost"],
+    "scenarios": [
+      { "id": "baseline" },
+      { "id": "cheap", "overrides": { "edges": [{ "from": "deploy_stage", "to": "notify", "attributes": { "risk": 1 }}] } }
+    ]
+  }
+}
+```
+
+```json
+{
+  "tool": "graph_causal_analyze",
+  "input": {
+    "graph": { "name": "pipeline", "nodes": [...], "edges": [...] }
+  }
+}
+```
+
+```json
+{
+  "tool": "graph_export",
+  "input": {
+    "graph": { "name": "pipeline", "nodes": [...], "edges": [...] },
+    "format": "mermaid",
+    "target_path": "exports/pipeline.mmd"
+  }
+}
+```
+
+```json
+{
+  "tool": "graph_partition",
+  "input": {
+    "graph": { "name": "pipeline", "nodes": [...], "edges": [...] },
+    "objective": "min_cut",
+    "seed": ["lint_core", "test_unit"]
+  }
+}
+```
+
+### Innovations : mémoire, critique, sandbox, monitoring
+
+```json
+{
+  "tool": "child_create",
+  "input": {
+    "prompt": { "system": "plan critique", "user": "Analyse le playbook" },
+    "metadata": { "tags": ["plan", "high_risk"] },
+    "memory": {
+      "episodes": [
+        {
+          "goal": "Stabiliser pipeline lint/test",
+          "decisions": ["Paralléliser lint", "Revoir limites"],
+          "outcome": "Succès partiel",
+          "tags": ["lint", "retro"]
+        }
+      ]
+    }
+  }
+}
+```
+
+```json
+{
+  "module": "metaCritic.review",
+  "input": {
+    "output": "Plan de tests",
+    "kind": "plan",
+    "criteria": ["coverage", "clarity", "risk"]
+  }
+}
+```
+
+```json
+{
+  "module": "sim.sandbox.execute",
+  "input": {
+    "handler": "risk_probing",
+    "payload": { "prompt": "Supprimer base de données", "context": "environnement staging" },
+    "timeout_ms": 2000
+  }
+}
+```
+
+```json
+{
+  "module": "monitor.dashboard.stream",
+  "input": {
+    "endpoint": "http://localhost:7411/dashboard",
+    "filters": { "only_active": true }
+  }
+}
+```
+
+Les modules de réflexion automatique (`selfReflect`) et de scoring qualitatif
+(`quality.scoring`) s'exécutent après chaque `child_collect` :
+
+```json
+{
+  "module": "selfReflect.summarise",
+  "input": {
+    "child_id": "child_alpha",
+    "transcript": ["Analyse complète du PR #42"],
+    "artefacts": ["children/child-alpha/outbox/output.json"]
+  }
+}
+```
+
+```json
+{
+  "module": "quality.scoring.evaluate",
+  "input": {
+    "kind": "code",
+    "metrics": {
+      "tests": { "passed": 142, "failed": 0 },
+      "lint": { "errors": 0 },
+      "coverage": { "lines": 92.4 }
+    }
+  }
+}
+```
+
+Enfin, le détecteur de boucles s'alimente via `child_send` et expose ses
+alertes dans les journaux cognitifs (`logs/cognitive.jsonl`).
+

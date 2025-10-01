@@ -27,9 +27,12 @@ import {
 } from "../src/tools/childTools.js";
 import { StructuredLogger } from "../src/logger.js";
 import { writeArtifact } from "../src/artifacts.js";
+import { SandboxRegistry, setSandboxRegistry } from "../src/sim/sandbox.js";
+import { LoopDetector } from "../src/guard/loopDetector.js";
 
 const mockRunnerPath = fileURLToPath(new URL("./fixtures/mock-runner.js", import.meta.url));
 const stubbornRunnerPath = fileURLToPath(new URL("./fixtures/stubborn-runner.js", import.meta.url));
+const silentRunnerPath = fileURLToPath(new URL("./fixtures/silent-runner.js", import.meta.url));
 
 describe("child tool handlers", () => {
   it("creates a cooperative child, exchanges messages and cleans up resources", async () => {
@@ -43,7 +46,7 @@ describe("child tool handlers", () => {
     });
     const logFile = path.join(childrenRoot, "tmp", "orchestrator.log");
     const logger = new StructuredLogger({ logFile });
-    const context: ChildToolContext = { supervisor, logger };
+    const context: ChildToolContext = { supervisor, logger, loopDetector: new LoopDetector() };
 
     try {
       const createInput = ChildCreateInputSchema.parse({
@@ -101,6 +104,7 @@ describe("child tool handlers", () => {
       const sendResult = await handleChildSend(context, sendInput);
       expect(sendResult.message.messageId).to.include(created.child_id);
       expect(sendResult.awaited_message).to.not.equal(null);
+      expect(sendResult.loop_alert).to.equal(null);
 
       const response = sendResult.awaited_message!;
       expect(response.stream).to.equal("stdout");
@@ -118,6 +122,7 @@ describe("child tool handlers", () => {
         }),
       );
       expect(streamSend.awaited_message).to.not.equal(null);
+      expect(streamSend.loop_alert).to.equal(null);
       const streamMessage = streamSend.awaited_message!;
       const streamParsed = streamMessage.parsed as { type?: string } | null;
       expect(streamParsed?.type).to.equal("pong");
@@ -200,7 +205,7 @@ describe("child tool handlers", () => {
     });
     const logFile = path.join(childrenRoot, "tmp", "orchestrator.log");
     const logger = new StructuredLogger({ logFile });
-    const context: ChildToolContext = { supervisor, logger };
+    const context: ChildToolContext = { supervisor, logger, loopDetector: new LoopDetector() };
 
     try {
       const created = await handleChildCreate(context, ChildCreateInputSchema.parse({ wait_for_ready: true }));
@@ -223,6 +228,307 @@ describe("child tool handlers", () => {
       await logger.flush();
       await supervisor.disposeAll();
       await rm(childrenRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("runs a sandbox dry-run before dispatching high-risk payloads", async () => {
+    const sandboxRegistry = new SandboxRegistry();
+    sandboxRegistry.register("dry-run", async (request) => ({
+      outcome: "success",
+      preview: { simulated: request.payload },
+      metrics: { tokens: 2 },
+    }));
+    const previousRegistry = setSandboxRegistry(sandboxRegistry);
+
+    const childrenRoot = await mkdtemp(path.join(tmpdir(), "child-tools-sandbox-"));
+    const supervisor = new ChildSupervisor({
+      childrenRoot,
+      defaultCommand: process.execPath,
+      defaultArgs: [mockRunnerPath, "--role", "guardian"],
+    });
+    const logFile = path.join(childrenRoot, "tmp", "orchestrator.log");
+    const logger = new StructuredLogger({ logFile });
+    const context: ChildToolContext = { supervisor, logger, loopDetector: new LoopDetector() };
+
+    try {
+      const created = await handleChildCreate(
+        context,
+        ChildCreateInputSchema.parse({
+          metadata: { risk: "high", tags: ["analysis", "high-risk"] },
+          wait_for_ready: true,
+        }),
+      );
+
+      const sendResult = await handleChildSend(
+        context,
+        ChildSendInputSchema.parse({
+          child_id: created.child_id,
+          payload: { type: "prompt", content: "validate sandbox" },
+          expect: "final",
+          timeout_ms: 1500,
+          sandbox: { metadata: { scenario: "unit" } },
+        }),
+      );
+
+      expect(sendResult.sandbox_result).to.not.equal(null);
+      expect(sendResult.sandbox_result?.status).to.equal("ok");
+      expect(sendResult.sandbox_result?.preview).to.deep.equal({ simulated: { type: "prompt", content: "validate sandbox" } });
+      expect(sendResult.sandbox_result?.metadata).to.include({ child_id: created.child_id, high_risk: true });
+      expect(sendResult.sandbox_result?.metadata).to.include({ scenario: "unit" });
+      expect(sendResult.awaited_message).to.not.equal(null);
+      expect(sendResult.loop_alert).to.equal(null);
+      const parsed = sendResult.awaited_message?.parsed as { type?: string; content?: string } | null;
+      expect(parsed?.type).to.equal("response");
+      expect(parsed?.content).to.equal("validate sandbox");
+    } finally {
+      setSandboxRegistry(previousRegistry);
+      await logger.flush();
+      await supervisor.disposeAll();
+      await rm(childrenRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("surfaces loop alerts when alternating exchanges repeat too quickly", async () => {
+    const childrenRoot = await mkdtemp(path.join(tmpdir(), "child-tools-loop-"));
+    const loopDetector = new LoopDetector({
+      loopWindowMs: 10_000,
+      maxAlternations: 2,
+      warnAtAlternations: 1,
+      defaultTimeoutMs: 1_000,
+      taskTimeouts: {
+        analysis: { baseMs: 1_000, minMs: 250, maxMs: 4_000, complexityMultiplier: 1.1 },
+      },
+    });
+    const supervisor = new ChildSupervisor({
+      childrenRoot,
+      defaultCommand: process.execPath,
+      defaultArgs: [mockRunnerPath, "--role", "friendly"],
+    });
+    const logFile = path.join(childrenRoot, "tmp", "orchestrator.log");
+    const logger = new StructuredLogger({ logFile });
+    const context: ChildToolContext = { supervisor, logger, loopDetector };
+
+    try {
+      const created = await handleChildCreate(
+        context,
+        ChildCreateInputSchema.parse({
+          metadata: { task_id: "analysis-001", task_type: "analysis" },
+          wait_for_ready: true,
+        }),
+      );
+
+      const payload = { type: "prompt", content: "loop please" };
+
+      const first = await handleChildSend(
+        context,
+        ChildSendInputSchema.parse({
+          child_id: created.child_id,
+          payload,
+          expect: "final",
+          timeout_ms: 1_500,
+        }),
+      );
+      expect(first.loop_alert).to.not.equal(null);
+      expect(first.loop_alert?.recommendation).to.equal("warn");
+
+      const second = await handleChildSend(
+        context,
+        ChildSendInputSchema.parse({
+          child_id: created.child_id,
+          payload,
+          expect: "final",
+          timeout_ms: 1_500,
+        }),
+      );
+      expect(second.loop_alert).to.not.equal(null);
+      expect(second.loop_alert?.recommendation).to.equal("kill");
+
+      const suggested = loopDetector.recommendTimeout("analysis", 1);
+      expect(suggested).to.be.greaterThan(200);
+      expect(suggested).to.be.at.most(4_000);
+
+      await handleChildKill(context, ChildKillInputSchema.parse({ child_id: created.child_id, timeout_ms: 250 }));
+      await supervisor.waitForExit(created.child_id, 1_000);
+      const gcResult = handleChildGc(context, ChildGcInputSchema.parse({ child_id: created.child_id }));
+      expect(gcResult.removed).to.equal(true);
+    } finally {
+      await logger.flush();
+      await supervisor.disposeAll();
+      await rm(childrenRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("aborts child_send when the sandbox reports a failure", async () => {
+    const sandboxRegistry = new SandboxRegistry();
+    sandboxRegistry.register("dry-run", async () => ({
+      outcome: "failure",
+      error: "detected risk",
+    }));
+    const previousRegistry = setSandboxRegistry(sandboxRegistry);
+
+    const childrenRoot = await mkdtemp(path.join(tmpdir(), "child-tools-sandbox-fail-"));
+    const supervisor = new ChildSupervisor({
+      childrenRoot,
+      defaultCommand: process.execPath,
+      defaultArgs: [mockRunnerPath, "--role", "guardian"],
+    });
+    const logFile = path.join(childrenRoot, "tmp", "orchestrator.log");
+    const logger = new StructuredLogger({ logFile });
+    const context: ChildToolContext = { supervisor, logger, loopDetector: new LoopDetector() };
+
+    try {
+      const created = await handleChildCreate(
+        context,
+        ChildCreateInputSchema.parse({ metadata: { risk: "high" }, wait_for_ready: true }),
+      );
+
+      const before = supervisor.stream(created.child_id, { limit: 100 }).totalMessages;
+
+      let caught: Error | null = null;
+      try {
+        await handleChildSend(
+          context,
+          ChildSendInputSchema.parse({
+            child_id: created.child_id,
+            payload: { type: "prompt", content: "danger" },
+            expect: "stream",
+            timeout_ms: 1000,
+          }),
+        );
+      } catch (error) {
+        caught = error as Error;
+      }
+
+      expect(caught).to.be.instanceOf(Error);
+      expect(caught?.message).to.match(/Sandbox action "dry-run" failed/);
+      const after = supervisor.stream(created.child_id, { limit: 100 }).totalMessages;
+      expect(after).to.equal(before);
+    } finally {
+      setSandboxRegistry(previousRegistry);
+      await logger.flush();
+      await supervisor.disposeAll();
+      await rm(childrenRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects invalid prompt templates when creating a child", () => {
+    const result = ChildCreateInputSchema.safeParse({ prompt: {} });
+    expect(result.success).to.equal(false);
+    if (!result.success) {
+      const messages = result.error.issues.map((issue) => issue.message);
+      expect(messages.some((message) => message.includes("must define at least one segment"))).to.equal(true);
+    }
+  });
+
+  it("fails child_send when awaiting a response times out", async function () {
+    this.timeout(10_000);
+    const childrenRoot = await mkdtemp(path.join(tmpdir(), "child-tools-timeout-"));
+    const supervisor = new ChildSupervisor({
+      childrenRoot,
+      defaultCommand: process.execPath,
+      defaultArgs: [silentRunnerPath],
+    });
+    const logFile = path.join(childrenRoot, "tmp", "orchestrator.log");
+    const logger = new StructuredLogger({ logFile });
+    const context: ChildToolContext = { supervisor, logger, loopDetector: new LoopDetector() };
+    let created: Awaited<ReturnType<typeof handleChildCreate>> | null = null;
+
+    try {
+      created = await handleChildCreate(context, ChildCreateInputSchema.parse({ wait_for_ready: true }));
+
+      let caught: Error | null = null;
+      try {
+        await handleChildSend(
+          context,
+          ChildSendInputSchema.parse({
+            child_id: created.child_id,
+            payload: { type: "prompt", content: "no response expected" },
+            expect: "final",
+            timeout_ms: 300,
+          }),
+        );
+      } catch (error) {
+        caught = error as Error;
+      }
+
+      expect(caught).to.be.instanceOf(Error);
+      expect(caught?.message).to.include("failed after 300ms");
+    } finally {
+      try {
+        if (created) {
+          await handleChildKill(
+            context,
+            ChildKillInputSchema.parse({ child_id: created.child_id, timeout_ms: 100 }),
+          ).catch(() => undefined);
+          await supervisor.waitForExit(created.child_id, 500).catch(() => undefined);
+          handleChildGc(context, ChildGcInputSchema.parse({ child_id: created.child_id }));
+        }
+      } finally {
+        await logger.flush();
+        await supervisor.disposeAll();
+        await rm(childrenRoot, { recursive: true, force: true });
+      }
+    }
+  });
+
+  it("rejects tool invocations that are not in the allowlist", async function () {
+    this.timeout(10_000);
+    const childrenRoot = await mkdtemp(path.join(tmpdir(), "child-tools-allowlist-"));
+    const supervisor = new ChildSupervisor({
+      childrenRoot,
+      defaultCommand: process.execPath,
+      defaultArgs: [mockRunnerPath, "--role", "allowlist"],
+    });
+    const logFile = path.join(childrenRoot, "tmp", "orchestrator.log");
+    const logger = new StructuredLogger({ logFile });
+    const context: ChildToolContext = { supervisor, logger, loopDetector: new LoopDetector() };
+    let created: Awaited<ReturnType<typeof handleChildCreate>> | null = null;
+
+    try {
+      created = await handleChildCreate(
+        context,
+        ChildCreateInputSchema.parse({ tools_allow: ["graph_generate"], wait_for_ready: true }),
+      );
+
+      await handleChildSend(
+        context,
+        ChildSendInputSchema.parse({
+          child_id: created.child_id,
+          payload: { type: "tool", tool: "graph_generate", arguments: { probe: true } },
+        }),
+      );
+
+      let caught: Error | null = null;
+      try {
+        await handleChildSend(
+          context,
+          ChildSendInputSchema.parse({
+            child_id: created.child_id,
+            payload: { type: "tool", tool: "graph_optimize", arguments: {} },
+          }),
+        );
+      } catch (error) {
+        caught = error as Error;
+      }
+
+      expect(caught).to.be.instanceOf(Error);
+      expect(caught?.message).to.include("graph_optimize");
+      expect(caught?.message.toLowerCase()).to.include("not allowed");
+    } finally {
+      try {
+        if (created) {
+          await handleChildKill(
+            context,
+            ChildKillInputSchema.parse({ child_id: created.child_id, timeout_ms: 150 }),
+          ).catch(() => undefined);
+          await supervisor.waitForExit(created.child_id, 500).catch(() => undefined);
+          handleChildGc(context, ChildGcInputSchema.parse({ child_id: created.child_id }));
+        }
+      } finally {
+        await logger.flush();
+        await supervisor.disposeAll();
+        await rm(childrenRoot, { recursive: true, force: true });
+      }
     }
   });
 });

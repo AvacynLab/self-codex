@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { createReadStream, promises as fs } from 'node:fs';
 import path from 'node:path';
+
 import {
   childWorkspacePath,
   ensureDirectory,
@@ -45,12 +46,25 @@ export interface ReadArtifactOptions {
 }
 
 const OUTBOX_DIRNAME = 'outbox';
+const MANIFEST_FILENAME = 'manifest.json';
+const MANIFEST_VERSION = 1;
+
+interface PersistedManifest {
+  version: number;
+  entries: ArtifactManifestEntry[];
+}
 
 /**
- * Computes the SHA-256 digest of a file without loading it entirely in memory.
+ * Computes the digest of the provided file using a streaming approach.
+ *
+ * The helper is exported so other subsystems (tests, collectors, …) can reuse
+ * the exact same hashing semantics when verifying artifacts.
  */
-async function computeSha256(filePath: string): Promise<string> {
-  const hash = createHash('sha256');
+export async function hashFile(
+  filePath: string,
+  algorithm: 'sha256' = 'sha256',
+): Promise<string> {
+  const hash = createHash(algorithm);
   const stream = createReadStream(filePath);
 
   await new Promise<void>((resolve, reject) => {
@@ -71,17 +85,60 @@ function outboxPath(childrenRoot: string, childId: string, relativePath?: string
   return resolveWithin(base, relativePath);
 }
 
+async function loadManifest(outboxDir: string): Promise<Map<string, ArtifactManifestEntry>> {
+  const manifestPath = path.join(outboxDir, MANIFEST_FILENAME);
+
+  try {
+    const raw = await fs.readFile(manifestPath, 'utf8');
+    const parsed = JSON.parse(raw) as PersistedManifest;
+
+    if (parsed.version !== MANIFEST_VERSION || !Array.isArray(parsed.entries)) {
+      return new Map();
+    }
+
+    const map = new Map<string, ArtifactManifestEntry>();
+    for (const entry of parsed.entries) {
+      if (
+        !entry ||
+        typeof entry.path !== 'string' ||
+        typeof entry.size !== 'number' ||
+        typeof entry.mimeType !== 'string' ||
+        typeof entry.sha256 !== 'string'
+      ) {
+        continue;
+      }
+      map.set(entry.path, { ...entry });
+    }
+    return map;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      return new Map();
+    }
+    throw error;
+  }
+}
+
+async function persistManifest(
+  outboxDir: string,
+  entries: Iterable<ArtifactManifestEntry>,
+): Promise<void> {
+  const manifestPath = path.join(outboxDir, MANIFEST_FILENAME);
+  const serialised: PersistedManifest = {
+    version: MANIFEST_VERSION,
+    entries: Array.from(entries).sort((a, b) => a.path.localeCompare(b.path)),
+  };
+
+  await fs.writeFile(manifestPath, `${JSON.stringify(serialised, null, 2)}\n`);
+}
+
 /**
  * Persists an artifact within the child outbox and returns its manifest entry.
  */
 export async function writeArtifact(
   options: WriteArtifactOptions,
 ): Promise<ArtifactManifestEntry> {
-  const absolutePath = outboxPath(
-    options.childrenRoot,
-    options.childId,
-    options.relativePath,
-  );
+  const outboxDir = await ensureDirectory(options.childrenRoot, options.childId, OUTBOX_DIRNAME);
+  const absolutePath = resolveWithin(outboxDir, options.relativePath);
 
   await ensureParentDirectory(absolutePath);
 
@@ -93,12 +150,18 @@ export async function writeArtifact(
   await fs.writeFile(absolutePath, buffer);
   const stats = await fs.stat(absolutePath);
 
-  return {
-    path: path.relative(outboxPath(options.childrenRoot, options.childId), absolutePath),
+  const entry: ArtifactManifestEntry = {
+    path: path.relative(outboxDir, absolutePath),
     size: stats.size,
     mimeType: options.mimeType,
-    sha256: await computeSha256(absolutePath),
+    sha256: await hashFile(absolutePath),
   };
+
+  const manifest = await loadManifest(outboxDir);
+  manifest.set(entry.path, entry);
+  await persistManifest(outboxDir, manifest.values());
+
+  return entry;
 }
 
 /**
@@ -117,51 +180,63 @@ export async function readArtifact(
 }
 
 /**
- * Lists all artifacts present in the child outbox directory.
+ * Lists all artifacts present in the child outbox directory while refreshing
+ * the manifest metadata (size, hash, mime type).
+ */
+export async function scanArtifacts(
+  childrenRoot: string,
+  childId: string,
+): Promise<ArtifactManifestEntry[]> {
+  const outboxDir = await ensureDirectory(childrenRoot, childId, OUTBOX_DIRNAME);
+  const manifest = await loadManifest(outboxDir);
+  const refreshed = new Map<string, ArtifactManifestEntry>();
+
+  async function traverse(directory: string, prefix: string): Promise<void> {
+    const entries = await fs.readdir(directory, { withFileTypes: true });
+
+    for (const entry of entries) {
+      const entryPath = path.join(directory, entry.name);
+      const relativePath = prefix ? path.join(prefix, entry.name) : entry.name;
+
+      if (entry.isDirectory()) {
+        await traverse(entryPath, relativePath);
+        continue;
+      }
+
+      if (!entry.isFile() || entry.name === MANIFEST_FILENAME) {
+        continue;
+      }
+
+      const stats = await fs.stat(entryPath);
+      const previous = manifest.get(relativePath);
+      const mimeType = previous?.mimeType ?? 'application/octet-stream';
+      const sha256 = await hashFile(entryPath);
+
+      const descriptor: ArtifactManifestEntry = {
+        path: relativePath,
+        size: stats.size,
+        mimeType,
+        sha256,
+      };
+
+      refreshed.set(relativePath, descriptor);
+    }
+  }
+
+  await traverse(outboxDir, '');
+  await persistManifest(outboxDir, refreshed.values());
+
+  return Array.from(refreshed.values()).sort((a, b) => a.path.localeCompare(b.path));
+}
+
+/**
+ * Backwards compatibility alias preserved for existing imports. Upcoming
+ * refactors should migrate callers to {@link scanArtifacts} which more
+ * accurately communicates the side effects on the manifest.
  */
 export async function listArtifacts(
   childrenRoot: string,
   childId: string,
 ): Promise<ArtifactManifestEntry[]> {
-  const directory = await ensureDirectory(childrenRoot, childId, OUTBOX_DIRNAME);
-  return listArtifactsRecursive(directory, '');
-}
-
-/**
- * Internal helper used for recursive traversal when the directory parameter is
- * already resolved. The public API above keeps the contract focused on child
- * identifiers while this variant works with fully qualified paths.
- */
-async function listArtifactsRecursive(
-  directory: string,
-  prefix: string,
-): Promise<ArtifactManifestEntry[]> {
-  const entries = await fs.readdir(directory, { withFileTypes: true });
-  const manifests: ArtifactManifestEntry[] = [];
-
-  for (const entry of entries) {
-    const entryPath = path.join(directory, entry.name);
-    const pathInManifest = prefix ? path.join(prefix, entry.name) : entry.name;
-
-    if (entry.isDirectory()) {
-      const nested = await listArtifactsRecursive(entryPath, pathInManifest);
-      manifests.push(...nested);
-      continue;
-    }
-
-    if (!entry.isFile()) {
-      continue;
-    }
-
-    const stats = await fs.stat(entryPath);
-    manifests.push({
-      path: pathInManifest,
-      size: stats.size,
-      mimeType: 'application/octet-stream',
-      sha256: await computeSha256(entryPath),
-    });
-  }
-
-  manifests.sort((a, b) => a.path.localeCompare(b.path));
-  return manifests;
+  return scanArtifacts(childrenRoot, childId);
 }

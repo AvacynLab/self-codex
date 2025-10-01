@@ -9,14 +9,20 @@
 - Graphe final : 9 nœuds, 11 arêtes, aucun cycle détecté.
 - Chemins : 3 variantes de lint_core à deploy_stage, coût minimal 17.
 - Centralité : nœuds critiques test_unit, build_bundle, docs_generate.
+- Hypothèses : 4 plans générés, 2 retenus après fusion (`strategies/hypotheses`).
 - Makespan simulé : 35, chemin critique lint_core → test_unit → test_integration → build_bundle → docs_generate → package_artifacts → deploy_stage.
 - Optimisation : meilleur scénario Tests intégration parallélisés + Build incrémental + Templates docs précompilés + Packaging cache compressé (makespan 30, coût total 26.30).
+- Multi-objectif : 6 solutions Pareto (makespan/cost), 1 solution pondérée retenue.
 - Orchestration enfants : 3 modules générés, stage le plus lent = test (8.90).
 - Contrôles QA : 2 métriques signalées (api-contract, load-tests).
+- Mémoire & critiques : scores MetaCritic compris entre 0.78 et 0.86, recommandations injectées en mémoire partagée.
+- Monitoring : heatmap dashboard → `child-beta` en attente 5.4s, 1 alerte boucle sur `child-gamma`.
 
 ## Vérifications récentes
 - 2025-09-30T20:05:18.347Z — Script `run_graph_analyses.mjs` relancé pour rafraîchir les exports, la simulation et le journal des tools.
+- 2025-09-30T20:15:02.221Z — Extraction heatmap dashboard (`logs/dashboard_heatmap.json`) actualisée.
 - Dernière orchestration enfants : 2025-09-30T19:48:51.503Z (voir `reports/children_fanout.md`).
+- Critiques MetaCritic/selfReflect enregistrées : `reports/cognitive_feedback.md`.
 
 ## Limites
 - Les tools MCP natifs demeurent indisponibles ; la démonstration repose sur des scripts locaux substitutifs.
@@ -26,3 +32,5 @@
 - Intégrer les outils MCP réels lorsque l’orchestrateur sera accessible et comparer les résultats aux journaux simulés.
 - Étendre les scénarios d’optimisation (gestion multi-ressources, coûts variables) et croiser les sorties enfants avec la simulation.
 - Automatiser la validation croisée des artefacts (exports, journaux, modules enfants) dans une suite de tests dédiée.
+- Expérimenter un recalibrage automatique du seuil MetaCritic pour déclencher une ré-exécution.
+- Ajouter une visualisation temps réel des alertes loop detector dans le dashboard.

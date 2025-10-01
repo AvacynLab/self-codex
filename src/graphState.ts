@@ -1,4 +1,5 @@
-﻿import { MessageRecord } from "./types.js";
+import { MessageRecord } from "./types.js";
+import { ChildRecordSnapshot } from "./state/childrenIndex.js";
 type AttributeValue = string | number | boolean;
 
 type NodeType = "job" | "child" | "message" | "pending" | "subscription" | "event";
@@ -55,6 +56,31 @@ export interface ChildSnapshot {
    * heartbeat.
    */
   lastHeartbeatAt: number | null;
+  /**
+   * Priority assigned by operators or automation to influence scheduling
+   * decisions. A higher number indicates a child that should receive more
+   * attention from follow-up actions (resends, reviews, etc.). When `null`, the
+   * child follows the default priority.
+   */
+  priority: number | null;
+  /** PID reported by the runtime supervisor, or null when unavailable. */
+  pid: number | null;
+  /** Absolute path of the runtime working directory, or null if undisclosed. */
+  workdir: string | null;
+  /** Timestamp indicating when the child process actually started. */
+  startedAt: number | null;
+  /** Timestamp marking when the child terminated, if applicable. */
+  endedAt: number | null;
+  /** Number of spawn retries recorded by the supervisor index. */
+  retries: number;
+  /** Exit code captured upon termination, null when the child has not exited. */
+  exitCode: number | null;
+  /** Exit signal captured upon termination, null when absent. */
+  exitSignal: string | null;
+  /** Whether the supervisor had to forcefully terminate the child. */
+  forcedTermination: boolean;
+  /** Human-readable reason provided by the supervisor upon termination. */
+  stopReason: string | null;
 }
 
 export interface JobSnapshot {
@@ -253,7 +279,17 @@ export class GraphState {
       created_at: options.createdAt,
       transcript_size: 0,
       last_ts: 0,
-      last_heartbeat_at: 0
+      last_heartbeat_at: 0,
+      priority: 0,
+      pid: 0,
+      workdir: "",
+      started_at: 0,
+      ended_at: 0,
+      retries: 0,
+      exit_code: 0,
+      exit_signal: "",
+      forced_termination: false,
+      stop_reason: "",
     };
     if (spec.goals?.length) {
       attributes.goals = normalizeString(spec.goals.join("\n"));
@@ -293,6 +329,16 @@ export class GraphState {
       runtime: string;
       lastTs: number | null;
       lastHeartbeatAt: number | null;
+      priority: number | null;
+      pid: number | null;
+      workdir: string | null;
+      startedAt: number | null;
+      endedAt: number | null;
+      retries: number;
+      exitCode: number | null;
+      exitSignal: string | null;
+      forcedTermination: boolean | null;
+      stopReason: string | null;
     }>
   ): void {
     const nodeId = this.childNodeId(childId);
@@ -326,7 +372,85 @@ export class GraphState {
     if (updates.lastHeartbeatAt !== undefined) {
       attributes.last_heartbeat_at = updates.lastHeartbeatAt ?? 0;
     }
+    if (updates.priority !== undefined) {
+      if (updates.priority === null) {
+        attributes.priority = 0;
+      } else {
+        const numericPriority = Number(updates.priority);
+        attributes.priority = Number.isFinite(numericPriority) ? Math.max(0, Math.floor(numericPriority)) : 0;
+      }
+    }
+    if (updates.pid !== undefined) {
+      if (updates.pid === null) {
+        attributes.pid = 0;
+      } else {
+        const numericPid = Number(updates.pid);
+        attributes.pid = Number.isFinite(numericPid) && numericPid > 0 ? Math.floor(numericPid) : 0;
+      }
+    }
+    if (updates.workdir !== undefined) {
+      attributes.workdir = normalizeString(updates.workdir);
+    }
+    if (updates.startedAt !== undefined) {
+      attributes.started_at = updates.startedAt ?? 0;
+    }
+    if (updates.endedAt !== undefined) {
+      attributes.ended_at = updates.endedAt ?? 0;
+    }
+    if (updates.retries !== undefined) {
+      const numericRetries = Number(updates.retries);
+      attributes.retries = Number.isFinite(numericRetries) && numericRetries > 0 ? Math.floor(numericRetries) : 0;
+    }
+    if (updates.exitCode !== undefined) {
+      if (updates.exitCode === null) {
+        delete attributes.exit_code;
+      } else {
+        const numericExit = Number(updates.exitCode);
+        if (Number.isFinite(numericExit)) {
+          attributes.exit_code = Math.floor(numericExit);
+        } else {
+          delete attributes.exit_code;
+        }
+      }
+    }
+    if (updates.exitSignal !== undefined) {
+      attributes.exit_signal = normalizeString(updates.exitSignal);
+    }
+    if (updates.forcedTermination !== undefined) {
+      attributes.forced_termination = !!updates.forcedTermination;
+    }
+    if (updates.stopReason !== undefined) {
+      attributes.stop_reason = normalizeString(updates.stopReason);
+    }
     this.nodes.set(nodeId, { id: nodeId, attributes });
+  }
+
+  /**
+   * Synchronises runtime metadata emitted by the supervisor with the graph.
+   *
+   * The dashboard consumes these enriched fields (PID, workdir, retries…) to
+   * contextualise each child. Missing nodes are ignored so the method can be
+   * safely invoked even when the graph was not pre-populated (e.g. manual
+   * child_create without plan bookkeeping).
+   */
+  syncChildIndexSnapshot(snapshot: ChildRecordSnapshot): void {
+    const nodeId = this.childNodeId(snapshot.childId);
+    if (!this.nodes.has(nodeId)) {
+      return;
+    }
+
+    this.patchChild(snapshot.childId, {
+      pid: snapshot.pid,
+      workdir: snapshot.workdir,
+      startedAt: snapshot.startedAt,
+      lastHeartbeatAt: snapshot.lastHeartbeatAt,
+      retries: snapshot.retries,
+      endedAt: snapshot.endedAt,
+      exitCode: snapshot.exitCode,
+      exitSignal: snapshot.exitSignal,
+      forcedTermination: snapshot.forcedTermination,
+      stopReason: snapshot.stopReason,
+    });
   }
 
   /**
@@ -1031,6 +1155,20 @@ export class GraphState {
     const transcriptSize = Number(node.attributes.transcript_size ?? 0);
     const lastTs = toNullableNumber(node.attributes.last_ts);
     const lastHeartbeatAt = toNullableNumber(node.attributes.last_heartbeat_at);
+    const priority = toNullableNumber(node.attributes.priority);
+    const pid = toNullableNumber(node.attributes.pid);
+    const workdir = toNullableString(node.attributes.workdir);
+    const startedAt = toNullableNumber(node.attributes.started_at);
+    const endedAt = toNullableNumber(node.attributes.ended_at);
+    const retries = Number(node.attributes.retries ?? 0);
+    let exitCode: number | null = null;
+    if (node.attributes.exit_code !== undefined) {
+      const numericExit = Number(node.attributes.exit_code);
+      exitCode = Number.isFinite(numericExit) ? Math.floor(numericExit) : null;
+    }
+    const exitSignal = toNullableString(node.attributes.exit_signal);
+    const forcedTermination = node.attributes.forced_termination === true;
+    const stopReason = toNullableString(node.attributes.stop_reason);
     return {
       id,
       jobId,
@@ -1044,7 +1182,17 @@ export class GraphState {
       createdAt,
       transcriptSize,
       lastTs,
-      lastHeartbeatAt
+      lastHeartbeatAt,
+      priority,
+      pid,
+      workdir,
+      startedAt,
+      endedAt,
+      retries: Number.isFinite(retries) && retries > 0 ? Math.floor(retries) : 0,
+      exitCode,
+      exitSignal,
+      forcedTermination,
+      stopReason,
     };
   }
 }

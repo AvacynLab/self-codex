@@ -3,17 +3,7 @@ import { writeFile } from "node:fs/promises";
 import { setTimeout as delay } from "node:timers/promises";
 import { z } from "zod";
 import { ensureDirectory, resolveWithin } from "../paths.js";
-import { renderPromptTemplate, } from "../prompts.js";
-/** Acceptable prompt template segment (single string or array of strings). */
-const PromptTemplateSegmentSchema = z.union([z.string(), z.array(z.string())]);
-/** Schema describing the high level prompt blueprint shared by the clones. */
-const PromptTemplateSchema = z.object({
-    system: PromptTemplateSegmentSchema.optional(),
-    user: PromptTemplateSegmentSchema.optional(),
-    assistant: PromptTemplateSegmentSchema.optional(),
-});
-/** Schema describing the variables injected while rendering prompts. */
-const PromptVariablesSchema = z.record(z.union([z.string(), z.number(), z.boolean()]));
+import { PromptTemplateSchema, PromptVariablesSchema, renderPromptTemplate, } from "../prompts.js";
 /** Blueprint for a single child produced by the fan-out planner. */
 const ChildPlanSchema = z.object({
     name: z.string().min(1, "child name must not be empty"),

@@ -11,7 +11,10 @@
       "start": "node dist/server.js",
       "start:http": "node dist/server.js --http --http-host 0.0.0.0 --http-port 4000 --no-stdio",
       "dev": "node --loader ts-node/esm src/server.ts",
-      "test": "npm run build --silent && node --loader ./node_modules/ts-node/esm.mjs ./node_modules/mocha/bin/mocha.js --reporter tap \"tests/**/*.test.ts\"",
+      "clean": "node scripts/clean.mjs",
+      "test": "npm run build --silent && npm run test:unit",
+      "test:unit": "node --loader ./node_modules/ts-node/esm.mjs ./node_modules/mocha/bin/mocha.js --reporter tap \"tests/**/*.test.ts\"",
+      "test:int": "node scripts/run-int-tests.mjs",
       "lint": "tsc --noEmit --pretty false && tsc --noEmit --project graph-forge/tsconfig.json"
     },
     "dependencies": {

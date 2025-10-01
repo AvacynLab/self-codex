@@ -11,6 +11,8 @@ import { ensureDirectory, resolveWithin } from "../paths.js";
 import {
   PromptTemplate,
   PromptMessage,
+  PromptTemplateSchema,
+  PromptVariablesSchema,
   renderPromptTemplate,
 } from "../prompts.js";
 import { EventKind, EventLevel } from "../eventStore.js";
@@ -48,23 +50,8 @@ export interface PlanToolContext {
   emitEvent: PlanEventEmitter;
 }
 
-/** Acceptable prompt template segment (single string or array of strings). */
-const PromptTemplateSegmentSchema = z.union([z.string(), z.array(z.string())]);
-
-/** Schema describing the high level prompt blueprint shared by the clones. */
-const PromptTemplateSchema = z.object({
-  system: PromptTemplateSegmentSchema.optional(),
-  user: PromptTemplateSegmentSchema.optional(),
-  assistant: PromptTemplateSegmentSchema.optional(),
-});
-
 /** Type of the prompt template payload accepted by the fan-out tool. */
 export type PlanPromptTemplateInput = z.infer<typeof PromptTemplateSchema>;
-
-/** Schema describing the variables injected while rendering prompts. */
-const PromptVariablesSchema = z.record(
-  z.union([z.string(), z.number(), z.boolean()]),
-);
 
 /** Blueprint for a single child produced by the fan-out planner. */
 const ChildPlanSchema = z.object({
@@ -373,6 +360,7 @@ async function spawnChildWithRetry(
       });
 
       const runtimeStatus = created.runtime.getStatus();
+      context.graphState.syncChildIndexSnapshot(created.index);
       context.graphState.recordChildHeartbeat(
         childId,
         runtimeStatus.lastHeartbeatAt ?? Date.now(),
