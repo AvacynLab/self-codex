@@ -93,4 +93,23 @@ describe("graph adaptive heuristics", () => {
     expect(evaluation.edgesToPrune).to.be.empty;
     expect(evaluation.insights.every((insight) => insight.recommendation === "keep")).to.equal(true);
   });
+
+  it("keeps pruning idempotent and only bumps the version on actual removals", () => {
+    const graph = buildGraph();
+    const evaluation = {
+      insights: [],
+      edgesToPrune: ["start→mid"],
+      edgesToBoost: [],
+    };
+
+    const first = pruneWeakBranches(graph, evaluation);
+    expect(first.graphVersion).to.equal(graph.graphVersion + 1);
+    expect(first.edges.map((edge) => edge.from + edge.to)).to.not.include("startmid");
+
+    const second = pruneWeakBranches(first, evaluation);
+    expect(second.graphVersion).to.equal(first.graphVersion);
+    expect(second.edges).to.have.length(first.edges.length);
+    expect(second.edges).to.not.equal(first.edges);
+    expect(second.edges).to.deep.equal(first.edges);
+  });
 });

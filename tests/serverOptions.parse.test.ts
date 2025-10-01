@@ -21,6 +21,9 @@ describe("parseOrchestratorRuntimeOptions", () => {
     expect(result.parallelism).to.equal(2);
     expect(result.childIdleSec).to.equal(120);
     expect(result.childTimeoutSec).to.equal(900);
+    expect(result.enableReflection).to.equal(true);
+    expect(result.enableQualityGate).to.equal(true);
+    expect(result.qualityThreshold).to.equal(70);
   });
 
   it("accepte les options HTTP explicites", () => {
@@ -74,6 +77,23 @@ describe("parseOrchestratorRuntimeOptions", () => {
       .to.throw("La valeur -5 pour --child-idle-sec doit être un entier positif.");
     expect(() => parseOrchestratorRuntimeOptions(["--child-timeout-sec", "abc"]))
       .to.throw("La valeur abc pour --child-timeout-sec doit être un entier positif.");
+  });
+
+  it("permet de désactiver réflexion et quality gate", () => {
+    const result = parseOrchestratorRuntimeOptions(["--no-reflection", "--no-quality-gate"]);
+    expect(result.enableReflection).to.equal(false);
+    expect(result.enableQualityGate).to.equal(false);
+  });
+
+  it("applique le seuil qualité lorsque fourni", () => {
+    const result = parseOrchestratorRuntimeOptions(["--quality-threshold", "55"]);
+    expect(result.qualityThreshold).to.equal(55);
+    expect(result.enableQualityGate).to.equal(true);
+  });
+
+  it("rejette un seuil qualité hors bornes", () => {
+    expect(() => parseOrchestratorRuntimeOptions(["--quality-threshold", "150"]))
+      .to.throw("La valeur 150 pour --quality-threshold doit être comprise entre 0 et 100.");
   });
 
   it("rejette un fichier de log vide", () => {

@@ -28,17 +28,21 @@ export function renderMermaidFromGraph(
   const maxLength = Math.max(8, options.maxLabelLength ?? 48);
 
   const idMap = new Map<string, string>();
+  // Track the generated identifiers separately to avoid repeatedly scanning the
+  // cache. This keeps the deterministic suffixing logic linear in the number
+  // of nodes instead of quadratic when collisions appear.
+  const usedIds = new Set<string>();
   const lines: string[] = [`graph ${direction}`];
 
   for (const node of parsed.nodes) {
-    const normalisedId = normaliseId(node.id, idMap);
+    const normalisedId = normaliseId(node.id, idMap, usedIds);
     const label = buildNodeLabel(node, options.labelAttribute, maxLength);
     lines.push(`${normalisedId}["${label}"]`);
   }
 
   for (const edge of parsed.edges) {
-    const fromId = idMap.get(edge.from) ?? normaliseId(edge.from, idMap);
-    const toId = idMap.get(edge.to) ?? normaliseId(edge.to, idMap);
+    const fromId = idMap.get(edge.from) ?? normaliseId(edge.from, idMap, usedIds);
+    const toId = idMap.get(edge.to) ?? normaliseId(edge.to, idMap, usedIds);
     const label = buildEdgeLabel(edge, options.weightAttribute, maxLength);
     const segment = label ? ` -- "${label}" --> ` : " --> ";
     lines.push(`${fromId}${segment}${toId}`);
@@ -47,23 +51,30 @@ export function renderMermaidFromGraph(
   return lines.join("\n");
 }
 
-function normaliseId(original: string, cache: Map<string, string>): string {
+function normaliseId(
+  original: string,
+  cache: Map<string, string>,
+  used: Set<string>,
+): string {
   const existing = cache.get(original);
   if (existing) {
     return existing;
   }
   const base = original
     .trim()
+    // Replace characters Mermaid cannot accept in identifiers with a safe
+    // underscore placeholder.
     .replace(/[^a-zA-Z0-9_]/g, "_")
     .replace(/_{2,}/g, "_");
   const candidate = base.length > 0 ? base : "node";
   let finalId = candidate;
   let counter = 1;
-  while ([...cache.values()].includes(finalId)) {
+  while (used.has(finalId)) {
     counter += 1;
     finalId = `${candidate}_${counter}`;
   }
   cache.set(original, finalId);
+  used.add(finalId);
   return finalId;
 }
 
@@ -116,5 +127,16 @@ function truncateLabel(label: string, maxLength: number): string {
 }
 
 function escapeLabel(label: string): string {
-  return label.replace(/"/g, '\\"');
+  // Escape backslashes first so subsequent replacements keep their semantics.
+  return label
+    .replace(/\\/g, "\\\\")
+    .replace(/\r\n|\r|\n/g, "\\n")
+    .replace(/"/g, '\\"')
+    // Brackets occasionally appear in labels; escape them so Mermaid does not
+    // mistake them for node syntax.
+    .replace(/\[/g, "\\[")
+    .replace(/\]/g, "\\]")
+    // Replace remaining control characters with spaces to keep the diagram
+    // readable if unexpected values slip through.
+    .replace(/[\u0000-\u001f]/g, " ");
 }

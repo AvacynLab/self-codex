@@ -47,6 +47,12 @@ export interface OrchestratorRuntimeOptions {
    * it is forcefully terminated.
    */
   childTimeoutSec: number;
+  /** Enable the self-reflection pass after each deliverable. */
+  enableReflection: boolean;
+  /** Enable the quality gate guarding final deliverables. */
+  enableQualityGate: boolean;
+  /** Threshold (0-100) below which a deliverable is flagged for revision. */
+  qualityThreshold: number;
 }
 
 /**
@@ -65,6 +71,9 @@ interface ParseState {
   parallelism: number;
   childIdleSec: number;
   childTimeoutSec: number;
+  enableReflection: boolean;
+  qualityGateEnabled: boolean;
+  qualityThreshold: number;
 }
 
 const FLAG_WITH_VALUE = new Set([
@@ -75,7 +84,8 @@ const FLAG_WITH_VALUE = new Set([
   "--log-file",
   "--parallelism",
   "--child-idle-sec",
-  "--child-timeout-sec"
+  "--child-timeout-sec",
+  "--quality-threshold",
 ]);
 
 /**
@@ -87,6 +97,14 @@ function parsePositiveInteger(value: string, flag: string): number {
     throw new Error(`La valeur ${value} pour ${flag} doit être un entier positif.`);
   }
   return num;
+}
+
+function parseQualityThreshold(value: string, flag: string): number {
+  const num = Number(value);
+  if (!Number.isFinite(num) || num < 0 || num > 100) {
+    throw new Error(`La valeur ${value} pour ${flag} doit être comprise entre 0 et 100.`);
+  }
+  return Math.round(num);
 }
 
 /**
@@ -118,7 +136,10 @@ const DEFAULT_STATE: ParseState = {
   logFile: null,
   parallelism: 2,
   childIdleSec: 120,
-  childTimeoutSec: 900
+  childTimeoutSec: 900,
+  enableReflection: true,
+  qualityGateEnabled: true,
+  qualityThreshold: 70,
 };
 
 /**
@@ -198,6 +219,22 @@ export function parseOrchestratorRuntimeOptions(argv: string[]): OrchestratorRun
       case "--child-timeout-sec":
         state.childTimeoutSec = parsePositiveInteger(value ?? "", flag);
         break;
+      case "--no-reflection":
+        state.enableReflection = false;
+        break;
+      case "--reflection":
+        state.enableReflection = true;
+        break;
+      case "--no-quality-gate":
+        state.qualityGateEnabled = false;
+        break;
+      case "--quality-gate":
+        state.qualityGateEnabled = true;
+        break;
+      case "--quality-threshold":
+        state.qualityThreshold = parseQualityThreshold(value ?? "", flag);
+        state.qualityGateEnabled = true;
+        break;
       default:
         // Ignore unknown flags so the orchestrator remains permissive for
         // future arguments handled elsewhere.
@@ -219,7 +256,10 @@ export function parseOrchestratorRuntimeOptions(argv: string[]): OrchestratorRun
     logFile: state.logFile,
     parallelism: state.parallelism,
     childIdleSec: state.childIdleSec,
-    childTimeoutSec: state.childTimeoutSec
+    childTimeoutSec: state.childTimeoutSec,
+    enableReflection: state.enableReflection,
+    enableQualityGate: state.qualityGateEnabled,
+    qualityThreshold: state.qualityThreshold,
   };
 }
 

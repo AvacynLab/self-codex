@@ -62,4 +62,37 @@ describe("Memory attention", () => {
     expect(context.episodes.length).to.be.greaterThan(0);
     expect(context.episodes[0].goal.toLowerCase()).to.include("automatiser");
   });
+
+  it("filters contradictory outcomes for the same goal", () => {
+    const base = Date.now();
+    store.recordEpisode({
+      goal: "Réparer pipeline QA",
+      decision: "Relancer la build",
+      outcome: "Succès stabilisé",
+      tags: ["qa", "rollback"],
+      importance: 0.85,
+      createdAt: base + 2_000,
+    });
+    store.recordEpisode({
+      goal: "Réparer pipeline QA",
+      decision: "Relancer la build",
+      outcome: "Échec persistant malgré relance",
+      tags: ["qa", "rollback"],
+      importance: 0.4,
+      createdAt: base + 3_000,
+    });
+
+    const context = selectMemoryContext(store, {
+      tags: ["rollback", "qa"],
+      limit: 2,
+      minimumScore: 0.01,
+    });
+
+    expect(context.episodes).to.have.lengthOf(1);
+    const rollbackEpisodes = context.episodes.filter((episode) =>
+      episode.goal.toLowerCase().includes("pipeline qa"),
+    );
+    expect(rollbackEpisodes).to.have.lengthOf(1);
+    expect(rollbackEpisodes[0].outcome.toLowerCase()).to.include("succès");
+  });
 });

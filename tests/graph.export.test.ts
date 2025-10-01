@@ -42,6 +42,42 @@ describe("graph export helpers", () => {
     expect(output).to.include("weight=2");
   });
 
+  it("escapes special characters in Mermaid and DOT outputs", () => {
+    const escapingDescriptor: GraphDescriptorPayload = {
+      name: "escape-demo",
+      nodes: [
+        {
+          id: 'node "alpha"\n',
+          label: 'Alpha "Beta"\nGamma',
+          attributes: { role: "source" },
+        },
+        { id: "target[edge]", label: "Target ] Node", attributes: { role: "sink" } },
+      ],
+      edges: [
+        {
+          from: 'node "alpha"\n',
+          to: "target[edge]",
+          label: 'Edge "Label"\nNext',
+          attributes: { weight: "3" },
+        },
+      ],
+    };
+
+    const mermaid = renderMermaidFromGraph(escapingDescriptor, { direction: "TB", weightAttribute: "weight" });
+    // The first node identifier must be normalised without leaking bracket syntax
+    // and the label should contain escaped quotes and newlines.
+    expect(mermaid).to.include('graph TB');
+    expect(mermaid).to.include('node_alpha_["Alpha \\"Beta\\"\\nGamma"]');
+    expect(mermaid).to.include('node_alpha_ -- "Edge \\"Label\\"\\nNext" --> target_edge_');
+
+    const dot = renderDotFromGraph(escapingDescriptor, { weightAttribute: "weight" });
+    // DOT output keeps raw identifiers but they must be quoted and escaped for
+    // readability.
+    expect(dot).to.include('"node \\\"alpha\\"\\n"');
+    expect(dot).to.include('"target[edge]"');
+    expect(dot).to.include('label=\"Edge \\\"Label\\"\\nNext\"');
+  });
+
   it("renders a GraphML document", () => {
     const output = renderGraphmlFromGraph(descriptor, { weightAttribute: "weight" });
     expect(output).to.include("<graphml");

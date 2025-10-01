@@ -18,7 +18,7 @@ import {
   ChildrenIndex,
   UnknownChildError,
 } from "../src/state/childrenIndex.js";
-import { childWorkspacePath } from "../src/paths.js";
+import { PathResolutionError, childWorkspacePath } from "../src/paths.js";
 import { writeArtifact } from "../src/artifacts.js";
 
 const mockRunnerPath = fileURLToPath(new URL("./fixtures/mock-runner.js", import.meta.url));
@@ -270,6 +270,65 @@ it("surfaces ChildSpawnError after exhausting retry attempts", async () => {
     expect(attempts).to.equal(3);
     expect(caught).to.be.instanceOf(ChildSpawnError);
     expect((caught as ChildSpawnError).attempts).to.equal(3);
+  } finally {
+    await rm(childrenRoot, { recursive: true, force: true });
+  }
+});
+
+it("rejects invalid pagination parameters when streaming child messages", async () => {
+  const childrenRoot = await mkdtemp(path.join(tmpdir(), "child-stream-"));
+  const childId = "child-stream";
+  let runtime: ChildRuntime | null = null;
+
+  try {
+    runtime = await startChildRuntime({
+      childId,
+      childrenRoot,
+      command: process.execPath,
+      args: [mockRunnerPath, "--role", "pagination"],
+    });
+
+    await runtime.waitForMessage(
+      (message: ChildRuntimeMessage) =>
+        message.stream === "stdout" && Boolean(message.parsed && (message.parsed as any).type === "ready"),
+    );
+
+    // Guard rails should reject zero/negative pagination bounds so the caller
+    // cannot request infinite streams or out-of-range cursors.
+    expect(() => runtime!.streamMessages({ limit: 0 })).to.throw("limit must be a positive integer");
+    expect(() => runtime!.streamMessages({ afterSequence: -2 })).to.throw(
+      "afterSequence must be an integer >= -1",
+    );
+  } finally {
+    if (runtime) {
+      try {
+        await runtime.shutdown({ signal: "SIGTERM", timeoutMs: 500 });
+      } catch {
+        // already terminated
+      }
+    }
+    await rm(childrenRoot, { recursive: true, force: true });
+  }
+});
+
+it("refuses to launch children that would escape their workspace", async () => {
+  const childrenRoot = await mkdtemp(path.join(tmpdir(), "child-invalid-"));
+
+  try {
+    let error: unknown;
+    try {
+      await startChildRuntime({
+        childId: "../escape",
+        childrenRoot,
+        command: process.execPath,
+      });
+    } catch (err) {
+      error = err;
+    }
+
+    // The launch sequence should fail before reaching the actual spawn step
+    // because the workspace resolution detects the directory traversal.
+    expect(error).to.be.instanceOf(PathResolutionError);
   } finally {
     await rm(childrenRoot, { recursive: true, force: true });
   }

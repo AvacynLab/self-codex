@@ -97,4 +97,59 @@ describe("strategies.hypotheses", () => {
     expect(new Set(fusedIds).size).to.equal(fusedIds.length);
     expect(convergence.rationale.length).to.equal(2);
   });
+
+  it("ignore les divergences neutres et fusionne partiellement les alternatives", () => {
+    const divergences = [
+      {
+        id: "noop",
+        description: "Aucun changement",
+        emphasis: "quality" as const,
+        addSteps: [],
+      },
+      {
+        id: "speed",
+        description: "Accélérer le delivery",
+        emphasis: "speed" as const,
+        removeStepIds: ["design"],
+        adjustEffortFactor: 0.7,
+        addSteps: [
+          { id: "spike", summary: "Spike technique", effort: 1, risk: 0.4, domain: "research", tags: ["explore"] },
+        ],
+      },
+      {
+        id: "qa",
+        description: "Renforcer la QA",
+        emphasis: "quality" as const,
+        addSteps: [
+          { id: "qa_plan", summary: "Plan de tests", effort: 2, risk: 0.3, domain: "qa", tags: ["quality"] },
+        ],
+      },
+    ];
+
+    const hypotheses = generateHypotheses(
+      {
+        objective: "Livrer une fonctionnalité",
+        basePlan,
+        divergences,
+      },
+      { maxHypotheses: 5 },
+    );
+
+    const hypothesisIds = hypotheses.map((hypothesis) => hypothesis.id);
+    expect(hypothesisIds).to.not.include("noop");
+    expect(hypotheses.length).to.equal(3);
+
+    const ranked = evaluateHypotheses(hypotheses, basePlan, {
+      noveltyWeight: 0.45,
+      coverageWeight: 0.25,
+      effortWeight: 0.15,
+      riskWeight: 0.15,
+    });
+
+    const convergence = convergeHypotheses(ranked, { maxSelected: 2 });
+    const fusedIds = convergence.fusedPlan.map((step) => step.id);
+
+    expect(fusedIds).to.deep.equal(["analyse", "design", "implement", "qa_plan", "spike"]);
+    expect(new Set(fusedIds).size).to.equal(fusedIds.length);
+  });
 });

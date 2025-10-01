@@ -24,6 +24,15 @@ describe("paths", () => {
     expect(() => resolveWithin(root, "..", "outside.txt")).to.throw(PathResolutionError);
   });
 
+  it("refuses child identifiers that attempt traversal", () => {
+    const root = "/tmp/workspace";
+
+    // `childWorkspacePath` funnels all resolutions through `resolveWithin`
+    // which needs to hard reject directory climbing attempts so a malicious
+    // child cannot target sibling workspaces.
+    expect(() => childWorkspacePath(root, "../escape", "logs")).to.throw(PathResolutionError);
+  });
+
   it("creates nested directories when ensuring a path", async () => {
     const base = await mkdtemp(path.join(tmpdir(), "paths-test-"));
 

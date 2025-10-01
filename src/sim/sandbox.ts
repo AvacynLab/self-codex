@@ -145,9 +145,10 @@ export class SandboxRegistry {
     const timeoutMs = normaliseTimeout(request.timeoutMs ?? this.defaultTimeoutMs);
     const controller = new AbortController();
     const abortSignal = controller.signal;
+    const payloadClone = freezeDeep(cloneValue(request.payload));
     const executionRequest: SandboxExecutionRequest = {
       action: request.action,
-      payload: request.payload,
+      payload: payloadClone,
       metadata: cloneRecord(request.metadata),
       timeoutMs,
       signal: abortSignal,
@@ -156,9 +157,9 @@ export class SandboxRegistry {
     let timeoutHandle: NodeJS.Timeout | null = null;
     let timedOut = false;
 
-    const handlerPromise = Promise.resolve(handler(executionRequest)).then((result) =>
-      normaliseHandlerResult(result),
-    );
+    const handlerPromise = Promise.resolve()
+      .then(() => handler(executionRequest))
+      .then((result) => normaliseHandlerResult(result));
 
     const timeoutPromise: Promise<SandboxHandlerResult> = new Promise((_, reject) => {
       timeoutHandle = setTimeout(() => {
@@ -310,7 +311,8 @@ function cloneRecord(metadata?: Record<string, unknown>): Record<string, unknown
   if (!metadata || typeof metadata !== "object") {
     return undefined;
   }
-  return { ...metadata };
+  const clone = cloneValue(metadata) as Record<string, unknown>;
+  return freezeDeep(clone);
 }
 
 function normaliseError(error: unknown): { name: string; message: string } {
@@ -319,4 +321,67 @@ function normaliseError(error: unknown): { name: string; message: string } {
   }
   const message = typeof error === "string" ? error : JSON.stringify(error);
   return { name: "SandboxError", message };
+}
+
+// -- Internal helpers -----------------------------------------------------
+
+function cloneValue<T>(value: T): T {
+  const structuredCloneFn: (<K>(value: K) => K) | undefined =
+    typeof globalThis.structuredClone === "function"
+      ? (globalThis.structuredClone as <K>(val: K) => K)
+      : undefined;
+
+  if (structuredCloneFn) {
+    try {
+      return structuredCloneFn(value);
+    } catch (error) {
+      // Fall through to the manual copy below when the value contains
+      // unsupported entries such as functions or symbols.
+    }
+  }
+
+  if (value === null || typeof value !== "object") {
+    return value;
+  }
+
+  if (Array.isArray(value)) {
+    return value.map((entry) => cloneValue(entry)) as unknown as T;
+  }
+
+  if (value instanceof Map) {
+    return new Map(Array.from(value.entries(), ([key, entry]) => [key, cloneValue(entry)])) as unknown as T;
+  }
+
+  if (value instanceof Set) {
+    return new Set(Array.from(value.values(), (entry) => cloneValue(entry))) as unknown as T;
+  }
+
+  const clone: Record<string | symbol, unknown> = {};
+  for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+    clone[key] = cloneValue(entry);
+  }
+  return clone as T;
+}
+
+function freezeDeep<T>(value: T): T {
+  if (!value || typeof value !== "object") {
+    return value;
+  }
+
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      freezeDeep(entry);
+    }
+  } else if (value instanceof Map || value instanceof Set) {
+    for (const entry of value.values()) {
+      freezeDeep(entry);
+    }
+  } else {
+    for (const key of Object.keys(value as Record<string, unknown>)) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- recursive walk across arbitrary payloads
+      freezeDeep((value as Record<string, any>)[key]);
+    }
+  }
+
+  return Object.freeze(value);
 }

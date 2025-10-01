@@ -806,33 +806,48 @@ présentées sont tronquées pour la lisibilité, mais respectent le format rée
 ```
 
 Les modules de réflexion automatique (`selfReflect`) et de scoring qualitatif
-(`quality.scoring`) s'exécutent après chaque `child_collect` :
+(`quality.scoring`) s'exécutent désormais automatiquement dans `child_collect`
+et enrichissent la réponse :
 
 ```json
 {
-  "module": "selfReflect.summarise",
-  "input": {
+  "tool": "child_collect",
+  "result": {
     "child_id": "child_alpha",
-    "transcript": ["Analyse complète du PR #42"],
-    "artefacts": ["children/child-alpha/outbox/output.json"]
+    "review": { "overall": 0.62, "verdict": "warn" },
+    "reflection": {
+      "insights": ["Le livrable contient du code source; vérifier la robustesse des tests."],
+      "nextSteps": ["Ajouter ou compléter des tests unitaires pour couvrir les cas critiques."],
+      "risks": ["Des marqueurs TODO/FIXME subsistent dans le code."]
+    },
+    "quality_assessment": {
+      "kind": "code",
+      "score": 72,
+      "rubric": { "tests": 78, "lint": 100, "complexity": 60 },
+      "metrics": { "testsPassed": 3, "lintErrors": 0, "complexity": 40 },
+      "gate": { "enabled": true, "threshold": 70, "needs_revision": false }
+    },
+    "needs_revision": false
   }
 }
 ```
 
-```json
-{
-  "module": "quality.scoring.evaluate",
-  "input": {
-    "kind": "code",
-    "metrics": {
-      "tests": { "passed": 142, "failed": 0 },
-      "lint": { "errors": 0 },
-      "coverage": { "lines": 92.4 }
-    }
-  }
-}
-```
+Activez/désactivez ces heuristiques via les flags CLI (`--no-reflection`,
+`--quality-gate`, `--quality-threshold 80`) ou les variables d'environnement
+`MCP_ENABLE_REFLECTION`, `MCP_QUALITY_GATE`, `MCP_QUALITY_THRESHOLD`.
 
-Enfin, le détecteur de boucles s'alimente via `child_send` et expose ses
-alertes dans les journaux cognitifs (`logs/cognitive.jsonl`).
+- **Mémoire partagée** (`memory/store.ts`) : TTL adaptatif, importance pondérée
+  et stockage des réflexions/qualités pour les itérations suivantes.
+- **Sélection de contexte** (`memory/attention.ts`) : filtrage strict, retrait
+  des épisodes contradictoires et priorisation par tags.
+- **Graphes adaptatifs** (`graph/adaptive.ts`) : renforcement idempotent,
+  versionnement et élagage contrôlé des nœuds faibles.
+- **Stratégies d'hypothèses** (`strategies/hypotheses.ts`) : divergence contrôlée
+  (≥2 plans) puis fusion partielle pilotée par score.
+- **Sandbox** (`sim/sandbox.ts`) : isolement I/O complet, horloge mockée et
+  gestion explicite des timeouts/erreurs.
+- **Dashboard** (`monitor/dashboard.ts`) : endpoints `GET /health` et
+  `GET /graph/state`, flux SSE et commandes pause/cancel/prioritise.
+- **Détecteur de boucles** (`guard/loopDetector.ts`) : branché sur `child_send`,
+  il logge les alertes dans `logs/cognitive.jsonl`.
 

@@ -46,4 +46,26 @@ describe("audit.planBias", () => {
     expect(report.insights).to.have.length(0);
     expect(report.hasCriticalBias).to.equal(false);
   });
+
+  it("avoids anchoring false positives when a challenger step is present", () => {
+    // The second step purposely challenges the initial hypothesis using a dedicated review tag.
+    const challengedPlan: PlanStep[] = [
+      { id: "analyse", summary: "Analyse initiale", effort: 2, risk: 0.4, domain: "analysis", tags: ["analysis"] },
+      {
+        id: "challenge",
+        summary: "Revue critique",
+        effort: 1,
+        risk: 0.3,
+        domain: "analysis",
+        tags: ["analysis", "challenge"],
+      },
+      { id: "livrer", summary: "Livraison", effort: 3, risk: 0.5, domain: "delivery", tags: ["delivery"] },
+    ];
+
+    const report = analysePlanBias(challengedPlan);
+    const anchoring = report.insights.find((insight) => insight.type === "anchoring");
+
+    expect(anchoring).to.equal(undefined);
+    expect(report.hasCriticalBias).to.equal(false);
+  });
 });

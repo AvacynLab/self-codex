@@ -51,6 +51,11 @@ export interface SpecialistConfig {
   maxTokens?: number;
   /** Optional custom scoring hook evaluated in addition to heuristics. */
   scorer?: (task: RoutingTaskDescriptor) => number;
+  /**
+   * Flag toggled by operators to temporarily remove a specialist from the
+   * routing pool without unregistering it. Defaults to `true`.
+   */
+  available?: boolean;
 }
 
 /** Telemetry collected for each specialist to inform the routing decision. */
@@ -90,6 +95,7 @@ const specialistConfigSchema = z.object({
   tags: z.array(z.string().min(1)).optional(),
   languages: z.array(z.string().min(1)).optional(),
   maxTokens: z.number().int().positive().optional(),
+  available: z.boolean().optional(),
 });
 
 /** Laplace smoothing constant preventing reliability collapse. */
@@ -105,6 +111,7 @@ export class ModelRouter {
   private readonly acceptanceThreshold: number;
   private readonly specialists = new Map<string, SpecialistConfig>();
   private readonly stats = new Map<string, SpecialistStats>();
+  private fallbackAvailable = true;
 
   constructor(options: ModelRouterOptions) {
     this.fallbackModel = options.fallbackModel;
@@ -117,7 +124,7 @@ export class ModelRouter {
    */
   registerSpecialist(config: SpecialistConfig): void {
     const parsed = specialistConfigSchema.parse(config);
-    const merged: SpecialistConfig = { ...config, ...parsed };
+    const merged: SpecialistConfig = { ...config, ...parsed, available: config.available ?? true };
     this.specialists.set(merged.id, merged);
     if (!this.stats.has(merged.id)) {
       this.stats.set(merged.id, {
@@ -137,13 +144,34 @@ export class ModelRouter {
 
   /** Retrieves a snapshot of the configured specialists. */
   listSpecialists(): SpecialistConfig[] {
-    return Array.from(this.specialists.values()).sort((a, b) => {
-      const priorityDiff = (b.priority ?? 0) - (a.priority ?? 0);
-      if (priorityDiff !== 0) {
-        return priorityDiff;
-      }
-      return a.id.localeCompare(b.id);
-    });
+    return Array.from(this.specialists.values())
+      .map((config) => ({ ...config }))
+      .sort((a, b) => {
+        const priorityDiff = (b.priority ?? 0) - (a.priority ?? 0);
+        if (priorityDiff !== 0) {
+          return priorityDiff;
+        }
+        return a.id.localeCompare(b.id);
+      });
+  }
+
+  /**
+   * Updates the live availability of a model. Operators typically wire this to
+   * health checks so degraded specialists are skipped. When the fallback model
+   * itself is unavailable the router refuses to route and surfaces a concise
+   * error to upstream callers so they can escalate.
+   */
+  setAvailability(id: string, available: boolean): void {
+    if (id === this.fallbackModel) {
+      this.fallbackAvailable = available;
+      return;
+    }
+
+    const specialist = this.specialists.get(id);
+    if (!specialist) {
+      throw new Error(`Unknown model '${id}'`);
+    }
+    this.specialists.set(id, { ...specialist, available });
   }
 
   /**
@@ -159,6 +187,11 @@ export class ModelRouter {
     const breakdown: Array<{ id: string; score: number; reliability: number }> = [];
 
     for (const specialist of candidates) {
+      if (specialist.available === false) {
+        const reliability = this.computeReliability(specialist.id);
+        breakdown.push({ id: specialist.id, score: 0, reliability });
+        continue;
+      }
       const reliability = this.computeReliability(specialist.id);
       const heuristicScore = this.computeHeuristicScore(task, specialist);
       const customScore = specialist.scorer ? specialist.scorer(task) : 0;
@@ -172,6 +205,11 @@ export class ModelRouter {
     }
 
     if (bestScore < this.acceptanceThreshold) {
+      if (!this.fallbackAvailable) {
+        throw new Error(
+          `No available model could satisfy the request and fallback '${this.fallbackModel}' is unavailable.`,
+        );
+      }
       return {
         model: this.fallbackModel,
         score: clamp01(bestScore),
