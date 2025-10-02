@@ -22,6 +22,41 @@ export interface HttpRuntimeOptions {
 /**
  * Runtime configuration parsed from CLI arguments.
  */
+export interface FeatureToggles {
+  /** Enable Behaviour Tree compilation and execution tools. */
+  enableBT: boolean;
+  /** Enable the reactive scheduler driving Behaviour Trees. */
+  enableReactiveScheduler: boolean;
+  /** Enable the shared blackboard coordination store. */
+  enableBlackboard: boolean;
+  /** Enable the stigmergic field and related coordination hooks. */
+  enableStigmergy: boolean;
+  /** Enable the Contract-Net protocol helpers. */
+  enableCNP: boolean;
+  /** Enable vote-based consensus helpers. */
+  enableConsensus: boolean;
+  /** Enable the autoscaler responsible for spawning children. */
+  enableAutoscaler: boolean;
+  /** Enable the orchestrator supervisor in charge of incident mitigation. */
+  enableSupervisor: boolean;
+  /** Enable the knowledge graph tooling (future module). */
+  enableKnowledge: boolean;
+  /** Enable the causal memory tooling (future module). */
+  enableCausalMemory: boolean;
+  /** Enable value guard checks filtering unsafe plans. */
+  enableValueGuard: boolean;
+}
+
+/** Tunable delays exposed so operators can adjust runtime pacing. */
+export interface RuntimeTimingOptions {
+  /** Target tick pacing for Behaviour Tree execution (milliseconds). */
+  btTickMs: number;
+  /** Default half-life applied when evaporating the stigmergic field. */
+  stigHalfLifeMs: number;
+  /** Number of scheduler ticks tolerated without progress before stalling. */
+  supervisorStallTicks: number;
+}
+
 export interface OrchestratorRuntimeOptions {
   /** Controls whether the legacy stdio transport must be enabled. */
   enableStdio: boolean;
@@ -53,6 +88,10 @@ export interface OrchestratorRuntimeOptions {
   enableQualityGate: boolean;
   /** Threshold (0-100) below which a deliverable is flagged for revision. */
   qualityThreshold: number;
+  /** Feature toggles controlling optional orchestrator modules. */
+  features: FeatureToggles;
+  /** Runtime pacing configuration for optional modules. */
+  timings: RuntimeTimingOptions;
 }
 
 /**
@@ -74,6 +113,8 @@ interface ParseState {
   enableReflection: boolean;
   qualityGateEnabled: boolean;
   qualityThreshold: number;
+  featureToggles: FeatureToggles;
+  timings: RuntimeTimingOptions;
 }
 
 const FLAG_WITH_VALUE = new Set([
@@ -86,6 +127,9 @@ const FLAG_WITH_VALUE = new Set([
   "--child-idle-sec",
   "--child-timeout-sec",
   "--quality-threshold",
+  "--bt-tick-ms",
+  "--stig-half-life-ms",
+  "--supervisor-stall-ticks",
 ]);
 
 /**
@@ -140,6 +184,24 @@ const DEFAULT_STATE: ParseState = {
   enableReflection: true,
   qualityGateEnabled: true,
   qualityThreshold: 70,
+  featureToggles: {
+    enableBT: false,
+    enableReactiveScheduler: false,
+    enableBlackboard: false,
+    enableStigmergy: false,
+    enableCNP: false,
+    enableConsensus: false,
+    enableAutoscaler: false,
+    enableSupervisor: false,
+    enableKnowledge: false,
+    enableCausalMemory: false,
+    enableValueGuard: false,
+  },
+  timings: {
+    btTickMs: 50,
+    stigHalfLifeMs: 30_000,
+    supervisorStallTicks: 6,
+  },
 };
 
 /**
@@ -148,7 +210,11 @@ const DEFAULT_STATE: ParseState = {
  * returns a structured object that can directly be consumed by the runtime.
  */
 export function parseOrchestratorRuntimeOptions(argv: string[]): OrchestratorRuntimeOptions {
-  const state: ParseState = { ...DEFAULT_STATE };
+  const state: ParseState = {
+    ...DEFAULT_STATE,
+    featureToggles: { ...DEFAULT_STATE.featureToggles },
+    timings: { ...DEFAULT_STATE.timings },
+  };
 
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
@@ -235,6 +301,81 @@ export function parseOrchestratorRuntimeOptions(argv: string[]): OrchestratorRun
         state.qualityThreshold = parseQualityThreshold(value ?? "", flag);
         state.qualityGateEnabled = true;
         break;
+      case "--enable-bt":
+        state.featureToggles.enableBT = true;
+        break;
+      case "--disable-bt":
+        state.featureToggles.enableBT = false;
+        break;
+      case "--enable-reactive-scheduler":
+        state.featureToggles.enableReactiveScheduler = true;
+        break;
+      case "--disable-reactive-scheduler":
+        state.featureToggles.enableReactiveScheduler = false;
+        break;
+      case "--enable-blackboard":
+        state.featureToggles.enableBlackboard = true;
+        break;
+      case "--disable-blackboard":
+        state.featureToggles.enableBlackboard = false;
+        break;
+      case "--enable-stigmergy":
+        state.featureToggles.enableStigmergy = true;
+        break;
+      case "--disable-stigmergy":
+        state.featureToggles.enableStigmergy = false;
+        break;
+      case "--enable-cnp":
+        state.featureToggles.enableCNP = true;
+        break;
+      case "--disable-cnp":
+        state.featureToggles.enableCNP = false;
+        break;
+      case "--enable-consensus":
+        state.featureToggles.enableConsensus = true;
+        break;
+      case "--disable-consensus":
+        state.featureToggles.enableConsensus = false;
+        break;
+      case "--enable-autoscaler":
+        state.featureToggles.enableAutoscaler = true;
+        break;
+      case "--disable-autoscaler":
+        state.featureToggles.enableAutoscaler = false;
+        break;
+      case "--enable-supervisor":
+        state.featureToggles.enableSupervisor = true;
+        break;
+      case "--disable-supervisor":
+        state.featureToggles.enableSupervisor = false;
+        break;
+      case "--enable-knowledge":
+        state.featureToggles.enableKnowledge = true;
+        break;
+      case "--disable-knowledge":
+        state.featureToggles.enableKnowledge = false;
+        break;
+      case "--enable-causal-memory":
+        state.featureToggles.enableCausalMemory = true;
+        break;
+      case "--disable-causal-memory":
+        state.featureToggles.enableCausalMemory = false;
+        break;
+      case "--enable-value-guard":
+        state.featureToggles.enableValueGuard = true;
+        break;
+      case "--disable-value-guard":
+        state.featureToggles.enableValueGuard = false;
+        break;
+      case "--bt-tick-ms":
+        state.timings.btTickMs = parsePositiveInteger(value ?? "", flag);
+        break;
+      case "--stig-half-life-ms":
+        state.timings.stigHalfLifeMs = parsePositiveInteger(value ?? "", flag);
+        break;
+      case "--supervisor-stall-ticks":
+        state.timings.supervisorStallTicks = parsePositiveInteger(value ?? "", flag);
+        break;
       default:
         // Ignore unknown flags so the orchestrator remains permissive for
         // future arguments handled elsewhere.
@@ -260,6 +401,8 @@ export function parseOrchestratorRuntimeOptions(argv: string[]): OrchestratorRun
     enableReflection: state.enableReflection,
     enableQualityGate: state.qualityGateEnabled,
     qualityThreshold: state.qualityThreshold,
+    features: { ...state.featureToggles },
+    timings: { ...state.timings },
   };
 }
 

@@ -2,10 +2,20 @@ import { createHash } from "node:crypto";
 
 import { z } from "zod";
 
+import { applyAdaptiveRewrites, type AdaptiveEvaluationResult } from "../graph/adaptive.js";
 import { GraphComputationCache } from "../graph/cache.js";
 import { buildGraphAttributeIndex } from "../graph/index.js";
 import { partitionGraph, type GraphPartitionObjective } from "../graph/partition.js";
+import {
+  applyAll,
+  createInlineSubgraphRule,
+  createRerouteAvoidRule,
+  createSplitParallelRule,
+  type RewriteHistoryEntry,
+  type RewriteRule,
+} from "../graph/rewrite.js";
 import type { NormalisedGraph } from "../graph/types.js";
+import type { KnowledgeGraph } from "../knowledge/knowledgeGraph.js";
 
 interface GraphForgeModelInstance {
   listNodes(): Array<{ id: string }>;
@@ -255,11 +265,24 @@ const PRESET_LIBRARY: Record<string, TaskDefinition[]> = {
  * Generate a labelled dependency graph from textual or structured task
  * descriptions.
  */
+export interface GraphGenerationContext {
+  /** Optional knowledge graph powering plan pattern suggestions. */
+  knowledgeGraph?: KnowledgeGraph | null;
+  /** Explicit flag used to disable knowledge-based suggestions. */
+  knowledgeEnabled?: boolean;
+}
+
+interface DerivedTasksResult {
+  tasks: TaskDefinition[];
+  notes: string[];
+}
+
 export function handleGraphGenerate(
   input: GraphGenerateInput,
+  context?: GraphGenerationContext,
 ): GraphGenerateResult {
-  const tasks = normaliseTasks(input);
   const defaultWeight = input.default_weight ?? 1;
+  const { tasks, notes: knowledgeNotes } = deriveTasks(input, context);
 
   const nodes = new Map<string, TaskDefinition>();
   const order: string[] = [];
@@ -359,13 +382,19 @@ export function handleGraphGenerate(
 
   ensureGraphIdentity(descriptor);
 
+  const notes: string[] = [];
+  if (knowledgeNotes.length > 0) {
+    notes.push(...knowledgeNotes);
+  }
+  if (tasks.some((task) => task.synthetic === true)) {
+    notes.push("synthetic nodes were added for undeclared dependencies");
+  }
+
   return {
     graph: serialiseDescriptor(descriptor),
     task_count: tasks.filter((task) => !task.synthetic).length,
     edge_count: descriptor.edges.length,
-    notes: tasks.some((task) => task.synthetic === true)
-      ? ["synthetic nodes were added for undeclared dependencies"]
-      : [],
+    notes,
   };
 }
 
@@ -465,6 +494,307 @@ export function handleGraphMutate(input: GraphMutateInput): GraphMutateResult {
   }
 
   return { graph: serialiseDescriptor(descriptor), applied };
+}
+
+/** Identifier of rewrite rules that can be triggered via the rewrite tool. */
+const GraphRewriteRuleIdSchema = z.enum(["split_parallel", "inline_subgraph", "reroute_avoid"]);
+
+const GraphRewriteManualOptionsSchema = z
+  .object({
+    stop_on_no_change: z.boolean().optional(),
+    split_parallel_targets: z.array(z.string().min(1)).optional(),
+    reroute_avoid_node_ids: z.array(z.string().min(1)).optional(),
+    reroute_avoid_labels: z.array(z.string().min(1)).optional(),
+  })
+  .strict();
+
+const GraphRewriteAdaptiveOptionsSchema = z
+  .object({
+    stop_on_no_change: z.boolean().optional(),
+    avoid_labels: z.array(z.string().min(1)).optional(),
+  })
+  .strict();
+
+const GraphRewriteInsightMetricsSchema = z
+  .object({
+    successes: z.number().int().nonnegative(),
+    failures: z.number().int().nonnegative(),
+    total_duration_ms: z.number().nonnegative(),
+    total_reward: z.number(),
+    last_updated_at: z.number().int().nonnegative(),
+    attempts: z.number().int().nonnegative(),
+    success_rate: z.number().min(0).max(1),
+    average_duration_ms: z.number().nonnegative(),
+  })
+  .strict();
+
+const GraphRewriteInsightSchema = z
+  .object({
+    edge_key: z.string().min(1),
+    reinforcement: z.number().min(0).max(1),
+    confidence: z.number().min(0).max(1),
+    recommendation: z.enum(["boost", "keep", "prune"]),
+    metrics: GraphRewriteInsightMetricsSchema.optional(),
+  })
+  .strict();
+
+const GraphRewriteAdaptiveEvaluationSchema = z
+  .object({
+    edges_to_boost: z.array(z.string().min(1)).default([]),
+    edges_to_prune: z.array(z.string().min(1)).default([]),
+    insights: z.array(GraphRewriteInsightSchema).default([]),
+  })
+  .strict();
+
+const GraphRewriteApplyManualSchema = z
+  .object({
+    graph: GraphDescriptorSchema,
+    mode: z.literal("manual"),
+    rules: z.array(GraphRewriteRuleIdSchema).min(1, "at least one rewrite rule must be selected"),
+    options: GraphRewriteManualOptionsSchema.optional(),
+  })
+  .strict();
+
+const GraphRewriteApplyAdaptiveSchema = z
+  .object({
+    graph: GraphDescriptorSchema,
+    mode: z.literal("adaptive"),
+    evaluation: GraphRewriteAdaptiveEvaluationSchema,
+    options: GraphRewriteAdaptiveOptionsSchema.optional(),
+  })
+  .strict();
+
+/** Input payload accepted by `graph_rewrite_apply`. */
+export const GraphRewriteApplyInputSchema = z.discriminatedUnion("mode", [
+  GraphRewriteApplyManualSchema,
+  GraphRewriteApplyAdaptiveSchema,
+]);
+
+export const GraphRewriteApplyInputShape = {
+  graph: GraphDescriptorSchema,
+  mode: z.enum(["manual", "adaptive"]),
+  rules: z.array(GraphRewriteRuleIdSchema).optional(),
+  options: z
+    .object({
+      stop_on_no_change: z.boolean().optional(),
+      split_parallel_targets: z.array(z.string().min(1)).optional(),
+      reroute_avoid_node_ids: z.array(z.string().min(1)).optional(),
+      reroute_avoid_labels: z.array(z.string().min(1)).optional(),
+      avoid_labels: z.array(z.string().min(1)).optional(),
+    })
+    .optional(),
+  evaluation: GraphRewriteAdaptiveEvaluationSchema.optional(),
+} as const;
+
+export type GraphRewriteApplyInput = z.infer<typeof GraphRewriteApplyInputSchema>;
+
+export interface GraphRewriteApplyResult extends Record<string, unknown> {
+  graph: GraphDescriptorPayload;
+  history: RewriteHistoryEntry[];
+  total_applied: number;
+  changed: boolean;
+  stop_on_no_change: boolean;
+  mode: "manual" | "adaptive";
+  rules_invoked: string[];
+}
+
+/**
+ * Apply graph rewrite rules either manually selected by the caller or derived
+ * from an adaptive reinforcement evaluation. The helper maintains graph
+ * identity so the transaction manager can reason about optimistic concurrency.
+ */
+export function handleGraphRewriteApply(input: GraphRewriteApplyInput): GraphRewriteApplyResult {
+  const descriptor = normaliseDescriptor(input.graph);
+  const baseVersion = descriptor.graphVersion;
+
+  let rewrittenGraph: NormalisedGraph;
+  let history: RewriteHistoryEntry[];
+  let rulesInvoked: string[];
+  let stopOnNoChange: boolean;
+
+  if (input.mode === "manual") {
+    const manualOptions = input.options;
+    const ruleSet = new Set(input.rules);
+    const rules: RewriteRule[] = [];
+    rulesInvoked = [];
+
+    if (ruleSet.has("split_parallel")) {
+      const targets = normaliseEdgeTargets(manualOptions?.split_parallel_targets);
+      rules.push(createSplitParallelRule(targets));
+      rulesInvoked.push("split-parallel");
+    }
+
+    if (ruleSet.has("inline_subgraph")) {
+      rules.push(createInlineSubgraphRule());
+      rulesInvoked.push("inline-subgraph");
+    }
+
+    if (ruleSet.has("reroute_avoid")) {
+      const avoidNodeIds = normaliseStringSet(manualOptions?.reroute_avoid_node_ids);
+      const avoidLabels = normaliseStringSet(manualOptions?.reroute_avoid_labels);
+      rules.push(
+        createRerouteAvoidRule({
+          avoidNodeIds,
+          avoidLabels,
+        }),
+      );
+      rulesInvoked.push("reroute-avoid");
+    }
+
+    if (rules.length === 0) {
+      throw new Error("no rewrite rules resolved after validating the input");
+    }
+
+    stopOnNoChange = manualOptions?.stop_on_no_change ?? true;
+    const { graph: rewritten, history: rewriteHistory } = applyAll(
+      descriptor,
+      rules,
+      stopOnNoChange,
+    );
+    rewrittenGraph = rewritten;
+    history = rewriteHistory;
+  } else {
+    const adaptiveOptions = input.options;
+    const evaluation = mapAdaptiveEvaluation(input.evaluation);
+    stopOnNoChange = adaptiveOptions?.stop_on_no_change ?? true;
+    const avoidLabels = dedupeStringList(adaptiveOptions?.avoid_labels);
+    const { graph: rewritten, history: rewriteHistory } = applyAdaptiveRewrites(
+      descriptor,
+      evaluation,
+      {
+        stopOnNoChange,
+        avoidLabels: avoidLabels ?? undefined,
+      },
+    );
+    rewrittenGraph = rewritten;
+    history = rewriteHistory;
+    rulesInvoked = Array.from(new Set(history.map((entry) => entry.rule)));
+  }
+
+  const totalApplied = history.reduce((sum, entry) => sum + entry.applied, 0);
+  const changed = totalApplied > 0;
+
+  rewrittenGraph.graphVersion = baseVersion;
+  ensureGraphIdentity(rewrittenGraph, {
+    preferId: input.graph.graph_id ?? null,
+    preferVersion: baseVersion,
+    mutated: changed,
+  });
+
+  if (changed) {
+    computationCache.invalidateGraph(rewrittenGraph.graphId);
+  }
+
+  return {
+    graph: serialiseDescriptor(rewrittenGraph),
+    history,
+    total_applied: totalApplied,
+    changed,
+    stop_on_no_change: stopOnNoChange,
+    mode: input.mode,
+    rules_invoked: rulesInvoked,
+  };
+}
+
+/**
+ * Convert human-friendly edge descriptors into the canonical `from→to`
+ * representation expected by the rewrite rules. The helper validates the
+ * format so the caller receives actionable feedback when a target is malformed.
+ */
+function normaliseEdgeTargets(raw?: string[]): Set<string> | undefined {
+  if (!raw || raw.length === 0) {
+    return undefined;
+  }
+  const targets = new Set<string>();
+  for (const entry of raw) {
+    const trimmed = entry.trim();
+    if (!trimmed) {
+      continue;
+    }
+    const canonical = trimmed.replace(/->/g, "→");
+    const parts = canonical.split("→");
+    if (parts.length !== 2) {
+      throw new Error(
+        "split_parallel_targets entries must follow '<from>→<to>' or '<from>-><to>'",
+      );
+    }
+    const from = parts[0]?.trim();
+    const to = parts[1]?.trim();
+    if (!from || !to) {
+      throw new Error(
+        "split_parallel_targets entries must provide both source and target identifiers",
+      );
+    }
+    targets.add(`${from}→${to}`);
+  }
+  return targets.size > 0 ? targets : undefined;
+}
+
+/** Build a sanitised set from a list of strings, trimming blanks and duplicates. */
+function normaliseStringSet(raw?: string[]): Set<string> | undefined {
+  if (!raw || raw.length === 0) {
+    return undefined;
+  }
+  const values = new Set<string>();
+  for (const entry of raw) {
+    const trimmed = entry.trim();
+    if (trimmed.length === 0) {
+      continue;
+    }
+    values.add(trimmed);
+  }
+  return values.size > 0 ? values : undefined;
+}
+
+/** Deduplicate and trim an optional list of strings, returning null when empty. */
+function dedupeStringList(raw?: string[]): string[] | null {
+  const set = normaliseStringSet(raw);
+  if (!set) {
+    return null;
+  }
+  return Array.from(set);
+}
+
+/**
+ * Map the caller-provided adaptive evaluation payload to the strongly-typed
+ * structure consumed by the adaptive rewrite helper.
+ */
+function mapAdaptiveEvaluation(
+  evaluation: z.infer<typeof GraphRewriteAdaptiveEvaluationSchema>,
+): AdaptiveEvaluationResult {
+  const insights = evaluation.insights.map((insight) => ({
+    edgeKey: insight.edge_key,
+    reinforcement: insight.reinforcement,
+    confidence: insight.confidence,
+    recommendation: insight.recommendation,
+    metrics: insight.metrics
+      ? {
+          successes: insight.metrics.successes,
+          failures: insight.metrics.failures,
+          totalDurationMs: insight.metrics.total_duration_ms,
+          totalReward: insight.metrics.total_reward,
+          lastUpdatedAt: insight.metrics.last_updated_at,
+          attempts: insight.metrics.attempts,
+          successRate: insight.metrics.success_rate,
+          averageDurationMs: insight.metrics.average_duration_ms,
+        }
+      : {
+          successes: 0,
+          failures: 0,
+          totalDurationMs: 0,
+          totalReward: 0,
+          lastUpdatedAt: 0,
+          attempts: 0,
+          successRate: 0,
+          averageDurationMs: 0,
+        },
+  }));
+
+  return {
+    insights,
+    edgesToBoost: evaluation.edges_to_boost,
+    edgesToPrune: evaluation.edges_to_prune,
+  };
 }
 
 /** Input payload accepted by `graph_validate`. */
@@ -1140,16 +1470,54 @@ export function handleGraphPartition(input: GraphPartitionInput): GraphPartition
   };
 }
 
-function normaliseTasks(input: GraphGenerateInput): TaskDefinition[] {
+function deriveTasks(input: GraphGenerateInput, context?: GraphGenerationContext): DerivedTasksResult {
+  const manual = normaliseTasksFromInput(input);
+  if (manual) {
+    return { tasks: manual, notes: [] };
+  }
+
+  const knowledgeEnabled = context?.knowledgeEnabled ?? true;
+  const knowledgeGraph = knowledgeEnabled ? context?.knowledgeGraph ?? undefined : undefined;
+
+  if (knowledgeGraph) {
+    const pattern = knowledgeGraph.buildPlanPattern(input.name);
+    if (pattern && pattern.tasks.length > 0) {
+      const tasks = pattern.tasks.map((task) => {
+        const metadata: Record<string, string | number | boolean> = {};
+        if (task.source) {
+          metadata.knowledge_source = task.source;
+        }
+        if (Number.isFinite(task.confidence)) {
+          metadata.knowledge_confidence = Number(task.confidence.toFixed(3));
+        }
+        return {
+          id: task.id,
+          label: task.label,
+          dependsOn: task.dependsOn,
+          duration: task.duration,
+          weight: task.weight,
+          metadata: Object.keys(metadata).length > 0 ? metadata : undefined,
+        } satisfies TaskDefinition;
+      });
+      const avg = pattern.averageConfidence;
+      const baseNote = `knowledge pattern '${pattern.plan}' applied (${pattern.tasks.length} tasks${
+        avg !== null ? `, avg_confidence=${avg.toFixed(2)}` : ""
+      })`;
+      const notes = pattern.sourceCount > 0 ? [baseNote, `knowledge sources=${pattern.sourceCount}`] : [baseNote];
+      return { tasks, notes };
+    }
+  }
+
+  throw new Error("either preset or tasks must be provided");
+}
+
+function normaliseTasksFromInput(input: GraphGenerateInput): TaskDefinition[] | null {
   const tasks: TaskDefinition[] = [];
   if (input.preset) {
     tasks.push(...(PRESET_LIBRARY[input.preset] ?? []));
   }
   if (!input.tasks) {
-    if (tasks.length === 0) {
-      throw new Error("either preset or tasks must be provided");
-    }
-    return tasks;
+    return tasks.length > 0 ? tasks : null;
   }
   const parsed = parseTaskSource(input.tasks);
   tasks.push(...parsed);

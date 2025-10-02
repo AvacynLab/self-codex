@@ -15,6 +15,7 @@ import {
   handlePlanFanout,
   handlePlanReduce,
 } from "../src/tools/planTools.js";
+import { StigmergyField } from "../src/coord/stigmergy.js";
 
 const mockRunnerPath = fileURLToPath(new URL("./fixtures/mock-runner.js", import.meta.url));
 
@@ -29,6 +30,7 @@ function createPlanContext(options: {
   logger: StructuredLogger;
   events: Array<{ kind: string; payload?: unknown }>;
 }): PlanToolContext {
+  const stigmergy = new StigmergyField();
   return {
     supervisor: options.supervisor,
     graphState: options.graphState,
@@ -38,6 +40,7 @@ function createPlanContext(options: {
     emitEvent: (event) => {
       options.events.push({ kind: event.kind, payload: event.payload });
     },
+    stigmergy,
   };
 }
 
@@ -213,11 +216,30 @@ describe("plan_reduce tool", () => {
         }),
       );
 
-      expect(reduceResult.aggregate).to.deep.equal({ value: "choix-A", count: 2 });
-      expect(reduceResult.trace.details).to.deep.equal({
+      expect(reduceResult.aggregate).to.deep.equal({
+        mode: "majority",
+        value: "choix-A",
+        satisfied: true,
+        tie: false,
+        threshold: 2,
+        total_weight: 3,
         tally: {
           "choix-A": 2,
           "choix-B": 1,
+        },
+      });
+      expect(reduceResult.trace.details).to.deep.equal({
+        consensus: {
+          mode: "majority",
+          value: "choix-A",
+          satisfied: true,
+          tie: false,
+          threshold: 2,
+          total_weight: 3,
+          tally: {
+            "choix-A": 2,
+            "choix-B": 1,
+          },
         },
       });
     } finally {

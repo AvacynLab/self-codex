@@ -19,6 +19,7 @@ import {
   handlePlanReduce,
 } from "../src/tools/planTools.js";
 import { writeArtifact } from "../src/artifacts.js";
+import { StigmergyField } from "../src/coord/stigmergy.js";
 
 const mockRunnerPath = fileURLToPath(new URL("./fixtures/mock-runner.js", import.meta.url));
 const stubbornRunnerPath = fileURLToPath(new URL("./fixtures/stubborn-runner.js", import.meta.url));
@@ -31,6 +32,7 @@ function createPlanContext(options: {
   defaultRuntime?: string;
   events: Array<{ kind: string; payload?: unknown }>;
 }): PlanToolContext {
+  const stigmergy = new StigmergyField();
   return {
     supervisor: options.supervisor,
     graphState: options.graphState,
@@ -40,6 +42,7 @@ function createPlanContext(options: {
     emitEvent: (event) => {
       options.events.push({ kind: event.kind, payload: event.payload });
     },
+    stigmergy,
   };
 }
 
@@ -301,7 +304,18 @@ describe("plan tools", () => {
         }),
       );
       expect(reduceVote.reducer).to.equal("vote");
-      expect(reduceVote.trace.details).to.have.property("tally");
+      expect(reduceVote.trace.details).to.have.property("consensus");
+      const consensusDetails = reduceVote.trace.details?.consensus as
+        | {
+          mode: string;
+          tally?: Record<string, number>;
+          value?: unknown;
+        }
+        | undefined;
+      expect(consensusDetails).to.be.an("object");
+      expect(consensusDetails?.mode).to.equal("majority");
+      expect(consensusDetails?.value).to.equal("A");
+      expect(consensusDetails?.tally).to.be.an("object");
       expect(events.filter((event) => event.kind === "AGGREGATE")).to.have.length.greaterThan(0);
 
       await logger.flush();

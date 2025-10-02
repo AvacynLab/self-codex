@@ -64,10 +64,10 @@ Contexte inchangé : TypeScript/Node ESM, exécution locale, une instance Codex 
     * `HierGraph = { id, nodes:HierNode[], edges:Edge[] }`
   * [x] API : `embedSubgraph(parent:HierGraph, nodeId, sub:HierGraph)`, `flatten(h:HierGraph): Graph` (expansion contrôlée)
   * [x] **Validation** (no cycles inter-niveaux, ports d’entrée/sortie nommés)
-* [ ] **Modifier** `src/server.ts`
+* [x] **Modifier** `src/server.ts`
 
-  * [ ] Étendre `graph_generate`/`graph_mutate` pour `kind:"subgraph"`
-  * [ ] Nouvelle tool `graph_subgraph_extract` (extrait un sous-plan en fichier JSON, versionné dans run dir)
+  * [x] Étendre `graph_generate`/`graph_mutate` pour `kind:"subgraph"`
+  * [x] Nouvelle tool `graph_subgraph_extract` (extrait un sous-plan en fichier JSON, versionné dans run dir)
 * [x] **Tests**
 
   * [x] `tests/graph.hierarchy.generate-embed.test.ts` (embed + validate)
@@ -106,7 +106,7 @@ Contexte inchangé : TypeScript/Node ESM, exécution locale, une instance Codex 
   * [x] Numéro de **version** incrémental + horodatage
 * [ ] **Intégrer** à *toutes* mutations serveur (wrap `graph_mutate`, `graph_rewrite_apply`)
   * [x] Wrap `graph_mutate`
-  * [ ] Wrap `graph_rewrite_apply`
+  * [x] Wrap `graph_rewrite_apply`
 * [ ] **Tests**
 
   * [x] `tests/graph.tx.snapshot-rollback.test.ts`
@@ -118,47 +118,47 @@ Contexte inchangé : TypeScript/Node ESM, exécution locale, une instance Codex 
 
 ### B1. Interpréteur Behavior Tree (BT)
 
-* [ ] **Créer** `src/executor/bt/types.ts` (Status: `SUCCESS|FAILURE|RUNNING`)
-* [ ] **Créer** `src/executor/bt/nodes.ts`
+* [x] **Créer** `src/executor/bt/types.ts` (Status: `SUCCESS|FAILURE|RUNNING`)
+* [x] **Créer** `src/executor/bt/nodes.ts`
 
-  * [ ] Composites : `Sequence`, `Selector`, `Parallel(policy:all/any)`
-  * [ ] Décorateurs : `Retry(n, backoff)`, `Timeout(ms)`, `Guard(cond)`
-  * [ ] Feuilles : `TaskLeaf(toolName, inputSchema)` → appelle tools existants (child_send, graph_*…)
-* [ ] **Créer** `src/executor/bt/interpreter.ts` (tick async, persistance état nœuds)
-* [ ] **Créer** `src/executor/bt/compiler.ts` (compile `HierGraph` → BT selon patrons)
-* [ ] **Modifier** `src/server.ts`
+  * [x] Composites : `Sequence`, `Selector`, `Parallel(policy:all/any)`
+  * [x] Décorateurs : `Retry(n, backoff)`, `Timeout(ms)`, `Guard(cond)`
+  * [x] Feuilles : `TaskLeaf(toolName, inputSchema)` → appelle tools existants (child_send, graph_*…)
+* [x] **Créer** `src/executor/bt/interpreter.ts` (tick async, persistance état nœuds)
+* [x] **Créer** `src/executor/bt/compiler.ts` (compile `HierGraph` → BT selon patrons)
+* [x] **Modifier** `src/server.ts`
 
-  * [ ] Nouvelle tool `plan_compile_bt` (retourne JSON BT)
-  * [ ] Nouvelle tool `plan_run_bt` (lance interpréteur + expose events)
-* [ ] **Tests**
+  * [x] Nouvelle tool `plan_compile_bt` (retourne JSON BT)
+  * [x] Nouvelle tool `plan_run_bt` (lance interpréteur + expose events)
+* [x] **Tests**
 
-  * [ ] `tests/bt.nodes.sequence-selector.test.ts`
-  * [ ] `tests/bt.decorators.retry-timeout.test.ts` (fake timers)
-  * [ ] `tests/bt.compiler.from-hiergraph.test.ts`
-  * [ ] `tests/bt.run.integration.test.ts` (BT → outils réels mockés)
+  * [x] `tests/bt.nodes.sequence-selector.test.ts`
+  * [x] `tests/bt.decorators.retry-timeout.test.ts` (fake timers)
+  * [x] `tests/bt.compiler.from-hiergraph.test.ts`
+  * [x] `tests/bt.run.integration.test.ts` (BT → outils réels mockés)
 
 ### B2. Scheduler réactif & bus d’événements
 
-* [ ] **Créer** `src/executor/reactiveScheduler.ts`
+* [x] **Créer** `src/executor/reactiveScheduler.ts`
 
-  * [ ] EventBus (Node `EventEmitter`) : `taskReady`, `taskDone`, `blackboardChanged`, `stigmergyChanged`
-  * [ ] Politique : priorité dynamique (âge, criticité, phéromones)
-* [ ] **Relier** BT → Scheduler (ticks pilotés par événements)
-* [ ] **Tests**
+  * [x] EventBus (Node `EventEmitter`) : `taskReady`, `taskDone`, `blackboardChanged`, `stigmergyChanged`
+  * [x] Politique : priorité dynamique (âge, criticité, phéromones)
+* [x] **Relier** BT → Scheduler (ticks pilotés par événements)
+* [x] **Tests**
 
-  * [ ] `tests/executor.scheduler.reactivity.test.ts` (réaction immédiate aux events)
-  * [ ] `tests/executor.scheduler.prio.test.ts` (priorités évolutives)
+  * [x] `tests/executor.scheduler.reactivity.test.ts` (réaction immédiate aux events)
+  * [x] `tests/executor.scheduler.prio.test.ts` (priorités évolutives)
 
 ### B3. Boucle de *ticks* & budgets
 
-* [ ] **Créer** `src/executor/loop.ts`
+* [x] **Créer** `src/executor/loop.ts`
 
-  * [ ] Tick cadencé (`setInterval`) + `pause/resume/stop`
-  * [ ] Budgets : tâches longues → coopérative (yield)
-* [ ] **Tests**
+  * [x] Tick cadencé (`setInterval`) + `pause/resume/stop`
+  * [x] Budgets : tâches longues → coopérative (yield)
+* [x] **Tests**
 
-  * [ ] `tests/executor.loop.timing.test.ts` (fake timers, no drift)
-  * [ ] `tests/executor.loop.budget.test.ts`
+  * [x] `tests/executor.loop.timing.test.ts` (fake timers, no drift)
+  * [x] `tests/executor.loop.budget.test.ts`
 
 ---
 
@@ -166,53 +166,53 @@ Contexte inchangé : TypeScript/Node ESM, exécution locale, une instance Codex 
 
 ### C1. **Blackboard** (tableau noir)
 
-* [ ] **Créer** `src/coord/blackboard.ts`
+* [x] **Créer** `src/coord/blackboard.ts`
 
-  * [ ] KV typé + tags + TTL + watch (events)
-  * [ ] Snapshots (pour débogage, export)
-* [ ] **Modifier** `src/server.ts`
+  * [x] KV typé + tags + TTL + watch (events)
+  * [x] Snapshots (pour débogage, export)
+* [x] **Modifier** `src/server.ts`
 
-  * [ ] Tools : `bb_set`, `bb_get`, `bb_query`, `bb_watch(startFromVersion)` (stream)
-* [ ] **Tests**
+  * [x] Tools : `bb_set`, `bb_get`, `bb_query`, `bb_watch(startFromVersion)` (stream)
+* [x] **Tests**
 
-  * [ ] `tests/coord.blackboard.kv.test.ts`
-  * [ ] `tests/coord.blackboard.watch.test.ts` (dédup + ordre)
+  * [x] `tests/coord.blackboard.kv.test.ts`
+  * [x] `tests/coord.blackboard.watch.test.ts` (dédup + ordre)
 
 ### C2. **Stigmergie** (phéromones)
 
-* [ ] **Créer** `src/coord/stigmergy.ts`
+* [x] **Créer** `src/coord/stigmergy.ts`
 
-  * [ ] API : `mark(nodeId, type, intensity)`, `evaporate(halfLifeMs)`, `fieldSnapshot()`
-* [ ] **Modifier** scheduler pour pondérer sélection de tâches par champ de phéromones
-* [ ] **Server tools** : `stig_mark`, `stig_decay`, `stig_snapshot`
-* [ ] **Tests**
+  * [x] API : `mark(nodeId, type, intensity)`, `evaporate(halfLifeMs)`, `fieldSnapshot()`
+* [x] **Modifier** scheduler pour pondérer sélection de tâches par champ de phéromones
+* [x] **Server tools** : `stig_mark`, `stig_decay`, `stig_snapshot`
+* [x] **Tests**
 
-  * [ ] `tests/coord.stigmergy.field.test.ts` (accumulation/évaporation)
-  * [ ] `tests/coord.stigmergy.scheduler.test.ts` (impact mesurable sur choix)
+  * [x] `tests/coord.stigmergy.field.test.ts` (accumulation/évaporation)
+  * [x] `tests/coord.stigmergy.scheduler.test.ts` (impact mesurable sur choix)
 
 ### C3. **Contract-Net Protocol**
 
-* [ ] **Créer** `src/coord/contractNet.ts`
+* [x] **Créer** `src/coord/contractNet.ts`
 
-  * [ ] Messages : `announce(task)`, `bid(agentId,cost)`, `award(agentId)`
-  * [ ] Stratégie d’attribution (min cost, heuristique)
-* [ ] **Intégrer** à `child_create`/`child_send` (routeur de tâches via CNP si activé)
-* [ ] **Server tool** : `cnp_announce` (expérimental)
-* [ ] **Tests**
+  * [x] Messages : `announce(task)`, `bid(agentId,cost)`, `award(agentId)`
+  * [x] Stratégie d’attribution (min cost, heuristique)
+* [x] **Intégrer** à `child_create`/`child_send` (routeur de tâches via CNP si activé)
+* [x] **Server tool** : `cnp_announce` (expérimental)
+* [x] **Tests**
 
-  * [ ] `tests/coord.contractnet.basic.test.ts`
-  * [ ] `tests/coord.contractnet.tie-breaker.test.ts`
+  * [x] `tests/coord.contractnet.basic.test.ts`
+  * [x] `tests/coord.contractnet.tie-breaker.test.ts`
 
 ### C4. **Consensus / Vote**
 
-* [ ] **Créer** `src/coord/consensus.ts`
+* [x] **Créer** `src/coord/consensus.ts`
 
-  * [ ] `majority`, `quorum(k)`, `weighted(weights)`
-* [ ] **Relier** à `plan_join` / `plan_reduce` (mode `vote`)
-* [ ] **Tests**
+  * [x] `majority`, `quorum(k)`, `weighted(weights)`
+* [x] **Relier** à `plan_join` / `plan_reduce` (mode `vote`)
+* [x] **Tests**
 
-  * [ ] `tests/coord.consensus.modes.test.ts`
-  * [ ] `tests/plan.join.vote.integration.test.ts`
+  * [x] `tests/coord.consensus.modes.test.ts`
+  * [x] `tests/plan.join.vote.integration.test.ts`
 
 ---
 
@@ -220,28 +220,28 @@ Contexte inchangé : TypeScript/Node ESM, exécution locale, une instance Codex 
 
 ### D1. **Autoscaler d’enfants**
 
-* [ ] **Créer** `src/agents/autoscaler.ts`
+* [x] **Créer** `src/agents/autoscaler.ts`
 
-  * [ ] Metrics : backlog scheduler, latence, taux d’échec
-  * [ ] Politique : spawn/retire avec bornes et *cooldown*
-* [ ] **Intégrer** au loop (tick → `reconcile()`)
-* [ ] **Server tool** : `agent_autoscale_set({min,max,cooldown})`
-* [ ] **Tests**
+  * [x] Metrics : backlog scheduler, latence, taux d’échec
+  * [x] Politique : spawn/retire avec bornes et *cooldown*
+* [x] **Intégrer** au loop (tick → `reconcile()`)
+* [x] **Server tool** : `agent_autoscale_set({min,max,cooldown})`
+* [x] **Tests**
 
-  * [ ] `tests/agents.autoscaler.scale-updown.test.ts` (sans fuite de process)
-  * [ ] `tests/agents.autoscaler.cooldown.test.ts`
+  * [x] `tests/agents.autoscaler.scale-updown.test.ts` (sans fuite de process)
+  * [x] `tests/agents.autoscaler.cooldown.test.ts`
 
 ### D2. **Superviseur (Global Workspace)**
 
-* [ ] **Créer** `src/agents/supervisor.ts`
+* [x] **Créer** `src/agents/supervisor.ts`
 
-  * [ ] Détecte stagnation (aucun progrès N ticks), deadlocks, starvation
-  * [ ] Actions : réécriture de plan ciblée, redispatch, alertes
-* [ ] **Relier** à `loopDetector` et `rewrite`
-* [ ] **Tests**
+  * [x] Détecte stagnation (aucun progrès N ticks), deadlocks, starvation
+  * [x] Actions : réécriture de plan ciblée, redispatch, alertes
+* [x] **Relier** à `loopDetector` et `rewrite`
+* [x] **Tests**
 
-  * [ ] `tests/agents.supervisor.stagnation.test.ts`
-  * [ ] `tests/agents.supervisor.unblock.test.ts`
+  * [x] `tests/agents.supervisor.stagnation.test.ts`
+  * [x] `tests/agents.supervisor.unblock.test.ts`
 
 ### D3. **Sécurité/opération**
 
@@ -255,44 +255,44 @@ Contexte inchangé : TypeScript/Node ESM, exécution locale, une instance Codex 
 
 ### E1. **Graphe de connaissances interne (KG)**
 
-* [ ] **Créer** `src/knowledge/knowledgeGraph.ts`
+* [x] **Créer** `src/knowledge/knowledgeGraph.ts`
 
-  * [ ] Triplets `{subject,predicate,object,source?,confidence?}` + index
-  * [ ] Query simple par motif (sans dépendance RDF)
-* [ ] **Relier** `graph_generate` pour *suggérer* patrons de plan depuis KG
-* [ ] **Server tools** : `kg_insert`, `kg_query`, `kg_export`
-* [ ] **Tests**
+  * [x] Triplets `{subject,predicate,object,source?,confidence?}` + index
+  * [x] Query simple par motif (sans dépendance RDF)
+* [x] **Relier** `graph_generate` pour *suggérer* patrons de plan depuis KG
+* [x] **Server tools** : `kg_insert`, `kg_query`, `kg_export`
+* [x] **Tests**
 
-  * [ ] `tests/knowledge.kg.insert-query.test.ts`
-  * [ ] `tests/graph.generate.from-kg.test.ts` (patrons appliqués)
+  * [x] `tests/knowledge.kg.insert-query.test.ts`
+  * [x] `tests/graph.generate.from-kg.test.ts` (patrons appliqués)
 
 ### E2. **Mémoire causale d’événements**
 
-* [ ] **Créer** `src/knowledge/causalMemory.ts`
+* [x] **Créer** `src/knowledge/causalMemory.ts`
 
-  * [ ] Noeuds = événements, arêtes cause→effet (exécution réelle)
-  * [ ] API : `record(event, causes[])`, `explain(outcome)`
-* [ ] **Brancher** exécution (BT & scheduler) pour enregistrer événements
-* [ ] **Server tools** : `causal_export`, `causal_explain(outcomeId)`
-* [ ] **Tests**
+  * [x] Noeuds = événements, arêtes cause→effet (exécution réelle)
+  * [x] API : `record(event, causes[])`, `explain(outcome)`
+* [x] **Brancher** exécution (BT & scheduler) pour enregistrer événements
+* [x] **Server tools** : `causal_export`, `causal_explain(outcomeId)`
+* [x] **Tests**
 
-  * [ ] `tests/knowledge.causal.record-explain.test.ts`
-  * [ ] `tests/causal.integration.bt-scheduler.test.ts`
+  * [x] `tests/knowledge.causal.record-explain.test.ts`
+  * [x] `tests/causal.integration.bt-scheduler.test.ts`
 
 ---
 
 ## F) **Graphe de valeurs** & filtrage des plans
 
-* [ ] **Créer** `src/values/valueGraph.ts`
+* [x] **Créer** `src/values/valueGraph.ts`
 
-  * [ ] Noeuds : valeurs (sécurité, confidentialité, coût, perfo…), arêtes : priorités/contraintes
-  * [ ] `scorePlan(plan):{score,total,violations[]}` + `filter(plan)`
-* [ ] **Intégrer** à `plan_fanout` (pré-filtrer), `plan_reduce` (pondérer)
-* [ ] **Server tools** : `values_set`, `values_score`, `values_filter`
-* [ ] **Tests**
+  * [x] Noeuds : valeurs (sécurité, confidentialité, coût, perfo…), arêtes : priorités/contraintes
+  * [x] `scorePlan(plan):{score,total,violations[]}` + `filter(plan)`
+* [x] **Intégrer** à `plan_fanout` (pré-filtrer), `plan_reduce` (pondérer)
+* [x] **Server tools** : `values_set`, `values_score`, `values_filter`
+* [x] **Tests**
 
-  * [ ] `tests/values.score-filter.test.ts`
-  * [ ] `tests/plan.values-integration.test.ts` (plan rejeté si violation critique)
+  * [x] `tests/values.score-filter.test.ts`
+  * [x] `tests/plan.values-integration.test.ts` (plan rejeté si violation critique)
 
 ---
 
@@ -307,20 +307,21 @@ Contexte inchangé : TypeScript/Node ESM, exécution locale, une instance Codex 
     * `bb_set/get/query/watch`, `stig_mark/decay/snapshot`
     * `cnp_announce`, `consensus_vote`
     * `agent_autoscale_set`
-    * `kg_insert/query/export`, `causal_export/explain`
-    * `values_set/score/filter`
+    * `kg_insert/query/export`, `causal_export/explain` ✅
+    * `values_set/score/filter` ✅
   * [ ] **Zod schemas** pour chaque input, validation stricte
-  * [ ] Codes d’erreurs :
+  * [x] Codes d’erreurs :
 
-    * `E-BT-INVALID`, `E-BT-RUN-TIMEOUT`
-    * `E-BB-NOTFOUND`, `E-STIG-TYPE`
-    * `E-CNP-NO-BIDS`, `E-CONSENSUS-NO-QUORUM`
-    * `E-KG-BAD-TRIPLE`, `E-CAUSAL-NO-PATH`
-    * `E-VALUES-VIOLATION`, `E-REWRITE-CONFLICT`
-* [ ] **Tests**
+    * [x] `E-BT-INVALID`, `E-BT-RUN-TIMEOUT`
+    * [x] `E-BB-NOTFOUND`, `E-STIG-TYPE`
+    * [x] `E-CNP-NO-BIDS`, `E-CONSENSUS-NO-QUORUM`
+    * [x] `E-KG-BAD-TRIPLE`, `E-CAUSAL-NO-PATH`
+    * [x] `E-VALUES-VIOLATION`, `E-REWRITE-CONFLICT`
+* [x] **Tests**
 
-  * [ ] `tests/server.tools.schemas.test.ts` (validation négative)
-  * [ ] `tests/server.tools.errors.test.ts` (codes/msgs cohérents)
+  * [x] `tests/server.tools.schemas.test.ts` (validation négative)
+  * [x] `tests/server.tools.errors.test.ts` (codes/msgs cohérents)
+* [x] Stabiliser `plan_reduce` (vote) pour normaliser les résumés JSON/textuels et éviter les erreurs de quorum.
 
 ---
 
@@ -381,18 +382,18 @@ Contexte inchangé : TypeScript/Node ESM, exécution locale, une instance Codex 
 
 ## K) Feature flags & configuration
 
-* [ ] **Modifier** `src/serverOptions.ts`
+* [x] **Modifier** `src/serverOptions.ts`
 
-  * [ ] Flags (off par défaut) :
+  * [x] Flags (off par défaut) :
 
     * `enableBT`, `enableReactiveScheduler`
     * `enableBlackboard`, `enableStigmergy`, `enableCNP`, `enableConsensus`
     * `enableAutoscaler`, `enableSupervisor`
     * `enableKnowledge`, `enableCausalMemory`, `enableValueGuard`
-  * [ ] Timeouts/délais : `btTickMs`, `stigHalfLifeMs`, `supervisorStallTicks`
-* [ ] **Tests**
+  * [x] Timeouts/délais : `btTickMs`, `stigHalfLifeMs`, `supervisorStallTicks`
+* [x] **Tests**
 
-  * [ ] `tests/options.flags.wiring.test.ts` (activation/désactivation propre)
+  * [x] `tests/options.flags.wiring.test.ts` (activation/désactivation propre)
 
 ---
 
@@ -467,3 +468,99 @@ Si tu veux, je peux ensuite te générer les **squelettes TypeScript** (fichiers
 - ✅ Intégré le gestionnaire transactionnel côté serveur pour `graph_mutate` avec rollback automatique et journalisation dédiée.
 - ✅ Exposé des helpers de normalisation/sérialisation pour relier les outils de graphe aux transactions.
 - ✅ Ajouté le test `tests/graph.tx.mutate-integration.test.ts` couvrant l'interop entre mutations et transactions.
+
+### 2025-10-01 – Agent `gpt-5-codex` (iteration 35)
+- ✅ Étendu les outils `graph_generate` et `graph_mutate` pour détecter/consigner les sous-graphes et signaler les descripteurs manquants.
+- ✅ Implémenté la tool `graph_subgraph_extract` avec export versionné vers le run dir et journalisation MCP.
+- ✅ Créé la bibliothèque `subgraphRegistry` + `subgraphExtract` et le test `graph.subgraph.extract.test.ts` (horodatage déterministe, nettoyage run dir).
+
+### 2025-10-01 – Agent `gpt-5-codex` (iteration 36)
+- ✅ Implémenté `graph_rewrite_apply` côté outils avec schéma Zod, sélection manuelle/adaptative des règles et invalidation du cache.
+- ✅ Enregistré la tool `graph_rewrite_apply` sur le serveur avec transactions, journalisation détaillée et suivi des sous-graphes.
+- ✅ Ajouté `tests/graph.rewrite.apply.test.ts` et `tests/graph.tx.rewrite-integration.test.ts` couvrant règles manuelles/adaptatives et commits optimistes.
+
+### 2025-10-01 – Agent `gpt-5-codex` (iteration 37)
+- ✅ Créé la suite Behaviour Tree (`types.ts`, `nodes.ts`, `interpreter.ts`, `compiler.ts`) avec commentaires détaillés et nœuds Sequence/Selector/Parallel/Retry/Timeout/Guard/TaskLeaf.
+- ✅ Ajouté les outils MCP `plan_compile_bt` et `plan_run_bt` (Zod, invocations tracées, mode dry-run `noop`) et intégré au serveur.
+- ✅ Couvert l’interpréteur avec `tests/bt.nodes.sequence-selector.test.ts`, `tests/bt.decorators.retry-timeout.test.ts`, `tests/bt.compiler.from-hiergraph.test.ts`, `tests/bt.run.integration.test.ts` (fake timers, flux stub).
+
+### 2025-10-01 – Agent `gpt-5-codex` (iteration 38)
+- ✅ Implémenté `src/executor/reactiveScheduler.ts` avec bus d’événements typé, calculs de priorité (criticité + phéromones + vieillissement) et traçabilité des ticks.
+- ✅ Relié `plan_run_bt` au scheduler réactif pour piloter l’interpréteur via les signaux et exposer le nombre de ticks exécutés.
+- ✅ Ajouté `tests/executor.scheduler.reactivity.test.ts` et `tests/executor.scheduler.prio.test.ts` (horloge manuelle déterministe) et maintenu `npm test` vert.
+- 🔜 Suivi : brancher les futurs modules (blackboard/stigmergie réels) sur le bus pour enrichir les signaux et ajouter des handlers d’outils BT non-« noop ».
+
+### 2025-10-01 – Agent `gpt-5-codex` (iteration 39)
+- ✅ Créé `src/executor/loop.ts` avec boucle cadencée, budget coopératif et API `whenIdle`/`stop` documentées pour orchestrer les ticks.
+- ✅ Écrit `tests/executor.loop.timing.test.ts` et `tests/executor.loop.budget.test.ts` avec horloges manuelles pour valider cadence, pause/reprise et yields coopératifs.
+- ✅ Exécuté `npm test` pour garantir que l’ensemble de la suite reste déterministe et verte après l’ajout de la boucle.
+
+### 2025-10-01 – Agent `gpt-5-codex` (iteration 40)
+- ✅ Implémenté `src/coord/blackboard.ts` avec KV typé, TTL déterministe, journal d’événements borné et API de watch synchronisée.
+- ✅ Ajouté les tools `bb_set/get/query/watch` côté serveur (schémas Zod, logs dédiés, intégration au nettoyage TTL) et enregistrés via MCP.
+- ✅ Créé les tests `coord.blackboard.kv.test.ts` & `coord.blackboard.watch.test.ts` (horloge manuelle) pour couvrir stockage, expiration et streaming; suite `npm test` vérifiée.
+
+### 2025-10-01 – Agent `gpt-5-codex` (iteration 41)
+- ✅ Implémenté `src/coord/stigmergy.ts` avec accumulation déterministe, évaporation exponentielle et notifications de changements.
+- ✅ Branché le scheduler réactif sur le champ de phéromones (priorités pondérées, rebalancement live) et exposé les tools `stig_mark/decay/snapshot` via le serveur MCP.
+- ✅ Ajouté les tests `coord.stigmergy.field.test.ts` et `coord.stigmergy.scheduler.test.ts` garantissant évaporation, snapshots et impact sur la sélection des tâches.
+
+### 2025-10-01 – Agent `gpt-5-codex` (iteration 42)
+- ✅ Ajouté le coordinateur Contract-Net (annonce/bid/award avec biais heuristiques et pénalité de charge) et documentation inline.
+- ✅ Relié `child_create`/`child_send` au CNP (sélection automatique, résumé de dispatch, completion auto) et exposé la tool MCP `cnp_announce`.
+- ✅ Créé les tests `coord.contractnet.*` et un scénario `child_send` validant le routage Contract-Net.
+
+### 2025-10-01 – Agent `gpt-5-codex` (iteration 43)
+- ✅ Implémenté `src/coord/consensus.ts` avec calculs `majority`/`quorum`/`weighted`, normalisation des options et schéma Zod réutilisable.
+- ✅ Relié le consensus aux outils `plan_join` et `plan_reduce` (mode vote) avec exposition des résultats dans les traces et les événements.
+- ✅ Ajouté les tests `coord.consensus.modes.test.ts`, `plan.join.vote.integration.test.ts`, mis à jour `plan.fanout-join.test.ts` et `plan.reduce.test.ts`, puis exécuté `npm test`.
+
+### 2025-10-01 – Agent `gpt-5-codex` (iteration 44)
+- ✅ Créé `src/agents/autoscaler.ts` (métriques backlog/latence/taux d’échec, politique bornée avec cooldown) et connecté au loop via l’interface `LoopReconciler`.
+- ✅ Ajouté le tool `agent_autoscale_set` (schéma Zod + logging) et instancié l’autoscaler côté serveur.
+- ✅ Écrit les tests `agents.autoscaler.scale-updown.test.ts`, `agents.autoscaler.cooldown.test.ts`, `executor.loop.reconciler.test.ts` (horloge manuelle) et vérifié `npm test`.
+
+### 2025-10-02 – Agent `gpt-5-codex` (iteration 45)
+- ✅ Stabilisé `tests/agents.autoscaler.scale-updown.test.ts` en abaissant la moyenne de latence sous le seuil de relaxation et en retirant les traces de debug.
+- ✅ Exécuté la suite complète `npm test` (245 tests) pour confirmer que l’autoscaler et le loop restent verts.
+
+### 2025-10-02 – Agent `gpt-5-codex` (iteration 46)
+- ✅ Introduit `src/agents/supervisor.ts` (détection stagnation/starvation, gestion des alertes de loop, interface `LoopReconciler`).
+- ✅ Relié le superviseur au serveur (`childTools`, `planTools`, `loopDetector`) avec événements MCP (`supervisor_*`) et callbacks de réécriture/redispatch.
+- ✅ Ajouté `tests/agents.supervisor.stagnation.test.ts` & `tests/agents.supervisor.unblock.test.ts`, ajusté le scheduler pour exposer le backlog post-tick et maintenu `npm test` vert (248 tests).
+
+### 2025-10-02 – Agent `gpt-5-codex` (iteration 47)
+- ✅ Étendu `serverOptions` avec les toggles de modules et délais (`btTickMs`, `stigHalfLifeMs`, `supervisorStallTicks`) et exposé l’API de configuration runtime.
+- ✅ Mis à jour `tests/serverOptions.parse.test.ts` pour couvrir l’activation/désactivation et les délais personnalisés.
+- ✅ Ajouté `tests/options.flags.wiring.test.ts` pour vérifier l’application dynamique des toggles et timings via le serveur.
+
+### 2025-10-02 – Agent `gpt-5-codex` (iteration 48)
+- ✅ Créé `src/knowledge/knowledgeGraph.ts` (index triple, motifs wildcard, patterns de plan) et horloge injectée pour tests déterministes.
+- ✅ Relié `handleGraphGenerate` aux patterns KG et ajouté les tools MCP `kg_insert/query/export` avec garde feature flag.
+- ✅ Ajouté `tests/knowledge.kg.insert-query.test.ts` et `tests/graph.generate.from-kg.test.ts` couvrant stockage, requêtes et génération pilotée; suite `npm test` (254) verte.
+
+### 2025-10-02 – Agent `gpt-5-codex` (iteration 49)
+- ✅ Implémenté `src/knowledge/causalMemory.ts` (enregistrement d'événements, explication ascendante, export complet) et résumé JSON compact.
+- ✅ Branché la mémoire causale sur le scheduler réactif et `plan_run_bt` (événements `bt.tool.*`, `scheduler.tick.*`) avec garde feature flag.
+- ✅ Ajouté les tools MCP `causal_export` / `causal_explain`, journalisation dédiée et tests ciblés (`knowledge.causal.record-explain`, `causal.integration.bt-scheduler`).
+
+### 2025-10-02 – Agent `gpt-5-codex` (iteration 50)
+- ✅ Créé `src/values/valueGraph.ts` avec scoring, propagation des contraintes et filtrage par seuil configurable.
+- ✅ Intégré le garde-fou dans `plan_fanout` (pré-filtrage + journalisation) et `plan_reduce` (pondération des votes) avec enregistrement des décisions par enfant.
+- ✅ Ajouté les tools `values_set/score/filter`, les tests unitaires `values.score-filter` et l'intégration `plan.values-integration`, plus la signalisation d'erreur `E-VALUES-VIOLATION` côté serveur.
+
+### 2025-10-02 – Agent `gpt-5-codex` (iteration 51)
+- ✅ Harmonisé les codes d’erreurs MCP (`E-BT-INVALID`, `E-BT-RUN-TIMEOUT`, `E-BB-NOTFOUND`, `E-STIG-TYPE`, `E-CNP-NO-BIDS`, `E-CONSENSUS-NO-QUORUM`, `E-KG-BAD-TRIPLE`, `E-CAUSAL-NO-PATH`, `E-VALUES-VIOLATION`, `E-REWRITE-CONFLICT`) via des classes dédiées et la normalisation serveur.
+- ✅ Étendu `plan_run_bt` avec `timeout_ms`, ajouté le timeout runtime `BehaviorTreeRunTimeoutError` et câblé `plan_reduce` pour lever `ConsensusNoQuorumError` lors des votes infructueux.
+- ✅ Ajouté les suites ciblées `tests/server.tools.schemas.test.ts` et `tests/server.tools.errors.test.ts` vérifiant les validations négatives et la remontée des codes; exécuté les nouvelles suites Mocha.
+
+### 2025-10-02 – Agent `gpt-5-codex` (iteration 52)
+- ✅ Ajouté la tool `graph_hyper_export` (projection hyper-graphe → graphe standard) avec exports Mermaid/DOT et test dédié.
+- ✅ Enregistré `plan_run_reactive` (ExecutionLoop + scheduler réactif) et couvert le flux avec `tests/plan.run-reactive.test.ts`.
+- ✅ Exposé `consensus_vote` côté coordination, schéma Zod et test majoritaire pour valider le calcul.
+- 🔄 Étendu `tests/server.tools.schemas.test.ts` pour inclure les nouveaux schémas (`graph_hyper_export`, `plan_run_reactive`, `consensus_vote`).
+
+### 2025-10-02 – Agent `gpt-5-codex` (iteration 53)
+- ✅ Normalisé les résumés de vote dans `plan_reduce` pour extraire les champs `vote`/`value` lorsque disponibles et conserver des sources de diagnostic.
+- ✅ Ajouté une assertion sur la valeur gagnante dans `tests/plan.fanout-join.test.ts` et relancé la suite ciblée (verts).
+- 🔜 Audit global des schémas Zod (Section G) toujours ouvert.

@@ -18,11 +18,15 @@ export class GraphTransactionError extends Error {
 
 /** Error thrown when attempting to commit using a stale base version. */
 export class GraphVersionConflictError extends GraphTransactionError {
+  public readonly code = "E-REWRITE-CONFLICT";
+  public readonly details: { graphId: string; expected: number; found: number };
+
   constructor(graphId: string, expected: number, found: number) {
     super(
       `graph '${graphId}' diverged: expected version ${expected} but received ${found}`,
     );
     this.name = "GraphVersionConflictError";
+    this.details = { graphId, expected, found };
   }
 }
 

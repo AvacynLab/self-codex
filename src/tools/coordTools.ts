@@ -1,0 +1,512 @@
+import { z } from "zod";
+
+import {
+  BlackboardEntrySnapshot,
+  BlackboardEvent,
+  BlackboardStore,
+} from "../coord/blackboard.js";
+import {
+  ContractNetAwardDecision,
+  ContractNetBidSnapshot,
+  ContractNetCallSnapshot,
+  ContractNetCoordinator,
+} from "../coord/contractNet.js";
+import {
+  StigmergyField,
+  StigmergyFieldSnapshot,
+  StigmergyPointSnapshot,
+  StigmergyTotalSnapshot,
+} from "../coord/stigmergy.js";
+import { StructuredLogger } from "../logger.js";
+
+/**
+ * Error raised when a requested blackboard key cannot be found. The dedicated
+ * code ensures MCP clients can distinguish between missing entries and actual
+ * transport failures.
+ */
+export class BlackboardEntryNotFoundError extends Error {
+  public readonly code = "E-BB-NOTFOUND";
+  public readonly details: { key: string };
+
+  constructor(key: string) {
+    super(`No blackboard entry found for key ${key}`);
+    this.name = "BlackboardEntryNotFoundError";
+    this.details = { key };
+  }
+}
+
+/**
+ * Context shared by coordination-related tools. Injected by the server so the
+ * handlers stay testable and do not directly depend on singletons.
+ */
+export interface CoordinationToolContext {
+  /** Blackboard instance storing shared key/value state across agents. */
+  blackboard: BlackboardStore;
+  /** Stigmergic field aggregating pheromone intensities. */
+  stigmergy: StigmergyField;
+  /** Contract-Net coordinator orchestrating auctions between agents. */
+  contractNet: ContractNetCoordinator;
+  /** Structured logger used for auditability. */
+  logger: StructuredLogger;
+}
+
+/** Schema validating the payload accepted by the `bb_set` tool. */
+export const BbSetInputSchema = z.object({
+  key: z.string().min(1, "key must not be empty"),
+  value: z.unknown(),
+  tags: z.array(z.string().min(1)).max(16).default([]),
+  ttl_ms: z.number().int().min(1).max(86_400_000).optional(),
+});
+export const BbSetInputShape = BbSetInputSchema.shape;
+
+/** Schema validating the payload accepted by the `bb_get` tool. */
+export const BbGetInputSchema = z.object({
+  key: z.string().min(1, "key must not be empty"),
+});
+export const BbGetInputShape = BbGetInputSchema.shape;
+
+/** Schema validating the payload accepted by the `bb_query` tool. */
+export const BbQueryInputSchema = z.object({
+  keys: z.array(z.string().min(1)).max(64).optional(),
+  tags: z.array(z.string().min(1)).max(16).optional(),
+  limit: z.number().int().min(1).max(100).default(25),
+});
+export const BbQueryInputShape = BbQueryInputSchema.shape;
+
+/** Schema validating the payload accepted by the `bb_watch` tool. */
+export const BbWatchInputSchema = z.object({
+  start_version: z.number().int().min(0).default(0),
+  limit: z.number().int().min(1).max(200).default(100),
+});
+export const BbWatchInputShape = BbWatchInputSchema.shape;
+
+/** Schema validating the payload accepted by the `stig_mark` tool. */
+export const StigMarkInputSchema = z.object({
+  node_id: z.string().min(1, "node_id must not be empty"),
+  type: z.string().min(1, "type must not be empty"),
+  intensity: z.number().positive().max(10_000, "intensity must remain bounded"),
+});
+export const StigMarkInputShape = StigMarkInputSchema.shape;
+
+/** Schema validating the payload accepted by the `stig_decay` tool. */
+export const StigDecayInputSchema = z.object({
+  half_life_ms: z.number().int().positive().max(86_400_000, "half_life_ms too large"),
+});
+export const StigDecayInputShape = StigDecayInputSchema.shape;
+
+/** Schema validating the payload accepted by the `stig_snapshot` tool. */
+export const StigSnapshotInputSchema = z.object({});
+export const StigSnapshotInputShape = StigSnapshotInputSchema.shape;
+
+/** Schema validating the payload accepted by the `cnp_announce` tool. */
+export const CnpAnnounceInputSchema = z
+  .object({
+    task_id: z.string().min(1, "task_id must not be empty"),
+    payload: z.unknown().optional(),
+    tags: z.array(z.string().min(1)).max(32).default([]),
+    metadata: z.record(z.unknown()).optional(),
+    deadline_ms: z.number().int().positive().max(86_400_000).optional(),
+    auto_bid: z.boolean().optional(),
+    heuristics: z
+      .object({
+        prefer_agents: z.array(z.string().min(1)).max(64).optional(),
+        agent_bias: z.record(z.number()).optional(),
+        busy_penalty: z.number().nonnegative().max(100).optional(),
+        preference_bonus: z.number().nonnegative().max(100).optional(),
+      })
+      .partial()
+      .optional(),
+    manual_bids: z
+      .array(
+        z
+          .object({
+            agent_id: z.string().min(1),
+            cost: z.number().nonnegative(),
+            metadata: z.record(z.unknown()).optional(),
+          })
+          .strict(),
+      )
+      .max(128)
+      .optional(),
+  })
+  .strict();
+export const CnpAnnounceInputShape = CnpAnnounceInputSchema.shape;
+
+/** Result returned by {@link handleBbSet}. */
+export interface BbSetResult extends SerializedBlackboardEntry {}
+
+/** Result returned by {@link handleBbGet}. */
+export interface BbGetResult extends Record<string, unknown> {
+  entry: SerializedBlackboardEntry;
+}
+
+/** Result returned by {@link handleBbQuery}. */
+export interface BbQueryResult extends Record<string, unknown> {
+  entries: SerializedBlackboardEntry[];
+  next_cursor: number | null;
+}
+
+/** Result returned by {@link handleBbWatch}. */
+export interface BbWatchResult extends Record<string, unknown> {
+  events: SerializedBlackboardEvent[];
+  next_version: number;
+}
+
+interface SerializedBlackboardEntry extends Record<string, unknown> {
+  key: string;
+  value: unknown;
+  tags: string[];
+  created_at: number;
+  updated_at: number;
+  expires_at: number | null;
+  version: number;
+}
+
+interface SerializedBlackboardEvent extends Record<string, unknown> {
+  version: number;
+  kind: string;
+  key: string;
+  timestamp: number;
+  reason: string | null;
+  entry: SerializedBlackboardEntry | null;
+  previous: SerializedBlackboardEntry | null;
+}
+
+interface SerializedStigmergyPoint extends Record<string, unknown> {
+  node_id: string;
+  type: string;
+  intensity: number;
+  updated_at: number;
+}
+
+interface SerializedStigmergyTotal extends Record<string, unknown> {
+  node_id: string;
+  intensity: number;
+  updated_at: number;
+}
+
+interface SerializedStigmergyChange extends Record<string, unknown> {
+  point: SerializedStigmergyPoint;
+  node_total: SerializedStigmergyTotal;
+}
+
+/** Result returned by {@link handleStigMark}. */
+export interface StigMarkResult extends Record<string, unknown> {
+  point: SerializedStigmergyPoint;
+  node_total: SerializedStigmergyTotal;
+}
+
+/** Result returned by {@link handleStigDecay}. */
+export interface StigDecayResult extends Record<string, unknown> {
+  changes: SerializedStigmergyChange[];
+}
+
+/** Result returned by {@link handleStigSnapshot}. */
+export interface StigSnapshotResult extends Record<string, unknown> {
+  generated_at: number;
+  points: SerializedStigmergyPoint[];
+  totals: SerializedStigmergyTotal[];
+}
+
+interface SerializedContractNetBid extends Record<string, unknown> {
+  agent_id: string;
+  cost: number;
+  submitted_at: number;
+  kind: string;
+  metadata: Record<string, unknown>;
+}
+
+interface SerializedContractNetHeuristics extends Record<string, unknown> {
+  prefer_agents: string[];
+  agent_bias: Record<string, number>;
+  busy_penalty: number;
+  preference_bonus: number;
+}
+
+/** Result returned by {@link handleCnpAnnounce}. */
+export interface CnpAnnounceResult extends Record<string, unknown> {
+  call_id: string;
+  task_id: string;
+  payload: unknown;
+  metadata: Record<string, unknown>;
+  tags: string[];
+  status: string;
+  announced_at: number;
+  deadline_ms: number | null;
+  awarded_agent_id: string;
+  awarded_cost: number;
+  awarded_effective_cost: number;
+  bids: SerializedContractNetBid[];
+  heuristics: SerializedContractNetHeuristics;
+}
+
+/**
+ * Stores or updates a key on the blackboard with optional tags and TTL. The
+ * returned payload mirrors the current snapshot so clients can cache it.
+ */
+export function handleBbSet(
+  context: CoordinationToolContext,
+  input: z.infer<typeof BbSetInputSchema>,
+): BbSetResult {
+  const snapshot = context.blackboard.set(input.key, input.value, {
+    tags: input.tags,
+    ttlMs: input.ttl_ms,
+  });
+  context.logger.info("bb_set", {
+    key: snapshot.key,
+    version: snapshot.version,
+    tags: snapshot.tags,
+    ttl_ms: input.ttl_ms ?? null,
+  });
+  return serialiseEntry(snapshot);
+}
+
+/** Retrieves a single entry when available. */
+export function handleBbGet(
+  context: CoordinationToolContext,
+  input: z.infer<typeof BbGetInputSchema>,
+): BbGetResult {
+  const snapshot = context.blackboard.get(input.key);
+  if (!snapshot) {
+    context.logger.warn("bb_get_miss", { key: input.key });
+    throw new BlackboardEntryNotFoundError(input.key);
+  }
+  context.logger.info("bb_get", { key: input.key, hit: 1 });
+  return { entry: serialiseEntry(snapshot) };
+}
+
+/** Queries the blackboard by keys and/or tags. */
+export function handleBbQuery(
+  context: CoordinationToolContext,
+  input: z.infer<typeof BbQueryInputSchema>,
+): BbQueryResult {
+  const results = context.blackboard.query({ keys: input.keys, tags: input.tags });
+  const limited = results.slice(0, input.limit).map(serialiseEntry);
+  context.logger.info("bb_query", {
+    keys: input.keys ?? null,
+    tags: input.tags ?? null,
+    returned: limited.length,
+  });
+  const cursor = limited.length > 0 ? limited[limited.length - 1].version : null;
+  return { entries: limited, next_cursor: cursor };
+}
+
+/** Lists history events so clients can resume from the last delivered version. */
+export function handleBbWatch(
+  context: CoordinationToolContext,
+  input: z.infer<typeof BbWatchInputSchema>,
+): BbWatchResult {
+  const events = context.blackboard.getEventsSince(input.start_version, { limit: input.limit });
+  const serialised = events.map(serialiseEvent);
+  const nextVersion = serialised.length > 0 ? serialised[serialised.length - 1].version : input.start_version;
+  context.logger.info("bb_watch", {
+    start_version: input.start_version,
+    requested: input.limit,
+    delivered: serialised.length,
+    next_version: nextVersion,
+  });
+  return { events: serialised, next_version: nextVersion };
+}
+
+function serialiseEntry(snapshot: BlackboardEntrySnapshot): SerializedBlackboardEntry {
+  return {
+    key: snapshot.key,
+    value: snapshot.value,
+    tags: snapshot.tags,
+    created_at: snapshot.createdAt,
+    updated_at: snapshot.updatedAt,
+    expires_at: snapshot.expiresAt,
+    version: snapshot.version,
+  };
+}
+
+function serialiseEvent(event: BlackboardEvent): SerializedBlackboardEvent {
+  return {
+    version: event.version,
+    kind: event.kind,
+    key: event.key,
+    timestamp: event.timestamp,
+    reason: event.reason ?? null,
+    entry: event.entry ? serialiseEntry(event.entry) : null,
+    previous: event.previous ? serialiseEntry(event.previous) : null,
+  };
+}
+
+/**
+ * Deposits pheromones on the stigmergic field and returns the updated point
+ * alongside the aggregated node intensity so schedulers can factor the change
+ * immediately.
+ */
+export function handleStigMark(
+  context: CoordinationToolContext,
+  input: z.infer<typeof StigMarkInputSchema>,
+): StigMarkResult {
+  const snapshot = context.stigmergy.mark(input.node_id, input.type, input.intensity);
+  const total = context.stigmergy.getNodeIntensity(input.node_id) ?? {
+    nodeId: input.node_id,
+    intensity: snapshot.intensity,
+    updatedAt: snapshot.updatedAt,
+  };
+  context.logger.info("stig_mark", {
+    node_id: input.node_id,
+    type: snapshot.type,
+    intensity: snapshot.intensity,
+    node_total: total.intensity,
+  });
+  return {
+    point: serialisePoint(snapshot),
+    node_total: serialiseTotal(total),
+  };
+}
+
+/**
+ * Applies exponential decay to the field. The response lists each affected
+ * point along with the resulting node totals to help clients update their
+ * dashboards.
+ */
+export function handleStigDecay(
+  context: CoordinationToolContext,
+  input: z.infer<typeof StigDecayInputSchema>,
+): StigDecayResult {
+  const changes = context.stigmergy.evaporate(input.half_life_ms);
+  context.logger.info("stig_decay", {
+    half_life_ms: input.half_life_ms,
+    affected: changes.length,
+  });
+  return {
+    changes: changes.map((change) => ({
+      point: serialisePoint({
+        nodeId: change.nodeId,
+        type: change.type ?? "aggregate",
+        intensity: change.intensity,
+        updatedAt: change.updatedAt,
+      }),
+      node_total: serialiseTotal({
+        nodeId: change.nodeId,
+        intensity: change.totalIntensity,
+        updatedAt: change.updatedAt,
+      }),
+    })),
+  };
+}
+
+/** Returns a deterministic snapshot of the stigmergic field. */
+export function handleStigSnapshot(
+  context: CoordinationToolContext,
+  _input: z.infer<typeof StigSnapshotInputSchema>,
+): StigSnapshotResult {
+  const snapshot = context.stigmergy.fieldSnapshot();
+  context.logger.info("stig_snapshot", {
+    points: snapshot.points.length,
+    totals: snapshot.totals.length,
+  });
+  return serialiseFieldSnapshot(snapshot);
+}
+
+function serialisePoint(snapshot: StigmergyPointSnapshot): SerializedStigmergyPoint {
+  return {
+    node_id: snapshot.nodeId,
+    type: snapshot.type,
+    intensity: Number(snapshot.intensity.toFixed(6)),
+    updated_at: snapshot.updatedAt,
+  };
+}
+
+function serialiseTotal(total: StigmergyTotalSnapshot): SerializedStigmergyTotal {
+  return {
+    node_id: total.nodeId,
+    intensity: Number(total.intensity.toFixed(6)),
+    updated_at: total.updatedAt,
+  };
+}
+
+function serialiseFieldSnapshot(snapshot: StigmergyFieldSnapshot): StigSnapshotResult {
+  return {
+    generated_at: snapshot.generatedAt,
+    points: snapshot.points.map(serialisePoint),
+    totals: snapshot.totals.map(serialiseTotal),
+  };
+}
+
+/** Announces a task to the Contract-Net and immediately awards the best bid. */
+export function handleCnpAnnounce(
+  context: CoordinationToolContext,
+  input: z.infer<typeof CnpAnnounceInputSchema>,
+): CnpAnnounceResult {
+  const announcement = context.contractNet.announce({
+    taskId: input.task_id,
+    payload: input.payload,
+    tags: input.tags,
+    metadata: input.metadata,
+    deadlineMs: input.deadline_ms ?? null,
+    autoBid: input.auto_bid,
+    heuristics: {
+      preferAgents: input.heuristics?.prefer_agents,
+      agentBias: input.heuristics?.agent_bias,
+      busyPenalty: input.heuristics?.busy_penalty,
+      preferenceBonus: input.heuristics?.preference_bonus,
+    },
+  });
+
+  if (input.manual_bids) {
+    for (const bid of input.manual_bids) {
+      context.contractNet.bid(announcement.callId, bid.agent_id, bid.cost, {
+        metadata: bid.metadata ?? {},
+      });
+    }
+  }
+
+  const decision = context.contractNet.award(announcement.callId);
+  const snapshot = context.contractNet.getCall(announcement.callId);
+  if (!snapshot) {
+    throw new Error(`call ${announcement.callId} disappeared after award`);
+  }
+
+  context.logger.info("cnp_announce", {
+    call_id: snapshot.callId,
+    bids: snapshot.bids.length,
+    awarded_agent_id: decision.agentId,
+  });
+
+  return serialiseContractNetResult(snapshot, decision);
+}
+
+function serialiseContractNetResult(
+  snapshot: ContractNetCallSnapshot,
+  decision: ContractNetAwardDecision,
+): CnpAnnounceResult {
+  return {
+    call_id: snapshot.callId,
+    task_id: snapshot.taskId,
+    payload: snapshot.payload,
+    metadata: snapshot.metadata,
+    tags: snapshot.tags,
+    status: snapshot.status,
+    announced_at: snapshot.announcedAt,
+    deadline_ms: snapshot.deadlineMs,
+    awarded_agent_id: decision.agentId,
+    awarded_cost: decision.cost,
+    awarded_effective_cost: decision.effectiveCost,
+    bids: snapshot.bids.map(serialiseContractNetBid),
+    heuristics: serialiseContractNetHeuristics(snapshot),
+  };
+}
+
+function serialiseContractNetBid(bid: ContractNetBidSnapshot): SerializedContractNetBid {
+  return {
+    agent_id: bid.agentId,
+    cost: bid.cost,
+    submitted_at: bid.submittedAt,
+    kind: bid.kind,
+    metadata: bid.metadata,
+  };
+}
+
+function serialiseContractNetHeuristics(snapshot: ContractNetCallSnapshot): SerializedContractNetHeuristics {
+  return {
+    prefer_agents: snapshot.heuristics.preferAgents,
+    agent_bias: snapshot.heuristics.agentBias,
+    busy_penalty: snapshot.heuristics.busyPenalty,
+    preference_bonus: snapshot.heuristics.preferenceBonus,
+  };
+}
