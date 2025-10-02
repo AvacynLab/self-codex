@@ -49,6 +49,12 @@ describe("graph transactions - concurrency control", () => {
 
       third.workingCopy.metadata.stage = "third";
       expect(() => manager.commit(third.txId, third.workingCopy)).to.throw(GraphVersionConflictError);
+
+      // Conflict should leave the transaction active so callers can roll back
+      // to the pristine snapshot and release the optimistic lock cleanly.
+      const rollback = manager.rollback(third.txId);
+      expect(rollback.version).to.equal(third.baseVersion);
+      expect(rollback.snapshot.metadata.stage).to.equal("first");
       expect(manager.countActiveTransactions()).to.equal(0);
     } finally {
       Date.now = originalNow;

@@ -228,18 +228,16 @@ describe("plan_reduce tool", () => {
           "choix-B": 1,
         },
       });
-      expect(reduceResult.trace.details).to.deep.equal({
-        consensus: {
-          mode: "majority",
-          value: "choix-A",
-          satisfied: true,
-          tie: false,
-          threshold: 2,
-          total_weight: 3,
-          tally: {
-            "choix-A": 2,
-            "choix-B": 1,
-          },
+      expect(reduceResult.trace.details?.consensus).to.deep.equal({
+        mode: "majority",
+        value: "choix-A",
+        satisfied: true,
+        tie: false,
+        threshold: 2,
+        total_weight: 3,
+        tally: {
+          "choix-A": 2,
+          "choix-B": 1,
         },
       });
     } finally {

@@ -89,10 +89,10 @@ function normaliseNodes(nodes) {
     return { ids: nodeIds, records };
 }
 /**
- * Project a hyper-graph into the normalised representation consumed by the rest
- * of the graph tooling. The resulting graph preserves the original nodes while
- * expanding every hyper-edge into a set of binary edges enriched with metadata
- * for traceability.
+ * Project a {@link HyperGraph} into the normalised representation consumed by
+ * the rest of the graph tooling. The resulting graph preserves the original
+ * nodes while expanding every hyper-edge into a set of binary edges enriched
+ * with metadata for traceability.
  */
 export function projectHyperGraph(graph, options = {}) {
     if (!graph.id || graph.id.trim().length === 0) {
@@ -116,4 +116,4 @@ export function projectHyperGraph(graph, options = {}) {
         },
     };
 }
-export { HYPER_EDGE_ID_KEY, HYPER_EDGE_PAIR_INDEX_KEY, HYPER_EDGE_SOURCE_CARDINALITY_KEY, HYPER_EDGE_SOURCE_INDEX_KEY, HYPER_EDGE_TARGET_CARDINALITY_KEY, HYPER_EDGE_TARGET_INDEX_KEY, projectHyperEdge };
+export { HYPER_EDGE_ID_KEY, HYPER_EDGE_PAIR_INDEX_KEY, HYPER_EDGE_SOURCE_CARDINALITY_KEY, HYPER_EDGE_SOURCE_INDEX_KEY, HYPER_EDGE_TARGET_CARDINALITY_KEY, HYPER_EDGE_TARGET_INDEX_KEY, projectHyperEdge, };

@@ -7,6 +7,11 @@ import { GraphComputationCache } from "../graph/cache.js";
 import { buildGraphAttributeIndex } from "../graph/index.js";
 import { partitionGraph, type GraphPartitionObjective } from "../graph/partition.js";
 import {
+  projectHyperGraph,
+  type HyperEdge,
+  type HyperGraph,
+} from "../graph/hypergraph.js";
+import {
   applyAll,
   createInlineSubgraphRule,
   createRerouteAvoidRule,
@@ -145,6 +150,34 @@ export const GraphDescriptorSchema = z.object({
   graph_version: z.number().int().positive().optional(),
 });
 
+/** Schema describing a hyper-edge before projection. */
+const GraphHyperEdgeSchema = z
+  .object({
+    id: z.string().min(1, "hyper_edge id must not be empty"),
+    sources: z.array(z.string().min(1)).min(1, "hyper_edge must declare sources"),
+    targets: z.array(z.string().min(1)).min(1, "hyper_edge must declare targets"),
+    label: z.string().optional(),
+    weight: z.number().finite().nonnegative().optional(),
+    attributes: GraphAttributeRecordSchema.optional(),
+  })
+  .strict();
+
+/** Schema accepted by the hyper-graph export tool. */
+export const GraphHyperExportInputSchema = z
+  .object({
+    id: z.string().min(1, "hyper_graph id must not be empty"),
+    nodes: z.array(GraphNodeSchema).min(1, "hyper_graph must declare nodes"),
+    hyper_edges: z
+      .array(GraphHyperEdgeSchema)
+      .min(1, "hyper_graph must declare hyper_edges"),
+    metadata: GraphAttributeRecordSchema.optional(),
+    graph_version: z.number().int().positive().optional(),
+  })
+  .strict();
+
+export type GraphHyperExportInput = z.infer<typeof GraphHyperExportInputSchema>;
+export const GraphHyperExportInputShape = GraphHyperExportInputSchema.shape;
+
 /**
  * Internal representation used once the payload has been validated by the
  * schemata above. Every node keeps its insertion order to ensure deterministic
@@ -234,6 +267,15 @@ export interface GraphGenerateResult extends Record<string, unknown> {
   task_count: number;
   edge_count: number;
   notes: string[];
+}
+
+export interface GraphHyperExportResult extends Record<string, unknown> {
+  graph: GraphDescriptorPayload;
+  stats: {
+    nodes: number;
+    hyper_edges: number;
+    edges: number;
+  };
 }
 
 interface TaskDefinition {
@@ -448,6 +490,44 @@ export function normaliseGraphPayload(payload: GraphDescriptorPayload): Normalis
  */
 export function serialiseNormalisedGraph(descriptor: NormalisedGraph): GraphDescriptorPayload {
   return serialiseDescriptor(descriptor);
+}
+
+/**
+ * Project a hyper-graph into a regular directed graph while preserving context
+ * through metadata. The helper keeps statistics handy for downstream tooling
+ * and tests so that auditing coverage remains simple.
+ */
+export function handleGraphHyperExport(input: GraphHyperExportInput): GraphHyperExportResult {
+  const hyperGraph: HyperGraph = {
+    id: input.id,
+    nodes: input.nodes.map((node) => ({
+      id: node.id,
+      label: node.label,
+      attributes: node.attributes ?? {},
+    })),
+    hyperEdges: input.hyper_edges.map((edge) => ({
+      id: edge.id,
+      sources: [...edge.sources],
+      targets: [...edge.targets],
+      label: edge.label,
+      weight: edge.weight,
+      attributes: edge.attributes ?? {},
+    } satisfies HyperEdge)),
+    metadata: input.metadata,
+  } satisfies HyperGraph;
+
+  const projected = projectHyperGraph(hyperGraph, {
+    graphVersion: input.graph_version,
+  });
+
+  return {
+    graph: serialiseNormalisedGraph(projected),
+    stats: {
+      nodes: projected.nodes.length,
+      hyper_edges: input.hyper_edges.length,
+      edges: projected.edges.length,
+    },
+  };
 }
 
 /** Apply idempotent graph operations, returning the mutated graph. */

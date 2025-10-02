@@ -13,9 +13,12 @@ export class GraphTransactionError extends Error {
 }
 /** Error thrown when attempting to commit using a stale base version. */
 export class GraphVersionConflictError extends GraphTransactionError {
+    code = "E-REWRITE-CONFLICT";
+    details;
     constructor(graphId, expected, found) {
         super(`graph '${graphId}' diverged: expected version ${expected} but received ${found}`);
         this.name = "GraphVersionConflictError";
+        this.details = { graphId, expected, found };
     }
 }
 /** Error thrown when a caller references a transaction identifier that expired. */
@@ -89,7 +92,6 @@ export class GraphTransactionManager {
         if (!record) {
             throw new UnknownTransactionError(txId);
         }
-        this.transactions.delete(txId);
         if (updatedGraph.graphId !== record.graphId) {
             throw new GraphTransactionError(`graph id mismatch: expected '${record.graphId}' but received '${updatedGraph.graphId}'`);
         }
@@ -123,6 +125,10 @@ export class GraphTransactionManager {
         else {
             finalGraph = this.cloneGraph(state.graph);
         }
+        // The transaction can only be retired once the graph has been safely
+        // persisted. Keeping the record alive until this point allows callers to
+        // recover via {@link rollback} when a conflict occurs during validation.
+        this.transactions.delete(txId);
         return {
             txId,
             graphId: record.graphId,

@@ -152,8 +152,6 @@ export class GraphTransactionManager {
       throw new UnknownTransactionError(txId);
     }
 
-    this.transactions.delete(txId);
-
     if (updatedGraph.graphId !== record.graphId) {
       throw new GraphTransactionError(
         `graph id mismatch: expected '${record.graphId}' but received '${updatedGraph.graphId}'`,
@@ -196,6 +194,11 @@ export class GraphTransactionManager {
     } else {
       finalGraph = this.cloneGraph(state.graph);
     }
+
+    // The transaction can only be retired once the graph has been safely
+    // persisted. Keeping the record alive until this point allows callers to
+    // recover via {@link rollback} when a conflict occurs during validation.
+    this.transactions.delete(txId);
 
     return {
       txId,

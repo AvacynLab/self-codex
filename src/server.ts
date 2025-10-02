@@ -10,11 +10,14 @@ import { GraphTransactionManager, GraphVersionConflictError } from "./graph/tx.j
 import { LoggerOptions, StructuredLogger } from "./logger.js";
 import { EventStore, OrchestratorEvent } from "./eventStore.js";
 import { startHttpServer } from "./httpServer.js";
+import { startDashboardServer } from "./monitor/dashboard.js";
+import { BehaviorTreeStatusRegistry } from "./monitor/btStatusRegistry.js";
 import { MessageRecord, Role } from "./types.js";
 import {
   FeatureToggles,
   RuntimeTimingOptions,
   parseOrchestratorRuntimeOptions,
+  ChildSafetyOptions,
 } from "./serverOptions.js";
 import { ChildSupervisor } from "./childSupervisor.js";
 import { ChildRecordSnapshot, UnknownChildError } from "./state/childrenIndex.js";
@@ -70,6 +73,8 @@ import {
   PlanCompileBTInputShape,
   PlanRunBTInputSchema,
   PlanRunBTInputShape,
+  PlanRunReactiveInputSchema,
+  PlanRunReactiveInputShape,
   PlanReduceInputSchema,
   PlanReduceInputShape,
   PlanToolContext,
@@ -77,6 +82,7 @@ import {
   handlePlanJoin,
   handlePlanCompileBT,
   handlePlanRunBT,
+  handlePlanRunReactive,
   handlePlanReduce,
   ValueGuardRejectionError,
 } from "./tools/planTools.js";
@@ -106,6 +112,9 @@ import {
   handleStigMark,
   handleStigSnapshot,
   handleCnpAnnounce,
+  ConsensusVoteInputSchema,
+  ConsensusVoteInputShape,
+  handleConsensusVote,
 } from "./tools/coordTools.js";
 import {
   AgentAutoscaleSetInputSchema,
@@ -135,6 +144,8 @@ import {
   GraphCausalAnalyzeInputShape,
   GraphRewriteApplyInputSchema,
   GraphRewriteApplyInputShape,
+  GraphHyperExportInputSchema,
+  GraphHyperExportInputShape,
   GraphPartitionInputSchema,
   GraphPartitionInputShape,
   GraphSummarizeInputSchema,
@@ -146,6 +157,7 @@ import {
   handleGraphGenerate,
   handleGraphMutate,
   handleGraphRewriteApply,
+  handleGraphHyperExport,
   handleGraphPathsConstrained,
   handleGraphPathsKShortest,
   handleGraphCentralityBetweenness,
@@ -250,6 +262,8 @@ const causalMemory = new CausalMemory();
 const valueGraph = new ValueGraph();
 /** Registry storing the last guard decision for spawned children. */
 const valueGuardRegistry = new Map<string, ValueFilterDecision>();
+/** Registry exposing live Behaviour Tree node statuses to dashboards. */
+const btStatusRegistry = new BehaviorTreeStatusRegistry();
 
 /** Default feature toggles used before CLI/flags are parsed. */
 const DEFAULT_FEATURE_TOGGLES: FeatureToggles = {
@@ -273,8 +287,15 @@ const DEFAULT_RUNTIME_TIMINGS: RuntimeTimingOptions = {
   supervisorStallTicks: 6,
 };
 
+const DEFAULT_CHILD_SAFETY_LIMITS: ChildSafetyOptions = {
+  maxChildren: 16,
+  memoryLimitMb: 512,
+  cpuPercent: 100,
+};
+
 let runtimeFeatures: FeatureToggles = { ...DEFAULT_FEATURE_TOGGLES };
 let runtimeTimings: RuntimeTimingOptions = { ...DEFAULT_RUNTIME_TIMINGS };
+let runtimeChildSafety: ChildSafetyOptions = { ...DEFAULT_CHILD_SAFETY_LIMITS };
 
 /** Returns the active feature toggles applied to the orchestrator. */
 export function getRuntimeFeatures(): FeatureToggles {
@@ -294,6 +315,21 @@ export function getRuntimeTimings(): RuntimeTimingOptions {
 /** Applies a new pacing configuration for optional modules. */
 export function configureRuntimeTimings(next: RuntimeTimingOptions): void {
   runtimeTimings = { ...next };
+}
+
+/** Returns the safety guardrails applied to child runtimes. */
+export function getChildSafetyLimits(): ChildSafetyOptions {
+  return { ...runtimeChildSafety };
+}
+
+/** Applies new safety guardrails and updates the child supervisor accordingly. */
+export function configureChildSafetyLimits(next: ChildSafetyOptions): void {
+  runtimeChildSafety = { ...next };
+  childSupervisor.configureSafety({
+    maxChildren: runtimeChildSafety.maxChildren,
+    memoryLimitMb: runtimeChildSafety.memoryLimitMb,
+    cpuPercent: runtimeChildSafety.cpuPercent,
+  });
 }
 
 interface SubgraphSummary {
@@ -457,6 +493,11 @@ const childSupervisor = new ChildSupervisor({
   defaultCommand: defaultChildCommand,
   defaultArgs: defaultChildArgs,
   defaultEnv: process.env,
+  safety: {
+    maxChildren: runtimeChildSafety.maxChildren,
+    memoryLimitMb: runtimeChildSafety.memoryLimitMb,
+    cpuPercent: runtimeChildSafety.cpuPercent,
+  },
 });
 
 const autoscaler = new Autoscaler({ supervisor: childSupervisor, logger });
@@ -935,11 +976,15 @@ function getPlanToolContext(): PlanToolContext {
       });
     },
     stigmergy,
+    blackboard: runtimeFeatures.enableBlackboard ? blackboard : undefined,
     supervisorAgent: orchestratorSupervisor,
     causalMemory: runtimeFeatures.enableCausalMemory ? causalMemory : undefined,
     valueGuard: runtimeFeatures.enableValueGuard
       ? { graph: valueGraph, registry: valueGuardRegistry }
       : undefined,
+    loopDetector,
+    autoscaler: runtimeFeatures.enableAutoscaler ? autoscaler : undefined,
+    btStatusRegistry,
   };
 }
 
@@ -1237,12 +1282,18 @@ const SUBS = new Map<string, Subscription>();
 const now = () => Date.now();
 const j = (o: unknown) => JSON.stringify(o, null, 2);
 
-const GraphSubgraphExtractInputSchema = z.object({
-  graph: GraphDescriptorSchema,
-  node_id: z.string().min(1),
-  run_id: z.string().min(1),
-  directory: z.string().min(1).optional(),
-});
+/**
+ * Input schema guarding the `graph_subgraph_extract` tool. The strict contract
+ * rejects stray properties so export destinations remain predictable.
+ */
+const GraphSubgraphExtractInputSchema = z
+  .object({
+    graph: GraphDescriptorSchema,
+    node_id: z.string().min(1),
+    run_id: z.string().min(1),
+    directory: z.string().min(1).optional(),
+  })
+  .strict();
 
 const GraphSubgraphExtractInputShape = GraphSubgraphExtractInputSchema.shape;
 
@@ -2650,13 +2701,47 @@ server.registerTool(
 );
 
 server.registerTool(
+  "graph_hyper_export",
+  {
+    title: "Graph hyper export",
+    description: "Projette un hyper-graphe en graphe orienté avec métadonnées conservées.",
+    inputSchema: GraphHyperExportInputShape,
+  },
+  async (input: unknown) => {
+    try {
+      const parsed = GraphHyperExportInputSchema.parse(input);
+      logger.info("graph_hyper_export_requested", {
+        graph_id: parsed.id,
+        nodes: parsed.nodes.length,
+        hyper_edges: parsed.hyper_edges.length,
+      });
+      const result = handleGraphHyperExport(parsed);
+      logger.info("graph_hyper_export_succeeded", {
+        graph_id: result.graph.graph_id,
+        nodes: result.stats.nodes,
+        edges: result.stats.edges,
+        hyper_edges: result.stats.hyper_edges,
+      });
+      return {
+        content: [
+          { type: "text" as const, text: j({ tool: "graph_hyper_export", result }) },
+        ],
+        structuredContent: result,
+      };
+    } catch (error) {
+      return graphToolError("graph_hyper_export", error);
+    }
+  },
+);
+
+server.registerTool(
   "kg_insert",
   {
     title: "Knowledge insert",
     description: "Insère ou met à jour des triplets dans le graphe de connaissances.",
     inputSchema: KgInsertInputShape,
   },
-  async (input) => {
+  async (input: unknown) => {
     const disabled = ensureKnowledgeEnabled("kg_insert");
     if (disabled) {
       return disabled;
@@ -3435,6 +3520,28 @@ server.registerTool(
 );
 
 server.registerTool(
+  "plan_run_reactive",
+  {
+    title: "Plan run reactive loop",
+    description:
+      "Exécute un Behaviour Tree via le scheduler réactif et la boucle de ticks (autoscaler/superviseur).",
+    inputSchema: PlanRunReactiveInputShape,
+  },
+  async (input) => {
+    try {
+      const parsed = PlanRunReactiveInputSchema.parse(input);
+      const result = await handlePlanRunReactive(getPlanToolContext(), parsed);
+      return {
+        content: [{ type: "text" as const, text: j({ tool: "plan_run_reactive", result }) }],
+        structuredContent: result,
+      };
+    } catch (error) {
+      return planToolError("plan_run_reactive", error, {}, "E-BT-INVALID");
+    }
+  },
+);
+
+server.registerTool(
   "bb_set",
   {
     title: "Blackboard set",
@@ -3595,7 +3702,7 @@ server.registerTool(
     description: "Annonce une tâche au protocole Contract-Net et retourne l'attribution.",
     inputSchema: CnpAnnounceInputShape,
   },
-  async (input) => { 
+  async (input) => {
     try {
       pruneExpired();
       const parsed = CnpAnnounceInputSchema.parse(input);
@@ -3606,6 +3713,38 @@ server.registerTool(
       };
     } catch (error) {
       return coordinationToolError("cnp_announce", error);
+    }
+  },
+);
+
+server.registerTool(
+  "consensus_vote",
+  {
+    title: "Consensus vote",
+    description: "Agrège des bulletins pour calculer une décision de consensus auditable.",
+    inputSchema: ConsensusVoteInputShape,
+  },
+  async (input) => {
+    try {
+      pruneExpired();
+      const parsed = ConsensusVoteInputSchema.parse(input);
+      logger.info("consensus_vote_requested", {
+        mode: parsed.config?.mode ?? "majority",
+        votes: parsed.votes.length,
+      });
+      const result = handleConsensusVote(getCoordinationToolContext(), parsed);
+      logger.info("consensus_vote_succeeded", {
+        mode: result.mode,
+        outcome: result.outcome,
+        satisfied: result.satisfied,
+        votes: result.votes,
+      });
+      return {
+        content: [{ type: "text" as const, text: j({ tool: "consensus_vote", result }) }],
+        structuredContent: result,
+      };
+    } catch (error) {
+      return coordinationToolError("consensus_vote", error);
     }
   },
 );
@@ -4761,6 +4900,7 @@ if (isMain) {
 
   configureRuntimeFeatures(options.features);
   configureRuntimeTimings(options.timings);
+  configureChildSafetyLimits(options.safety);
   reflectionEnabled = options.enableReflection;
   qualityGateEnabled = options.enableQualityGate;
   qualityGateThreshold = options.qualityThreshold;
@@ -4805,6 +4945,30 @@ if (isMain) {
     }
   }
 
+  // Start the monitoring dashboard when operators enabled it via CLI. The
+  // server shares the orchestrator in-memory state so the cleanup hook mirrors
+  // the HTTP transport lifecycle.
+  if (options.dashboard.enabled) {
+    try {
+      const handle = await startDashboardServer({
+        host: options.dashboard.host,
+        port: options.dashboard.port,
+        streamIntervalMs: options.dashboard.streamIntervalMs,
+        graphState,
+        supervisor: childSupervisor,
+        eventStore,
+        stigmergy,
+        btStatusRegistry,
+        supervisorAgent: orchestratorSupervisor,
+        logger,
+      });
+      cleanup.push(handle.close);
+    } catch (error) {
+      logger.error("dashboard_start_failed", { message: error instanceof Error ? error.message : String(error) });
+      process.exit(1);
+    }
+  }
+
   if (enableStdio) {
     const transport = new StdioServerTransport();
     await server.connect(transport);
@@ -4830,5 +4994,13 @@ if (isMain) {
   });
 }
 
-export { server, graphState, DEFAULT_CHILD_RUNTIME, buildLiveEvents, setDefaultChildRuntime };
+export {
+  server,
+  graphState,
+  DEFAULT_CHILD_RUNTIME,
+  buildLiveEvents,
+  setDefaultChildRuntime,
+  GraphSubgraphExtractInputSchema,
+  GraphSubgraphExtractInputShape,
+};
 

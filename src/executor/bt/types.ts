@@ -34,6 +34,17 @@ export interface TickRuntime {
   wait(ms: number): Promise<void>;
   /** Shared map of variables exposed to guards and task leaves. */
   variables: Record<string, unknown>;
+  /**
+   * Optional recommender returning the timeout budget for a named category. The
+   * decorator passes {@link TimeoutDefinition.complexity_score} when available
+   * and expects the runtime to fall back to the provided {@link fallbackMs}.
+   */
+  recommendTimeout?(category: string, complexityScore?: number, fallbackMs?: number): number | undefined;
+  /**
+   * Optional analytics hook invoked once a timeout branch completes. Runtimes
+   * may leverage it to feed telemetry (loop detector, dashboards, …).
+   */
+  recordTimeoutOutcome?(category: string, outcome: { durationMs: number; success: boolean; budgetMs: number }): void;
 }
 
 /**
@@ -96,7 +107,19 @@ export interface RetryDefinition {
 export interface TimeoutDefinition {
   type: "timeout";
   id?: string;
-  timeout_ms: number;
+  /** Optional static timeout applied when no category override is resolved. */
+  timeout_ms?: number;
+  /**
+   * Optional logical category resolved against runtime timeout profiles. When
+   * provided the interpreter will ask the orchestrator for a recommended
+   * timeout and fall back to {@link timeout_ms} if the profile is unavailable.
+   */
+  timeout_category?: string;
+  /**
+   * Optional complexity hint forwarded to the timeout recommender. Values are
+   * clamped by the runtime to keep recommendations bounded.
+   */
+  complexity_score?: number;
   child: BehaviorNodeDefinition;
 }
 
@@ -128,12 +151,13 @@ export interface CompiledBehaviorTree {
 
 /** Schema validating a serialised Behaviour Tree definition. */
 export const BehaviorNodeDefinitionSchema: z.ZodType<BehaviorNodeDefinition> = z.lazy(() =>
-  z.discriminatedUnion("type", [
-    z.object({
-      type: z.literal("sequence"),
-      id: z.string().min(1).optional(),
-      children: z.array(BehaviorNodeDefinitionSchema).min(1),
-    }),
+  z
+    .discriminatedUnion("type", [
+      z.object({
+        type: z.literal("sequence"),
+        id: z.string().min(1).optional(),
+        children: z.array(BehaviorNodeDefinitionSchema).min(1),
+      }),
     z.object({
       type: z.literal("selector"),
       id: z.string().min(1).optional(),
@@ -155,7 +179,9 @@ export const BehaviorNodeDefinitionSchema: z.ZodType<BehaviorNodeDefinition> = z
     z.object({
       type: z.literal("timeout"),
       id: z.string().min(1).optional(),
-      timeout_ms: z.number().int().min(1),
+      timeout_ms: z.number().int().min(1).optional(),
+      timeout_category: z.string().min(1).optional(),
+      complexity_score: z.number().positive().max(100).optional(),
       child: BehaviorNodeDefinitionSchema,
     }),
     z.object({
@@ -172,7 +198,23 @@ export const BehaviorNodeDefinitionSchema: z.ZodType<BehaviorNodeDefinition> = z
       tool: z.string().min(1),
       input_key: z.string().min(1).optional(),
     }),
-  ]),
+  ])
+    .superRefine((value, ctx) => {
+      if (value.type === "timeout" && value.timeout_ms === undefined && value.timeout_category === undefined) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "timeout nodes require timeout_ms or timeout_category",
+          path: ["timeout_ms"],
+        });
+      }
+      if (value.type === "timeout" && value.complexity_score !== undefined && !Number.isFinite(value.complexity_score)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "complexity_score must be finite",
+          path: ["complexity_score"],
+        });
+      }
+    }),
 );
 
 /** Schema validating an entire compiled Behaviour Tree payload. */

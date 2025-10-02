@@ -1,5 +1,4 @@
 import { GraphDescriptorSchema } from "../tools/graphTools.js";
-/** Options that tweak the DOT serialisation. */
 /**
  * Render a graph descriptor as a GraphViz DOT document.
  *
@@ -20,7 +19,11 @@ export function renderDotFromGraph(descriptor, options = {}) {
         const attrs = [];
         const label = buildEdgeLabel(edge, options.weightAttribute);
         const hyperAnnotation = buildHyperEdgeAnnotation(edge);
-        const combinedLabel = hyperAnnotation ? label ? `${label} ${hyperAnnotation}` : hyperAnnotation : label;
+        const combinedLabel = hyperAnnotation
+            ? label
+                ? `${label} ${hyperAnnotation}`
+                : hyperAnnotation
+            : label;
         if (combinedLabel) {
             attrs.push(`label=\"${combinedLabel}\"`);
         }
@@ -79,7 +82,10 @@ function buildHyperEdgeAnnotation(edge) {
     }
     const sourceCardinality = edge.attributes?.hyper_edge_source_cardinality;
     const targetCardinality = edge.attributes?.hyper_edge_target_cardinality;
-    if (typeof sourceCardinality === "number" && Number.isFinite(sourceCardinality) && typeof targetCardinality === "number" && Number.isFinite(targetCardinality)) {
+    if (typeof sourceCardinality === "number" &&
+        Number.isFinite(sourceCardinality) &&
+        typeof targetCardinality === "number" &&
+        Number.isFinite(targetCardinality)) {
         annotation += ` ${sourceCardinality}->${targetCardinality}`;
     }
     annotation += "]";

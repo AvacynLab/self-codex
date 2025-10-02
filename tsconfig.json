@@ -1,11 +1,19 @@
 {
     "compilerOptions": {
       "target": "ES2022",
-      "lib": ["ES2022", "DOM"],
+      "lib": ["ES2022"],
       "module": "ES2022",
       "moduleResolution": "node",
       "outDir": "dist",
       "rootDir": "src",
+      "baseUrl": "src",
+      "paths": {
+        "executor/*": ["executor/*"],
+        "coord/*": ["coord/*"],
+        "knowledge/*": ["knowledge/*"],
+        "values/*": ["values/*"],
+        "graph/*": ["graph/*"]
+      },
       "strict": true,
       "esModuleInterop": true,
       "forceConsistentCasingInFileNames": true,

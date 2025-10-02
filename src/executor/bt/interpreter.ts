@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import {
+  type BTStatus,
   type BehaviorNode,
   type BehaviorNodeDefinition,
   type BehaviorTickResult,
@@ -21,6 +22,8 @@ import {
 export interface BuildBehaviorTreeOptions {
   /** Optional registry resolving the input schema for each tool. */
   taskSchemas?: Record<string, z.ZodTypeAny>;
+  /** Optional callback invoked whenever a node reports a new status. */
+  statusReporter?: (nodeId: string, status: BTStatus) => void;
 }
 
 /**
@@ -60,7 +63,7 @@ export function buildBehaviorTree(
   options: BuildBehaviorTreeOptions = {},
   idPrefix = "root",
 ): BehaviorNode {
-  const { taskSchemas = {} } = options;
+  const { taskSchemas = {}, statusReporter } = options;
   let autoIndex = 0;
 
   function nextId(prefix: string, provided?: string): string {
@@ -72,42 +75,72 @@ export function buildBehaviorTree(
     return generated;
   }
 
+  function track(node: BehaviorNode): BehaviorNode {
+    if (!statusReporter) {
+      return node;
+    }
+    return {
+      id: node.id,
+      async tick(runtime: TickRuntime): Promise<BehaviorTickResult> {
+        statusReporter(node.id, "running");
+        try {
+          const result = await node.tick(runtime);
+          statusReporter(node.id, result.status);
+          return result;
+        } catch (error) {
+          statusReporter(node.id, "failure");
+          throw error;
+        }
+      },
+      reset(): void {
+        node.reset();
+      },
+    } satisfies BehaviorNode;
+  }
+
   function instantiate(node: BehaviorNodeDefinition, prefix: string): BehaviorNode {
     switch (node.type) {
       case "sequence": {
         const id = nextId(`${prefix}-sequence`, node.id);
         const children = node.children.map((child, index) => instantiate(child, `${id}-${index}`));
-        return new SequenceNode(id, children);
+        return track(new SequenceNode(id, children));
       }
       case "selector": {
         const id = nextId(`${prefix}-selector`, node.id);
         const children = node.children.map((child, index) => instantiate(child, `${id}-${index}`));
-        return new SelectorNode(id, children);
+        return track(new SelectorNode(id, children));
       }
       case "parallel": {
         const id = nextId(`${prefix}-parallel`, node.id);
         const children = node.children.map((child, index) => instantiate(child, `${id}-${index}`));
-        return new ParallelNode(id, node.policy, children);
+        return track(new ParallelNode(id, node.policy, children));
       }
       case "retry": {
         const id = nextId(`${prefix}-retry`, node.id);
         const child = instantiate(node.child, `${id}-child`);
-        return new RetryNode(id, node.max_attempts, child, node.backoff_ms);
+        return track(new RetryNode(id, node.max_attempts, child, node.backoff_ms));
       }
       case "timeout": {
         const id = nextId(`${prefix}-timeout`, node.id);
         const child = instantiate(node.child, `${id}-child`);
-        return new TimeoutNode(id, node.timeout_ms, child);
+        return track(
+          new TimeoutNode(
+            id,
+            node.timeout_ms ?? null,
+            child,
+            { category: node.timeout_category ?? null, complexityScore: node.complexity_score ?? null },
+          ),
+        );
       }
       case "guard": {
         const id = nextId(`${prefix}-guard`, node.id);
         const child = instantiate(node.child, `${id}-child`);
-        return new GuardNode(id, node.condition_key, node.expected, child);
+        return track(new GuardNode(id, node.condition_key, node.expected, child));
       }
       case "task": {
         const id = nextId(`${prefix}-task`, node.id ?? node.node_id);
         const schema = taskSchemas[node.tool];
-        return new TaskLeaf(id, node.tool, { inputKey: node.input_key, schema });
+        return track(new TaskLeaf(id, node.tool, { inputKey: node.input_key, schema }));
       }
       default: {
         const exhaustive: never = node;

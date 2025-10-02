@@ -7,7 +7,17 @@ const FLAG_WITH_VALUE = new Set([
     "--log-file",
     "--parallelism",
     "--child-idle-sec",
-    "--child-timeout-sec"
+    "--child-timeout-sec",
+    "--max-children",
+    "--child-memory-mb",
+    "--child-cpu-percent",
+    "--quality-threshold",
+    "--bt-tick-ms",
+    "--stig-half-life-ms",
+    "--supervisor-stall-ticks",
+    "--dashboard-port",
+    "--dashboard-host",
+    "--dashboard-interval-ms",
 ]);
 /**
  * Ensures a provided numeric string can be converted to a positive integer.
@@ -18,6 +28,21 @@ function parsePositiveInteger(value, flag) {
         throw new Error(`La valeur ${value} pour ${flag} doit être un entier positif.`);
     }
     return num;
+}
+function parseQualityThreshold(value, flag) {
+    const num = Number(value);
+    if (!Number.isFinite(num) || num < 0 || num > 100) {
+        throw new Error(`La valeur ${value} pour ${flag} doit être comprise entre 0 et 100.`);
+    }
+    return Math.round(num);
+}
+/**
+ * Parses the dashboard streaming interval. We accept positive integers and
+ * enforce a sane minimum to avoid overwhelming clients.
+ */
+function parseDashboardInterval(value, flag) {
+    const parsed = parsePositiveInteger(value, flag);
+    return Math.max(250, parsed);
 }
 /**
  * Normalises an HTTP path ensuring it is absolute and non-empty.
@@ -43,11 +68,41 @@ const DEFAULT_STATE = {
     httpPath: "/mcp",
     httpEnableJson: false,
     httpStateless: false,
+    dashboardEnabled: false,
+    dashboardPort: 4100,
+    dashboardHost: "127.0.0.1",
+    dashboardIntervalMs: 2_000,
     maxEventHistory: 5000,
     logFile: null,
     parallelism: 2,
     childIdleSec: 120,
-    childTimeoutSec: 900
+    childTimeoutSec: 900,
+    enableReflection: true,
+    qualityGateEnabled: true,
+    qualityThreshold: 70,
+    featureToggles: {
+        enableBT: false,
+        enableReactiveScheduler: false,
+        enableBlackboard: false,
+        enableStigmergy: false,
+        enableCNP: false,
+        enableConsensus: false,
+        enableAutoscaler: false,
+        enableSupervisor: false,
+        enableKnowledge: false,
+        enableCausalMemory: false,
+        enableValueGuard: false,
+    },
+    timings: {
+        btTickMs: 50,
+        stigHalfLifeMs: 30_000,
+        supervisorStallTicks: 6,
+    },
+    safety: {
+        maxChildren: 16,
+        memoryLimitMb: 512,
+        cpuPercent: 100,
+    },
 };
 /**
  * Parses CLI arguments in order to determine how the orchestrator must expose
@@ -55,7 +110,12 @@ const DEFAULT_STATE = {
  * returns a structured object that can directly be consumed by the runtime.
  */
 export function parseOrchestratorRuntimeOptions(argv) {
-    const state = { ...DEFAULT_STATE };
+    const state = {
+        ...DEFAULT_STATE,
+        featureToggles: { ...DEFAULT_STATE.featureToggles },
+        timings: { ...DEFAULT_STATE.timings },
+        safety: { ...DEFAULT_STATE.safety },
+    };
     for (let index = 0; index < argv.length; index += 1) {
         const arg = argv[index];
         if (!arg.startsWith("--")) {
@@ -102,6 +162,26 @@ export function parseOrchestratorRuntimeOptions(argv) {
             case "--http":
                 state.httpEnabled = true;
                 break;
+            case "--dashboard":
+                state.dashboardEnabled = true;
+                break;
+            case "--dashboard-port":
+                state.dashboardPort = parsePositiveInteger(value ?? "", flag);
+                state.dashboardEnabled = true;
+                break;
+            case "--dashboard-host": {
+                const rawHost = (value ?? "").trim();
+                if (!rawHost.length) {
+                    throw new Error("L'hôte du dashboard ne peut pas être vide.");
+                }
+                state.dashboardHost = rawHost;
+                state.dashboardEnabled = true;
+                break;
+            }
+            case "--dashboard-interval-ms":
+                state.dashboardIntervalMs = parseDashboardInterval(value ?? "", flag);
+                state.dashboardEnabled = true;
+                break;
             case "--max-event-history":
                 state.maxEventHistory = parsePositiveInteger(value ?? "", flag);
                 break;
@@ -122,6 +202,108 @@ export function parseOrchestratorRuntimeOptions(argv) {
             case "--child-timeout-sec":
                 state.childTimeoutSec = parsePositiveInteger(value ?? "", flag);
                 break;
+            case "--max-children":
+                state.safety.maxChildren = parsePositiveInteger(value ?? "", flag);
+                break;
+            case "--child-memory-mb":
+                state.safety.memoryLimitMb = parsePositiveInteger(value ?? "", flag);
+                break;
+            case "--child-cpu-percent": {
+                const parsedCpu = parsePositiveInteger(value ?? "", flag);
+                state.safety.cpuPercent = Math.min(100, Math.max(1, parsedCpu));
+                break;
+            }
+            case "--no-reflection":
+                state.enableReflection = false;
+                break;
+            case "--reflection":
+                state.enableReflection = true;
+                break;
+            case "--no-quality-gate":
+                state.qualityGateEnabled = false;
+                break;
+            case "--quality-gate":
+                state.qualityGateEnabled = true;
+                break;
+            case "--quality-threshold":
+                state.qualityThreshold = parseQualityThreshold(value ?? "", flag);
+                state.qualityGateEnabled = true;
+                break;
+            case "--enable-bt":
+                state.featureToggles.enableBT = true;
+                break;
+            case "--disable-bt":
+                state.featureToggles.enableBT = false;
+                break;
+            case "--enable-reactive-scheduler":
+                state.featureToggles.enableReactiveScheduler = true;
+                break;
+            case "--disable-reactive-scheduler":
+                state.featureToggles.enableReactiveScheduler = false;
+                break;
+            case "--enable-blackboard":
+                state.featureToggles.enableBlackboard = true;
+                break;
+            case "--disable-blackboard":
+                state.featureToggles.enableBlackboard = false;
+                break;
+            case "--enable-stigmergy":
+                state.featureToggles.enableStigmergy = true;
+                break;
+            case "--disable-stigmergy":
+                state.featureToggles.enableStigmergy = false;
+                break;
+            case "--enable-cnp":
+                state.featureToggles.enableCNP = true;
+                break;
+            case "--disable-cnp":
+                state.featureToggles.enableCNP = false;
+                break;
+            case "--enable-consensus":
+                state.featureToggles.enableConsensus = true;
+                break;
+            case "--disable-consensus":
+                state.featureToggles.enableConsensus = false;
+                break;
+            case "--enable-autoscaler":
+                state.featureToggles.enableAutoscaler = true;
+                break;
+            case "--disable-autoscaler":
+                state.featureToggles.enableAutoscaler = false;
+                break;
+            case "--enable-supervisor":
+                state.featureToggles.enableSupervisor = true;
+                break;
+            case "--disable-supervisor":
+                state.featureToggles.enableSupervisor = false;
+                break;
+            case "--enable-knowledge":
+                state.featureToggles.enableKnowledge = true;
+                break;
+            case "--disable-knowledge":
+                state.featureToggles.enableKnowledge = false;
+                break;
+            case "--enable-causal-memory":
+                state.featureToggles.enableCausalMemory = true;
+                break;
+            case "--disable-causal-memory":
+                state.featureToggles.enableCausalMemory = false;
+                break;
+            case "--enable-value-guard":
+                state.featureToggles.enableValueGuard = true;
+                break;
+            case "--disable-value-guard":
+                state.featureToggles.enableValueGuard = false;
+                break;
+            case "--bt-tick-ms":
+                state.timings.btTickMs = parsePositiveInteger(value ?? "", flag);
+                break;
+            case "--stig-half-life-ms":
+                state.timings.stigHalfLifeMs = parsePositiveInteger(value ?? "", flag);
+                break;
+            case "--supervisor-stall-ticks":
+                state.timings.supervisorStallTicks = parsePositiveInteger(value ?? "", flag);
+                break;
             default:
                 // Ignore unknown flags so the orchestrator remains permissive for
                 // future arguments handled elsewhere.
@@ -136,13 +318,25 @@ export function parseOrchestratorRuntimeOptions(argv) {
             host: state.httpHost,
             path: state.httpPath,
             enableJson: state.httpEnableJson,
-            stateless: state.httpStateless
+            stateless: state.httpStateless,
+        },
+        dashboard: {
+            enabled: state.dashboardEnabled,
+            port: state.dashboardPort,
+            host: state.dashboardHost,
+            streamIntervalMs: state.dashboardIntervalMs,
         },
         maxEventHistory: state.maxEventHistory,
         logFile: state.logFile,
         parallelism: state.parallelism,
         childIdleSec: state.childIdleSec,
-        childTimeoutSec: state.childTimeoutSec
+        childTimeoutSec: state.childTimeoutSec,
+        enableReflection: state.enableReflection,
+        enableQualityGate: state.qualityGateEnabled,
+        qualityThreshold: state.qualityThreshold,
+        features: { ...state.featureToggles },
+        timings: { ...state.timings },
+        safety: { ...state.safety },
     };
 }
 /**

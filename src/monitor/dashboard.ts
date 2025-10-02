@@ -7,6 +7,11 @@ import { EventStore, OrchestratorEvent } from "../eventStore.js";
 import { GraphState, GraphStateMetrics } from "../graphState.js";
 import { ChildSupervisor } from "../childSupervisor.js";
 import { StructuredLogger } from "../logger.js";
+import { StigmergyField } from "../coord/stigmergy.js";
+import { BehaviorTreeStatusRegistry } from "./btStatusRegistry.js";
+import type { BehaviorTreeStatusSnapshot } from "./btStatusRegistry.js";
+import type { BTStatus } from "../executor/bt/types.js";
+import type { OrchestratorSupervisor, SupervisorSchedulerSnapshot } from "../agents/supervisor.js";
 
 /**
  * Descriptor returned by the dashboard streaming endpoints.
@@ -18,6 +23,10 @@ export interface DashboardSnapshot {
   metrics: GraphStateMetrics;
   /** Heatmap-friendly aggregates derived from runtime events. */
   heatmap: DashboardHeatmap;
+  /** Latest scheduler backlog and throughput metrics. */
+  scheduler: DashboardSchedulerSnapshot;
+  /** Latest Behaviour Tree node statuses grouped by tree identifier. */
+  behaviorTrees: DashboardBehaviorTreeStatus[];
   /** Lightweight child projections displayed in the dashboard table. */
   children: Array<{
     id: string;
@@ -38,6 +47,8 @@ export interface DashboardHeatmap {
   errors: DashboardHeatmapCell[];
   /** Estimated token usage per child based on recent events. */
   tokens: DashboardHeatmapCell[];
+  /** Aggregated pheromone intensities per node derived from the stigmergic field. */
+  pheromones: DashboardHeatmapCell[];
 }
 
 /** Descriptor of a single heatmap cell. */
@@ -45,6 +56,34 @@ export interface DashboardHeatmapCell {
   childId: string;
   label: string;
   value: number;
+}
+
+/** Scheduler snapshot surfaced to operators. */
+export interface DashboardSchedulerSnapshot {
+  /** Tick index reported by the scheduler. */
+  tick: number;
+  /** Pending tasks awaiting execution. */
+  backlog: number;
+  /** Number of tasks completed on the latest tick. */
+  completed: number;
+  /** Number of tasks failed on the latest tick. */
+  failed: number;
+  /** Timestamp of the last scheduler update, or null when unavailable. */
+  updatedAt: number | null;
+}
+
+/** Node status returned as part of the Behaviour Tree snapshot. */
+export interface DashboardBehaviorTreeNodeStatus {
+  nodeId: string;
+  status: BTStatus;
+  updatedAt: number;
+}
+
+/** Aggregated Behaviour Tree snapshot streamed to dashboards. */
+export interface DashboardBehaviorTreeStatus {
+  treeId: string;
+  updatedAt: number;
+  nodes: DashboardBehaviorTreeNodeStatus[];
 }
 
 /**
@@ -75,6 +114,12 @@ export interface DashboardServerOptions {
   supervisor: Pick<ChildSupervisor, "cancel">;
   /** Event store providing access to runtime events. */
   eventStore: EventStore;
+  /** Shared stigmergic field exposing pheromone intensities. */
+  stigmergy: StigmergyField;
+  /** Registry collecting Behaviour Tree node statuses. */
+  btStatusRegistry: BehaviorTreeStatusRegistry;
+  /** Optional supervisor agent exposing scheduler backlog snapshots. */
+  supervisorAgent?: OrchestratorSupervisor;
   /** Structured logger used for operational diagnostics. */
   logger?: StructuredLogger;
 }
@@ -105,6 +150,9 @@ export interface DashboardRouterOptions {
   logger?: StructuredLogger;
   streamIntervalMs?: number;
   autoBroadcast?: boolean;
+  stigmergy: StigmergyField;
+  btStatusRegistry: BehaviorTreeStatusRegistry;
+  supervisorAgent?: OrchestratorSupervisor;
 }
 
 /** Router returned by {@link createDashboardRouter}. */
@@ -126,6 +174,9 @@ export function createDashboardRouter(options: DashboardRouterOptions): Dashboar
   const graphState = options.graphState;
   const eventStore = options.eventStore;
   const supervisor = options.supervisor;
+  const stigmergy = options.stigmergy;
+  const btStatusRegistry = options.btStatusRegistry;
+  const supervisorAgent = options.supervisorAgent;
   const streamIntervalMs = Math.max(250, options.streamIntervalMs ?? 2_000);
   const clients = new Set<ServerResponse>();
   const autoBroadcast = options.autoBroadcast ?? true;
@@ -136,7 +187,7 @@ export function createDashboardRouter(options: DashboardRouterOptions): Dashboar
       if (clients.size === 0) {
         return;
       }
-      broadcast(clients, graphState, eventStore, logger);
+      broadcast(clients, graphState, eventStore, stigmergy, btStatusRegistry, supervisorAgent, logger);
     }, streamIntervalMs);
   }
 
@@ -156,30 +207,44 @@ export function createDashboardRouter(options: DashboardRouterOptions): Dashboar
       }
 
       if (req.method === "GET" && pathname === "/metrics") {
-        writeJson(res, 200, buildSnapshot(graphState, eventStore));
+        writeJson(
+          res,
+          200,
+          buildSnapshot(graphState, eventStore, stigmergy, btStatusRegistry, supervisorAgent),
+        );
         return;
       }
 
       if (req.method === "GET" && pathname === "/stream") {
-        handleStreamRequest(res, clients, graphState, eventStore, logger, streamIntervalMs);
+        handleStreamRequest(
+          res,
+          clients,
+          graphState,
+          eventStore,
+          stigmergy,
+          btStatusRegistry,
+          supervisorAgent,
+          logger,
+          streamIntervalMs,
+        );
         return;
       }
 
       if (req.method === "POST" && pathname === "/controls/pause") {
         await handlePauseRequest(req, res, graphState, logger);
-        broadcast(clients, graphState, eventStore, logger);
+        broadcast(clients, graphState, eventStore, stigmergy, btStatusRegistry, supervisorAgent, logger);
         return;
       }
 
       if (req.method === "POST" && pathname === "/controls/cancel") {
         await handleCancelRequest(req, res, graphState, supervisor, logger);
-        broadcast(clients, graphState, eventStore, logger);
+        broadcast(clients, graphState, eventStore, stigmergy, btStatusRegistry, supervisorAgent, logger);
         return;
       }
 
       if (req.method === "POST" && pathname === "/controls/prioritise") {
         await handlePrioritiseRequest(req, res, graphState, logger);
-        broadcast(clients, graphState, eventStore, logger);
+        broadcast(clients, graphState, eventStore, stigmergy, btStatusRegistry, supervisorAgent, logger);
         return;
       }
 
@@ -200,7 +265,8 @@ export function createDashboardRouter(options: DashboardRouterOptions): Dashboar
   return {
     streamIntervalMs,
     handleRequest: handler,
-    broadcast: () => broadcast(clients, graphState, eventStore, logger),
+    broadcast: () =>
+      broadcast(clients, graphState, eventStore, stigmergy, btStatusRegistry, supervisorAgent, logger),
     async close() {
       if (interval) {
         clearInterval(interval);
@@ -236,6 +302,9 @@ export async function startDashboardServer(options: DashboardServerOptions): Pro
     logger,
     streamIntervalMs: options.streamIntervalMs,
     autoBroadcast: true,
+    stigmergy: options.stigmergy,
+    btStatusRegistry: options.btStatusRegistry,
+    supervisorAgent: options.supervisorAgent,
   });
 
   const server = createServer((req, res) => {
@@ -382,6 +451,9 @@ function handleStreamRequest(
   clients: Set<ServerResponse>,
   graphState: GraphState,
   eventStore: EventStore,
+  stigmergy: StigmergyField,
+  btStatusRegistry: BehaviorTreeStatusRegistry,
+  supervisorAgent: OrchestratorSupervisor | undefined,
   logger: StructuredLogger,
   streamIntervalMs: number,
 ): void {
@@ -395,7 +467,7 @@ function handleStreamRequest(
   res.on("close", () => {
     clients.delete(res);
   });
-  const snapshot = buildSnapshot(graphState, eventStore);
+  const snapshot = buildSnapshot(graphState, eventStore, stigmergy, btStatusRegistry, supervisorAgent);
   res.write(`data: ${JSON.stringify(snapshot)}\n\n`);
   logger.debug("dashboard_stream_connected", { clients: clients.size });
 }
@@ -405,12 +477,15 @@ function broadcast(
   clients: Set<ServerResponse>,
   graphState: GraphState,
   eventStore: EventStore,
+  stigmergy: StigmergyField,
+  btStatusRegistry: BehaviorTreeStatusRegistry,
+  supervisorAgent: OrchestratorSupervisor | undefined,
   logger: StructuredLogger,
 ): void {
   if (clients.size === 0) {
     return;
   }
-  const snapshot = buildSnapshot(graphState, eventStore);
+  const snapshot = buildSnapshot(graphState, eventStore, stigmergy, btStatusRegistry, supervisorAgent);
   const payload = `data: ${JSON.stringify(snapshot)}\n\n`;
   for (const client of clients) {
     client.write(payload);
@@ -419,9 +494,17 @@ function broadcast(
 }
 
 /** Builds a snapshot mixing metrics, children summaries and heatmap data. */
-function buildSnapshot(graphState: GraphState, eventStore: EventStore): DashboardSnapshot {
+function buildSnapshot(
+  graphState: GraphState,
+  eventStore: EventStore,
+  stigmergy: StigmergyField,
+  btStatusRegistry: BehaviorTreeStatusRegistry,
+  supervisorAgent: OrchestratorSupervisor | undefined,
+): DashboardSnapshot {
   const metrics = graphState.collectMetrics();
-  const heatmap = computeDashboardHeatmap(graphState, eventStore);
+  const heatmap = computeDashboardHeatmap(graphState, eventStore, stigmergy);
+  const scheduler = buildSchedulerSnapshot(supervisorAgent);
+  const behaviorTrees = normaliseBehaviorTreeSnapshots(btStatusRegistry.snapshot());
   const children = graphState.listChildSnapshots().map((child) => {
     const lastActivityAt = child.lastTs ?? child.lastHeartbeatAt ?? child.createdAt;
     return {
@@ -438,6 +521,8 @@ function buildSnapshot(graphState: GraphState, eventStore: EventStore): Dashboar
     timestamp: Date.now(),
     metrics,
     heatmap,
+    scheduler,
+    behaviorTrees,
     children,
   };
 }
@@ -459,8 +544,12 @@ function extractTokenUsage(event: OrchestratorEvent): number {
   return 0;
 }
 
-/** Computes heatmap-friendly aggregates combining idle durations, errors and tokens. */
-export function computeDashboardHeatmap(graphState: GraphState, eventStore: EventStore): DashboardHeatmap {
+/** Computes heatmap-friendly aggregates combining idle durations, errors, tokens and pheromones. */
+export function computeDashboardHeatmap(
+  graphState: GraphState,
+  eventStore: EventStore,
+  stigmergy: StigmergyField,
+): DashboardHeatmap {
   const now = Date.now();
   const children = graphState.listChildSnapshots();
 
@@ -509,5 +598,52 @@ export function computeDashboardHeatmap(graphState: GraphState, eventStore: Even
   }
   tokens.sort((a, b) => b.value - a.value);
 
-  return { idle, errors, tokens };
+  const fieldSnapshot = stigmergy.fieldSnapshot();
+  const pheromones: DashboardHeatmapCell[] = fieldSnapshot.totals
+    .filter((total) => total.intensity > 0)
+    .map((total) => ({
+      childId: total.nodeId,
+      label: total.nodeId,
+      value: total.intensity,
+    }))
+    .sort((a, b) => b.value - a.value);
+
+  return { idle, errors, tokens, pheromones };
+}
+
+/** Builds a scheduler snapshot suitable for dashboard consumption. */
+function buildSchedulerSnapshot(
+  supervisorAgent: OrchestratorSupervisor | undefined,
+): DashboardSchedulerSnapshot {
+  if (!supervisorAgent) {
+    return { tick: 0, backlog: 0, completed: 0, failed: 0, updatedAt: null };
+  }
+  const snapshot = supervisorAgent.getLastSchedulerSnapshot();
+  if (!snapshot) {
+    return { tick: 0, backlog: 0, completed: 0, failed: 0, updatedAt: null };
+  }
+  return {
+    tick: snapshot.schedulerTick,
+    backlog: snapshot.backlog,
+    completed: snapshot.completed,
+    failed: snapshot.failed,
+    updatedAt: snapshot.updatedAt,
+  };
+}
+
+/** Normalises registry snapshots into dashboard-friendly Behaviour Tree payloads. */
+function normaliseBehaviorTreeSnapshots(
+  snapshots: BehaviorTreeStatusSnapshot[],
+): DashboardBehaviorTreeStatus[] {
+  return snapshots
+    .filter((snapshot) => snapshot.nodes.length > 0)
+    .map((snapshot) => ({
+      treeId: snapshot.treeId,
+      updatedAt: snapshot.updatedAt,
+      nodes: snapshot.nodes.map((node) => ({
+        nodeId: node.nodeId,
+        status: node.status,
+        updatedAt: node.updatedAt,
+      })),
+    }));
 }

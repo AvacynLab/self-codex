@@ -15,6 +15,8 @@ import {
   type TickRuntime,
 } from "../executor/bt/types.js";
 import { ReactiveScheduler } from "../executor/reactiveScheduler.js";
+import { ExecutionLoop } from "../executor/loop.js";
+import { BbSetInputSchema } from "./coordTools.js";
 import {
   ConsensusConfigSchema,
   majority as computeConsensusMajority,
@@ -25,6 +27,7 @@ import {
   type ConsensusVote,
 } from "../coord/consensus.js";
 import { StigmergyField } from "../coord/stigmergy.js";
+import { BlackboardStore, type BlackboardEvent, type BlackboardEntrySnapshot } from "../coord/blackboard.js";
 import type { CausalMemory } from "../knowledge/causalMemory.js";
 import type {
   ValueFilterDecision,
@@ -35,6 +38,7 @@ import type {
 import { GraphState } from "../graphState.js";
 import { StructuredLogger } from "../logger.js";
 import { OrchestratorSupervisor } from "../agents/supervisor.js";
+import { Autoscaler } from "../agents/autoscaler.js";
 import { ensureDirectory, resolveWithin } from "../paths.js";
 import {
   PromptTemplate,
@@ -44,6 +48,8 @@ import {
   renderPromptTemplate,
 } from "../prompts.js";
 import { EventKind, EventLevel } from "../eventStore.js";
+import type { LoopDetector } from "../guard/loopDetector.js";
+import { BehaviorTreeStatusRegistry } from "../monitor/btStatusRegistry.js";
 
 /**
  * Type used when emitting orchestration events. The server injects a concrete
@@ -66,6 +72,53 @@ export interface ValueGuardRuntime {
   registry: Map<string, ValueFilterDecision>;
 }
 
+/** Error raised when Behaviour Tree tasks require a disabled blackboard module. */
+class BlackboardFeatureDisabledError extends Error {
+  public readonly code = "E-BB-DISABLED";
+  public readonly hint = "enable_blackboard";
+
+  constructor() {
+    super("blackboard module disabled");
+    this.name = "BlackboardFeatureDisabledError";
+  }
+}
+
+/** Ensure a blackboard is available before Behaviour Tree tasks attempt to use it. */
+function requireBlackboard(context: PlanToolContext): BlackboardStore {
+  if (!context.blackboard) {
+    throw new BlackboardFeatureDisabledError();
+  }
+  return context.blackboard;
+}
+
+/** Serialise a blackboard entry using the public API shape expected by callers. */
+function serialiseBlackboardEntry(
+  snapshot: BlackboardEntrySnapshot,
+): Record<string, unknown> {
+  return {
+    key: snapshot.key,
+    value: snapshot.value,
+    tags: snapshot.tags,
+    created_at: snapshot.createdAt,
+    updated_at: snapshot.updatedAt,
+    expires_at: snapshot.expiresAt,
+    version: snapshot.version,
+  };
+}
+
+/** Derive a scheduling importance score from a blackboard event. */
+function deriveBlackboardImportance(event: BlackboardEvent): number {
+  const tags = event.entry?.tags ?? event.previous?.tags ?? [];
+  const lowered = new Set(tags.map((tag) => tag.toLowerCase()));
+  if (lowered.has("critical") || lowered.has("urgent")) {
+    return 3;
+  }
+  if (lowered.has("high") || lowered.has("priority")) {
+    return 2;
+  }
+  return event.kind === "set" ? 1 : 0.5;
+}
+
 /**
  * Context shared by the plan tool handlers. The orchestrator injects the
  * supervisor to control child runtimes, the mutable {@link GraphState} and the
@@ -86,12 +139,20 @@ export interface PlanToolContext {
   emitEvent: PlanEventEmitter;
   /** Shared stigmergic field used to influence scheduling priorities. */
   stigmergy: StigmergyField;
+  /** Optional blackboard store relaying shared signals across agents. */
+  blackboard?: BlackboardStore;
   /** Optional orchestrator supervisor handling loop and stagnation mitigation. */
   supervisorAgent?: OrchestratorSupervisor;
+  /** Optional autoscaler reconciling scheduler pressure after every loop tick. */
+  autoscaler?: Autoscaler;
   /** Optional causal memory capturing scheduler and Behaviour Tree events. */
   causalMemory?: CausalMemory;
   /** Optional value guard filtering unsafe plans before execution. */
   valueGuard?: ValueGuardRuntime;
+  /** Optional loop detector used to derive timeout budgets for BT categories. */
+  loopDetector?: LoopDetector;
+  /** Optional registry collecting Behaviour Tree node statuses for dashboards. */
+  btStatusRegistry?: BehaviorTreeStatusRegistry;
 }
 
 /**
@@ -413,22 +474,37 @@ export interface PlanReduceResult extends Record<string, unknown> {
   };
 }
 
-/** Input payload accepted by the `plan_compile_bt` tool. */
-export const PlanCompileBTInputSchema = z.object({
-  graph: HierGraphSchema,
-});
+/**
+ * Input payload accepted by the `plan_compile_bt` tool.
+ *
+ * The schema is marked as strict to ensure CI catches payloads that carry
+ * unexpected properties which would otherwise be silently ignored during
+ * behaviour tree compilation.
+ */
+export const PlanCompileBTInputSchema = z
+  .object({
+    graph: HierGraphSchema,
+  })
+  .strict();
 
 export type PlanCompileBTInput = z.infer<typeof PlanCompileBTInputSchema>;
 export type PlanCompileBTResult = z.infer<typeof CompiledBehaviorTreeSchema>;
 export const PlanCompileBTInputShape = PlanCompileBTInputSchema.shape;
 
-/** Input payload accepted by the `plan_run_bt` tool. */
-export const PlanRunBTInputSchema = z.object({
-  tree: CompiledBehaviorTreeSchema,
-  variables: z.record(z.unknown()).default({}),
-  dry_run: z.boolean().default(false),
-  timeout_ms: z.number().int().min(1).max(60_000).optional(),
-});
+/**
+ * Input payload accepted by the `plan_run_bt` tool.
+ *
+ * Extra keys are rejected via `.strict()` so orchestration payloads cannot leak
+ * unintended flags into the execution loop.
+ */
+export const PlanRunBTInputSchema = z
+  .object({
+    tree: CompiledBehaviorTreeSchema,
+    variables: z.record(z.unknown()).default({}),
+    dry_run: z.boolean().default(false),
+    timeout_ms: z.number().int().min(1).max(60_000).optional(),
+  })
+  .strict();
 
 export type PlanRunBTInput = z.infer<typeof PlanRunBTInputSchema>;
 export const PlanRunBTInputShape = PlanRunBTInputSchema.shape;
@@ -446,9 +522,45 @@ export interface PlanRunBTResult extends Record<string, unknown> {
   }>;
 }
 
+/**
+ * Input payload accepted by the `plan_run_reactive` tool.
+ *
+ * `.strict()` keeps the scheduler loop deterministic by preventing stray fields
+ * from slipping into the runtime budget configuration.
+ */
+export const PlanRunReactiveInputSchema = z
+  .object({
+    tree: CompiledBehaviorTreeSchema,
+    variables: z.record(z.unknown()).default({}),
+    tick_ms: z.number().int().min(10).max(5_000).default(100),
+    budget_ms: z.number().int().min(1).max(5_000).optional(),
+    timeout_ms: z.number().int().min(1).max(300_000).optional(),
+    dry_run: z.boolean().default(false),
+  })
+  .strict();
+
+export type PlanRunReactiveInput = z.infer<typeof PlanRunReactiveInputSchema>;
+export const PlanRunReactiveInputShape = PlanRunReactiveInputSchema.shape;
+
+/** Result returned by {@link handlePlanRunReactive}. */
+export interface PlanRunReactiveResult extends Record<string, unknown> {
+  status: BTStatus;
+  loop_ticks: number;
+  scheduler_ticks: number;
+  duration_ms: number;
+  last_output: unknown;
+  invocations: Array<{
+    tool: string;
+    input: unknown;
+    output: unknown;
+    executed: boolean;
+  }>;
+}
+
 /** Default schema registry used by the Behaviour Tree interpreter. */
 const BehaviorTaskSchemas: Record<string, z.ZodTypeAny> = {
   noop: z.any(),
+  bb_set: BbSetInputSchema,
 };
 
 /** Tool handlers executed by the Behaviour Tree interpreter. */
@@ -456,6 +568,21 @@ type BehaviorToolHandler = (context: PlanToolContext, input: unknown) => Promise
 
 const BehaviorToolHandlers: Record<string, BehaviorToolHandler> = {
   noop: async (_context, input) => input ?? null,
+  bb_set: async (context, input) => {
+    const payload = BbSetInputSchema.parse(input ?? {});
+    const blackboard = requireBlackboard(context);
+    const snapshot = blackboard.set(payload.key, payload.value, {
+      tags: payload.tags,
+      ttlMs: payload.ttl_ms,
+    });
+    context.logger.info("bt_bb_set", {
+      key: snapshot.key,
+      version: snapshot.version,
+      tags: snapshot.tags,
+      ttl_ms: payload.ttl_ms ?? null,
+    });
+    return serialiseBlackboardEntry(snapshot);
+  },
 };
 
 /** Internal representation of a child plan resolved from the input payload. */
@@ -1438,9 +1565,6 @@ export async function handlePlanRunBT(
   input: PlanRunBTInput,
 ): Promise<PlanRunBTResult> {
   const schemaRegistry = { ...BehaviorTaskSchemas };
-  const interpreter = new BehaviorTreeInterpreter(
-    buildBehaviorTree(input.tree.root, { taskSchemas: schemaRegistry }),
-  );
   const invocations: PlanRunBTResult["invocations"] = [];
   let lastOutput: unknown = null;
   let lastResultStatus: BTStatus = "running";
@@ -1451,8 +1575,22 @@ export async function handlePlanRunBT(
     dry_run: dryRun,
   });
 
+  if (context.btStatusRegistry) {
+    context.btStatusRegistry.reset(input.tree.id);
+  }
+  const statusReporter = context.btStatusRegistry
+    ? (nodeId: string, status: BTStatus) => {
+        context.btStatusRegistry?.record(input.tree.id, nodeId, status);
+      }
+    : undefined;
+
+  const interpreter = new BehaviorTreeInterpreter(
+    buildBehaviorTree(input.tree.root, { taskSchemas: schemaRegistry, statusReporter }),
+  );
+
   const causalMemory = context.causalMemory;
   let scheduler: ReactiveScheduler;
+  const loopDetector = context.loopDetector ?? null;
 
   const runtime = {
     invokeTool: async (tool: string, taskInput: unknown) => {
@@ -1514,6 +1652,32 @@ export async function handlePlanRunBT(
       await delay(ms);
     },
     variables: input.variables,
+    recommendTimeout: loopDetector
+      ? (category: string, complexityScore?: number, fallbackMs?: number) => {
+          try {
+            return loopDetector.recommendTimeout(category, complexityScore ?? 1);
+          } catch (error) {
+            context.logger.warn("bt_timeout_recommendation_failed", {
+              category,
+              fallback_ms: fallbackMs ?? null,
+              message: error instanceof Error ? error.message : String(error),
+            });
+            return fallbackMs;
+          }
+        }
+      : undefined,
+    recordTimeoutOutcome: loopDetector
+      ? (category, outcome) => {
+          if (!Number.isFinite(outcome.durationMs) || outcome.durationMs <= 0) {
+            return;
+          }
+          loopDetector.recordTaskObservation({
+            taskType: category,
+            durationMs: Math.max(1, Math.round(outcome.durationMs)),
+            success: outcome.success,
+          });
+        }
+      : undefined,
   } satisfies Partial<TickRuntime> & { invokeTool: (tool: string, input: unknown) => Promise<unknown> };
 
   scheduler = new ReactiveScheduler({
@@ -1589,6 +1753,313 @@ export async function handlePlanRunBT(
       tree_id: input.tree.id,
       status: lastResultStatus,
       ticks: scheduler.tickCount,
+    });
+  }
+}
+
+/**
+ * Executes a Behaviour Tree inside the reactive execution loop. The loop wires
+ * autoscaling and supervision reconcilers so orchestration side-effects are
+ * applied after every scheduler tick. The handler mirrors
+ * {@link handlePlanRunBT} telemetry while surfacing loop-specific metrics.
+ */
+export async function handlePlanRunReactive(
+  context: PlanToolContext,
+  input: PlanRunReactiveInput,
+): Promise<PlanRunReactiveResult> {
+  const schemaRegistry = { ...BehaviorTaskSchemas };
+  const invocations: PlanRunReactiveResult["invocations"] = [];
+  const dryRun = input.dry_run ?? false;
+  let lastOutput: unknown = null;
+  let lastResultStatus: BTStatus = "running";
+
+  context.logger.info("plan_run_reactive", {
+    tree_id: input.tree.id,
+    tick_ms: input.tick_ms,
+    dry_run: dryRun,
+  });
+
+  const causalMemory = context.causalMemory;
+  const loopDetector = context.loopDetector ?? null;
+  const autoscaler = context.autoscaler ?? null;
+  let scheduler: ReactiveScheduler | null = null;
+  let unsubscribeBlackboard: (() => void) | null = null;
+
+  if (context.btStatusRegistry) {
+    context.btStatusRegistry.reset(input.tree.id);
+  }
+  const statusReporter = context.btStatusRegistry
+    ? (nodeId: string, status: BTStatus) => {
+        context.btStatusRegistry?.record(input.tree.id, nodeId, status);
+      }
+    : undefined;
+
+  const interpreter = new BehaviorTreeInterpreter(
+    buildBehaviorTree(input.tree.root, { taskSchemas: schemaRegistry, statusReporter }),
+  );
+
+  const runtime = {
+    invokeTool: async (tool: string, taskInput: unknown) => {
+      if (dryRun) {
+        invocations.push({ tool, input: taskInput, output: null, executed: false });
+        return null;
+      }
+      const handler = BehaviorToolHandlers[tool];
+      if (!handler) {
+        throw new Error(`Unknown behaviour tree tool ${tool}`);
+      }
+      const parentId = causalMemory && scheduler ? scheduler.getCurrentTickCausalEventId() : null;
+      const parentCauses = parentId ? [parentId] : [];
+      const invocationEvent = causalMemory
+        ? causalMemory.record(
+            {
+              type: "bt.tool.invoke",
+              data: { tool, input: summariseForCausalMemory(taskInput) },
+              tags: ["bt", "tool", tool],
+            },
+            parentCauses,
+          )
+        : null;
+      try {
+        const output = await handler(context, taskInput);
+        invocations.push({ tool, input: taskInput, output, executed: true });
+        lastOutput = output;
+        if (causalMemory) {
+          causalMemory.record(
+            {
+              type: "bt.tool.success",
+              data: { tool, output: summariseForCausalMemory(output) },
+              tags: ["bt", "tool", "success", tool],
+            },
+            invocationEvent ? [invocationEvent.id] : parentCauses,
+          );
+        }
+        return output;
+      } catch (error) {
+        if (causalMemory) {
+          const message = error instanceof Error ? error.message : String(error);
+          causalMemory.record(
+            {
+              type: "bt.tool.failure",
+              data: { tool, message },
+              tags: ["bt", "tool", "failure", tool],
+            },
+            invocationEvent ? [invocationEvent.id] : parentCauses,
+          );
+        }
+        throw error;
+      }
+    },
+    now: () => Date.now(),
+    wait: async (ms: number) => {
+      if (ms <= 0) {
+        return;
+      }
+      await delay(ms);
+    },
+    variables: input.variables,
+    recommendTimeout: loopDetector
+      ? (category: string, complexityScore?: number, fallbackMs?: number) => {
+          try {
+            return loopDetector.recommendTimeout(category, complexityScore ?? 1);
+          } catch (error) {
+            context.logger.warn("bt_timeout_recommendation_failed", {
+              category,
+              fallback_ms: fallbackMs ?? null,
+              message: error instanceof Error ? error.message : String(error),
+            });
+            return fallbackMs;
+          }
+        }
+      : undefined,
+    recordTimeoutOutcome: loopDetector
+      ? (category, outcome) => {
+          if (!Number.isFinite(outcome.durationMs) || outcome.durationMs <= 0) {
+            return;
+          }
+          loopDetector.recordTaskObservation({
+            taskType: category,
+            durationMs: Math.max(1, Math.round(outcome.durationMs)),
+            success: outcome.success,
+          });
+        }
+      : undefined,
+  } satisfies Partial<TickRuntime> & { invokeTool: (tool: string, input: unknown) => Promise<unknown> };
+
+  scheduler = new ReactiveScheduler({
+    interpreter,
+    runtime,
+    now: runtime.now,
+    getPheromoneIntensity: (nodeId) => context.stigmergy.getNodeIntensity(nodeId)?.intensity ?? 0,
+    causalMemory,
+    onTick: (trace) => {
+      lastResultStatus = trace.result.status;
+      context.supervisorAgent?.recordSchedulerSnapshot({
+        schedulerTick: scheduler?.tickCount ?? 0,
+        backlog: trace.pendingAfter,
+        completed: trace.result.status === "success" ? 1 : 0,
+        failed: trace.result.status === "failure" ? 1 : 0,
+      });
+      if (autoscaler) {
+        autoscaler.updateBacklog(trace.pendingAfter);
+        autoscaler.recordTaskResult({
+          durationMs: Math.max(0, trace.finishedAt - trace.startedAt),
+          success: trace.result.status !== "failure",
+        });
+      }
+    },
+  });
+
+  if (context.blackboard) {
+    const startingVersion = context.blackboard.getCurrentVersion();
+    unsubscribeBlackboard = context.blackboard.watch({
+      fromVersion: startingVersion,
+      listener: (event) => {
+        if (!scheduler) {
+          return;
+        }
+        const importance = deriveBlackboardImportance(event);
+        scheduler.emit("blackboardChanged", { key: event.key, importance });
+        context.logger.info("plan_run_reactive_blackboard_event", {
+          tree_id: input.tree.id,
+          key: event.key,
+          kind: event.kind,
+          importance,
+        });
+      },
+    });
+  }
+
+  const unsubscribeStigmergy = context.stigmergy.onChange((change) => {
+    scheduler?.emit("stigmergyChanged", {
+      nodeId: change.nodeId,
+      intensity: change.totalIntensity,
+      type: change.type,
+    });
+  });
+
+  const reconcilers = [];
+  if (autoscaler) {
+    reconcilers.push(autoscaler);
+  }
+  if (context.supervisorAgent) {
+    reconcilers.push(context.supervisorAgent);
+  }
+
+  const rootId =
+    ("id" in input.tree.root && input.tree.root.id) ||
+    ("node_id" in input.tree.root && (input.tree.root as { node_id?: string }).node_id) ||
+    input.tree.id;
+
+  let executedLoopTicks = 0;
+
+  let finish: ((result: BehaviorTickResult) => void) | null = null;
+  let fail: ((error: unknown) => void) | null = null;
+  let runCompleted = false;
+
+  const runPromise = new Promise<BehaviorTickResult>((resolve, reject) => {
+    finish = (result) => {
+      if (runCompleted) {
+        return;
+      }
+      runCompleted = true;
+      resolve(result);
+    };
+    fail = (error) => {
+      if (runCompleted) {
+        return;
+      }
+      runCompleted = true;
+      if (scheduler) {
+        scheduler.stop();
+      }
+      reject(error);
+    };
+  });
+
+  const loop = new ExecutionLoop({
+    intervalMs: input.tick_ms ?? 100,
+    now: runtime.now,
+    budgetMs: input.budget_ms,
+    reconcilers,
+    onError: (error) => {
+      fail?.(error);
+    },
+    tick: async (loopContext) => {
+      if (runCompleted || !scheduler) {
+        return;
+      }
+      const initialEvent =
+        loopContext.tickIndex === 0
+          ? { type: "taskReady" as const, payload: { nodeId: rootId, criticality: 1 } }
+          : undefined;
+      try {
+        const result = await scheduler.runUntilSettled(initialEvent);
+        executedLoopTicks = Math.max(executedLoopTicks, loopContext.tickIndex + 1);
+        if (result.output !== undefined) {
+          lastOutput = result.output;
+        }
+        if (result.status !== "running") {
+          finish?.(result);
+        }
+      } catch (error) {
+        fail?.(error);
+      }
+    },
+  });
+
+  let timeoutHandle: NodeJS.Timeout | null = null;
+  if (input.timeout_ms !== undefined) {
+    timeoutHandle = setTimeout(() => {
+      fail?.(new BehaviorTreeRunTimeoutError(input.timeout_ms!));
+    }, input.timeout_ms);
+  }
+
+  const startedAt = runtime.now();
+  loop.start();
+
+  try {
+    const result = await runPromise;
+    const durationMs = runtime.now() - startedAt;
+    context.logger.info("plan_run_reactive_completed", {
+      tree_id: input.tree.id,
+      status: result.status,
+      loop_ticks: executedLoopTicks,
+      scheduler_ticks: scheduler.tickCount,
+      duration_ms: durationMs,
+      invocations: invocations.length,
+    });
+
+    return {
+      status: result.status,
+      loop_ticks: executedLoopTicks,
+      scheduler_ticks: scheduler.tickCount,
+      duration_ms: durationMs,
+      last_output: lastOutput,
+      invocations,
+    };
+  } catch (error) {
+    context.logger.error("plan_run_reactive_failed", {
+      tree_id: input.tree.id,
+      status: lastResultStatus,
+      message: error instanceof Error ? error.message : String(error),
+    });
+    throw error;
+  } finally {
+    if (timeoutHandle) {
+      clearTimeout(timeoutHandle);
+    }
+    if (unsubscribeBlackboard) {
+      unsubscribeBlackboard();
+    }
+    unsubscribeStigmergy();
+    scheduler?.stop();
+    await loop.stop();
+    context.logger.info("plan_run_reactive_status", {
+      tree_id: input.tree.id,
+      status: lastResultStatus,
+      loop_ticks: executedLoopTicks,
+      scheduler_ticks: scheduler?.tickCount ?? 0,
     });
   }
 }

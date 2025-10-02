@@ -41,13 +41,31 @@ function detectAnchoring(steps) {
     if (!firstDomain) {
         return null;
     }
-    const anchoredCount = steps.filter((step) => step.domain === firstDomain || step.tags?.includes(firstDomain)).length;
-    if (anchoredCount / steps.length < 0.5) {
+    const normalisedDomain = firstDomain.toLowerCase();
+    // Tags explicitly associated with a challenge/review step drastically reduce anchoring risk.
+    const counterTags = new Set(["challenge", "review", "critique", "audit", "validation", "retro"]);
+    let anchoredOccurrences = 0;
+    for (const [index, step] of steps.entries()) {
+        const usesDomain = (step.domain && step.domain.toLowerCase() === normalisedDomain) ||
+            (step.tags?.some((tag) => tag.toLowerCase() === normalisedDomain) ?? false);
+        if (!usesDomain) {
+            continue;
+        }
+        const hasCounterTag = step.tags?.some((tag) => counterTags.has(tag.toLowerCase())) && index !== 0;
+        if (hasCounterTag) {
+            continue;
+        }
+        anchoredOccurrences += 1;
+    }
+    // Ratio of steps still anchored to the initial domain after removing explicit challengers.
+    const ratio = anchoredOccurrences / steps.length;
+    if (ratio < 0.5) {
         return null;
     }
+    const severity = ratio >= 0.75 ? "high" : "medium";
     return {
         type: "anchoring",
-        severity: "medium",
+        severity,
         explanation: `La majorité des étapes restent ancrées sur le domaine initial « ${firstDomain} » sans remise en question.`,
         recommendedActions: [
             "Introduire une étape d'analyse indépendante pour challenger la première hypothèse.",

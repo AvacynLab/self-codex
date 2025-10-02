@@ -146,6 +146,243 @@ Les exécutions génèrent `run-<timestamp>/fanout.json` pour audit.
 }
 ```
 
+## Mode réactif (Behaviour Trees + scheduler)
+
+Le runtime réactif est désactivé par défaut. Active les modules nécessaires au
+lancement via les flags CLI :
+
+```bash
+node dist/server.js \
+  --enable-bt \
+  --enable-reactive-scheduler \
+  --enable-stigmergy \
+  --enable-autoscaler \
+  --enable-supervisor \
+  --enable-causal-memory
+```
+
+`plan_compile_bt` transforme un graphe hiérarchique en Behaviour Tree prêt à
+l'exécution. Chaque nœud `task` doit déclarer le tool MCP à invoquer via
+`bt_tool` et, optionnellement, la clé d'entrée consommée.
+
+```json
+{
+  "tool": "plan_compile_bt",
+  "input": {
+    "graph": {
+      "id": "demo_bt",
+      "nodes": [
+        {
+          "id": "prepare",
+          "kind": "task",
+          "label": "Préparer",
+          "attributes": { "bt_tool": "noop", "bt_input_key": "payload" }
+        },
+        {
+          "id": "execute",
+          "kind": "task",
+          "label": "Executer",
+          "attributes": { "bt_tool": "noop", "bt_input_key": "payload" }
+        }
+      ],
+      "edges": [
+        {
+          "id": "prepare_to_execute",
+          "from": { "nodeId": "prepare" },
+          "to": { "nodeId": "execute" }
+        }
+      ]
+    }
+  }
+}
+```
+
+Le résultat est un arbre compact. Pour exécuter la boucle réactive, réinjecte le
+payload compilé dans `plan_run_reactive` ou `plan_run_bt`. `tick_ms` cadence les
+ticks du scheduler, `budget_ms` borne la durée d'un tick et `timeout_ms`
+protège l'exécution complète.
+
+```json
+{
+  "tool": "plan_run_reactive",
+  "input": {
+    "tree": {
+      "id": "demo_bt",
+      "root": {
+        "type": "sequence",
+        "id": "demo_bt:sequence",
+        "children": [
+          { "type": "task", "id": "prepare", "node_id": "prepare", "tool": "noop", "input_key": "payload" },
+          { "type": "task", "id": "execute", "node_id": "execute", "tool": "noop", "input_key": "payload" }
+        ]
+      }
+    },
+    "variables": { "payload": { "message": "ping" } },
+    "tick_ms": 50,
+    "budget_ms": 10,
+    "timeout_ms": 2000
+  }
+}
+```
+
+Le scheduler publie le backlog, l'état des nœuds (RUNNING/OK/KO) et les
+phéromones au dashboard SSE (`npm run start:dashboard`). Active
+`--enable-value-guard` pour enrichir les invocations BT avec les décisions du
+garde-fou et surveiller les violations.
+
+## Coordination partagée (blackboard, stigmergie, Contract-Net, consensus)
+
+Les outils de coordination nécessitent `--enable-blackboard`,
+`--enable-stigmergy`, `--enable-cnp` et `--enable-consensus`. Ils fonctionnent
+entièrement hors ligne et s'intègrent au scheduler réactif.
+
+### Blackboard clé-valeur
+
+```json
+{ "tool": "bb_set", "input": { "key": "mission", "value": { "status": "ready" }, "tags": ["sync"], "ttl_ms": 60000 } }
+```
+
+```json
+{ "tool": "bb_get", "input": { "key": "mission" } }
+```
+
+`bb_watch` streame les événements via versioning séquentiel afin de rejouer le
+journal des écritures.
+
+### Champ stigmergique
+
+```json
+{ "tool": "stig_mark", "input": { "node_id": "triage", "type": "backlog", "intensity": 2.5 } }
+```
+
+```json
+{ "tool": "stig_snapshot", "input": {} }
+```
+
+Les intensités guident le scheduler réactif et sont visibles dans les overlays
+Mermaid et le dashboard.
+
+### Contrat-Net
+
+```json
+{
+  "tool": "cnp_announce",
+  "input": {
+    "task_id": "review-42",
+    "payload": { "priority": 3 },
+    "tags": ["analysis"],
+    "manual_bids": [
+      { "agent_id": "alpha", "cost": 5 },
+      { "agent_id": "beta", "cost": 3 }
+    ]
+  }
+}
+```
+
+Le résultat contient l'agent attribué (`awarded_agent_id`) et l'historique des
+enchères. Combine-le avec `plan_fanout` ou `child_send` pour adresser
+directement le gagnant.
+
+### Consensus rapide
+
+```json
+{
+  "tool": "consensus_vote",
+  "input": {
+    "votes": [
+      { "voter": "alpha", "value": "ship" },
+      { "voter": "beta", "value": "hold" },
+      { "voter": "gamma", "value": "ship" }
+    ],
+    "config": { "mode": "quorum", "quorum": 2 }
+  }
+}
+```
+
+Les décisions (`outcome`, `satisfied`, `tally`) sont identiques à celles
+renvoyées par `plan_reduce` en mode `vote`.
+
+## Valeurs, graphe de connaissances et mémoire causale
+
+Active simultanément `--enable-value-guard`, `--enable-knowledge` et
+`--enable-causal-memory` pour exploiter ces modules.
+
+### Configurer le garde-fou de valeurs
+
+```json
+{
+  "tool": "values_set",
+  "input": {
+    "values": [
+      { "id": "confidentialite", "label": "Confidentialité", "weight": 1 },
+      { "id": "cout", "label": "Coût", "weight": 0.5 }
+    ],
+    "relationships": [
+      { "from": "confidentialite", "to": "cout", "kind": "conflicts", "weight": 0.6 }
+    ],
+    "default_threshold": 0.5
+  }
+}
+```
+
+### Filtrer un plan
+
+```json
+{
+  "tool": "values_filter",
+  "input": {
+    "id": "plan-demo",
+    "impacts": [
+      { "value": "confidentialite", "impact": "risk", "severity": 0.8, "rationale": "log PII" },
+      { "value": "cout", "impact": "support", "severity": 0.2 }
+    ],
+    "threshold": 0.6
+  }
+}
+```
+
+`allowed`, `score`, `violations` et `threshold` sont également propagés aux
+résultats `plan_fanout`/`plan_reduce`.
+
+### Graphe de connaissances
+
+```json
+{
+  "tool": "kg_insert",
+  "input": {
+    "triples": [
+      { "subject": "plan_demo", "predicate": "uses", "object": "contract_net" }
+    ]
+  }
+}
+```
+
+```json
+{
+  "tool": "kg_query",
+  "input": { "subject": "plan_demo", "limit": 10 }
+}
+```
+
+Les résultats incluent les révisions, timestamps et ordinal pour permettre des
+replays déterministes.
+
+### Mémoire causale
+
+```json
+{ "tool": "causal_export", "input": {} }
+```
+
+```json
+{
+  "tool": "causal_explain",
+  "input": { "outcome_id": "bt.tool.success:noop", "max_depth": 5 }
+}
+```
+
+La mémoire causale relie les ticks BT, décisions de supervision et exécutions de
+tools pour investiguer les succès/échecs sur plusieurs boucles.
+
 ## Templates de prompts (`src/prompts.ts`)
 
 Le moteur de templating extrait les placeholders (`{{variable}}`) et impose que
@@ -570,6 +807,25 @@ npm run build  # compilation dist/
 
 Les nouveaux outils ajoutent systématiquement des tests unitaires (mocks enfant,
 planification, algorithmes de graphes, simulation/optimisation).
+
+### Micro-benchmarks scheduler
+
+Un banc de mesure manuel compare la latence du scheduler réactif **avec** ou
+**sans** pondération stigmergique. Le script reste hors CI afin de ne pas
+introduire de variance :
+
+```bash
+npm run bench:scheduler
+# Variables d'environnement disponibles :
+#   SCHED_BENCH_ITERATIONS=10000
+#   SCHED_BENCH_NODES=32
+#   SCHED_BENCH_STEP_MS=5
+```
+
+Le rapport affiche une table (scénario, ticks exécutés, latence totale,
+latence moyenne et traces collectées) pour suivre l'impact des optimisations.
+
+Installez les dépendances (`npm ci`) avant l'exécution pour disposer de `tsx`.
 
 ## Intégration continue
 
