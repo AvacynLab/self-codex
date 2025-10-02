@@ -3,8 +3,24 @@ import { EventEmitter } from "node:events";
 import { createWriteStream } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { inspect } from "node:util";
-import { listArtifacts } from "./artifacts.js";
+import { scanArtifacts } from "./artifacts.js";
 import { childWorkspacePath, ensureDirectory } from "./paths.js";
+/**
+ * Error raised when the runtime fails to spawn after exhausting all retry
+ * attempts. The original cause is exposed for diagnostic purposes so the
+ * supervisor can bubble up actionable hints to operators.
+ */
+export class ChildSpawnError extends Error {
+    attempts;
+    cause;
+    constructor(attempts, cause) {
+        const rootMessage = cause instanceof Error ? cause.message : String(cause ?? "unknown");
+        super(`Failed to spawn child after ${attempts} attempt(s): ${rootMessage}`);
+        this.name = "ChildSpawnError";
+        this.attempts = attempts;
+        this.cause = cause;
+    }
+}
 /**
  * Wraps a spawned child process and exposes helpers for messaging, logging and
  * heartbeat tracking. The class is intentionally event based so it can be
@@ -20,6 +36,10 @@ export class ChildRuntime extends EventEmitter {
     manifestPath;
     metadata;
     envKeys;
+    /** Constraints persisted in the manifest for monitoring and guards. */
+    limits;
+    /** Tools explicitly allowed for the child (used by guard rails). */
+    toolsAllow;
     child;
     logStream;
     messages = [];
@@ -45,8 +65,10 @@ export class ChildRuntime extends EventEmitter {
         this.workdir = params.workdir;
         this.logPath = params.logPath;
         this.manifestPath = params.manifestPath;
-        this.metadata = params.metadata;
-        this.envKeys = params.envKeys;
+        this.metadata = Object.freeze({ ...params.metadata });
+        this.envKeys = Object.freeze([...params.envKeys]);
+        this.limits = params.limits ? { ...params.limits } : null;
+        this.toolsAllow = Object.freeze([...params.toolsAllow]);
         this.child = params.child;
         this.startedAt = Date.now();
         this.logStream = createWriteStream(this.logPath, { flags: "a" });
@@ -189,7 +211,7 @@ export class ChildRuntime extends EventEmitter {
     async collectOutputs() {
         this.flushStdout();
         this.flushStderr();
-        const artifacts = await listArtifacts(this.childrenRoot, this.childId);
+        const artifacts = await scanArtifacts(this.childrenRoot, this.childId);
         return {
             childId: this.childId,
             manifestPath: this.manifestPath,
@@ -316,11 +338,14 @@ export class ChildRuntime extends EventEmitter {
             pid: this.pid,
             startedAt: new Date(this.startedAt).toISOString(),
             workdir: this.workdir,
+            workspace: this.workdir,
             logs: {
                 child: this.logPath,
             },
             envKeys: this.envKeys,
             metadata: this.metadata,
+            limits: this.limits,
+            tools_allow: this.toolsAllow,
             ...extras,
         };
         await writeFile(this.manifestPath, JSON.stringify(manifest, null, 2), "utf8");
@@ -506,28 +531,76 @@ export async function startChildRuntime(options) {
     const workdir = childRoot;
     const logPath = childWorkspacePath(options.childrenRoot, options.childId, "logs", "child.log");
     const manifestPath = childWorkspacePath(options.childrenRoot, options.childId, "manifest.json");
-    const args = options.args ?? [];
+    const args = options.args ? [...options.args] : [];
     const env = { ...process.env, ...(options.env ?? {}) };
-    const child = spawn(options.command, args, {
-        cwd: workdir,
-        env,
-        stdio: ["pipe", "pipe", "pipe"],
-    });
-    const runtime = new ChildRuntime({
-        childId: options.childId,
-        command: options.command,
-        args,
-        childrenRoot: options.childrenRoot,
-        workdir,
-        logPath,
-        manifestPath,
-        metadata: options.metadata ?? {},
-        envKeys: Object.keys(env).sort(),
-        child,
-    });
-    await runtime.waitUntilSpawned();
-    await runtime.writeManifest(options.manifestExtras ?? {});
-    return runtime;
+    const envKeys = Object.keys(env).sort();
+    const metadata = options.metadata ? { ...options.metadata } : {};
+    const limits = options.limits ? { ...options.limits } : null;
+    const toolsAllow = options.toolsAllow ? Array.from(new Set(options.toolsAllow)) : [];
+    const spawnFactory = options.spawnFactory ?? spawn;
+    const retry = options.spawnRetry ?? {};
+    const attempts = Math.max(1, Math.trunc(retry.attempts ?? 1));
+    const factor = Math.max(1, retry.backoffFactor ?? 2);
+    const maxDelay = Math.max(0, retry.maxDelayMs ?? 10_000);
+    let delay = Math.max(0, retry.initialDelayMs ?? 250);
+    let lastError = null;
+    for (let attempt = 1; attempt <= attempts; attempt += 1) {
+        let child;
+        try {
+            child = spawnFactory(options.command, args, {
+                cwd: workdir,
+                env,
+                stdio: ["pipe", "pipe", "pipe"],
+            });
+        }
+        catch (error) {
+            lastError = error;
+            if (attempt >= attempts) {
+                throw new ChildSpawnError(attempts, error);
+            }
+            if (delay > 0) {
+                await sleep(delay);
+            }
+            delay = computeNextDelay(delay, factor, maxDelay);
+            continue;
+        }
+        const runtime = new ChildRuntime({
+            childId: options.childId,
+            command: options.command,
+            args,
+            childrenRoot: options.childrenRoot,
+            workdir,
+            logPath,
+            manifestPath,
+            metadata,
+            envKeys,
+            limits,
+            toolsAllow,
+            child,
+        });
+        try {
+            await runtime.waitUntilSpawned();
+            await runtime.writeManifest(options.manifestExtras ?? {});
+            return runtime;
+        }
+        catch (error) {
+            lastError = error;
+            try {
+                await runtime.waitForExit(500);
+            }
+            catch {
+                // Ignore errors while tearing down a failed spawn attempt.
+            }
+            if (attempt >= attempts) {
+                throw new ChildSpawnError(attempts, error);
+            }
+            if (delay > 0) {
+                await sleep(delay);
+            }
+            delay = computeNextDelay(delay, factor, maxDelay);
+        }
+    }
+    throw new ChildSpawnError(attempts, lastError);
 }
 /**
  * Pretty printer primarily used by tests for debugging purposes.
@@ -537,4 +610,24 @@ export function formatChildMessages(messages) {
         .map((message) => `${new Date(message.receivedAt).toISOString()} [${message.stream}#${message.sequence}] ${message.raw} ` +
         (message.parsed ? inspect(message.parsed, { depth: 4 }) : "<raw>"))
         .join("\n");
+}
+/**
+ * Wait helper used by the spawn retry loop. The promise resolves after the
+ * specified delay, giving the system some breathing room before attempting a
+ * new process launch.
+ */
+async function sleep(delayMs) {
+    await new Promise((resolve) => setTimeout(resolve, delayMs));
+}
+/**
+ * Computes the next backoff delay while enforcing the configured ceiling.
+ * When the initial delay is zero the helper introduces a conservative
+ * fallback to avoid spinning aggressively.
+ */
+function computeNextDelay(currentDelay, factor, maxDelay) {
+    if (maxDelay === 0) {
+        return 0;
+    }
+    const base = currentDelay > 0 ? currentDelay * factor : Math.max(50, factor * 10);
+    return Math.min(maxDelay, base);
 }

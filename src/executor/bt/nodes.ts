@@ -221,29 +221,42 @@ export class RetryNode implements BehaviorNode {
 /** Behaviour Tree timeout decorator node. */
 const TIMEOUT_SENTINEL = Symbol("timeout");
 
+interface TimeoutNodeOptions {
+  readonly category?: string | null;
+  readonly complexityScore?: number | null;
+}
+
 export class TimeoutNode implements BehaviorNode {
   constructor(
     public readonly id: string,
-    private readonly timeoutMs: number,
+    private readonly fallbackTimeoutMs: number | null,
     private readonly child: BehaviorNode,
+    private readonly options: TimeoutNodeOptions = {},
   ) {}
 
   /**
    * Wrap the child execution inside a timeout. When the timer elapses first the
-   * decorator fails and resets the child.
+   * decorator fails and resets the child. Successful completions report the
+   * duration to the runtime so loop detectors can adjust future budgets.
    */
   async tick(runtime: TickRuntime): Promise<BehaviorTickResult> {
     const wait = runtime.wait ?? defaultDelay;
-    const timeoutPromise = wait(this.timeoutMs).then(() => TIMEOUT_SENTINEL);
+    const start = runtime.now ? runtime.now() : Date.now();
+    const budget = this.resolveBudget(runtime);
+    const timeoutPromise = wait(budget).then(() => TIMEOUT_SENTINEL);
     const childPromise = this.child.tick(runtime);
     const winner = await Promise.race([timeoutPromise, childPromise]);
     if (winner === TIMEOUT_SENTINEL) {
+      const end = runtime.now ? runtime.now() : Date.now();
+      this.recordOutcome(runtime, end - start, false, budget);
       this.child.reset();
       this.reset();
       return FAILURE_RESULT;
     }
     const result = winner as BehaviorTickResult;
     if (result.status !== "running") {
+      const end = runtime.now ? runtime.now() : Date.now();
+      this.recordOutcome(runtime, end - start, result.status === "success", budget);
       this.reset();
     }
     return result;
@@ -252,6 +265,37 @@ export class TimeoutNode implements BehaviorNode {
   /** Reset simply proxies to the child to clear its state. */
   reset(): void {
     this.child.reset();
+  }
+
+  private resolveBudget(runtime: TickRuntime): number {
+    const { category, complexityScore } = this.options;
+    if (category && runtime.recommendTimeout) {
+      const recommended = runtime.recommendTimeout(category, complexityScore ?? undefined, this.fallbackTimeoutMs ?? undefined);
+      if (recommended !== undefined && Number.isFinite(recommended) && recommended > 0) {
+        return Math.round(recommended);
+      }
+    }
+    if (this.fallbackTimeoutMs !== null && this.fallbackTimeoutMs !== undefined) {
+      return this.fallbackTimeoutMs;
+    }
+    throw new Error(`TimeoutNode ${this.id} is missing a valid timeout budget`);
+  }
+
+  private recordOutcome(runtime: TickRuntime, durationMs: number, success: boolean, budgetMs: number): void {
+    const { category } = this.options;
+    if (!category || !runtime.recordTimeoutOutcome) {
+      return;
+    }
+    const safeDuration = Number.isFinite(durationMs) && durationMs > 0 ? durationMs : 0;
+    try {
+      runtime.recordTimeoutOutcome(category, {
+        durationMs: Math.max(1, Math.round(safeDuration)),
+        success,
+        budgetMs,
+      });
+    } catch {
+      // Recording telemetry must never break behaviour tree execution.
+    }
   }
 }
 

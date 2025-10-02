@@ -6,6 +6,8 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { EventStore } from "../src/eventStore.js";
 import { GraphState } from "../src/graphState.js";
 import { StructuredLogger } from "../src/logger.js";
+import { StigmergyField } from "../src/coord/stigmergy.js";
+import { BehaviorTreeStatusRegistry } from "../src/monitor/btStatusRegistry.js";
 import { createDashboardRouter, computeDashboardHeatmap } from "../src/monitor/dashboard.js";
 import { ChildShutdownResult } from "../src/childRuntime.js";
 
@@ -118,11 +120,15 @@ describe("monitor/dashboard", function (this: Mocha.Suite) {
     eventStore.emit({ kind: "REPLY", level: "info", source: "child", childId: "child-1", payload: { tokens: 42 } });
     eventStore.emit({ kind: "ERROR", level: "error", source: "child", childId: "child-1" });
 
-    const heatmap = computeDashboardHeatmap(graphState, eventStore);
+    const stigmergy = new StigmergyField();
+    stigmergy.mark("child-1", "load", 3);
+
+    const heatmap = computeDashboardHeatmap(graphState, eventStore, stigmergy);
 
     expect(heatmap.idle).to.have.length(1);
     expect(heatmap.errors[0]).to.deep.include({ childId: "child-1", value: 1 });
     expect(heatmap.tokens[0]).to.deep.include({ childId: "child-1", value: 42 });
+    expect(heatmap.pheromones[0]).to.deep.include({ childId: "child-1" });
   });
 
   it("exposes HTTP endpoints for monitoring and control", async () => {
@@ -130,6 +136,8 @@ describe("monitor/dashboard", function (this: Mocha.Suite) {
     const graphState = new GraphState();
     const eventStore = new EventStore({ maxHistory: 100, logger });
     const supervisor = new StubSupervisor();
+    const stigmergy = new StigmergyField();
+    const btStatusRegistry = new BehaviorTreeStatusRegistry();
 
     const createdAt = Date.now() - 1000;
     graphState.createJob("job-1", { goal: "demo", createdAt, state: "running" });
@@ -147,6 +155,8 @@ describe("monitor/dashboard", function (this: Mocha.Suite) {
       logger,
       streamIntervalMs: 200,
       autoBroadcast: false,
+      stigmergy,
+      btStatusRegistry,
     });
 
     try {

@@ -42,6 +42,17 @@ describe("parseOrchestratorRuntimeOptions", () => {
       stigHalfLifeMs: 30_000,
       supervisorStallTicks: 6,
     });
+    expect(result.dashboard).to.deep.equal({
+      enabled: false,
+      host: "127.0.0.1",
+      port: 4100,
+      streamIntervalMs: 2_000,
+    });
+    expect(result.safety).to.deep.equal({
+      maxChildren: 16,
+      memoryLimitMb: 512,
+      cpuPercent: 100,
+    });
   });
 
   it("accepte les options HTTP explicites", () => {
@@ -64,6 +75,25 @@ describe("parseOrchestratorRuntimeOptions", () => {
     expect(result.http.stateless).to.equal(true);
   });
 
+  it("configure le dashboard lorsque les flags sont fournis", () => {
+    const result = parseOrchestratorRuntimeOptions([
+      "--dashboard",
+      "--dashboard-host",
+      "0.0.0.0",
+      "--dashboard-port",
+      "4500",
+      "--dashboard-interval-ms",
+      "500",
+    ]);
+
+    expect(result.dashboard).to.deep.equal({
+      enabled: true,
+      host: "0.0.0.0",
+      port: 4500,
+      streamIntervalMs: 500,
+    });
+  });
+
   it("applique le seuil d'historique des événements", () => {
     const result = parseOrchestratorRuntimeOptions(["--max-event-history", "2500"]);
     expect(result.maxEventHistory).to.equal(2500);
@@ -81,11 +111,18 @@ describe("parseOrchestratorRuntimeOptions", () => {
       "--child-idle-sec",
       "45",
       "--child-timeout-sec",
-      "600"
+      "600",
+      "--max-children",
+      "5",
+      "--child-memory-mb",
+      "1024",
+      "--child-cpu-percent",
+      "150",
     ]);
     expect(result.parallelism).to.equal(4);
     expect(result.childIdleSec).to.equal(45);
     expect(result.childTimeoutSec).to.equal(600);
+    expect(result.safety).to.deep.equal({ maxChildren: 5, memoryLimitMb: 1024, cpuPercent: 100 });
   });
 
   it("rejette les valeurs invalides pour les nouveaux flags", () => {
@@ -95,6 +132,12 @@ describe("parseOrchestratorRuntimeOptions", () => {
       .to.throw("La valeur -5 pour --child-idle-sec doit être un entier positif.");
     expect(() => parseOrchestratorRuntimeOptions(["--child-timeout-sec", "abc"]))
       .to.throw("La valeur abc pour --child-timeout-sec doit être un entier positif.");
+    expect(() => parseOrchestratorRuntimeOptions(["--max-children", "0"]))
+      .to.throw("La valeur 0 pour --max-children doit être un entier positif.");
+    expect(() => parseOrchestratorRuntimeOptions(["--child-memory-mb", "nan"]))
+      .to.throw("La valeur nan pour --child-memory-mb doit être un entier positif.");
+    expect(() => parseOrchestratorRuntimeOptions(["--dashboard-host", " "]))
+      .to.throw("L'hôte du dashboard ne peut pas être vide.");
   });
 
   it("permet de désactiver réflexion et quality gate", () => {
@@ -141,6 +184,9 @@ describe("parseOrchestratorRuntimeOptions", () => {
       "45000",
       "--supervisor-stall-ticks",
       "9",
+      "--dashboard",
+      "--dashboard-interval-ms",
+      "100",
     ]);
 
     expect(result.timings).to.deep.equal({
@@ -148,6 +194,7 @@ describe("parseOrchestratorRuntimeOptions", () => {
       stigHalfLifeMs: 45_000,
       supervisorStallTicks: 9,
     });
+    expect(result.dashboard.streamIntervalMs).to.equal(250);
   });
 
   it("applique le seuil qualité lorsque fourni", () => {

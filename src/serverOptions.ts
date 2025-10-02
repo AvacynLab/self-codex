@@ -20,6 +20,22 @@ export interface HttpRuntimeOptions {
 }
 
 /**
+ * Runtime configuration exposed to operators for the monitoring dashboard. The
+ * dashboard piggybacks the in-memory state of the orchestrator therefore it is
+ * toggled via the CLI and shares the lifecycle of the main process.
+ */
+export interface DashboardRuntimeOptions {
+  /** Enable the standalone dashboard HTTP server. */
+  enabled: boolean;
+  /** Host/interface used to bind the dashboard server. */
+  host: string;
+  /** Listening port for the dashboard server. */
+  port: number;
+  /** Interval (milliseconds) used to refresh SSE clients automatically. */
+  streamIntervalMs: number;
+}
+
+/**
  * Runtime configuration parsed from CLI arguments.
  */
 export interface FeatureToggles {
@@ -66,6 +82,8 @@ export interface OrchestratorRuntimeOptions {
   maxEventHistory: number;
   /** Optional path where JSON logs must be mirrored. */
   logFile?: string | null;
+  /** Dashboard HTTP exposure (optional). */
+  dashboard: DashboardRuntimeOptions;
   /**
    * Maximum number of child runtimes that the orchestrator will execute in
    * parallel when fan-out plans are scheduled. This parameter is surfaced via
@@ -92,6 +110,18 @@ export interface OrchestratorRuntimeOptions {
   features: FeatureToggles;
   /** Runtime pacing configuration for optional modules. */
   timings: RuntimeTimingOptions;
+  /** Operational safety guardrails applied to child runtimes. */
+  safety: ChildSafetyOptions;
+}
+
+/** Operational limits applied to child runtimes spawned by the orchestrator. */
+export interface ChildSafetyOptions {
+  /** Maximum number of concurrent child processes. */
+  maxChildren: number;
+  /** Memory ceiling (in megabytes) injected into child manifests. */
+  memoryLimitMb: number;
+  /** CPU usage ceiling (percentage) injected into child manifests. */
+  cpuPercent: number;
 }
 
 /**
@@ -105,6 +135,10 @@ interface ParseState {
   httpPath: string;
   httpEnableJson: boolean;
   httpStateless: boolean;
+  dashboardEnabled: boolean;
+  dashboardPort: number;
+  dashboardHost: string;
+  dashboardIntervalMs: number;
   maxEventHistory: number;
   logFile: string | null;
   parallelism: number;
@@ -115,6 +149,7 @@ interface ParseState {
   qualityThreshold: number;
   featureToggles: FeatureToggles;
   timings: RuntimeTimingOptions;
+  safety: ChildSafetyOptions;
 }
 
 const FLAG_WITH_VALUE = new Set([
@@ -126,10 +161,16 @@ const FLAG_WITH_VALUE = new Set([
   "--parallelism",
   "--child-idle-sec",
   "--child-timeout-sec",
+  "--max-children",
+  "--child-memory-mb",
+  "--child-cpu-percent",
   "--quality-threshold",
   "--bt-tick-ms",
   "--stig-half-life-ms",
   "--supervisor-stall-ticks",
+  "--dashboard-port",
+  "--dashboard-host",
+  "--dashboard-interval-ms",
 ]);
 
 /**
@@ -149,6 +190,15 @@ function parseQualityThreshold(value: string, flag: string): number {
     throw new Error(`La valeur ${value} pour ${flag} doit être comprise entre 0 et 100.`);
   }
   return Math.round(num);
+}
+
+/**
+ * Parses the dashboard streaming interval. We accept positive integers and
+ * enforce a sane minimum to avoid overwhelming clients.
+ */
+function parseDashboardInterval(value: string, flag: string): number {
+  const parsed = parsePositiveInteger(value, flag);
+  return Math.max(250, parsed);
 }
 
 /**
@@ -176,6 +226,10 @@ const DEFAULT_STATE: ParseState = {
   httpPath: "/mcp",
   httpEnableJson: false,
   httpStateless: false,
+  dashboardEnabled: false,
+  dashboardPort: 4100,
+  dashboardHost: "127.0.0.1",
+  dashboardIntervalMs: 2_000,
   maxEventHistory: 5000,
   logFile: null,
   parallelism: 2,
@@ -202,6 +256,11 @@ const DEFAULT_STATE: ParseState = {
     stigHalfLifeMs: 30_000,
     supervisorStallTicks: 6,
   },
+  safety: {
+    maxChildren: 16,
+    memoryLimitMb: 512,
+    cpuPercent: 100,
+  },
 };
 
 /**
@@ -214,6 +273,7 @@ export function parseOrchestratorRuntimeOptions(argv: string[]): OrchestratorRun
     ...DEFAULT_STATE,
     featureToggles: { ...DEFAULT_STATE.featureToggles },
     timings: { ...DEFAULT_STATE.timings },
+    safety: { ...DEFAULT_STATE.safety },
   };
 
   for (let index = 0; index < argv.length; index += 1) {
@@ -265,6 +325,26 @@ export function parseOrchestratorRuntimeOptions(argv: string[]): OrchestratorRun
       case "--http":
         state.httpEnabled = true;
         break;
+      case "--dashboard":
+        state.dashboardEnabled = true;
+        break;
+      case "--dashboard-port":
+        state.dashboardPort = parsePositiveInteger(value ?? "", flag);
+        state.dashboardEnabled = true;
+        break;
+      case "--dashboard-host": {
+        const rawHost = (value ?? "").trim();
+        if (!rawHost.length) {
+          throw new Error("L'hôte du dashboard ne peut pas être vide.");
+        }
+        state.dashboardHost = rawHost;
+        state.dashboardEnabled = true;
+        break;
+      }
+      case "--dashboard-interval-ms":
+        state.dashboardIntervalMs = parseDashboardInterval(value ?? "", flag);
+        state.dashboardEnabled = true;
+        break;
       case "--max-event-history":
         state.maxEventHistory = parsePositiveInteger(value ?? "", flag);
         break;
@@ -285,6 +365,17 @@ export function parseOrchestratorRuntimeOptions(argv: string[]): OrchestratorRun
       case "--child-timeout-sec":
         state.childTimeoutSec = parsePositiveInteger(value ?? "", flag);
         break;
+      case "--max-children":
+        state.safety.maxChildren = parsePositiveInteger(value ?? "", flag);
+        break;
+      case "--child-memory-mb":
+        state.safety.memoryLimitMb = parsePositiveInteger(value ?? "", flag);
+        break;
+      case "--child-cpu-percent": {
+        const parsedCpu = parsePositiveInteger(value ?? "", flag);
+        state.safety.cpuPercent = Math.min(100, Math.max(1, parsedCpu));
+        break;
+      }
       case "--no-reflection":
         state.enableReflection = false;
         break;
@@ -391,7 +482,13 @@ export function parseOrchestratorRuntimeOptions(argv: string[]): OrchestratorRun
       host: state.httpHost,
       path: state.httpPath,
       enableJson: state.httpEnableJson,
-      stateless: state.httpStateless
+      stateless: state.httpStateless,
+    },
+    dashboard: {
+      enabled: state.dashboardEnabled,
+      port: state.dashboardPort,
+      host: state.dashboardHost,
+      streamIntervalMs: state.dashboardIntervalMs,
     },
     maxEventHistory: state.maxEventHistory,
     logFile: state.logFile,
@@ -403,6 +500,7 @@ export function parseOrchestratorRuntimeOptions(argv: string[]): OrchestratorRun
     qualityThreshold: state.qualityThreshold,
     features: { ...state.featureToggles },
     timings: { ...state.timings },
+    safety: { ...state.safety },
   };
 }
 

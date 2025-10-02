@@ -17,6 +17,7 @@ const DEFAULT_EVALUATION_OPTIONS = {
 export function generateHypotheses(seed, options = {}) {
     const mergedOptions = { ...DEFAULT_GENERATION_OPTIONS, ...options };
     const hypotheses = [];
+    const fingerprints = new Set();
     const baseHypothesis = {
         id: `base-${randomUUID()}`,
         label: "baseline",
@@ -26,9 +27,17 @@ export function generateHypotheses(seed, options = {}) {
         effort: total(seed.basePlan.map((step) => step.effort)) ?? 0,
         rationale: ["Plan de base fourni par l'orchestrateur."],
     };
+    fingerprints.add(fingerprintSteps(baseHypothesis.steps));
     hypotheses.push(baseHypothesis);
     for (const divergence of seed.divergences) {
         const derived = applyDivergence(seed.basePlan, divergence, mergedOptions.noveltyBoost);
+        const signature = fingerprintSteps(derived.steps);
+        if (fingerprints.has(signature)) {
+            // Ignore divergences that do not materially change the plan to ensure we
+            // only surface distinct alternatives to the orchestrator.
+            continue;
+        }
+        fingerprints.add(signature);
         hypotheses.push(derived);
         if (hypotheses.length >= mergedOptions.maxHypotheses) {
             break;
@@ -64,17 +73,21 @@ export function evaluateHypotheses(hypotheses, basePlan, options = {}) {
 export function convergeHypotheses(ranked, options = {}) {
     const maxSelected = options.maxSelected ?? Math.min(3, ranked.length);
     const selected = ranked.slice(0, maxSelected);
-    const seen = new Set();
-    const fused = [];
-    for (const hypothesis of selected) {
-        for (const step of hypothesis.steps) {
-            if (seen.has(step.id)) {
-                continue;
+    const seen = new Map();
+    selected.forEach((hypothesis, hypothesisIndex) => {
+        hypothesis.steps.forEach((step, stepIndex) => {
+            const existing = seen.get(step.id);
+            const score = hypothesisIndex * 1_000 + stepIndex;
+            if (!existing || score < existing.score) {
+                // Copy the step so subsequent reasoning phases can safely mutate the
+                // fused plan without altering historical hypotheses.
+                seen.set(step.id, { step: { ...step, tags: step.tags ? [...step.tags] : undefined }, score });
             }
-            fused.push({ ...step });
-            seen.add(step.id);
-        }
-    }
+        });
+    });
+    const fused = [...seen.values()]
+        .sort((left, right) => left.score - right.score)
+        .map((entry) => entry.step);
     const rationale = selected.flatMap((hypothesis) => [
         `Hypothèse ${hypothesis.label}: ${hypothesis.rationale.join(" ")}`,
     ]);
@@ -83,6 +96,18 @@ export function convergeHypotheses(ranked, options = {}) {
         selectedHypotheses: selected,
         rationale,
     };
+}
+function fingerprintSteps(steps) {
+    return steps
+        .map((step) => [
+        step.id,
+        step.summary,
+        step.domain ?? "",
+        step.effort,
+        step.risk,
+        ...(step.tags ?? []),
+    ].join("|"))
+        .join("→");
 }
 function applyDivergence(basePlan, divergence, noveltyBoost) {
     const removed = new Set(divergence.removeStepIds ?? []);

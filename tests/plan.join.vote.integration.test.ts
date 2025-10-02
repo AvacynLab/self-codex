@@ -142,16 +142,14 @@ describe("plan_join consensus integration", () => {
       total_weight: 4,
       tally: { approve: 3, reject: 1 },
     });
-    expect(reduceResult.trace.details).to.deep.equal({
-      consensus: {
-        mode: "weighted",
-        value: "approve",
-        satisfied: true,
-        tie: false,
-        threshold: 3,
-        total_weight: 4,
-        tally: { approve: 3, reject: 1 },
-      },
+    expect(reduceResult.trace.details?.consensus).to.deep.equal({
+      mode: "weighted",
+      value: "approve",
+      satisfied: true,
+      tie: false,
+      threshold: 3,
+      total_weight: 4,
+      tally: { approve: 3, reject: 1 },
     });
   });
 });

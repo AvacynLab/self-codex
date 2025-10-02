@@ -1,4 +1,56 @@
 import { inspect } from "node:util";
+function isSerializedChildRecord(value) {
+    if (typeof value !== "object" || value === null) {
+        return false;
+    }
+    const candidate = value;
+    if (typeof candidate.state !== "string") {
+        return false;
+    }
+    const lifecycleStates = [
+        "starting",
+        "ready",
+        "running",
+        "idle",
+        "stopping",
+        "terminated",
+        "killed",
+        "error",
+    ];
+    if (!lifecycleStates.includes(candidate.state)) {
+        return false;
+    }
+    const isNumberOrNull = (v) => v === null || typeof v === "number";
+    const isStringOrNull = (v) => v === null || typeof v === "string";
+    if (!isNumberOrNull(candidate.lastHeartbeatAt ?? null)) {
+        return false;
+    }
+    if (typeof candidate.retries !== "number" && candidate.retries !== undefined) {
+        return false;
+    }
+    if (!isNumberOrNull(candidate.endedAt ?? null)) {
+        return false;
+    }
+    if (!isNumberOrNull(candidate.exitCode ?? null)) {
+        return false;
+    }
+    if (!isStringOrNull(candidate.exitSignal ?? null)) {
+        return false;
+    }
+    if (typeof candidate.forcedTermination !== "boolean" && candidate.forcedTermination !== undefined) {
+        return false;
+    }
+    if (candidate.metadata !== undefined && (typeof candidate.metadata !== "object" || candidate.metadata === null)) {
+        return false;
+    }
+    if (!isNumberOrNull(candidate.startedAt ?? null)) {
+        return false;
+    }
+    if (!isStringOrNull(candidate.stopReason ?? null)) {
+        return false;
+    }
+    return true;
+}
 /**
  * Raised whenever an operation targets an unknown child identifier.
  */
@@ -11,6 +63,17 @@ export class UnknownChildError extends Error {
     }
 }
 /**
+ * Raised when attempting to register a child twice.
+ */
+export class DuplicateChildError extends Error {
+    childId;
+    constructor(childId) {
+        super(`Child already registered: ${childId}`);
+        this.name = "DuplicateChildError";
+        this.childId = childId;
+    }
+}
+/**
  * Deep clones a mutable record to ensure callers cannot mutate internal state.
  */
 function cloneRecord(record) {
@@ -19,11 +82,11 @@ function cloneRecord(record) {
         pid: record.pid,
         workdir: record.workdir,
         state: record.state,
-        createdAt: record.createdAt,
+        startedAt: record.startedAt,
         lastHeartbeatAt: record.lastHeartbeatAt,
         retries: record.retries,
         metadata: { ...record.metadata },
-        stoppedAt: record.stoppedAt,
+        endedAt: record.endedAt,
         exitCode: record.exitCode,
         exitSignal: record.exitSignal,
         forcedTermination: record.forcedTermination,
@@ -43,17 +106,20 @@ export class ChildrenIndex {
      * Registers a new child and returns the public snapshot.
      */
     registerChild(options) {
-        const createdAt = options.createdAt ?? Date.now();
+        if (this.children.has(options.childId)) {
+            throw new DuplicateChildError(options.childId);
+        }
+        const startedAt = options.startedAt ?? Date.now();
         const record = {
             childId: options.childId,
             pid: options.pid,
             workdir: options.workdir,
             state: options.state ?? "starting",
-            createdAt,
+            startedAt,
             lastHeartbeatAt: null,
             retries: 0,
             metadata: { ...(options.metadata ?? {}) },
-            stoppedAt: null,
+            endedAt: null,
             exitCode: null,
             exitSignal: null,
             forcedTermination: false,
@@ -110,8 +176,8 @@ export class ChildrenIndex {
         const record = this.requireChild(childId);
         record.exitCode = details.code;
         record.exitSignal = details.signal;
-        record.stoppedAt = details.at ?? Date.now();
-        record.lastHeartbeatAt = record.stoppedAt;
+        record.endedAt = details.at ?? Date.now();
+        record.lastHeartbeatAt = record.endedAt;
         record.forcedTermination = details.forced ?? false;
         record.stopReason = details.reason ?? null;
         if (record.forcedTermination) {
@@ -161,10 +227,13 @@ export class ChildrenIndex {
                 state: record.state,
                 lastHeartbeatAt: record.lastHeartbeatAt,
                 retries: record.retries,
-                stoppedAt: record.stoppedAt,
+                endedAt: record.endedAt,
                 exitCode: record.exitCode,
                 exitSignal: record.exitSignal,
                 forcedTermination: record.forcedTermination,
+                startedAt: record.startedAt,
+                metadata: { ...record.metadata },
+                stopReason: record.stopReason,
             },
         ]);
         return Object.fromEntries(entries);
@@ -175,23 +244,23 @@ export class ChildrenIndex {
     restore(snapshot) {
         this.children.clear();
         for (const [childId, raw] of Object.entries(snapshot)) {
-            if (typeof raw !== "object" || raw === null) {
+            if (!isSerializedChildRecord(raw)) {
                 continue;
             }
             const record = {
                 childId,
                 pid: -1,
                 workdir: "",
-                state: "starting",
-                createdAt: Date.now(),
-                lastHeartbeatAt: typeof raw.lastHeartbeatAt === "number" ? raw.lastHeartbeatAt : null,
-                retries: typeof raw.retries === "number" ? raw.retries : 0,
-                metadata: {},
-                stoppedAt: typeof raw.stoppedAt === "number" ? raw.stoppedAt : null,
-                exitCode: typeof raw.exitCode === "number" ? raw.exitCode : null,
-                exitSignal: typeof raw.exitSignal === "string" ? raw.exitSignal : null,
-                forcedTermination: Boolean(raw.forcedTermination),
-                stopReason: null,
+                state: raw.state,
+                startedAt: raw.startedAt ?? Date.now(),
+                lastHeartbeatAt: raw.lastHeartbeatAt ?? null,
+                retries: raw.retries ?? 0,
+                metadata: { ...(raw.metadata ?? {}) },
+                endedAt: raw.endedAt ?? null,
+                exitCode: raw.exitCode ?? null,
+                exitSignal: raw.exitSignal ?? null,
+                forcedTermination: raw.forcedTermination ?? false,
+                stopReason: raw.stopReason ?? null,
             };
             this.children.set(childId, record);
         }

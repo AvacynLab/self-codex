@@ -10,16 +10,39 @@ import { GraphTransactionManager, GraphVersionConflictError } from "./graph/tx.j
 import { StructuredLogger } from "./logger.js";
 import { EventStore } from "./eventStore.js";
 import { startHttpServer } from "./httpServer.js";
-import { parseOrchestratorRuntimeOptions } from "./serverOptions.js";
+import { startDashboardServer } from "./monitor/dashboard.js";
+import { BehaviorTreeStatusRegistry } from "./monitor/btStatusRegistry.js";
+import { parseOrchestratorRuntimeOptions, } from "./serverOptions.js";
 import { ChildSupervisor } from "./childSupervisor.js";
 import { UnknownChildError } from "./state/childrenIndex.js";
+import { Autoscaler } from "./agents/autoscaler.js";
+import { OrchestratorSupervisor } from "./agents/supervisor.js";
+import { MetaCritic } from "./agents/metaCritic.js";
+import { reflect } from "./agents/selfReflect.js";
+import { scoreCode, scorePlan, scoreText } from "./quality/scoring.js";
+import { SharedMemoryStore } from "./memory/store.js";
+import { selectMemoryContext } from "./memory/attention.js";
+import { LoopDetector } from "./guard/loopDetector.js";
+import { BlackboardStore } from "./coord/blackboard.js";
+import { ContractNetCoordinator } from "./coord/contractNet.js";
+import { StigmergyField } from "./coord/stigmergy.js";
+import { KnowledgeGraph } from "./knowledge/knowledgeGraph.js";
+import { CausalMemory } from "./knowledge/causalMemory.js";
+import { ValueGraph } from "./values/valueGraph.js";
 import { ChildCancelInputShape, ChildCancelInputSchema, ChildCollectInputShape, ChildCollectInputSchema, ChildCreateInputShape, ChildCreateInputSchema, ChildGcInputShape, ChildGcInputSchema, ChildKillInputShape, ChildKillInputSchema, ChildSendInputShape, ChildSendInputSchema, ChildStreamInputShape, ChildStreamInputSchema, ChildStatusInputShape, ChildStatusInputSchema, handleChildCancel, handleChildCollect, handleChildCreate, handleChildGc, handleChildKill, handleChildSend, handleChildStream, handleChildStatus, } from "./tools/childTools.js";
-import { PlanFanoutInputSchema, PlanFanoutInputShape, PlanJoinInputSchema, PlanJoinInputShape, PlanReduceInputSchema, PlanReduceInputShape, handlePlanFanout, handlePlanJoin, handlePlanReduce, } from "./tools/planTools.js";
-import { GraphGenerateInputSchema, GraphGenerateInputShape, GraphMutateInputSchema, GraphMutateInputShape, GraphPathsConstrainedInputSchema, GraphPathsConstrainedInputShape, GraphPathsKShortestInputSchema, GraphPathsKShortestInputShape, GraphCentralityBetweennessInputSchema, GraphCentralityBetweennessInputShape, GraphCriticalPathInputSchema, GraphCriticalPathInputShape, GraphOptimizeInputSchema, GraphOptimizeInputShape, GraphOptimizeMooInputSchema, GraphOptimizeMooInputShape, GraphCausalAnalyzeInputSchema, GraphCausalAnalyzeInputShape, GraphPartitionInputSchema, GraphPartitionInputShape, GraphSummarizeInputSchema, GraphSummarizeInputShape, GraphSimulateInputSchema, GraphSimulateInputShape, GraphValidateInputSchema, GraphValidateInputShape, handleGraphGenerate, handleGraphMutate, handleGraphPathsConstrained, handleGraphPathsKShortest, handleGraphCentralityBetweenness, handleGraphCriticalPath, handleGraphOptimize, handleGraphOptimizeMoo, handleGraphCausalAnalyze, handleGraphPartition, handleGraphSummarize, handleGraphSimulate, handleGraphValidate, normaliseGraphPayload, serialiseNormalisedGraph, } from "./tools/graphTools.js";
+import { PlanFanoutInputSchema, PlanFanoutInputShape, PlanJoinInputSchema, PlanJoinInputShape, PlanCompileBTInputSchema, PlanCompileBTInputShape, PlanRunBTInputSchema, PlanRunBTInputShape, PlanRunReactiveInputSchema, PlanRunReactiveInputShape, PlanReduceInputSchema, PlanReduceInputShape, handlePlanFanout, handlePlanJoin, handlePlanCompileBT, handlePlanRunBT, handlePlanRunReactive, handlePlanReduce, ValueGuardRejectionError, } from "./tools/planTools.js";
+import { BbGetInputSchema, BbGetInputShape, BbQueryInputSchema, BbQueryInputShape, BbSetInputSchema, BbSetInputShape, BbWatchInputSchema, BbWatchInputShape, CnpAnnounceInputSchema, CnpAnnounceInputShape, handleBbGet, handleBbQuery, handleBbSet, handleBbWatch, StigDecayInputSchema, StigDecayInputShape, StigMarkInputSchema, StigMarkInputShape, StigSnapshotInputSchema, StigSnapshotInputShape, handleStigDecay, handleStigMark, handleStigSnapshot, handleCnpAnnounce, ConsensusVoteInputSchema, ConsensusVoteInputShape, handleConsensusVote, } from "./tools/coordTools.js";
+import { AgentAutoscaleSetInputSchema, AgentAutoscaleSetInputShape, handleAgentAutoscaleSet, } from "./tools/agentTools.js";
+import { GraphGenerateInputSchema, GraphGenerateInputShape, GraphMutateInputSchema, GraphMutateInputShape, GraphDescriptorSchema, GraphPathsConstrainedInputSchema, GraphPathsConstrainedInputShape, GraphPathsKShortestInputSchema, GraphPathsKShortestInputShape, GraphCentralityBetweennessInputSchema, GraphCentralityBetweennessInputShape, GraphCriticalPathInputSchema, GraphCriticalPathInputShape, GraphOptimizeInputSchema, GraphOptimizeInputShape, GraphOptimizeMooInputSchema, GraphOptimizeMooInputShape, GraphCausalAnalyzeInputSchema, GraphCausalAnalyzeInputShape, GraphRewriteApplyInputSchema, GraphRewriteApplyInputShape, GraphHyperExportInputSchema, GraphHyperExportInputShape, GraphPartitionInputSchema, GraphPartitionInputShape, GraphSummarizeInputSchema, GraphSummarizeInputShape, GraphSimulateInputSchema, GraphSimulateInputShape, GraphValidateInputSchema, GraphValidateInputShape, handleGraphGenerate, handleGraphMutate, handleGraphRewriteApply, handleGraphHyperExport, handleGraphPathsConstrained, handleGraphPathsKShortest, handleGraphCentralityBetweenness, handleGraphCriticalPath, handleGraphOptimize, handleGraphOptimizeMoo, handleGraphCausalAnalyze, handleGraphPartition, handleGraphSummarize, handleGraphSimulate, handleGraphValidate, normaliseGraphPayload, serialiseNormalisedGraph, } from "./tools/graphTools.js";
+import { KgExportInputSchema, KgExportInputShape, KgInsertInputSchema, KgInsertInputShape, KgQueryInputSchema, KgQueryInputShape, handleKgExport, handleKgInsert, handleKgQuery, } from "./tools/knowledgeTools.js";
+import { CausalExportInputSchema, CausalExportInputShape, CausalExplainInputSchema, CausalExplainInputShape, handleCausalExport, handleCausalExplain, } from "./tools/causalTools.js";
+import { ValuesFilterInputSchema, ValuesFilterInputShape, ValuesScoreInputSchema, ValuesScoreInputShape, ValuesSetInputSchema, ValuesSetInputShape, handleValuesFilter, handleValuesScore, handleValuesSet, } from "./tools/valueTools.js";
 import { renderMermaidFromGraph } from "./viz/mermaid.js";
 import { renderDotFromGraph } from "./viz/dot.js";
 import { renderGraphmlFromGraph } from "./viz/graphml.js";
 import { snapshotToGraphDescriptor } from "./viz/snapshot.js";
+import { SUBGRAPH_REGISTRY_KEY, collectMissingSubgraphDescriptors, collectSubgraphReferences, } from "./graph/subgraphRegistry.js";
+import { extractSubgraphToFile } from "./graph/subgraphExtract.js";
 // ---------------------------
 // Stores en memoire
 // ---------------------------
@@ -30,9 +53,186 @@ const graphState = new GraphState();
  * deterministic version bumps.
  */
 const graphTransactions = new GraphTransactionManager();
-let logger = new StructuredLogger();
+/** Shared blackboard store powering coordination tools. */
+const blackboard = new BlackboardStore();
+/** Shared stigmergic field coordinating pheromone-driven prioritisation. */
+const stigmergy = new StigmergyField();
+/** Shared contract-net coordinator balancing task assignments. */
+const contractNet = new ContractNetCoordinator();
+/** Shared knowledge graph storing reusable plan patterns. */
+const knowledgeGraph = new KnowledgeGraph();
+/** Shared causal memory tracking runtime event relationships. */
+const causalMemory = new CausalMemory();
+/** Shared value graph guarding plan execution against policy violations. */
+const valueGraph = new ValueGraph();
+/** Registry storing the last guard decision for spawned children. */
+const valueGuardRegistry = new Map();
+/** Registry exposing live Behaviour Tree node statuses to dashboards. */
+const btStatusRegistry = new BehaviorTreeStatusRegistry();
+/** Default feature toggles used before CLI/flags are parsed. */
+const DEFAULT_FEATURE_TOGGLES = {
+    enableBT: false,
+    enableReactiveScheduler: false,
+    enableBlackboard: false,
+    enableStigmergy: false,
+    enableCNP: false,
+    enableConsensus: false,
+    enableAutoscaler: false,
+    enableSupervisor: false,
+    enableKnowledge: false,
+    enableCausalMemory: false,
+    enableValueGuard: false,
+};
+/** Default runtime timings exposed before configuration takes place. */
+const DEFAULT_RUNTIME_TIMINGS = {
+    btTickMs: 50,
+    stigHalfLifeMs: 30_000,
+    supervisorStallTicks: 6,
+};
+const DEFAULT_CHILD_SAFETY_LIMITS = {
+    maxChildren: 16,
+    memoryLimitMb: 512,
+    cpuPercent: 100,
+};
+let runtimeFeatures = { ...DEFAULT_FEATURE_TOGGLES };
+let runtimeTimings = { ...DEFAULT_RUNTIME_TIMINGS };
+let runtimeChildSafety = { ...DEFAULT_CHILD_SAFETY_LIMITS };
+/** Returns the active feature toggles applied to the orchestrator. */
+export function getRuntimeFeatures() {
+    return { ...runtimeFeatures };
+}
+/** Applies a new set of feature toggles at runtime. */
+export function configureRuntimeFeatures(next) {
+    runtimeFeatures = { ...next };
+}
+/** Returns the pacing configuration applied to optional modules. */
+export function getRuntimeTimings() {
+    return { ...runtimeTimings };
+}
+/** Applies a new pacing configuration for optional modules. */
+export function configureRuntimeTimings(next) {
+    runtimeTimings = { ...next };
+}
+/** Returns the safety guardrails applied to child runtimes. */
+export function getChildSafetyLimits() {
+    return { ...runtimeChildSafety };
+}
+/** Applies new safety guardrails and updates the child supervisor accordingly. */
+export function configureChildSafetyLimits(next) {
+    runtimeChildSafety = { ...next };
+    childSupervisor.configureSafety({
+        maxChildren: runtimeChildSafety.maxChildren,
+        memoryLimitMb: runtimeChildSafety.memoryLimitMb,
+        cpuPercent: runtimeChildSafety.cpuPercent,
+    });
+}
+function summariseSubgraphUsage(graph) {
+    const references = Array.from(collectSubgraphReferences(graph));
+    const missing = collectMissingSubgraphDescriptors(graph);
+    return { references, missing };
+}
+function parseSizeEnv(raw) {
+    if (!raw) {
+        return undefined;
+    }
+    const cleaned = raw.trim().toLowerCase();
+    if (!cleaned.length) {
+        return undefined;
+    }
+    const match = cleaned.match(/^(\d+)([kmg]?b?)?$/);
+    if (!match) {
+        return undefined;
+    }
+    const base = Number(match[1]);
+    if (!Number.isFinite(base)) {
+        return undefined;
+    }
+    const unit = match[2];
+    switch (unit) {
+        case "k":
+        case "kb":
+            return base * 1024;
+        case "m":
+        case "mb":
+            return base * 1024 * 1024;
+        case "g":
+        case "gb":
+            return base * 1024 * 1024 * 1024;
+        default:
+            return base;
+    }
+}
+function parseCountEnv(raw) {
+    if (!raw) {
+        return undefined;
+    }
+    const num = Number(raw);
+    if (!Number.isFinite(num) || num <= 0) {
+        return undefined;
+    }
+    return Math.floor(num);
+}
+function parseRedactEnv(raw) {
+    if (!raw) {
+        return [];
+    }
+    return raw
+        .split(",")
+        .map((value) => value.trim())
+        .filter((value) => value.length > 0);
+}
+function parseBooleanEnv(raw, defaultValue) {
+    if (raw === undefined) {
+        return defaultValue;
+    }
+    const normalised = raw.trim().toLowerCase();
+    if (!normalised.length) {
+        return defaultValue;
+    }
+    if (["0", "false", "no", "off"].includes(normalised)) {
+        return false;
+    }
+    if (["1", "true", "yes", "on"].includes(normalised)) {
+        return true;
+    }
+    return defaultValue;
+}
+function parseQualityThresholdEnv(raw, fallback) {
+    if (raw === undefined) {
+        return fallback;
+    }
+    const parsed = Number(raw);
+    if (!Number.isFinite(parsed)) {
+        return fallback;
+    }
+    return Math.min(100, Math.max(0, Math.round(parsed)));
+}
+const baseLoggerOptions = {
+    logFile: process.env.MCP_LOG_FILE ?? undefined,
+    maxFileSizeBytes: parseSizeEnv(process.env.MCP_LOG_ROTATE_SIZE),
+    maxFileCount: parseCountEnv(process.env.MCP_LOG_ROTATE_KEEP),
+    redactSecrets: parseRedactEnv(process.env.MCP_LOG_REDACT),
+};
+let activeLoggerOptions = { ...baseLoggerOptions };
+let logger = new StructuredLogger(activeLoggerOptions);
 const eventStore = new EventStore({ maxHistory: 5000, logger });
+if (activeLoggerOptions.logFile) {
+    logger.info("logger_configured", {
+        log_file: activeLoggerOptions.logFile,
+        max_size_bytes: activeLoggerOptions.maxFileSizeBytes ?? null,
+        max_file_count: activeLoggerOptions.maxFileCount ?? null,
+        redacted_tokens: activeLoggerOptions.redactSecrets?.length ?? 0,
+        source: "env",
+    });
+}
+const memoryStore = new SharedMemoryStore();
+const metaCritic = new MetaCritic();
 let lastInactivityThresholdMs = 120_000;
+const loopDetector = new LoopDetector();
+const REFLECTION_PRIORITY_KINDS = new Set(["code", "plan", "text"]);
+let reflectionEnabled = parseBooleanEnv(process.env.MCP_ENABLE_REFLECTION, true);
+let qualityGateEnabled = parseBooleanEnv(process.env.MCP_QUALITY_GATE, true);
+let qualityGateThreshold = parseQualityThresholdEnv(process.env.MCP_QUALITY_THRESHOLD, 70);
 let DEFAULT_CHILD_RUNTIME = "codex";
 function setDefaultChildRuntime(runtime) {
     DEFAULT_CHILD_RUNTIME = runtime.trim() || "codex";
@@ -66,9 +266,395 @@ const childSupervisor = new ChildSupervisor({
     defaultCommand: defaultChildCommand,
     defaultArgs: defaultChildArgs,
     defaultEnv: process.env,
+    safety: {
+        maxChildren: runtimeChildSafety.maxChildren,
+        memoryLimitMb: runtimeChildSafety.memoryLimitMb,
+        cpuPercent: runtimeChildSafety.cpuPercent,
+    },
 });
+const autoscaler = new Autoscaler({ supervisor: childSupervisor, logger });
+const orchestratorSupervisor = new OrchestratorSupervisor({
+    childManager: childSupervisor,
+    logger,
+    actions: {
+        emitAlert: async (incident) => {
+            const level = incident.severity === "critical" ? "error" : "warn";
+            const eventKind = level === "error" ? "ERROR" : "WARN";
+            if (level === "error") {
+                logger.error("supervisor_incident", {
+                    type: incident.type,
+                    reason: incident.reason,
+                    context: incident.context,
+                });
+            }
+            else {
+                logger.warn("supervisor_incident", {
+                    type: incident.type,
+                    reason: incident.reason,
+                    context: incident.context,
+                });
+            }
+            pushEvent({ kind: eventKind, level, payload: { type: "supervisor_incident", incident } });
+        },
+        requestRewrite: async (incident) => {
+            logger.warn("supervisor_request_rewrite", incident.context);
+            pushEvent({ kind: "INFO", level: "warn", payload: { type: "supervisor_request_rewrite", incident } });
+        },
+        requestRedispatch: async (incident) => {
+            logger.warn("supervisor_request_redispatch", incident.context);
+            pushEvent({ kind: "INFO", level: "warn", payload: { type: "supervisor_request_redispatch", incident } });
+        },
+    },
+});
+function extractMetadataGoals(metadata) {
+    if (!metadata) {
+        return [];
+    }
+    const collected = [];
+    const candidateKeys = ["goal", "goals", "objective", "objectives", "mission", "target"];
+    for (const key of candidateKeys) {
+        const value = metadata[key];
+        if (typeof value === "string") {
+            collected.push(value);
+        }
+        else if (Array.isArray(value)) {
+            for (const entry of value) {
+                if (typeof entry === "string") {
+                    collected.push(entry);
+                }
+            }
+        }
+    }
+    return Array.from(new Set(collected
+        .map((goal) => goal.toString().trim())
+        .filter((goal) => goal.length > 0)));
+}
+function extractMetadataTags(metadata) {
+    if (!metadata) {
+        return [];
+    }
+    const tags = new Set();
+    const candidateKeys = ["tags", "labels", "topics", "areas", "keywords"];
+    for (const key of candidateKeys) {
+        const value = metadata[key];
+        if (typeof value === "string") {
+            tags.add(value);
+        }
+        else if (Array.isArray(value)) {
+            for (const entry of value) {
+                if (typeof entry === "string") {
+                    tags.add(entry);
+                }
+            }
+        }
+    }
+    for (const [key, value] of Object.entries(metadata)) {
+        if (typeof value === "string" && /tag|topic|domain|area|category/i.test(key)) {
+            tags.add(value);
+        }
+        else if (Array.isArray(value) && /tag|topic|domain|area|category/i.test(key)) {
+            for (const entry of value) {
+                if (typeof entry === "string") {
+                    tags.add(entry);
+                }
+            }
+        }
+    }
+    return Array.from(tags)
+        .map((tag) => tag.toString().trim().toLowerCase())
+        .filter((tag) => tag.length > 0);
+}
+function renderPromptForMemory(prompt) {
+    if (!prompt || typeof prompt !== "object") {
+        return "";
+    }
+    const segments = [];
+    const record = prompt;
+    for (const key of ["system", "user", "assistant"]) {
+        const value = record[key];
+        if (typeof value === "string") {
+            segments.push(value);
+        }
+        else if (Array.isArray(value)) {
+            for (const entry of value) {
+                if (typeof entry === "string") {
+                    segments.push(entry);
+                }
+            }
+        }
+    }
+    return segments.join(" ").slice(0, 512);
+}
+/**
+ * Normalises arbitrary identifiers (job labels, slugs…) into a compact
+ * lowercase string compatible with the graph node naming scheme. Non-alphanumeric
+ * characters are replaced to avoid creating invalid node IDs.
+ */
+function sanitiseIdentifier(raw, fallback) {
+    if (typeof raw !== "string") {
+        return fallback;
+    }
+    const trimmed = raw.trim().toLowerCase();
+    if (trimmed.length === 0) {
+        return fallback;
+    }
+    const collapsed = trimmed.replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "");
+    if (collapsed.length === 0) {
+        return fallback;
+    }
+    return collapsed.slice(0, 64);
+}
+/**
+ * Looks up the first string value associated with one of the provided metadata
+ * keys. The helper keeps the extraction logic readable when multiple aliases
+ * may be supplied by callers.
+ */
+function pickMetadataString(metadata, keys) {
+    if (!metadata) {
+        return undefined;
+    }
+    for (const key of keys) {
+        const value = metadata[key];
+        if (typeof value === "string" && value.trim().length > 0) {
+            return value;
+        }
+    }
+    return undefined;
+}
+/**
+ * Derives a stable job identifier for ad-hoc children spawned outside of plan
+ * executions. The identifier is prefixed to avoid clashing with planner
+ * generated jobs while still reflecting operator-provided hints when available.
+ */
+function deriveManualJobId(childId, metadata) {
+    const explicit = pickMetadataString(metadata, ["job_id", "jobId", "job", "jobSlug", "jobName"]);
+    const base = sanitiseIdentifier(explicit, childId);
+    return `manual-${base}`;
+}
+/**
+ * Extracts a human-friendly child name from metadata while falling back to the
+ * technical identifier when no label is provided.
+ */
+function deriveManualChildName(childId, metadata) {
+    const candidate = pickMetadataString(metadata, ["name", "label", "title", "alias", "child_name"]);
+    if (!candidate) {
+        return childId;
+    }
+    const trimmed = candidate.trim();
+    return trimmed.length > 0 ? trimmed.slice(0, 120) : childId;
+}
+/**
+ * Normalises a prompt segment (string or string array) into a single string.
+ * Empty entries are ignored so transcripts remain concise.
+ */
+function normalisePromptSegment(segment) {
+    if (!segment) {
+        return undefined;
+    }
+    if (typeof segment === "string") {
+        const trimmed = segment.trim();
+        return trimmed.length > 0 ? trimmed : undefined;
+    }
+    const parts = segment
+        .map((value) => (typeof value === "string" ? value.trim() : ""))
+        .filter((value) => value.length > 0);
+    if (parts.length === 0) {
+        return undefined;
+    }
+    return parts.join("\n");
+}
+/**
+ * Extracts the system prompt string, if any, so a synthetic transcript entry
+ * can be recorded when we materialise ad-hoc children in the graph.
+ */
+function deriveSystemPrompt(prompt) {
+    if (!prompt) {
+        return undefined;
+    }
+    return normalisePromptSegment(prompt.system);
+}
+/**
+ * Derives a runtime label used by the dashboard. Metadata wins over the
+ * underlying executable name which itself falls back to the configured default.
+ */
+function deriveRuntimeLabel(metadata, runtimeStatus) {
+    const metadataRuntime = pickMetadataString(metadata, ["runtime", "model", "engine", "llm"]);
+    if (metadataRuntime) {
+        return metadataRuntime.trim();
+    }
+    const command = runtimeStatus.command ?? "";
+    const commandBasename = command.length > 0 ? pathBasename(command) : "";
+    if (commandBasename.length > 0) {
+        return commandBasename;
+    }
+    return DEFAULT_CHILD_RUNTIME;
+}
+/**
+ * Ensures ad-hoc child creations appear in the graph by synthesising a job and
+ * child node when the planner did not pre-register them. This keeps the
+ * dashboard consistent regardless of how the runtime was spawned.
+ */
+function ensureChildVisibleInGraph(options) {
+    const { childId, snapshot, metadata, prompt, runtimeStatus, startedAt } = options;
+    const existing = graphState.getChild(childId);
+    if (existing) {
+        graphState.syncChildIndexSnapshot(snapshot);
+        return;
+    }
+    const goals = extractMetadataGoals(metadata);
+    const jobId = deriveManualJobId(childId, metadata);
+    const createdAtCandidates = [snapshot.startedAt, startedAt, Date.now()].filter((value) => typeof value === "number" && Number.isFinite(value) && value > 0);
+    const createdAt = createdAtCandidates.length > 0 ? createdAtCandidates[0] : Date.now();
+    if (!graphState.getJob(jobId)) {
+        graphState.createJob(jobId, { createdAt, goal: goals[0], state: "running" });
+    }
+    else if (goals[0]) {
+        graphState.patchJob(jobId, { goal: goals[0] });
+    }
+    const runtimeLabel = deriveRuntimeLabel(metadata, runtimeStatus);
+    const systemPrompt = deriveSystemPrompt(prompt);
+    const spec = {
+        name: deriveManualChildName(childId, metadata),
+        runtime: runtimeLabel,
+        goals: goals.length > 0 ? goals.slice(0, 5) : undefined,
+        system: systemPrompt,
+    };
+    graphState.createChild(jobId, childId, spec, { createdAt, ttlAt: null });
+    graphState.patchChild(childId, {
+        state: snapshot.state,
+        runtime: runtimeLabel,
+        lastHeartbeatAt: snapshot.lastHeartbeatAt,
+        startedAt: snapshot.startedAt,
+        waitingFor: null,
+        pendingId: null,
+    });
+    graphState.syncChildIndexSnapshot(snapshot);
+}
+function summariseChildOutputs(outputs) {
+    const parts = [];
+    const tags = new Set(["child"]);
+    let kind = "text";
+    const codeExtensions = new Set(["ts", "tsx", "js", "jsx", "py", "go", "rs", "java", "cs", "json", "mjs"]);
+    for (const artifact of outputs.artifacts) {
+        const ext = artifact.path.split(".").pop()?.toLowerCase();
+        if (ext) {
+            tags.add(ext);
+            if (codeExtensions.has(ext)) {
+                kind = "code";
+            }
+        }
+    }
+    for (const message of outputs.messages) {
+        tags.add(message.stream);
+        const parsed = message.parsed;
+        if (parsed && typeof parsed === "object") {
+            const record = parsed;
+            if (typeof record.content === "string") {
+                parts.push(record.content);
+                continue;
+            }
+            if (typeof record.text === "string") {
+                parts.push(record.text);
+                continue;
+            }
+            parts.push(JSON.stringify(record));
+        }
+        else if (typeof parsed === "string") {
+            parts.push(parsed);
+        }
+        else if (typeof message.raw === "string") {
+            parts.push(message.raw);
+        }
+    }
+    if (kind !== "code") {
+        const joined = parts.join(" ").toLowerCase();
+        if (/\betape\b|\bétape\b|\bplan\b|\bphase\b/.test(joined)) {
+            kind = "plan";
+        }
+    }
+    let text = parts.join("\n").slice(0, 2_000).trim();
+    if (!text) {
+        text = outputs.artifacts
+            .map((artifact) => `${artifact.path} (${artifact.size ?? 0} bytes)`)
+            .join("; ");
+    }
+    if (!text) {
+        text = "(aucune sortie)";
+    }
+    return { text, tags: Array.from(tags), kind };
+}
+function countMatches(pattern, text) {
+    const matches = text.match(pattern);
+    return matches ? matches.length : 0;
+}
+function deriveCodeQualitySignals(summaryText) {
+    const tokens = summaryText.split(/\s+/).filter((token) => token.length > 0);
+    const testsSignals = countMatches(/\b(test|describe|it|expect)\b/gi, summaryText);
+    const lintSignals = countMatches(/\b(?:lint|eslint|tsc|warning|erreur|error|exception)\b/gi, summaryText) +
+        countMatches(/\b(fail|échec)\b/gi, summaryText);
+    const complexityEstimate = tokens.length === 0 ? 5 : Math.ceil(tokens.length / 40);
+    return {
+        testsPassed: Math.min(testsSignals, 6),
+        lintErrors: Math.min(lintSignals, 10),
+        complexity: Math.min(complexityEstimate, 100),
+    };
+}
+function deriveTextQualitySignals(summaryText, reviewScore) {
+    const condensed = summaryText.replace(/\s+/g, " ").trim();
+    const sentences = condensed.split(/[.!?]+/).map((part) => part.trim()).filter((part) => part.length > 0);
+    const words = condensed.length > 0 ? condensed.split(/\s+/) : [];
+    const averageSentenceLength = sentences.length > 0 ? words.length / sentences.length : words.length;
+    const readability = Math.min(100, Math.max(20, 120 - averageSentenceLength * 3));
+    const bulletMatches = countMatches(/\n\s*(?:[-*•]|\d+\.)/g, summaryText);
+    const sectionMatches = countMatches(/\n\s*[A-Za-zÀ-ÿ0-9]+\s*:/g, summaryText);
+    const structure = Math.min(1, bulletMatches / 5 + sectionMatches / 6 + (sentences.length > 3 ? 0.2 : 0));
+    return {
+        factsOK: Math.min(1, Math.max(0, reviewScore)),
+        readability,
+        structure: Math.min(1, Math.max(0, structure)),
+    };
+}
+function derivePlanQualitySignals(summaryText, reviewScore) {
+    const lines = summaryText.split(/\n+/).map((line) => line.trim());
+    const nonEmpty = lines.filter((line) => line.length > 0);
+    const stepLines = nonEmpty.filter((line) => /^(?:\d+\.|[-*•])/.test(line));
+    const lower = summaryText.toLowerCase();
+    const coherence = Math.min(1, stepLines.length / Math.max(nonEmpty.length, 1));
+    const coverage = Math.min(1, stepLines.length / 6 + (summaryText.length > 400 ? 0.25 : 0));
+    let risk = reviewScore < 0.5 ? 0.8 : reviewScore < 0.7 ? 0.55 : 0.35;
+    if (!/fallback|plan\s*b|mitigation|contingence|secours/.test(lower)) {
+        risk += 0.2;
+    }
+    risk += Math.min(countMatches(/\brisque|bloquant|retard|incident\b/gi, summaryText) * 0.1, 0.3);
+    return {
+        coherence: Math.min(1, Math.max(0, coherence)),
+        coverage: Math.min(1, Math.max(0, coverage)),
+        risk: Math.min(1, Math.max(0, risk)),
+    };
+}
+function computeQualityAssessment(kind, summaryText, review) {
+    switch (kind) {
+        case "code": {
+            const signals = deriveCodeQualitySignals(summaryText);
+            const result = scoreCode(signals);
+            return { score: result.score, rubric: result.rubric, metrics: signals };
+        }
+        case "text": {
+            const signals = deriveTextQualitySignals(summaryText, review.overall);
+            const result = scoreText(signals);
+            return { score: result.score, rubric: result.rubric, metrics: signals };
+        }
+        case "plan": {
+            const signals = derivePlanQualitySignals(summaryText, review.overall);
+            const result = scorePlan(signals);
+            return { score: result.score, rubric: result.rubric, metrics: signals };
+        }
+        default:
+            return null;
+    }
+}
 function getChildToolContext() {
-    return { supervisor: childSupervisor, logger };
+    return { supervisor: childSupervisor, logger, loopDetector, contractNet, supervisorAgent: orchestratorSupervisor };
 }
 function getPlanToolContext() {
     return {
@@ -86,42 +672,235 @@ function getPlanToolContext() {
                 payload: event.payload,
             });
         },
+        stigmergy,
+        blackboard: runtimeFeatures.enableBlackboard ? blackboard : undefined,
+        supervisorAgent: orchestratorSupervisor,
+        causalMemory: runtimeFeatures.enableCausalMemory ? causalMemory : undefined,
+        valueGuard: runtimeFeatures.enableValueGuard
+            ? { graph: valueGraph, registry: valueGuardRegistry }
+            : undefined,
+        loopDetector,
+        autoscaler: runtimeFeatures.enableAutoscaler ? autoscaler : undefined,
+        btStatusRegistry,
     };
+}
+function getCoordinationToolContext() {
+    return { blackboard, stigmergy, contractNet, logger };
+}
+function getAgentToolContext() {
+    return { autoscaler, logger };
+}
+function getKnowledgeToolContext() {
+    return { knowledgeGraph, logger };
+}
+function getCausalToolContext() {
+    return { causalMemory, logger };
+}
+function getValueToolContext() {
+    return { valueGraph, logger };
+}
+function normaliseToolError(error, defaultCode) {
+    const message = error instanceof Error ? error.message : String(error);
+    let code = defaultCode;
+    let hint;
+    let details;
+    if (error instanceof z.ZodError) {
+        code = defaultCode;
+        hint = "invalid_input";
+        details = { issues: error.issues };
+    }
+    else if (typeof error.code === "string") {
+        code = error.code;
+        if (typeof error.hint === "string") {
+            hint = error.hint;
+        }
+        if (Object.prototype.hasOwnProperty.call(error, "details")) {
+            details = error.details;
+        }
+    }
+    else if (Object.prototype.hasOwnProperty.call(error, "details")) {
+        details = error.details;
+    }
+    return { code, message, hint, details };
 }
 function childToolError(toolName, error, context = {}) {
-    const message = error instanceof Error ? error.message : String(error);
-    const code = error instanceof UnknownChildError ? "NOT_FOUND" : "CHILD_TOOL_ERROR";
-    logger.error(`${toolName}_failed`, { ...context, message });
+    const defaultCode = error instanceof UnknownChildError ? "NOT_FOUND" : "CHILD_TOOL_ERROR";
+    const normalised = normaliseToolError(error, defaultCode);
+    logger.error(`${toolName}_failed`, { ...context, message: normalised.message, code: normalised.code, details: normalised.details });
+    const payload = {
+        error: normalised.code,
+        tool: toolName,
+        message: normalised.message,
+    };
+    if (normalised.hint) {
+        payload.hint = normalised.hint;
+    }
+    if (normalised.details !== undefined) {
+        payload.details = normalised.details;
+    }
     return {
         isError: true,
-        content: [{ type: "text", text: j({ error: code, tool: toolName, message }) }],
+        content: [{ type: "text", text: j(payload) }],
     };
 }
-function planToolError(toolName, error, context = {}) {
-    const message = error instanceof Error ? error.message : String(error);
-    logger.error(`${toolName}_failed`, { ...context, message });
+function planToolError(toolName, error, context = {}, defaultCode = "PLAN_TOOL_ERROR") {
+    const normalised = normaliseToolError(error, defaultCode);
+    logger.error(`${toolName}_failed`, { ...context, message: normalised.message, code: normalised.code, details: normalised.details });
+    const payload = {
+        error: normalised.code,
+        tool: toolName,
+        message: normalised.message,
+    };
+    if (normalised.hint) {
+        payload.hint = normalised.hint;
+    }
+    if (normalised.details !== undefined) {
+        payload.details = normalised.details;
+    }
     return {
         isError: true,
-        content: [
-            {
-                type: "text",
-                text: j({ error: "PLAN_TOOL_ERROR", tool: toolName, message }),
-            },
-        ],
+        content: [{ type: "text", text: j(payload) }],
     };
 }
-function graphToolError(toolName, error, context = {}) {
-    const message = error instanceof Error ? error.message : String(error);
-    logger.error(`${toolName}_failed`, { ...context, message });
+function graphToolError(toolName, error, context = {}, defaultCode = "GRAPH_TOOL_ERROR") {
+    const normalised = normaliseToolError(error, defaultCode);
+    logger.error(`${toolName}_failed`, { ...context, message: normalised.message, code: normalised.code, details: normalised.details });
+    const payload = {
+        error: normalised.code,
+        tool: toolName,
+        message: normalised.message,
+    };
+    if (normalised.hint) {
+        payload.hint = normalised.hint;
+    }
+    if (normalised.details !== undefined) {
+        payload.details = normalised.details;
+    }
     return {
         isError: true,
-        content: [
-            {
-                type: "text",
-                text: j({ error: "GRAPH_TOOL_ERROR", tool: toolName, message }),
-            },
-        ],
+        content: [{ type: "text", text: j(payload) }],
     };
+}
+function coordinationToolError(toolName, error, context = {}, defaultCode = "COORD_TOOL_ERROR") {
+    const normalised = normaliseToolError(error, defaultCode);
+    logger.error(`${toolName}_failed`, { ...context, message: normalised.message, code: normalised.code, details: normalised.details });
+    const payload = {
+        error: normalised.code,
+        tool: toolName,
+        message: normalised.message,
+    };
+    if (normalised.hint) {
+        payload.hint = normalised.hint;
+    }
+    if (normalised.details !== undefined) {
+        payload.details = normalised.details;
+    }
+    return {
+        isError: true,
+        content: [{ type: "text", text: j(payload) }],
+    };
+}
+function knowledgeToolError(toolName, error, context = {}, defaultCode = "KNOWLEDGE_TOOL_ERROR") {
+    const normalised = normaliseToolError(error, defaultCode);
+    logger.error(`${toolName}_failed`, { ...context, message: normalised.message, code: normalised.code, details: normalised.details });
+    const payload = {
+        error: normalised.code,
+        tool: toolName,
+        message: normalised.message,
+    };
+    if (normalised.hint) {
+        payload.hint = normalised.hint;
+    }
+    if (normalised.details !== undefined) {
+        payload.details = normalised.details;
+    }
+    return {
+        isError: true,
+        content: [{ type: "text", text: j(payload) }],
+    };
+}
+function causalToolError(toolName, error, context = {}, defaultCode = "CAUSAL_TOOL_ERROR") {
+    const normalised = normaliseToolError(error, defaultCode);
+    logger.error(`${toolName}_failed`, { ...context, message: normalised.message, code: normalised.code, details: normalised.details });
+    const payload = {
+        error: normalised.code,
+        tool: toolName,
+        message: normalised.message,
+    };
+    if (normalised.hint) {
+        payload.hint = normalised.hint;
+    }
+    if (normalised.details !== undefined) {
+        payload.details = normalised.details;
+    }
+    return {
+        isError: true,
+        content: [{ type: "text", text: j(payload) }],
+    };
+}
+function valueToolError(toolName, error, context = {}, defaultCode = "VALUE_TOOL_ERROR") {
+    const normalised = normaliseToolError(error, defaultCode);
+    logger.error(`${toolName}_failed`, { ...context, message: normalised.message, code: normalised.code, details: normalised.details });
+    const payload = {
+        error: normalised.code,
+        tool: toolName,
+        message: normalised.message,
+    };
+    if (normalised.hint) {
+        payload.hint = normalised.hint;
+    }
+    if (normalised.details !== undefined) {
+        payload.details = normalised.details;
+    }
+    return {
+        isError: true,
+        content: [{ type: "text", text: j(payload) }],
+    };
+}
+function ensureKnowledgeEnabled(toolName) {
+    if (!runtimeFeatures.enableKnowledge) {
+        logger.warn(`${toolName}_disabled`, { tool: toolName });
+        return {
+            isError: true,
+            content: [
+                {
+                    type: "text",
+                    text: j({ error: "KNOWLEDGE_DISABLED", tool: toolName, message: "knowledge module disabled" }),
+                },
+            ],
+        };
+    }
+    return null;
+}
+function ensureCausalMemoryEnabled(toolName) {
+    if (!runtimeFeatures.enableCausalMemory) {
+        logger.warn(`${toolName}_disabled`, { tool: toolName });
+        return {
+            isError: true,
+            content: [
+                {
+                    type: "text",
+                    text: j({ error: "CAUSAL_MEMORY_DISABLED", tool: toolName, message: "causal memory module disabled" }),
+                },
+            ],
+        };
+    }
+    return null;
+}
+function ensureValueGuardEnabled(toolName) {
+    if (!runtimeFeatures.enableValueGuard) {
+        logger.warn(`${toolName}_disabled`, { tool: toolName });
+        return {
+            isError: true,
+            content: [
+                {
+                    type: "text",
+                    text: j({ error: "VALUE_GUARD_DISABLED", tool: toolName, message: "value guard disabled" }),
+                },
+            ],
+        };
+    }
+    return null;
 }
 const SUBS = new Map();
 // ---------------------------
@@ -129,6 +908,19 @@ const SUBS = new Map();
 // ---------------------------
 const now = () => Date.now();
 const j = (o) => JSON.stringify(o, null, 2);
+/**
+ * Input schema guarding the `graph_subgraph_extract` tool. The strict contract
+ * rejects stray properties so export destinations remain predictable.
+ */
+const GraphSubgraphExtractInputSchema = z
+    .object({
+    graph: GraphDescriptorSchema,
+    node_id: z.string().min(1),
+    run_id: z.string().min(1),
+    directory: z.string().min(1).optional(),
+})
+    .strict();
+const GraphSubgraphExtractInputShape = GraphSubgraphExtractInputSchema.shape;
 function pushEvent(event) {
     const emitted = eventStore.emit({
         kind: event.kind,
@@ -203,6 +995,15 @@ function pruneExpired() {
             const jobId = child.jobId ?? findJobIdByChild(child.id);
             pushEvent({ kind: "KILL", jobId, childId: child.id, level: "warn", payload: { reason: "ttl" } });
         }
+    }
+    const expiredEntries = blackboard.evictExpired();
+    if (expiredEntries.length > 0) {
+        const keys = expiredEntries.map((event) => event.key);
+        logger.info("bb_expire", {
+            count: expiredEntries.length,
+            keys: keys.slice(0, 5),
+            truncated: keys.length > 5 ? keys.length - 5 : 0,
+        });
     }
 }
 // ---------------------------
@@ -1103,14 +1904,40 @@ server.registerTool("graph_generate", {
             preset: parsed.preset ?? null,
             has_tasks: parsed.tasks !== undefined,
         });
-        const result = handleGraphGenerate(parsed);
+        const result = handleGraphGenerate(parsed, {
+            knowledgeGraph: runtimeFeatures.enableKnowledge ? knowledgeGraph : undefined,
+            knowledgeEnabled: runtimeFeatures.enableKnowledge,
+        });
+        const summary = summariseSubgraphUsage(result.graph);
+        if (summary.references.length > 0) {
+            logger.info("graph_generate_subgraphs_detected", {
+                references: summary.references.length,
+                missing: summary.missing.length,
+            });
+        }
+        let notes = result.notes;
+        if (summary.missing.length > 0) {
+            const deduped = new Set(result.notes);
+            deduped.add("missing_subgraph_descriptors");
+            notes = Array.from(deduped);
+            logger.warn("graph_generate_missing_subgraphs", {
+                missing: summary.missing,
+                graph_id: result.graph.graph_id ?? null,
+            });
+        }
+        const enriched = {
+            ...result,
+            notes,
+            subgraph_refs: summary.references,
+            ...(summary.missing.length > 0 ? { missing_subgraph_descriptors: summary.missing } : {}),
+        };
         logger.info("graph_generate_succeeded", {
             nodes: result.graph.nodes.length,
             edges: result.graph.edges.length,
         });
         return {
-            content: [{ type: "text", text: j({ tool: "graph_generate", result }) }],
-            structuredContent: result,
+            content: [{ type: "text", text: j({ tool: "graph_generate", result: enriched }) }],
+            structuredContent: enriched,
         };
     }
     catch (error) {
@@ -1137,12 +1964,34 @@ server.registerTool("graph_mutate", {
         const tx = graphTransactions.begin(baseGraph);
         let committed;
         try {
-            const mutateInput = { ...parsed, graph: serialiseNormalisedGraph(tx.workingCopy) };
+            const mutateInput = {
+                ...parsed,
+                graph: serialiseNormalisedGraph(tx.workingCopy),
+            };
             const intermediate = handleGraphMutate(mutateInput);
             committed = graphTransactions.commit(tx.txId, normaliseGraphPayload(intermediate.graph));
             const finalGraph = serialiseNormalisedGraph(committed.graph);
             const result = { ...intermediate, graph: finalGraph };
-            const changed = result.applied.filter((entry) => entry.changed).length;
+            const summary = summariseSubgraphUsage(result.graph);
+            if (summary.references.length > 0) {
+                logger.info("graph_mutate_subgraphs_detected", {
+                    references: summary.references.length,
+                    missing: summary.missing.length,
+                    graph_id: committed.graphId,
+                });
+            }
+            if (summary.missing.length > 0) {
+                logger.warn("graph_mutate_missing_subgraphs", {
+                    missing: summary.missing,
+                    graph_id: committed.graphId,
+                });
+            }
+            const enrichedResult = {
+                ...result,
+                subgraph_refs: summary.references,
+                ...(summary.missing.length > 0 ? { missing_subgraph_descriptors: summary.missing } : {}),
+            };
+            const changed = enrichedResult.applied.filter((entry) => entry.changed).length;
             logger.info("graph_mutate_succeeded", {
                 operations: parsed.operations.length,
                 changed,
@@ -1151,8 +2000,8 @@ server.registerTool("graph_mutate", {
                 committed_at: committed.committedAt,
             });
             return {
-                content: [{ type: "text", text: j({ tool: "graph_mutate", result }) }],
-                structuredContent: result,
+                content: [{ type: "text", text: j({ tool: "graph_mutate", result: enrichedResult }) }],
+                structuredContent: enrichedResult,
             };
         }
         catch (error) {
@@ -1168,7 +2017,9 @@ server.registerTool("graph_mutate", {
                 catch (rollbackError) {
                     logger.error("graph_mutate_rollback_failed", {
                         graph_id: tx.graphId,
-                        message: rollbackError instanceof Error ? rollbackError.message : String(rollbackError),
+                        message: rollbackError instanceof Error
+                            ? rollbackError.message
+                            : String(rollbackError),
                     });
                 }
             }
@@ -1177,24 +2028,375 @@ server.registerTool("graph_mutate", {
     }
     catch (error) {
         if (error instanceof GraphVersionConflictError) {
-            logger.warn("graph_mutate_conflict", {
+            return graphToolError("graph_mutate", error, {
                 graph_id: graphIdForError,
                 version: graphVersionForError,
-                message: error.message,
             });
-            return {
-                isError: true,
-                content: [
-                    {
-                        type: "text",
-                        text: j({ error: "GRAPH_VERSION_CONFLICT", tool: "graph_mutate", message: error.message }),
-                    },
-                ],
-            };
         }
         return graphToolError("graph_mutate", error, {
             graph_id: graphIdForError,
             version: graphVersionForError ?? undefined,
+        });
+    }
+});
+server.registerTool("graph_subgraph_extract", {
+    title: "Graph subgraph extract",
+    description: "Exporte le descripteur d'un sous-graphe vers le dossier de run.",
+    inputSchema: GraphSubgraphExtractInputShape,
+}, async (input) => {
+    let parsed;
+    try {
+        parsed = GraphSubgraphExtractInputSchema.parse(input);
+        logger.info("graph_subgraph_extract_requested", {
+            node_id: parsed.node_id,
+            run_id: parsed.run_id,
+        });
+        const extraction = await extractSubgraphToFile({
+            graph: parsed.graph,
+            nodeId: parsed.node_id,
+            runId: parsed.run_id,
+            childrenRoot: CHILDREN_ROOT,
+            directoryName: parsed.directory,
+        });
+        logger.info("graph_subgraph_extract_succeeded", {
+            node_id: parsed.node_id,
+            run_id: extraction.runId,
+            subgraph_ref: extraction.subgraphRef,
+            version: extraction.version,
+        });
+        const descriptorPayload = {
+            run_id: extraction.runId,
+            node_id: extraction.nodeId,
+            subgraph_ref: extraction.subgraphRef,
+            version: extraction.version,
+            extracted_at: extraction.extractedAt,
+            absolute_path: extraction.absolutePath,
+            relative_path: extraction.relativePath,
+            graph_id: extraction.graphId,
+            graph_version: extraction.graphVersion,
+        };
+        return {
+            content: [
+                {
+                    type: "text",
+                    text: j({ tool: "graph_subgraph_extract", result: descriptorPayload }),
+                },
+            ],
+            structuredContent: {
+                ...descriptorPayload,
+                descriptor: extraction.descriptor,
+                metadata_key: SUBGRAPH_REGISTRY_KEY,
+            },
+        };
+    }
+    catch (error) {
+        return graphToolError("graph_subgraph_extract", error, {
+            node_id: parsed?.node_id,
+            run_id: parsed?.run_id,
+        });
+    }
+});
+server.registerTool("graph_hyper_export", {
+    title: "Graph hyper export",
+    description: "Projette un hyper-graphe en graphe orienté avec métadonnées conservées.",
+    inputSchema: GraphHyperExportInputShape,
+}, async (input) => {
+    try {
+        const parsed = GraphHyperExportInputSchema.parse(input);
+        logger.info("graph_hyper_export_requested", {
+            graph_id: parsed.id,
+            nodes: parsed.nodes.length,
+            hyper_edges: parsed.hyper_edges.length,
+        });
+        const result = handleGraphHyperExport(parsed);
+        logger.info("graph_hyper_export_succeeded", {
+            graph_id: result.graph.graph_id,
+            nodes: result.stats.nodes,
+            edges: result.stats.edges,
+            hyper_edges: result.stats.hyper_edges,
+        });
+        return {
+            content: [
+                { type: "text", text: j({ tool: "graph_hyper_export", result }) },
+            ],
+            structuredContent: result,
+        };
+    }
+    catch (error) {
+        return graphToolError("graph_hyper_export", error);
+    }
+});
+server.registerTool("kg_insert", {
+    title: "Knowledge insert",
+    description: "Insère ou met à jour des triplets dans le graphe de connaissances.",
+    inputSchema: KgInsertInputShape,
+}, async (input) => {
+    const disabled = ensureKnowledgeEnabled("kg_insert");
+    if (disabled) {
+        return disabled;
+    }
+    try {
+        const parsed = KgInsertInputSchema.parse(input);
+        const result = handleKgInsert(getKnowledgeToolContext(), parsed);
+        return {
+            content: [{ type: "text", text: j({ tool: "kg_insert", result }) }],
+            structuredContent: result,
+        };
+    }
+    catch (error) {
+        return knowledgeToolError("kg_insert", error);
+    }
+});
+server.registerTool("kg_query", {
+    title: "Knowledge query",
+    description: "Recherche des triplets par motif (joker * supporté).",
+    inputSchema: KgQueryInputShape,
+}, async (input) => {
+    const disabled = ensureKnowledgeEnabled("kg_query");
+    if (disabled) {
+        return disabled;
+    }
+    try {
+        const parsed = KgQueryInputSchema.parse(input);
+        const result = handleKgQuery(getKnowledgeToolContext(), parsed);
+        return {
+            content: [{ type: "text", text: j({ tool: "kg_query", result }) }],
+            structuredContent: result,
+        };
+    }
+    catch (error) {
+        return knowledgeToolError("kg_query", error);
+    }
+});
+server.registerTool("kg_export", {
+    title: "Knowledge export",
+    description: "Exporte l'intégralité du graphe de connaissances (ordre déterministe).",
+    inputSchema: KgExportInputShape,
+}, async (input) => {
+    const disabled = ensureKnowledgeEnabled("kg_export");
+    if (disabled) {
+        return disabled;
+    }
+    try {
+        const parsed = KgExportInputSchema.parse(input);
+        const result = handleKgExport(getKnowledgeToolContext(), parsed);
+        return {
+            content: [{ type: "text", text: j({ tool: "kg_export", result }) }],
+            structuredContent: result,
+        };
+    }
+    catch (error) {
+        return knowledgeToolError("kg_export", error);
+    }
+});
+server.registerTool("values_set", {
+    title: "Values graph set",
+    description: "Définit les valeurs, priorités et contraintes du garde-fou.",
+    inputSchema: ValuesSetInputShape,
+}, async (input) => {
+    const disabled = ensureValueGuardEnabled("values_set");
+    if (disabled) {
+        return disabled;
+    }
+    try {
+        const parsed = ValuesSetInputSchema.parse(input);
+        const result = handleValuesSet(getValueToolContext(), parsed);
+        return {
+            content: [{ type: "text", text: j({ tool: "values_set", result }) }],
+            structuredContent: result,
+        };
+    }
+    catch (error) {
+        return valueToolError("values_set", error);
+    }
+});
+server.registerTool("values_score", {
+    title: "Values score",
+    description: "Évalue un plan par rapport au graphe de valeurs.",
+    inputSchema: ValuesScoreInputShape,
+}, async (input) => {
+    const disabled = ensureValueGuardEnabled("values_score");
+    if (disabled) {
+        return disabled;
+    }
+    try {
+        const parsed = ValuesScoreInputSchema.parse(input);
+        const result = handleValuesScore(getValueToolContext(), parsed);
+        return {
+            content: [{ type: "text", text: j({ tool: "values_score", result }) }],
+            structuredContent: result,
+        };
+    }
+    catch (error) {
+        return valueToolError("values_score", error);
+    }
+});
+server.registerTool("values_filter", {
+    title: "Values filter",
+    description: "Applique le seuil du garde-fou et retourne la décision détaillée.",
+    inputSchema: ValuesFilterInputShape,
+}, async (input) => {
+    const disabled = ensureValueGuardEnabled("values_filter");
+    if (disabled) {
+        return disabled;
+    }
+    try {
+        const parsed = ValuesFilterInputSchema.parse(input);
+        const result = handleValuesFilter(getValueToolContext(), parsed);
+        return {
+            content: [{ type: "text", text: j({ tool: "values_filter", result }) }],
+            structuredContent: result,
+        };
+    }
+    catch (error) {
+        return valueToolError("values_filter", error);
+    }
+});
+server.registerTool("causal_export", {
+    title: "Causal memory export",
+    description: "Exporte la mémoire causale pour analyse hors-ligne.",
+    inputSchema: CausalExportInputShape,
+}, async (input) => {
+    const disabled = ensureCausalMemoryEnabled("causal_export");
+    if (disabled) {
+        return disabled;
+    }
+    try {
+        const parsed = CausalExportInputSchema.parse(input);
+        const result = handleCausalExport(getCausalToolContext(), parsed);
+        return {
+            content: [{ type: "text", text: j({ tool: "causal_export", result }) }],
+            structuredContent: result,
+        };
+    }
+    catch (error) {
+        return causalToolError("causal_export", error);
+    }
+});
+server.registerTool("causal_explain", {
+    title: "Causal memory explain",
+    description: "Reconstruit l'arbre des causes pour un événement donné.",
+    inputSchema: CausalExplainInputShape,
+}, async (input) => {
+    const disabled = ensureCausalMemoryEnabled("causal_explain");
+    if (disabled) {
+        return disabled;
+    }
+    let parsed;
+    try {
+        parsed = CausalExplainInputSchema.parse(input);
+        const result = handleCausalExplain(getCausalToolContext(), parsed);
+        return {
+            content: [{ type: "text", text: j({ tool: "causal_explain", result }) }],
+            structuredContent: result,
+        };
+    }
+    catch (error) {
+        return causalToolError("causal_explain", error, parsed ? { outcome_id: parsed.outcome_id } : {});
+    }
+});
+server.registerTool("graph_rewrite_apply", {
+    title: "Graph rewrite apply",
+    description: "Applique les règles de réécriture (manuelles ou adaptatives) sur un graphe hiérarchique.",
+    inputSchema: GraphRewriteApplyInputShape,
+}, async (input) => {
+    let parsed;
+    let graphIdForError = null;
+    let graphVersionForError = null;
+    try {
+        parsed = GraphRewriteApplyInputSchema.parse(input);
+        graphIdForError = parsed.graph.graph_id ?? null;
+        graphVersionForError = parsed.graph.graph_version ?? null;
+        logger.info("graph_rewrite_apply_requested", {
+            mode: parsed.mode,
+            graph_id: graphIdForError,
+            version: graphVersionForError,
+        });
+        const baseGraph = normaliseGraphPayload(parsed.graph);
+        const tx = graphTransactions.begin(baseGraph);
+        let committed;
+        try {
+            const rewriteInput = {
+                ...parsed,
+                graph: serialiseNormalisedGraph(tx.workingCopy),
+            };
+            const intermediate = handleGraphRewriteApply(rewriteInput);
+            committed = graphTransactions.commit(tx.txId, normaliseGraphPayload(intermediate.graph));
+            const finalGraph = serialiseNormalisedGraph(committed.graph);
+            const result = { ...intermediate, graph: finalGraph };
+            const summary = summariseSubgraphUsage(result.graph);
+            if (summary.references.length > 0) {
+                logger.info("graph_rewrite_apply_subgraphs_detected", {
+                    graph_id: committed.graphId,
+                    references: summary.references.length,
+                    missing: summary.missing.length,
+                });
+            }
+            if (summary.missing.length > 0) {
+                logger.warn("graph_rewrite_apply_missing_subgraphs", {
+                    graph_id: committed.graphId,
+                    missing: summary.missing,
+                });
+            }
+            const enrichedResult = {
+                ...result,
+                subgraph_refs: summary.references,
+                ...(summary.missing.length > 0
+                    ? { missing_subgraph_descriptors: summary.missing }
+                    : {}),
+            };
+            logger.info("graph_rewrite_apply_succeeded", {
+                mode: parsed.mode,
+                total_applied: enrichedResult.total_applied,
+                changed: enrichedResult.changed,
+                graph_id: committed.graphId,
+                version: committed.version,
+                committed_at: committed.committedAt,
+            });
+            return {
+                content: [
+                    {
+                        type: "text",
+                        text: j({ tool: "graph_rewrite_apply", result: enrichedResult }),
+                    },
+                ],
+                structuredContent: enrichedResult,
+            };
+        }
+        catch (error) {
+            if (!committed) {
+                try {
+                    graphTransactions.rollback(tx.txId);
+                    logger.warn("graph_rewrite_apply_rolled_back", {
+                        graph_id: tx.graphId,
+                        base_version: tx.baseVersion,
+                        reason: error instanceof Error ? error.message : String(error),
+                    });
+                }
+                catch (rollbackError) {
+                    logger.error("graph_rewrite_apply_rollback_failed", {
+                        graph_id: tx.graphId,
+                        message: rollbackError instanceof Error
+                            ? rollbackError.message
+                            : String(rollbackError),
+                    });
+                }
+            }
+            throw error;
+        }
+    }
+    catch (error) {
+        if (error instanceof GraphVersionConflictError) {
+            return graphToolError("graph_rewrite_apply", error, {
+                graph_id: graphIdForError ?? undefined,
+                version: graphVersionForError ?? undefined,
+                mode: parsed?.mode,
+            });
+        }
+        return graphToolError("graph_rewrite_apply", error, {
+            graph_id: graphIdForError ?? undefined,
+            version: graphVersionForError ?? undefined,
+            mode: parsed?.mode,
         });
     }
 });
@@ -1502,6 +2704,35 @@ server.registerTool("plan_fanout", {
         };
     }
     catch (error) {
+        if (error instanceof ValueGuardRejectionError) {
+            logger.error("plan_fanout_rejected_by_value_guard", {
+                rejected: error.rejections.length,
+            });
+            const rejected = error.rejections.map((entry) => ({
+                name: entry.name,
+                value_guard: {
+                    allowed: entry.decision.allowed,
+                    score: entry.decision.score,
+                    total: entry.decision.total,
+                    threshold: entry.decision.threshold,
+                    violations: entry.decision.violations,
+                },
+            }));
+            return {
+                isError: true,
+                content: [
+                    {
+                        type: "text",
+                        text: j({
+                            error: "E-VALUES-VIOLATION",
+                            tool: "plan_fanout",
+                            message: error.message,
+                            rejected,
+                        }),
+                    },
+                ],
+            };
+        }
         return planToolError("plan_fanout", error);
     }
 });
@@ -1540,6 +2771,256 @@ server.registerTool("plan_reduce", {
         return planToolError("plan_reduce", error);
     }
 });
+server.registerTool("plan_compile_bt", {
+    title: "Plan compile Behaviour Tree",
+    description: "Compile un graphe hiérarchique en Behaviour Tree exécutable.",
+    inputSchema: PlanCompileBTInputShape,
+}, async (input) => {
+    try {
+        const parsed = PlanCompileBTInputSchema.parse(input);
+        const result = handlePlanCompileBT(getPlanToolContext(), parsed);
+        return {
+            content: [{ type: "text", text: j({ tool: "plan_compile_bt", result }) }],
+            structuredContent: result,
+        };
+    }
+    catch (error) {
+        return planToolError("plan_compile_bt", error, {}, "E-BT-INVALID");
+    }
+});
+server.registerTool("plan_run_bt", {
+    title: "Plan run Behaviour Tree",
+    description: "Exécute un Behaviour Tree et trace chaque invocation de tool.",
+    inputSchema: PlanRunBTInputShape,
+}, async (input) => {
+    try {
+        const parsed = PlanRunBTInputSchema.parse(input);
+        const result = await handlePlanRunBT(getPlanToolContext(), parsed);
+        return {
+            content: [{ type: "text", text: j({ tool: "plan_run_bt", result }) }],
+            structuredContent: result,
+        };
+    }
+    catch (error) {
+        return planToolError("plan_run_bt", error, {}, "E-BT-INVALID");
+    }
+});
+server.registerTool("plan_run_reactive", {
+    title: "Plan run reactive loop",
+    description: "Exécute un Behaviour Tree via le scheduler réactif et la boucle de ticks (autoscaler/superviseur).",
+    inputSchema: PlanRunReactiveInputShape,
+}, async (input) => {
+    try {
+        const parsed = PlanRunReactiveInputSchema.parse(input);
+        const result = await handlePlanRunReactive(getPlanToolContext(), parsed);
+        return {
+            content: [{ type: "text", text: j({ tool: "plan_run_reactive", result }) }],
+            structuredContent: result,
+        };
+    }
+    catch (error) {
+        return planToolError("plan_run_reactive", error, {}, "E-BT-INVALID");
+    }
+});
+server.registerTool("bb_set", {
+    title: "Blackboard set",
+    description: "Définit ou met à jour une clé sur le tableau noir partagé.",
+    inputSchema: BbSetInputShape,
+}, async (input) => {
+    try {
+        pruneExpired();
+        const parsed = BbSetInputSchema.parse(input);
+        const result = handleBbSet(getCoordinationToolContext(), parsed);
+        return {
+            content: [{ type: "text", text: j({ tool: "bb_set", result }) }],
+            structuredContent: result,
+        };
+    }
+    catch (error) {
+        return coordinationToolError("bb_set", error);
+    }
+});
+server.registerTool("bb_get", {
+    title: "Blackboard get",
+    description: "Récupère la dernière valeur connue pour une clé.",
+    inputSchema: BbGetInputShape,
+}, async (input) => {
+    try {
+        pruneExpired();
+        const parsed = BbGetInputSchema.parse(input);
+        const result = handleBbGet(getCoordinationToolContext(), parsed);
+        return {
+            content: [{ type: "text", text: j({ tool: "bb_get", result }) }],
+            structuredContent: result,
+        };
+    }
+    catch (error) {
+        return coordinationToolError("bb_get", error);
+    }
+});
+server.registerTool("bb_query", {
+    title: "Blackboard query",
+    description: "Liste les entrées filtrées par tags et/ou clés.",
+    inputSchema: BbQueryInputShape,
+}, async (input) => {
+    try {
+        pruneExpired();
+        const parsed = BbQueryInputSchema.parse(input);
+        const result = handleBbQuery(getCoordinationToolContext(), parsed);
+        return {
+            content: [{ type: "text", text: j({ tool: "bb_query", result }) }],
+            structuredContent: result,
+        };
+    }
+    catch (error) {
+        return coordinationToolError("bb_query", error);
+    }
+});
+server.registerTool("bb_watch", {
+    title: "Blackboard watch",
+    description: "Retourne les événements après une version donnée pour suivre les changements.",
+    inputSchema: BbWatchInputShape,
+}, async (input) => {
+    try {
+        pruneExpired();
+        const parsed = BbWatchInputSchema.parse(input);
+        const result = handleBbWatch(getCoordinationToolContext(), parsed);
+        return {
+            content: [{ type: "text", text: j({ tool: "bb_watch", result }) }],
+            structuredContent: result,
+        };
+    }
+    catch (error) {
+        return coordinationToolError("bb_watch", error);
+    }
+});
+server.registerTool("stig_mark", {
+    title: "Stigmergie mark",
+    description: "Dépose des phéromones sur un nœud pour influencer la planification.",
+    inputSchema: StigMarkInputShape,
+}, async (input) => {
+    try {
+        pruneExpired();
+        const parsed = StigMarkInputSchema.parse(input);
+        const result = handleStigMark(getCoordinationToolContext(), parsed);
+        return {
+            content: [{ type: "text", text: j({ tool: "stig_mark", result }) }],
+            structuredContent: result,
+        };
+    }
+    catch (error) {
+        return coordinationToolError("stig_mark", error);
+    }
+});
+server.registerTool("stig_decay", {
+    title: "Stigmergie decay",
+    description: "Fait s'évaporer les phéromones selon une demi-vie déterministe.",
+    inputSchema: StigDecayInputShape,
+}, async (input) => {
+    try {
+        pruneExpired();
+        const parsed = StigDecayInputSchema.parse(input);
+        const result = handleStigDecay(getCoordinationToolContext(), parsed);
+        return {
+            content: [{ type: "text", text: j({ tool: "stig_decay", result }) }],
+            structuredContent: result,
+        };
+    }
+    catch (error) {
+        return coordinationToolError("stig_decay", error);
+    }
+});
+server.registerTool("stig_snapshot", {
+    title: "Stigmergie snapshot",
+    description: "Expose l'intensité des phéromones pour chaque nœud et type.",
+    inputSchema: StigSnapshotInputShape,
+}, async (input) => {
+    try {
+        pruneExpired();
+        const parsed = StigSnapshotInputSchema.parse(input);
+        const result = handleStigSnapshot(getCoordinationToolContext(), parsed);
+        return {
+            content: [{ type: "text", text: j({ tool: "stig_snapshot", result }) }],
+            structuredContent: result,
+        };
+    }
+    catch (error) {
+        return coordinationToolError("stig_snapshot", error);
+    }
+});
+server.registerTool("cnp_announce", {
+    title: "Contract-Net announce",
+    description: "Annonce une tâche au protocole Contract-Net et retourne l'attribution.",
+    inputSchema: CnpAnnounceInputShape,
+}, async (input) => {
+    try {
+        pruneExpired();
+        const parsed = CnpAnnounceInputSchema.parse(input);
+        const result = handleCnpAnnounce(getCoordinationToolContext(), parsed);
+        return {
+            content: [{ type: "text", text: j({ tool: "cnp_announce", result }) }],
+            structuredContent: result,
+        };
+    }
+    catch (error) {
+        return coordinationToolError("cnp_announce", error);
+    }
+});
+server.registerTool("consensus_vote", {
+    title: "Consensus vote",
+    description: "Agrège des bulletins pour calculer une décision de consensus auditable.",
+    inputSchema: ConsensusVoteInputShape,
+}, async (input) => {
+    try {
+        pruneExpired();
+        const parsed = ConsensusVoteInputSchema.parse(input);
+        logger.info("consensus_vote_requested", {
+            mode: parsed.config?.mode ?? "majority",
+            votes: parsed.votes.length,
+        });
+        const result = handleConsensusVote(getCoordinationToolContext(), parsed);
+        logger.info("consensus_vote_succeeded", {
+            mode: result.mode,
+            outcome: result.outcome,
+            satisfied: result.satisfied,
+            votes: result.votes,
+        });
+        return {
+            content: [{ type: "text", text: j({ tool: "consensus_vote", result }) }],
+            structuredContent: result,
+        };
+    }
+    catch (error) {
+        return coordinationToolError("consensus_vote", error);
+    }
+});
+server.registerTool("agent_autoscale_set", {
+    title: "Agent autoscale set",
+    description: "Configure les bornes de l'autoscaler de runtimes enfants.",
+    inputSchema: AgentAutoscaleSetInputShape,
+}, async (input) => {
+    try {
+        const parsed = AgentAutoscaleSetInputSchema.parse(input);
+        const result = handleAgentAutoscaleSet(getAgentToolContext(), parsed);
+        return {
+            content: [{ type: "text", text: j({ tool: "agent_autoscale_set", result }) }],
+            structuredContent: result,
+        };
+    }
+    catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        logger.error("agent_autoscale_set_failed", { message });
+        return {
+            isError: true,
+            content: [
+                {
+                    type: "text",
+                    text: j({ error: "AGENT_AUTOSCALE_ERROR", message }),
+                },
+            ],
+        };
+    }
+});
 // start
 server.registerTool("start", { title: "Start job", description: "Met les enfants d un job en waiting.", inputSchema: StartShape }, async (input) => {
     pruneExpired();
@@ -1571,10 +3052,44 @@ server.registerTool("child_create", {
 }, async (input) => {
     try {
         const parsed = ChildCreateInputSchema.parse(input);
-        const result = await handleChildCreate(getChildToolContext(), parsed);
+        const metadata = parsed.metadata ?? {};
+        const goals = extractMetadataGoals(metadata);
+        const tags = extractMetadataTags(metadata);
+        const contextSelection = selectMemoryContext(memoryStore, {
+            tags,
+            goals,
+            query: renderPromptForMemory(parsed.prompt),
+            limit: 4,
+        });
+        if (goals.length > 0) {
+            memoryStore.upsertKeyValue("orchestrator.last_goals", goals, {
+                tags: goals,
+                importance: 0.6,
+                metadata: { source: "child_create" },
+            });
+        }
+        const enrichedInput = { ...parsed };
+        if (contextSelection.episodes.length > 0 || contextSelection.keyValues.length > 0) {
+            enrichedInput.manifest_extras = {
+                ...(parsed.manifest_extras ?? {}),
+                memory_context: contextSelection,
+            };
+        }
+        const result = await handleChildCreate(getChildToolContext(), enrichedInput);
+        ensureChildVisibleInGraph({
+            childId: result.child_id,
+            snapshot: result.index_snapshot,
+            metadata: result.index_snapshot.metadata,
+            prompt: enrichedInput.prompt,
+            runtimeStatus: result.runtime_status,
+            startedAt: result.started_at,
+        });
+        const payload = contextSelection.episodes.length > 0 || contextSelection.keyValues.length > 0
+            ? { ...result, memory_context: contextSelection }
+            : result;
         return {
-            content: [{ type: "text", text: j({ tool: "child_create", result }) }],
-            structuredContent: result,
+            content: [{ type: "text", text: j({ tool: "child_create", result: payload }) }],
+            structuredContent: payload,
         };
     }
     catch (error) {
@@ -1606,6 +3121,7 @@ server.registerTool("child_status", {
     try {
         const parsed = ChildStatusInputSchema.parse(input);
         const result = handleChildStatus(getChildToolContext(), parsed);
+        graphState.syncChildIndexSnapshot(result.index_snapshot);
         return {
             content: [{ type: "text", text: j({ tool: "child_status", result }) }],
             structuredContent: result,
@@ -1623,9 +3139,131 @@ server.registerTool("child_collect", {
     try {
         const parsed = ChildCollectInputSchema.parse(input);
         const result = await handleChildCollect(getChildToolContext(), parsed);
+        const summary = summariseChildOutputs(result.outputs);
+        const review = metaCritic.review(summary.text, summary.kind, []);
+        logger.logCognitive({
+            actor: "meta-critic",
+            phase: "score",
+            childId: parsed.child_id,
+            score: review.overall,
+            content: review.feedback.join(" | "),
+            metadata: {
+                verdict: review.verdict,
+                suggestions: review.suggestions.slice(0, 3),
+            },
+        });
+        let reflectionSummary = null;
+        const shouldReflect = reflectionEnabled || REFLECTION_PRIORITY_KINDS.has(summary.kind);
+        if (shouldReflect) {
+            try {
+                reflectionSummary = await reflect({
+                    kind: summary.kind,
+                    input: summary.text,
+                    output: summary.text,
+                    meta: {
+                        score: review.overall,
+                        artifacts: result.outputs.artifacts.length,
+                        messages: result.outputs.messages.length,
+                    },
+                });
+                logger.logCognitive({
+                    actor: "self-reflect",
+                    phase: "resume",
+                    childId: parsed.child_id,
+                    content: reflectionSummary.insights.slice(0, 3).join(" | "),
+                    metadata: {
+                        kind: summary.kind,
+                        next_steps: reflectionSummary.nextSteps.slice(0, 2),
+                        risks: reflectionSummary.risks.slice(0, 2),
+                    },
+                });
+            }
+            catch (error) {
+                logger.warn("self_reflection_failed", {
+                    child_id: parsed.child_id,
+                    message: error instanceof Error ? error.message : String(error),
+                });
+            }
+        }
+        const qualityComputation = computeQualityAssessment(summary.kind, summary.text, review);
+        let qualityAssessment = null;
+        if (qualityComputation) {
+            const needsRevision = qualityGateEnabled && qualityComputation.score < qualityGateThreshold;
+            qualityAssessment = {
+                ...qualityComputation,
+                kind: summary.kind,
+                gate: {
+                    enabled: qualityGateEnabled,
+                    threshold: qualityGateThreshold,
+                    needs_revision: needsRevision,
+                },
+            };
+            logger.logCognitive({
+                actor: "quality-scorer",
+                phase: "score",
+                childId: parsed.child_id,
+                score: qualityComputation.score / 100,
+                content: `quality-${summary.kind}`,
+                metadata: {
+                    threshold: qualityGateThreshold,
+                    needs_revision: needsRevision,
+                    rubric: qualityComputation.rubric,
+                },
+            });
+        }
+        const childSnapshot = childSupervisor.childrenIndex.getChild(parsed.child_id);
+        const metadataTags = extractMetadataTags(childSnapshot?.metadata);
+        const tags = new Set([...summary.tags, ...metadataTags, parsed.child_id]);
+        const goals = extractMetadataGoals(childSnapshot?.metadata);
+        const episodeMetadata = {
+            child_id: parsed.child_id,
+            review,
+            artifact_count: result.outputs.artifacts.length,
+        };
+        if (reflectionSummary) {
+            episodeMetadata.reflection = reflectionSummary;
+        }
+        if (qualityAssessment) {
+            episodeMetadata.quality = {
+                kind: qualityAssessment.kind,
+                score: qualityAssessment.score,
+                rubric: qualityAssessment.rubric,
+                gate: qualityAssessment.gate,
+            };
+        }
+        const episode = memoryStore.recordEpisode({
+            goal: goals.length > 0 ? goals.join(" | ") : `Collecte ${parsed.child_id}`,
+            decision: "Synthèse des sorties enfant",
+            outcome: summary.text.slice(0, 512),
+            tags: Array.from(tags),
+            importance: review.overall,
+            metadata: episodeMetadata,
+        });
+        const payload = {
+            ...result,
+            review,
+            memory_snapshot: {
+                episode_id: episode.id,
+                tags: episode.tags,
+                stored_at: episode.createdAt,
+            },
+        };
+        if (reflectionSummary) {
+            payload.reflection = reflectionSummary;
+        }
+        if (qualityAssessment) {
+            payload.quality_assessment = {
+                kind: qualityAssessment.kind,
+                score: qualityAssessment.score,
+                rubric: qualityAssessment.rubric,
+                metrics: qualityAssessment.metrics,
+                gate: qualityAssessment.gate,
+            };
+            payload.needs_revision = qualityAssessment.gate.needs_revision;
+        }
         return {
-            content: [{ type: "text", text: j({ tool: "child_collect", result }) }],
-            structuredContent: result,
+            content: [{ type: "text", text: j({ tool: "child_collect", result: payload }) }],
+            structuredContent: payload,
         };
     }
     catch (error) {
@@ -2058,10 +3696,23 @@ if (isMain) {
         logger.error("cli_options_invalid", { message });
         process.exit(1);
     }
+    configureRuntimeFeatures(options.features);
+    configureRuntimeTimings(options.timings);
+    configureChildSafetyLimits(options.safety);
+    reflectionEnabled = options.enableReflection;
+    qualityGateEnabled = options.enableQualityGate;
+    qualityGateThreshold = options.qualityThreshold;
     if (options.logFile) {
-        logger = new StructuredLogger({ logFile: options.logFile });
+        activeLoggerOptions = { ...activeLoggerOptions, logFile: options.logFile };
+        logger = new StructuredLogger(activeLoggerOptions);
         eventStore.setLogger(logger);
-        logger.info("logger_configured", { log_file: options.logFile });
+        logger.info("logger_configured", {
+            log_file: options.logFile,
+            max_size_bytes: activeLoggerOptions.maxFileSizeBytes ?? null,
+            max_file_count: activeLoggerOptions.maxFileCount ?? null,
+            redacted_tokens: activeLoggerOptions.redactSecrets?.length ?? 0,
+            source: "cli",
+        });
     }
     eventStore.setMaxHistory(options.maxEventHistory);
     let enableStdio = options.enableStdio;
@@ -2082,6 +3733,30 @@ if (isMain) {
         }
         catch (error) {
             logger.error("http_start_failed", { message: error instanceof Error ? error.message : String(error) });
+            process.exit(1);
+        }
+    }
+    // Start the monitoring dashboard when operators enabled it via CLI. The
+    // server shares the orchestrator in-memory state so the cleanup hook mirrors
+    // the HTTP transport lifecycle.
+    if (options.dashboard.enabled) {
+        try {
+            const handle = await startDashboardServer({
+                host: options.dashboard.host,
+                port: options.dashboard.port,
+                streamIntervalMs: options.dashboard.streamIntervalMs,
+                graphState,
+                supervisor: childSupervisor,
+                eventStore,
+                stigmergy,
+                btStatusRegistry,
+                supervisorAgent: orchestratorSupervisor,
+                logger,
+            });
+            cleanup.push(handle.close);
+        }
+        catch (error) {
+            logger.error("dashboard_start_failed", { message: error instanceof Error ? error.message : String(error) });
             process.exit(1);
         }
     }
@@ -2108,4 +3783,4 @@ if (isMain) {
         process.exit(0);
     });
 }
-export { server, graphState, DEFAULT_CHILD_RUNTIME, buildLiveEvents, setDefaultChildRuntime };
+export { server, graphState, DEFAULT_CHILD_RUNTIME, buildLiveEvents, setDefaultChildRuntime, GraphSubgraphExtractInputSchema, GraphSubgraphExtractInputShape, };

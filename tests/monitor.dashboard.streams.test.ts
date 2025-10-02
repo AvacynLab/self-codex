@@ -1,0 +1,197 @@
+import { describe, it } from "mocha";
+import { expect } from "chai";
+import { Readable } from "node:stream";
+import type { IncomingMessage, ServerResponse } from "node:http";
+
+import { GraphState } from "../src/graphState.js";
+import { EventStore } from "../src/eventStore.js";
+import { StructuredLogger } from "../src/logger.js";
+import { StigmergyField } from "../src/coord/stigmergy.js";
+import { BehaviorTreeStatusRegistry } from "../src/monitor/btStatusRegistry.js";
+import type { SupervisorSchedulerSnapshot } from "../src/agents/supervisor.js";
+import {
+  DashboardSnapshot,
+  createDashboardRouter,
+} from "../src/monitor/dashboard.js";
+
+/**
+ * Minimal supervisor stub exposing the cancellation contract exercised by the
+ * dashboard router when handling control requests.
+ */
+class StubSupervisor {
+  public cancellations: string[] = [];
+
+  async cancel(childId: string): Promise<void> {
+    this.cancellations.push(childId);
+  }
+}
+
+class StubSupervisorAgent {
+  public snapshot: (SupervisorSchedulerSnapshot & { updatedAt: number }) | null = null;
+
+  getLastSchedulerSnapshot(): (SupervisorSchedulerSnapshot & { updatedAt: number }) | null {
+    return this.snapshot;
+  }
+}
+
+/** Lightweight response mock capturing SSE payloads for assertions. */
+class StreamResponse {
+  public statusCode: number | null = null;
+  public headersSent = false;
+  public finished = false;
+  public readonly headers: Record<string, string> = {};
+  private readonly chunks: Buffer[] = [];
+  private readonly closeListeners: Array<() => void> = [];
+
+  writeHead(status: number, headers?: Record<string, string | number>): ServerResponse {
+    this.statusCode = status;
+    if (headers) {
+      for (const [key, value] of Object.entries(headers)) {
+        this.headers[key.toLowerCase()] = String(value);
+      }
+    }
+    this.headersSent = true;
+    return this as unknown as ServerResponse;
+  }
+
+  write(chunk: string | Uint8Array): boolean {
+    const buffer = typeof chunk === "string" ? Buffer.from(chunk, "utf8") : Buffer.from(chunk);
+    this.chunks.push(buffer);
+    this.headersSent = true;
+    return true;
+  }
+
+  end(chunk?: string | Uint8Array): void {
+    if (chunk) {
+      this.write(chunk);
+    }
+    this.finished = true;
+    for (const listener of this.closeListeners) {
+      try {
+        listener();
+      } catch {
+        // Ignore close listener failures in tests to keep assertions focused on SSE output.
+      }
+    }
+  }
+
+  on(event: string, listener: () => void): this {
+    if (event === "close") {
+      this.closeListeners.push(listener);
+    }
+    return this;
+  }
+
+  /** Returns the concatenated SSE body for convenience. */
+  get body(): string {
+    return Buffer.concat(this.chunks).toString("utf8");
+  }
+
+  /** Extracts the JSON payloads emitted through `data:` SSE lines. */
+  get dataEvents(): string[] {
+    return this.body
+      .split("\n\n")
+      .filter((entry) => entry.startsWith("data: "))
+      .map((entry) => entry.slice("data: ".length));
+  }
+}
+
+/** Builds a mocked HTTP request accepted by the dashboard router. */
+function createRequest(method: string, path: string, body?: unknown): IncomingMessage {
+  const payload = body === undefined ? [] : [Buffer.from(JSON.stringify(body))];
+  const stream = Readable.from(payload);
+  const request = stream as unknown as IncomingMessage;
+  request.method = method;
+  request.url = path;
+  request.headers = {
+    host: "dashboard.test",
+    "content-type": "application/json",
+  } as Record<string, string>;
+  return request;
+}
+
+describe("monitor/dashboard streams", () => {
+  it("streams deterministic snapshots over SSE", async () => {
+    const logger = new StructuredLogger();
+    const graphState = new GraphState();
+    const eventStore = new EventStore({ maxHistory: 50, logger });
+    const supervisor = new StubSupervisor();
+    const stigmergy = new StigmergyField();
+    const btStatusRegistry = new BehaviorTreeStatusRegistry();
+    const supervisorAgent = new StubSupervisorAgent();
+
+    const createdAt = Date.now() - 1_000;
+    graphState.createJob("job-1", { goal: "demo", createdAt, state: "running" });
+    graphState.createChild(
+      "job-1",
+      "child-1",
+      { name: "alpha", runtime: "codex" },
+      { createdAt },
+    );
+    graphState.patchChild("child-1", { lastTs: createdAt + 200, priority: 2 });
+    stigmergy.mark("node-alpha", "progress", 5);
+    btStatusRegistry.reset("tree-demo", createdAt);
+    btStatusRegistry.record("tree-demo", "node-root", "running", createdAt + 100);
+    supervisorAgent.snapshot = {
+      schedulerTick: 2,
+      backlog: 3,
+      completed: 1,
+      failed: 0,
+      updatedAt: createdAt + 250,
+    };
+
+    const router = createDashboardRouter({
+      graphState,
+      eventStore,
+      supervisor,
+      logger,
+      streamIntervalMs: 250,
+      autoBroadcast: false,
+      stigmergy,
+      btStatusRegistry,
+      supervisorAgent,
+    });
+
+    try {
+      const response = new StreamResponse();
+      await router.handleRequest(createRequest("GET", "/stream"), response as unknown as ServerResponse);
+
+      expect(response.statusCode).to.equal(200);
+      expect(response.headers["content-type"]).to.equal("text/event-stream");
+
+      const initialEvents = response.dataEvents;
+      expect(initialEvents).to.have.lengthOf.at.least(1);
+
+      const firstSnapshot = JSON.parse(initialEvents[0]) as DashboardSnapshot;
+      expect(firstSnapshot.children).to.have.length(1);
+      expect(firstSnapshot.children[0]).to.include({ id: "child-1" });
+      expect(firstSnapshot.scheduler.backlog).to.equal(3);
+      expect(firstSnapshot.heatmap.pheromones[0]?.childId).to.equal("node-alpha");
+      expect(firstSnapshot.behaviorTrees[0]?.treeId).to.equal("tree-demo");
+
+      graphState.patchChild("child-1", { state: "completed", lastTs: createdAt + 800 });
+      eventStore.emit({ kind: "REPLY", level: "info", childId: "child-1", payload: { tokens: 12 } });
+      stigmergy.mark("node-alpha", "progress", 2);
+      btStatusRegistry.record("tree-demo", "node-root", "success", createdAt + 900);
+      supervisorAgent.snapshot = {
+        schedulerTick: 4,
+        backlog: 1,
+        completed: 2,
+        failed: 0,
+        updatedAt: createdAt + 950,
+      };
+
+      router.broadcast();
+      const afterBroadcast = response.dataEvents;
+      expect(afterBroadcast.length).to.be.greaterThan(initialEvents.length);
+
+      const latestSnapshot = JSON.parse(afterBroadcast[afterBroadcast.length - 1]) as DashboardSnapshot;
+      expect(latestSnapshot.children[0].state).to.equal("completed");
+      expect(latestSnapshot.heatmap.tokens[0]?.value ?? 0).to.be.greaterThan(0);
+      expect(latestSnapshot.scheduler.backlog).to.equal(1);
+      expect(latestSnapshot.behaviorTrees[0]?.nodes[0]?.status).to.equal("success");
+    } finally {
+      await router.close();
+    }
+  });
+});

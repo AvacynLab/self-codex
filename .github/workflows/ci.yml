@@ -1,4 +1,4 @@
-# CI workflow to guarantee build, lint, and test coverage on every push/PR.
+# CI workflow to guarantee build, lint, test, and coverage checks across Node versions.
 name: CI
 
 on:
@@ -23,9 +23,10 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node-version }}
+          cache: "npm"
 
-      - name: Install dependencies without writing lockfiles
-        run: npm install --no-save --no-package-lock
+      - name: Install dependencies
+        run: npm ci
 
       - name: Build TypeScript sources
         run: npm run build
@@ -33,5 +34,15 @@ jobs:
       - name: Lint TypeScript projects
         run: npm run lint
 
-      - name: Run test suite
+      - name: Run unit tests
         run: npm test
+
+      - name: Generate coverage report
+        run: npm run coverage
+
+      - name: Upload coverage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-${{ matrix.node-version }}
+          path: coverage
+          if-no-files-found: error

@@ -80,6 +80,7 @@ export class OrchestratorSupervisor implements LoopReconciler {
   private readonly starvationRepeatMs: number;
 
   private lastSchedulerSnapshot: SupervisorSchedulerSnapshot | null = null;
+  private lastSchedulerSnapshotAt: number | null = null;
   private lastBacklog = 0;
   private lastProgressTick = 0;
   private lastProgressAt = 0;
@@ -137,6 +138,21 @@ export class OrchestratorSupervisor implements LoopReconciler {
       backlog,
       completed,
       failed,
+    };
+    this.lastSchedulerSnapshotAt = this.now();
+  }
+
+  /** Returns the latest scheduler snapshot recorded by the supervisor. */
+  getLastSchedulerSnapshot(): (SupervisorSchedulerSnapshot & { updatedAt: number }) | null {
+    if (!this.lastSchedulerSnapshot || this.lastSchedulerSnapshotAt === null) {
+      return null;
+    }
+    return {
+      schedulerTick: this.lastSchedulerSnapshot.schedulerTick,
+      backlog: this.lastSchedulerSnapshot.backlog,
+      completed: this.lastSchedulerSnapshot.completed,
+      failed: this.lastSchedulerSnapshot.failed,
+      updatedAt: this.lastSchedulerSnapshotAt,
     };
   }
 

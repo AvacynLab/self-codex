@@ -53,6 +53,59 @@ export interface ChildSupervisorOptions {
    * conservative default derived from {@link idleTimeoutMs} is used.
    */
   idleCheckIntervalMs?: number;
+  /** Optional safety guardrails enforced while spawning children. */
+  safety?: ChildSupervisorSafetyOptions;
+}
+
+/**
+ * Declarative guardrails enforced by the supervisor. When configured, the
+ * supervisor refuses to spawn new children beyond the maximum threshold and
+ * annotates each manifest with the configured resource ceilings.
+ */
+export interface ChildSupervisorSafetyOptions {
+  /** Maximum number of concurrent children allowed. */
+  maxChildren?: number | null;
+  /** Upper bound on the memory (in megabytes) granted to each child. */
+  memoryLimitMb?: number | null;
+  /** Upper bound on the CPU usage percentage granted to each child. */
+  cpuPercent?: number | null;
+}
+
+/** Snapshot describing the currently enforced safety limits. */
+export interface ChildSupervisorSafetySnapshot {
+  maxChildren: number | null;
+  memoryLimitMb: number | null;
+  cpuPercent: number | null;
+}
+
+/** Error raised when the caller attempts to exceed the configured child cap. */
+export class ChildLimitExceededError extends Error {
+  public readonly code = "E-CHILD-LIMIT";
+
+  public readonly hint = "max_children_reached";
+
+  constructor(readonly maxChildren: number, readonly activeChildren: number) {
+    super(
+      `Cannot spawn more than ${maxChildren} child(ren); ${activeChildren} already running`,
+    );
+    this.name = "ChildLimitExceededError";
+  }
+}
+
+/**
+ * Error raised when a caller requests limits above the configured ceilings. We
+ * expose a dedicated code so the server can map the violation to a structured
+ * MCP error payload.
+ */
+export class ChildLimitOverrideError extends Error {
+  public readonly code = "E-CHILD-LIMIT";
+
+  public readonly hint = "limit_override_rejected";
+
+  constructor(readonly limit: "memory_mb" | "cpu_percent", readonly maximum: number, readonly requested: number) {
+    super(`Limit ${limit}=${requested} exceeds configured maximum ${maximum}`);
+    this.name = "ChildLimitOverrideError";
+  }
 }
 
 /**
@@ -141,6 +194,10 @@ export class ChildSupervisor {
   private readonly watchdogs = new Map<string, NodeJS.Timeout>();
   private readonly idleTimeoutMs: number;
   private readonly idleCheckIntervalMs: number;
+  private maxChildren: number | null = null;
+  private memoryLimitMb: number | null = null;
+  private cpuPercent: number | null = null;
+  private baseLimitsTemplate: ChildRuntimeLimits | null = null;
 
   constructor(options: ChildSupervisorOptions) {
     this.childrenRoot = options.childrenRoot;
@@ -155,6 +212,53 @@ export class ChildSupervisor {
     const configuredInterval = options.idleCheckIntervalMs;
     const interval = configuredInterval ?? defaultInterval;
     this.idleCheckIntervalMs = interval > 0 ? Math.min(interval, Math.max(250, this.idleTimeoutMs || interval)) : defaultInterval;
+
+    this.configureSafety(options.safety ?? {});
+  }
+
+  /** Returns the safety guardrails currently enforced by the supervisor. */
+  getSafetySnapshot(): ChildSupervisorSafetySnapshot {
+    return {
+      maxChildren: this.maxChildren,
+      memoryLimitMb: this.memoryLimitMb,
+      cpuPercent: this.cpuPercent,
+    };
+  }
+
+  /**
+   * Updates the safety guardrails. Thresholds are clamped to safe bounds so a
+   * misconfiguration never disables protections entirely.
+   */
+  configureSafety(options: ChildSupervisorSafetyOptions): void {
+    const { maxChildren, memoryLimitMb, cpuPercent } = options;
+
+    if (typeof maxChildren === "number" && Number.isFinite(maxChildren) && maxChildren > 0) {
+      this.maxChildren = Math.max(1, Math.trunc(maxChildren));
+    } else {
+      this.maxChildren = null;
+    }
+
+    if (typeof memoryLimitMb === "number" && Number.isFinite(memoryLimitMb) && memoryLimitMb > 0) {
+      this.memoryLimitMb = Math.max(1, Math.trunc(memoryLimitMb));
+    } else {
+      this.memoryLimitMb = null;
+    }
+
+    if (typeof cpuPercent === "number" && Number.isFinite(cpuPercent) && cpuPercent > 0) {
+      this.cpuPercent = Math.max(1, Math.min(100, Math.trunc(cpuPercent)));
+    } else {
+      this.cpuPercent = null;
+    }
+
+    const template: ChildRuntimeLimits = {};
+    if (this.memoryLimitMb !== null) {
+      template.memory_mb = this.memoryLimitMb;
+    }
+    if (this.cpuPercent !== null) {
+      template.cpu_percent = this.cpuPercent;
+    }
+
+    this.baseLimitsTemplate = Object.keys(template).length > 0 ? template : null;
   }
 
   /**
@@ -248,9 +352,18 @@ export class ChildSupervisor {
       throw new Error(`A runtime is already registered for ${childId}`);
     }
 
+    if (this.maxChildren !== null) {
+      const activeChildren = this.countActiveChildren();
+      if (activeChildren >= this.maxChildren) {
+        throw new ChildLimitExceededError(this.maxChildren, activeChildren);
+      }
+    }
+
     const command = options.command ?? this.defaultCommand;
     const args = options.args ? [...options.args] : [...this.defaultArgs];
     const env = { ...this.defaultEnv, ...(options.env ?? {}) };
+
+    const resolvedLimits = this.resolveChildLimits(options.limits ?? null);
 
     const runtime = await startChildRuntime({
       childId,
@@ -260,7 +373,7 @@ export class ChildSupervisor {
       env,
       metadata: options.metadata,
       manifestExtras: options.manifestExtras,
-      limits: options.limits ?? null,
+      limits: resolvedLimits,
       toolsAllow: options.toolsAllow ?? null,
       spawnRetry: options.spawnRetry,
     });
@@ -442,6 +555,50 @@ export class ChildSupervisor {
       throw new Error(`Unknown child record: ${childId}`);
     }
     return snapshot;
+  }
+
+  /** Counts the number of children that are still running or spawning. */
+  private countActiveChildren(): number {
+    let active = 0;
+    for (const runtime of this.runtimes.values()) {
+      const lifecycle = runtime.getStatus().lifecycle;
+      if (lifecycle === "spawning" || lifecycle === "running") {
+        active += 1;
+      }
+    }
+    return active;
+  }
+
+  /**
+   * Merges configured safety limits with caller-provided overrides while
+   * guarding against attempts to exceed the configured ceilings.
+   */
+  private resolveChildLimits(overrides: ChildRuntimeLimits | null): ChildRuntimeLimits | null {
+    const resolved: ChildRuntimeLimits = this.baseLimitsTemplate ? { ...this.baseLimitsTemplate } : {};
+
+    if (overrides) {
+      for (const [key, rawValue] of Object.entries(overrides)) {
+        if (rawValue === undefined || rawValue === null) {
+          continue;
+        }
+
+        if (key === "memory_mb" && this.memoryLimitMb !== null && typeof rawValue === "number") {
+          if (rawValue > this.memoryLimitMb) {
+            throw new ChildLimitOverrideError("memory_mb", this.memoryLimitMb, rawValue);
+          }
+        }
+
+        if (key === "cpu_percent" && this.cpuPercent !== null && typeof rawValue === "number") {
+          if (rawValue > this.cpuPercent) {
+            throw new ChildLimitOverrideError("cpu_percent", this.cpuPercent, rawValue);
+          }
+        }
+
+        resolved[key] = rawValue as ChildRuntimeLimits[keyof ChildRuntimeLimits];
+      }
+    }
+
+    return Object.keys(resolved).length > 0 ? resolved : null;
   }
 
   private nextMessageIndex(childId: string): number {

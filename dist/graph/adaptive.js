@@ -1,3 +1,4 @@
+import { applyAll, createInlineSubgraphRule, createRerouteAvoidRule, createSplitParallelRule } from "./rewrite.js";
 const DEFAULT_OPTIONS = {
     targetDurationMs: 2_000,
     successWeight: 0.6,
@@ -142,11 +143,22 @@ export function evaluateAdaptiveGraph(graph, state, options = {}) {
  * the delta before committing to the change.
  */
 export function pruneWeakBranches(graph, evaluation) {
-    const edges = graph.edges.filter((edge) => !evaluation.edgesToPrune.includes(edgeKey(edge.from, edge.to)));
+    const edgesToRemove = new Set(evaluation.edgesToPrune);
+    let removedEdges = 0;
+    const retainedEdges = graph.edges.filter((edge) => {
+        const shouldRemove = edgesToRemove.has(edgeKey(edge.from, edge.to));
+        if (shouldRemove) {
+            removedEdges += 1;
+        }
+        return !shouldRemove;
+    });
+    // Keep the structure immutable while ensuring repeated pruning rounds are
+    // idempotent: once the weak edges disappeared we simply retain the current
+    // version number so subsequent passes do not drift.
     return {
         ...graph,
-        edges,
-        graphVersion: graph.graphVersion + (evaluation.edgesToPrune.length > 0 ? 1 : 0),
+        edges: removedEdges > 0 ? retainedEdges : [...graph.edges],
+        graphVersion: graph.graphVersion + (removedEdges > 0 ? 1 : 0),
     };
 }
 /**
@@ -167,6 +179,35 @@ export function deriveWeightMultipliers(evaluation, options = {}) {
         multipliers.set(insight.edgeKey, multiplier);
     }
     return multipliers;
+}
+/**
+ * Apply the default rewrite rules using the adaptive evaluation outcome as a
+ * signal to decide which branches should be transformed.
+ */
+export function applyAdaptiveRewrites(graph, evaluation, options = {}) {
+    const boostTargets = new Set(evaluation.edgesToBoost);
+    const pruneTargets = new Set();
+    for (const key of evaluation.edgesToPrune) {
+        const [, target] = key.split("→");
+        if (target) {
+            pruneTargets.add(target);
+        }
+    }
+    const avoidLabels = options.avoidLabels ? new Set(options.avoidLabels) : undefined;
+    const baseRules = [];
+    if (boostTargets.size > 0) {
+        baseRules.push(createSplitParallelRule(boostTargets));
+    }
+    else {
+        baseRules.push(createSplitParallelRule());
+    }
+    baseRules.push(createInlineSubgraphRule());
+    baseRules.push(createRerouteAvoidRule({
+        avoidNodeIds: pruneTargets.size > 0 ? pruneTargets : undefined,
+        avoidLabels,
+    }));
+    const rules = baseRules.concat(options.additionalRules ?? []);
+    return applyAll(graph, rules, options.stopOnNoChange ?? true);
 }
 function edgeKey(from, to) {
     return `${from}→${to}`;

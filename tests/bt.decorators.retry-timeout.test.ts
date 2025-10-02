@@ -171,6 +171,79 @@ describe("behaviour tree decorators", () => {
     expect(result.status).to.equal("success");
   });
 
+  it("requests categorised timeout budgets and records successful outcomes", async () => {
+    const deferred = new DeferredNode("deferred", { status: "success" });
+    const clock = new TestClock();
+    const waits: number[] = [];
+    const recorded: Array<{ category: string; outcome: { durationMs: number; success: boolean; budgetMs: number } }> = [];
+    const runtime: TickRuntime = {
+      ...noopRuntime,
+      now: () => clock.now(),
+      wait: (ms) => {
+        waits.push(ms);
+        return clock.wait(ms);
+      },
+      recommendTimeout: (category, complexity, fallback) => {
+        expect(category).to.equal("analysis");
+        expect(complexity).to.equal(2);
+        expect(fallback).to.equal(120);
+        return 80;
+      },
+      recordTimeoutOutcome: (category, outcome) => {
+        recorded.push({ category, outcome });
+      },
+    };
+    const timeout = new TimeoutNode("timeout", 120, deferred, { category: "analysis", complexityScore: 2 });
+
+    const pending = timeout.tick(runtime);
+    await Promise.resolve();
+    expect(waits).to.deep.equal([80]);
+
+    clock.advance(30);
+    deferred.resolve();
+
+    const result = await pending;
+    expect(result.status).to.equal("success");
+    expect(recorded).to.have.length(1);
+    expect(recorded[0].category).to.equal("analysis");
+    expect(recorded[0].outcome.success).to.equal(true);
+    expect(recorded[0].outcome.budgetMs).to.equal(80);
+    expect(recorded[0].outcome.durationMs).to.equal(30);
+  });
+
+  it("falls back to runtime failure when the timeout elapses", async () => {
+    const deferred = new DeferredNode("deferred", { status: "success" });
+    const clock = new TestClock();
+    const waits: number[] = [];
+    const recorded: Array<{ category: string; outcome: { durationMs: number; success: boolean; budgetMs: number } }> = [];
+    const runtime: TickRuntime = {
+      ...noopRuntime,
+      now: () => clock.now(),
+      wait: (ms) => {
+        waits.push(ms);
+        return clock.wait(ms);
+      },
+      recommendTimeout: () => 50,
+      recordTimeoutOutcome: (category, outcome) => {
+        recorded.push({ category, outcome });
+      },
+    };
+    const timeout = new TimeoutNode("timeout", 200, deferred, { category: "analysis" });
+
+    const pending = timeout.tick(runtime);
+    await Promise.resolve();
+    expect(waits).to.deep.equal([50]);
+
+    clock.advanceTo(50);
+    const result = await pending;
+    expect(result.status).to.equal("failure");
+    expect(recorded).to.have.length(1);
+    expect(recorded[0].category).to.equal("analysis");
+    expect(recorded[0].outcome.success).to.equal(false);
+    expect(recorded[0].outcome.budgetMs).to.equal(50);
+    expect(recorded[0].outcome.durationMs).to.equal(50);
+  });
+
   it("invokes the runtime tool through task leaves", async () => {
     let calledWith: unknown = null;
     const runtime: TickRuntime = {

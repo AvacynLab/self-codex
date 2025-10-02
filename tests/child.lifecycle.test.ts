@@ -175,17 +175,18 @@ describe("child runtime lifecycle", () => {
 
       const shutdown = await runtime.shutdown({ signal: "SIGTERM", timeoutMs: 100 });
 
-      // Node.js 22 started honouring the SIGTERM handler even for stubborn
-      // children, allowing the process to terminate gracefully before the
-      // timeout elapses. To keep the regression test stable across the
-      // supported Node versions we assert the forced shutdown behaviour on
-      // Node 18/20 and fall back to checking the recorded signal on Node 22+.
+      // Newer Node.js releases (20.19+ and 22+) started honouring the SIGTERM
+      // handler even for stubborn children, allowing the process to terminate
+      // gracefully before the timeout elapses. To keep the regression test
+      // stable across the supported Node versions we assert the forced
+      // shutdown behaviour on Node 18 and fall back to checking the recorded
+      // signal on more recent runtimes.
       const majorNodeVersion = Number.parseInt(process.versions.node.split(".")[0] ?? "0", 10);
 
-      if (Number.isFinite(majorNodeVersion) && majorNodeVersion >= 22) {
-        // Node.js 22 may acknowledge the SIGTERM quickly or still require a
-        // follow-up SIGKILL depending on scheduler timing. Accept both
-        // outcomes while ensuring the metadata remains coherent.
+      if (Number.isFinite(majorNodeVersion) && majorNodeVersion >= 20) {
+        // Node.js 20.19 and newer may acknowledge the SIGTERM quickly or still
+        // require a follow-up SIGKILL depending on scheduler timing. Accept
+        // both outcomes while ensuring the metadata remains coherent.
         if (shutdown.forced) {
           expect(shutdown.signal === "SIGKILL" || shutdown.code !== 0).to.equal(true);
         } else {

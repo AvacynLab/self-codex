@@ -18,6 +18,14 @@ import {
   StigmergyTotalSnapshot,
 } from "../coord/stigmergy.js";
 import { StructuredLogger } from "../logger.js";
+import {
+  ConsensusConfigSchema,
+  majority,
+  quorum,
+  weighted,
+  type ConsensusDecision,
+  type ConsensusVote,
+} from "../coord/consensus.js";
 
 /**
  * Error raised when a requested blackboard key cannot be found. The dedicated
@@ -79,6 +87,41 @@ export const BbWatchInputSchema = z.object({
   limit: z.number().int().min(1).max(200).default(100),
 });
 export const BbWatchInputShape = BbWatchInputSchema.shape;
+
+/** Schema validating the payload accepted by the `consensus_vote` tool. */
+const ConsensusBallotSchema = z
+  .object({
+    voter: z.string().min(1, "voter must not be empty"),
+    value: z.string().min(1, "value must not be empty"),
+  })
+  .strict();
+
+const ConsensusVoteBaseSchema = z
+  .object({
+    votes: z.array(ConsensusBallotSchema).min(1, "at least one vote must be provided"),
+    config: ConsensusConfigSchema.optional(),
+  })
+  .strict();
+
+export const ConsensusVoteInputSchema = ConsensusVoteBaseSchema.superRefine((payload, ctx) => {
+    if (payload.config?.mode === "quorum" && typeof payload.config.quorum !== "number") {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["config", "quorum"],
+        message: "quorum mode requires the quorum field",
+      });
+    }
+    if (payload.config?.mode === "weighted" && payload.config.quorum !== undefined && payload.config.quorum <= 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["config", "quorum"],
+        message: "quorum must be positive when provided",
+      });
+    }
+  });
+
+export type ConsensusVoteInput = z.infer<typeof ConsensusVoteInputSchema>;
+export const ConsensusVoteInputShape = ConsensusVoteBaseSchema.shape;
 
 /** Schema validating the payload accepted by the `stig_mark` tool. */
 export const StigMarkInputSchema = z.object({
@@ -206,6 +249,18 @@ export interface StigSnapshotResult extends Record<string, unknown> {
   generated_at: number;
   points: SerializedStigmergyPoint[];
   totals: SerializedStigmergyTotal[];
+}
+
+/** Result returned by {@link handleConsensusVote}. */
+export interface ConsensusVoteResult extends Record<string, unknown> {
+  mode: ConsensusDecision["mode"];
+  outcome: ConsensusDecision["outcome"];
+  satisfied: boolean;
+  tie: boolean;
+  threshold: number | null;
+  total_weight: number;
+  tally: Record<string, number>;
+  votes: number;
 }
 
 interface SerializedContractNetBid extends Record<string, unknown> {
@@ -469,6 +524,62 @@ export function handleCnpAnnounce(
   });
 
   return serialiseContractNetResult(snapshot, decision);
+}
+
+/**
+ * Computes a consensus decision from raw ballots. The helper mirrors the
+ * consensus logic used in planners so operators can query aggregated votes on
+ * demand without triggering a full reduce workflow.
+ */
+export function handleConsensusVote(
+  context: CoordinationToolContext,
+  input: ConsensusVoteInput,
+): ConsensusVoteResult {
+  const votes: ConsensusVote[] = input.votes.map((ballot) => ({
+    voter: ballot.voter,
+    value: ballot.value,
+  }));
+
+  const config = ConsensusConfigSchema.parse(input.config ?? {});
+  const baseOptions = {
+    weights: config.weights,
+    preferValue: config.prefer_value,
+    tieBreaker: config.tie_breaker,
+  } as const;
+
+  let decision: ConsensusDecision;
+  switch (config.mode) {
+    case "quorum": {
+      const quorumThreshold = config.quorum as number;
+      decision = quorum(votes, { ...baseOptions, quorum: quorumThreshold });
+      break;
+    }
+    case "weighted":
+      decision = weighted(votes, { ...baseOptions, quorum: config.quorum });
+      break;
+    default:
+      decision = majority(votes, baseOptions);
+      break;
+  }
+
+  context.logger.info("consensus_vote", {
+    mode: decision.mode,
+    outcome: decision.outcome,
+    satisfied: decision.satisfied,
+    votes: votes.length,
+    total_weight: decision.totalWeight,
+  });
+
+  return {
+    mode: decision.mode,
+    outcome: decision.outcome,
+    satisfied: decision.satisfied,
+    tie: decision.tie,
+    threshold: decision.threshold ?? null,
+    total_weight: decision.totalWeight,
+    tally: decision.tally,
+    votes: votes.length,
+  };
 }
 
 function serialiseContractNetResult(

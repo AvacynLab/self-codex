@@ -1,6 +1,5 @@
 import { flatten } from "./hierarchy.js";
-/** Unique key storing the serialized registry of sub-graphs embedded inside a normalised graph. */
-const SUBGRAPH_REGISTRY_KEY = "hierarchy:subgraphs";
+import { SUBGRAPH_REGISTRY_KEY, parseSubgraphRegistry, } from "./subgraphRegistry.js";
 /** Attribute flag automatically added to edges produced by the split-parallel rule. */
 const SPLIT_PARALLEL_FLAG = "rewritten_split_parallel";
 /** Attribute flag automatically added to edges produced by the inline-subgraph rule. */
@@ -323,26 +322,6 @@ function applyRule(graph, rule) {
         }
     }
     return { graph: current, applied, matches };
-}
-/** Extract and validate the subgraph registry stored in the metadata map. */
-function parseSubgraphRegistry(value) {
-    if (!value || typeof value !== "string") {
-        return null;
-    }
-    try {
-        const parsed = JSON.parse(value);
-        const registry = new Map();
-        for (const [key, descriptor] of Object.entries(parsed)) {
-            if (!descriptor || typeof descriptor !== "object") {
-                continue;
-            }
-            registry.set(key, descriptor);
-        }
-        return registry;
-    }
-    catch {
-        return null;
-    }
 }
 /** Ensure that a node identifier remains unique within the provided graph. */
 function ensureUniqueNodeId(graph, baseId) {

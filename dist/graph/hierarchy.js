@@ -1,13 +1,26 @@
+/** Default input port assigned when a task endpoint does not specify one explicitly. */
 const DEFAULT_INPUT_PORT = "in";
+/** Default output port assigned when a task endpoint does not specify one explicitly. */
 const DEFAULT_OUTPUT_PORT = "out";
+/** Internal key used to store the embedded hierarchical sub-graph within a subgraph node. */
 const EMBEDDED_GRAPH_KEY = "__embeddedGraph";
+/** Internal key used to track the ancestry of embeddings to detect cycles. */
 const ANCESTRY_KEY = "__hierarchyAncestry";
+/**
+ * Determine whether the provided node represents a task.
+ */
 function isTaskNode(node) {
     return node.kind === "task";
 }
+/**
+ * Determine whether the provided node represents a sub-graph placeholder.
+ */
 function isSubgraphNode(node) {
     return node.kind === "subgraph";
 }
+/**
+ * Normalise the provided list of port names, defaulting to a single entry when undefined.
+ */
 function normalisePorts(ports, fallback) {
     if (!ports || ports.length === 0) {
         return new Set([fallback]);
@@ -15,12 +28,15 @@ function normalisePorts(ports, fallback) {
     const unique = new Set();
     for (const port of ports) {
         if (typeof port !== "string" || port.trim().length === 0) {
-            throw new Error(`Invalid port name "${port}"`);
+            throw new Error(`Invalid port name \"${port}\"`);
         }
         unique.add(port);
     }
     return unique;
 }
+/**
+ * Extract and validate the SubgraphPorts contract stored inside a subgraph node.
+ */
 function extractSubgraphPorts(node) {
     const raw = node.params?.ports;
     if (!raw || typeof raw !== "object") {
@@ -50,6 +66,9 @@ function extractSubgraphPorts(node) {
     }
     return { inputs, outputs };
 }
+/**
+ * Retrieve the embedded graph stored inside a subgraph node, if any.
+ */
 function extractEmbeddedGraph(node) {
     const raw = node.params?.[EMBEDDED_GRAPH_KEY];
     if (!raw) {
@@ -60,9 +79,15 @@ function extractEmbeddedGraph(node) {
     }
     return raw;
 }
+/**
+ * Deep clone a hierarchical graph to avoid accidental mutations when embedding.
+ */
 function cloneHierGraph(graph) {
     return structuredClone(graph);
 }
+/**
+ * Recursively ensure that embedding the provided sub-graph would not introduce a cycle across hierarchy levels.
+ */
 function assertNoInterLevelCycle(graph, ancestors) {
     if (ancestors.has(graph.id)) {
         throw new Error(`Embedding graph ${graph.id} would introduce a cycle`);
@@ -81,6 +106,9 @@ function assertNoInterLevelCycle(graph, ancestors) {
         }
     }
 }
+/**
+ * Ensure node identifiers are unique and all edges reference valid nodes and ports.
+ */
 function validateHierGraph(graph) {
     const idSet = new Set();
     const nodeById = new Map();
@@ -98,6 +126,7 @@ function validateHierGraph(graph) {
             if (!node.ref || node.ref.trim().length === 0) {
                 throw new Error(`Subgraph node ${node.id} must reference a subgraph identifier`);
             }
+            // Validate ports and embedded graphs up-front.
             extractSubgraphPorts(node);
             const embedded = extractEmbeddedGraph(node);
             if (embedded) {
@@ -142,9 +171,15 @@ function validateHierGraph(graph) {
         }
     }
 }
+/**
+ * Helper exposing the embedded graph stored inside a subgraph node (used in tests and diagnostics).
+ */
 export function getEmbeddedGraph(node) {
     return extractEmbeddedGraph(node);
 }
+/**
+ * Embed the provided sub-graph inside the selected subgraph node, returning a new hierarchical graph instance.
+ */
 export function embedSubgraph(parent, nodeId, sub) {
     validateHierGraph(parent);
     validateHierGraph(sub);
@@ -184,9 +219,12 @@ export function embedSubgraph(parent, nodeId, sub) {
     };
     return {
         ...parent,
-        nodes: parent.nodes.map((candidate) => candidate.id === nodeId ? updatedNode : candidate),
+        nodes: parent.nodes.map((candidate) => (candidate.id === nodeId ? updatedNode : candidate)),
     };
 }
+/**
+ * Convert a hierarchical graph into the flattened normalised representation consumed by the rest of the orchestrator.
+ */
 export function flatten(hier) {
     validateHierGraph(hier);
     const nodes = [];
@@ -213,7 +251,9 @@ export function flatten(hier) {
                 const attributes = { kind: "task" };
                 if (node.attributes) {
                     for (const [key, value] of Object.entries(node.attributes)) {
-                        if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+                        if (typeof value === "string" ||
+                            typeof value === "number" ||
+                            typeof value === "boolean") {
                             attributes[key] = value;
                         }
                     }
@@ -275,12 +315,13 @@ export function flatten(hier) {
                 from_port: fromPort,
                 to_port: toPort,
             };
-            edges.push({
+            const record = {
                 from: fromId,
                 to: toId,
                 label: edge.label,
                 attributes,
-            });
+            };
+            edges.push(record);
         }
         return mapping;
     }
