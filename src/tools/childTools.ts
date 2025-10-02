@@ -17,6 +17,8 @@ import { StructuredLogger } from "../logger.js";
 import { SandboxExecutionResult, getSandboxRegistry } from "../sim/sandbox.js";
 import { PromptTemplateSchema } from "../prompts.js";
 import { LoopAlert, LoopDetector } from "../guard/loopDetector.js";
+import { OrchestratorSupervisor } from "../agents/supervisor.js";
+import { ContractNetAwardDecision, ContractNetCoordinator, RegisterAgentOptions } from "../coord/contractNet.js";
 
 /**
  * Dependencies required by the child tool handlers. The orchestrator injects
@@ -30,6 +32,10 @@ export interface ChildToolContext {
   logger: StructuredLogger;
   /** Optional guard responsible for detecting tight conversational loops. */
   loopDetector?: LoopDetector;
+  /** Optional contract-net coordinator used to route tasks when enabled. */
+  contractNet?: ContractNetCoordinator;
+  /** Optional orchestrator supervisor notified when incidents occur. */
+  supervisorAgent?: OrchestratorSupervisor;
 }
 
 /**
@@ -159,6 +165,17 @@ export async function handleChildCreate(
     workdir: runtimeStatus.workdir,
   });
 
+  if (context.contractNet) {
+    const profile = deriveContractNetProfile(input);
+    const snapshot = context.contractNet.registerAgent(created.childId, profile);
+    context.logger.info("contract_net_agent_registered", {
+      agent_id: snapshot.agentId,
+      base_cost: snapshot.baseCost,
+      reliability: snapshot.reliability,
+      tags: snapshot.tags,
+    });
+  }
+
   return {
     child_id: created.childId,
     runtime_status: runtimeStatus,
@@ -170,6 +187,77 @@ export async function handleChildCreate(
     ready_message: readyMessage,
     sent_initial_payload: sentInitialPayload,
   };
+}
+
+/** Derives a contract-net profile from the child creation payload. */
+function deriveContractNetProfile(input: z.infer<typeof ChildCreateInputSchema>): RegisterAgentOptions {
+  const baseCost = deriveContractNetBaseCost(input);
+  const reliability = deriveContractNetReliability(input.metadata);
+  const tags = deriveContractNetTags(input);
+  const metadata: Record<string, unknown> = {};
+  if (input.metadata) {
+    metadata.metadata = structuredClone(input.metadata);
+  }
+  if (input.budget) {
+    metadata.budget = structuredClone(input.budget);
+  }
+  if (input.timeouts) {
+    metadata.timeouts = structuredClone(input.timeouts);
+  }
+  if (input.tools_allow) {
+    metadata.tools_allow = [...input.tools_allow];
+  }
+
+  const profile: RegisterAgentOptions = {
+    baseCost,
+    tags,
+    metadata,
+  };
+  if (reliability !== undefined) {
+    profile.reliability = reliability;
+  }
+  return profile;
+}
+
+function deriveContractNetBaseCost(input: z.infer<typeof ChildCreateInputSchema>): number {
+  const budget = input.budget ?? {};
+  if (typeof budget.wallclock_ms === "number" && Number.isFinite(budget.wallclock_ms)) {
+    return Math.max(1, Math.round(budget.wallclock_ms / 100));
+  }
+  if (typeof budget.tokens === "number" && Number.isFinite(budget.tokens)) {
+    return Math.max(1, Math.round(budget.tokens / 50));
+  }
+  if (typeof budget.messages === "number" && Number.isFinite(budget.messages)) {
+    return Math.max(1, budget.messages * 25);
+  }
+  return 100;
+}
+
+function deriveContractNetReliability(metadata: unknown): number | undefined {
+  const record = toRecord(metadata);
+  if (!record) {
+    return undefined;
+  }
+  const contractNet = toRecord(record.contract_net);
+  if (!contractNet) {
+    return undefined;
+  }
+  const value = contractNet.reliability;
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function deriveContractNetTags(input: z.infer<typeof ChildCreateInputSchema>): string[] {
+  const tags = new Set<string>();
+  for (const tool of input.tools_allow ?? []) {
+    tags.add(`tool:${tool}`);
+  }
+  const metadata = toRecord(input.metadata);
+  if (metadata) {
+    for (const tag of extractStringArray(metadata.tags)) {
+      tags.add(tag);
+    }
+  }
+  return Array.from(tags);
 }
 
 /**
@@ -220,6 +308,14 @@ const ChildSendSandboxSchema = z
   })
   .strict();
 
+const ChildSendContractNetSchema = z
+  .object({
+    call_id: z.string().min(1),
+    requested_agent_id: z.string().min(1).optional(),
+    auto_complete: z.boolean().optional(),
+  })
+  .strict();
+
 const ChildSendInputBaseSchema = z.object({
   child_id: z.string().min(1),
   payload: z.unknown(),
@@ -234,6 +330,7 @@ const ChildSendInputBaseSchema = z.object({
       message: "timeout_ms must be finite",
     }),
   sandbox: ChildSendSandboxSchema.optional(),
+  contract_net: ChildSendContractNetSchema.optional(),
 });
 
 export const ChildSendInputSchema = ChildSendInputBaseSchema.refine(
@@ -300,6 +397,23 @@ function errorMessage(error: unknown): string {
   return String(error);
 }
 
+interface ContractNetDispatchSummary extends Record<string, unknown> {
+  call_id: string;
+  agent_id: string;
+  cost: number;
+  effective_cost: number;
+}
+
+/** Converts an award decision into a serialisable summary. */
+function buildContractNetSummary(decision: ContractNetAwardDecision): ContractNetDispatchSummary {
+  return {
+    call_id: decision.callId,
+    agent_id: decision.agentId,
+    cost: decision.cost,
+    effective_cost: Number(decision.effectiveCost.toFixed(6)),
+  };
+}
+
 /** Shape returned by {@link handleChildSend}. */
 export interface ChildSendResult extends Record<string, unknown> {
   child_id: string;
@@ -307,6 +421,7 @@ export interface ChildSendResult extends Record<string, unknown> {
   awaited_message: ChildRuntimeMessage | null;
   sandbox_result: SandboxExecutionResult | null;
   loop_alert: LoopAlert | null;
+  contract_net: ContractNetDispatchSummary | null;
 }
 
 /**
@@ -316,20 +431,41 @@ export async function handleChildSend(
   context: ChildToolContext,
   input: z.infer<typeof ChildSendInputSchema>,
 ): Promise<ChildSendResult> {
-  context.logger.info("child_send", { child_id: input.child_id });
+  const contractNetConfig = input.contract_net ?? null;
+  let contractNetDecision: ContractNetAwardDecision | null = null;
+  let resolvedChildId = input.child_id;
+
+  if (contractNetConfig) {
+    if (!context.contractNet) {
+      throw new Error("Contract-Net coordinator is not enabled");
+    }
+    const requested =
+      contractNetConfig.requested_agent_id ?? (input.child_id !== "auto" ? input.child_id : undefined);
+    const normalisedRequest = requested === "auto" ? undefined : requested;
+    contractNetDecision = context.contractNet.award(contractNetConfig.call_id, normalisedRequest);
+    resolvedChildId = contractNetDecision.agentId;
+  }
+
+  const childId = resolvedChildId;
+
+  context.logger.info("child_send", {
+    child_id: childId,
+    contract_net_call: contractNetConfig?.call_id ?? null,
+  });
 
   context.logger.logCognitive({
     actor: "orchestrator",
     phase: "prompt",
-    childId: input.child_id,
+    childId,
     content: serialiseForLog(input.payload),
     metadata: {
       expect: input.expect ?? null,
       sandbox: input.sandbox ?? null,
+      contract_net_call: contractNetConfig?.call_id ?? null,
     },
   });
 
-  const childSnapshot = context.supervisor.childrenIndex.getChild(input.child_id);
+  const childSnapshot = context.supervisor.childrenIndex.getChild(childId);
   const metadataRecord = toRecord(childSnapshot?.metadata);
   const highRisk = isHighRiskTask(metadataRecord);
   const sandboxConfig = input.sandbox;
@@ -339,11 +475,11 @@ export async function handleChildSend(
   const loopTaskId = extractTaskIdentifier(metadataRecord);
   const loopTaskType = extractTaskType(metadataRecord);
   let loopAlert: LoopAlert | null = null;
-  const allowedTools = context.supervisor.getAllowedTools(input.child_id);
+  const allowedTools = context.supervisor.getAllowedTools(childId);
   const requestedTool = extractRequestedTool(input.payload);
   if (requestedTool && allowedTools.length > 0 && !allowedTools.includes(requestedTool)) {
     throw new Error(
-      `Tool "${requestedTool}" is not allowed for child ${input.child_id}. Allowed tools: ${allowedTools.join(", ")}`,
+      `Tool "${requestedTool}" is not allowed for child ${childId}. Allowed tools: ${allowedTools.join(", ")}`,
     );
   }
 
@@ -354,7 +490,7 @@ export async function handleChildSend(
     const baseMetadata = toRecord(sandboxConfig?.metadata) ?? {};
     const sandboxMetadata: Record<string, unknown> = {
       ...baseMetadata,
-      child_id: input.child_id,
+      child_id: childId,
       high_risk: highRisk,
     };
     if (!registry.has(actionName)) {
@@ -372,7 +508,7 @@ export async function handleChildSend(
         metadata: sandboxMetadata,
       };
       context.logger.warn("child_send_sandbox_missing_handler", {
-        child_id: input.child_id,
+        child_id: childId,
         action: actionName,
       });
     } else {
@@ -384,7 +520,7 @@ export async function handleChildSend(
         timeoutMs: timeoutOverride,
       });
       context.logger.info("child_send_sandbox", {
-        child_id: input.child_id,
+        child_id: childId,
         action: actionName,
         status: sandboxResult.status,
         duration_ms: sandboxResult.durationMs,
@@ -398,14 +534,14 @@ export async function handleChildSend(
 
   let baselineSequence = 0;
   if (input.expect) {
-    const snapshot = context.supervisor.stream(input.child_id, { limit: 1 });
+    const snapshot = context.supervisor.stream(childId, { limit: 1 });
     baselineSequence = snapshot.totalMessages;
   }
 
-  const message = await context.supervisor.send(input.child_id, input.payload);
+  const message = await context.supervisor.send(childId, input.payload);
 
   const loopSignature = loopDetector
-    ? rememberLoopSignature(input.child_id, metadataRecord, input.payload)
+    ? rememberLoopSignature(childId, metadataRecord, input.payload)
     : null;
 
   if (loopDetector && loopSignature) {
@@ -413,23 +549,33 @@ export async function handleChildSend(
       loopAlert,
       loopDetector.recordInteraction({
         from: "orchestrator",
-        to: `child:${input.child_id}`,
+        to: `child:${childId}`,
         signature: loopSignature,
-        childId: input.child_id,
+        childId,
         taskId: loopTaskId ?? undefined,
         taskType: loopTaskType,
       }),
       context,
     );
+    if (loopAlert && context.supervisorAgent) {
+      await context.supervisorAgent.recordLoopAlert(loopAlert);
+    }
   }
 
   if (!input.expect) {
+    if (contractNetDecision && (contractNetConfig?.auto_complete ?? true)) {
+      context.contractNet?.complete(contractNetDecision.callId);
+    }
+    const contractNetSummary = contractNetDecision
+      ? buildContractNetSummary(contractNetDecision)
+      : null;
     return {
-      child_id: input.child_id,
+      child_id: childId,
       message,
       awaited_message: null,
       sandbox_result: sandboxResult,
       loop_alert: loopAlert,
+      contract_net: contractNetSummary,
     };
   }
 
@@ -438,7 +584,7 @@ export async function handleChildSend(
 
   try {
     const awaited = await context.supervisor.waitForMessage(
-      input.child_id,
+      childId,
       (msg) => msg.sequence >= baselineSequence && matcher(msg),
       timeoutMs,
     );
@@ -446,15 +592,18 @@ export async function handleChildSend(
       loopAlert = mergeLoopAlerts(
         loopAlert,
         loopDetector.recordInteraction({
-          from: `child:${input.child_id}`,
+          from: `child:${childId}`,
           to: "orchestrator",
           signature: loopSignature,
-          childId: input.child_id,
+          childId,
           taskId: loopTaskId ?? undefined,
           taskType: loopTaskType,
         }),
         context,
       );
+      if (loopAlert && context.supervisorAgent) {
+        await context.supervisorAgent.recordLoopAlert(loopAlert);
+      }
       const duration = Math.max(1, awaited.receivedAt - message.sentAt);
       loopDetector.recordTaskObservation({
         taskType: loopTaskType,
@@ -463,21 +612,28 @@ export async function handleChildSend(
       });
     }
     context.logger.logCognitive({
-      actor: `child:${input.child_id}`,
+      actor: `child:${childId}`,
       phase: "resume",
-      childId: input.child_id,
+      childId,
       content: childMessageExcerpt(awaited),
       metadata: {
         stream: awaited.stream,
         sequence: awaited.sequence,
       },
     });
+    if (contractNetDecision && (contractNetConfig?.auto_complete ?? true)) {
+      context.contractNet?.complete(contractNetDecision.callId);
+    }
+    const contractNetSummary = contractNetDecision
+      ? buildContractNetSummary(contractNetDecision)
+      : null;
     return {
-      child_id: input.child_id,
+      child_id: childId,
       message,
       awaited_message: cloneChildMessage(awaited),
       sandbox_result: sandboxResult,
       loop_alert: loopAlert,
+      contract_net: contractNetSummary,
     };
   } catch (error) {
     if (loopDetector && loopSignature) {
@@ -489,9 +645,9 @@ export async function handleChildSend(
     }
     const reason = errorMessage(error);
     context.logger.logCognitive({
-      actor: `child:${input.child_id}`,
+      actor: `child:${childId}`,
       phase: "resume",
-      childId: input.child_id,
+      childId,
       content: reason,
       metadata: {
         status: "error",
@@ -552,6 +708,23 @@ function toRecord(value: unknown): Record<string, unknown> | undefined {
     return undefined;
   }
   return value as Record<string, unknown>;
+}
+
+/** Extracts an array of strings ignoring falsy or non-string entries. */
+function extractStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  const result: string[] = [];
+  for (const entry of value) {
+    if (typeof entry === "string") {
+      const normalised = entry.trim();
+      if (normalised.length > 0) {
+        result.push(normalised);
+      }
+    }
+  }
+  return result;
 }
 
 /**

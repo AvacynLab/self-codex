@@ -1,0 +1,67 @@
+import { z } from "zod";
+
+import { Autoscaler } from "../agents/autoscaler.js";
+import { StructuredLogger } from "../logger.js";
+
+/** Context provided to agent management tools. */
+export interface AgentToolContext {
+  autoscaler: Autoscaler;
+  logger: StructuredLogger;
+}
+
+/** Schema describing the payload accepted by `agent_autoscale_set`. */
+const AgentAutoscaleSetInputBase = z.object({
+  min: z.number().int().nonnegative(),
+  max: z.number().int().nonnegative(),
+  cooldown_ms: z.number().int().nonnegative().optional(),
+});
+
+export const AgentAutoscaleSetInputSchema = AgentAutoscaleSetInputBase.superRefine((value, ctx) => {
+  if (value.max < value.min) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "invalid_bounds",
+      params: {
+        code: "invalid_bounds",
+        message: "max must be greater than or equal to min",
+        hint: "increase max or lower min",
+      },
+    });
+  }
+});
+
+export const AgentAutoscaleSetInputShape = AgentAutoscaleSetInputBase.shape;
+
+export interface AgentAutoscaleSetResult {
+  min: number;
+  max: number;
+  cooldown_ms: number;
+}
+
+/**
+ * Updates the autoscaler bounds and cooldown, returning the applied values so
+ * operators can persist the configuration.
+ */
+export function handleAgentAutoscaleSet(
+  context: AgentToolContext,
+  input: z.infer<typeof AgentAutoscaleSetInputSchema>,
+): AgentAutoscaleSetResult {
+  const patch = {
+    minChildren: input.min,
+    maxChildren: input.max,
+    ...(input.cooldown_ms !== undefined ? { cooldownMs: input.cooldown_ms } : {}),
+  };
+
+  const config = context.autoscaler.configure(patch);
+  context.logger.info("agent_autoscale_config_applied", {
+    min: config.minChildren,
+    max: config.maxChildren,
+    cooldown_ms: config.cooldownMs,
+  });
+
+  return {
+    min: config.minChildren,
+    max: config.maxChildren,
+    cooldown_ms: config.cooldownMs,
+  };
+}

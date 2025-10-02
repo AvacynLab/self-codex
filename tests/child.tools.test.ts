@@ -29,6 +29,7 @@ import { StructuredLogger } from "../src/logger.js";
 import { writeArtifact } from "../src/artifacts.js";
 import { SandboxRegistry, setSandboxRegistry } from "../src/sim/sandbox.js";
 import { LoopDetector } from "../src/guard/loopDetector.js";
+import { ContractNetCoordinator } from "../src/coord/contractNet.js";
 
 const mockRunnerPath = fileURLToPath(new URL("./fixtures/mock-runner.js", import.meta.url));
 const stubbornRunnerPath = fileURLToPath(new URL("./fixtures/stubborn-runner.js", import.meta.url));
@@ -187,6 +188,64 @@ describe("child tool handlers", () => {
       expect(messages).to.include("child_collect");
       expect(messages).to.include("child_cancel");
       expect(messages).to.include("child_gc");
+    } finally {
+      await logger.flush();
+      await supervisor.disposeAll();
+      await rm(childrenRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("routes child_send through the Contract-Net coordinator when available", async () => {
+    const childrenRoot = await mkdtemp(path.join(tmpdir(), "child-tools-cnp-"));
+    const supervisor = new ChildSupervisor({
+      childrenRoot,
+      defaultCommand: process.execPath,
+      defaultArgs: [mockRunnerPath, "--role", "friendly"],
+      idleTimeoutMs: 200,
+      idleCheckIntervalMs: 25,
+    });
+    const logFile = path.join(childrenRoot, "tmp", "orchestrator.log");
+    const logger = new StructuredLogger({ logFile });
+    const contractNet = new ContractNetCoordinator();
+    const context: ChildToolContext = { supervisor, logger, loopDetector: new LoopDetector(), contractNet };
+
+    try {
+      const first = await handleChildCreate(
+        context,
+        ChildCreateInputSchema.parse({ wait_for_ready: true, metadata: { label: "alpha" } }),
+      );
+      const second = await handleChildCreate(
+        context,
+        ChildCreateInputSchema.parse({ wait_for_ready: true, metadata: { label: "beta" } }),
+      );
+
+      const announcement = contractNet.announce({ taskId: "alloc-1", autoBid: false });
+      contractNet.bid(announcement.callId, first.child_id, 6);
+      contractNet.bid(announcement.callId, second.child_id, 3);
+
+      const sendResult = await handleChildSend(
+        context,
+        ChildSendInputSchema.parse({
+          child_id: "auto",
+          payload: { type: "prompt", content: "contract-net" },
+          expect: "final",
+          timeout_ms: 1500,
+          contract_net: { call_id: announcement.callId },
+        }),
+      );
+
+      expect(sendResult.child_id).to.equal(second.child_id);
+      expect(sendResult.contract_net).to.not.equal(null);
+      expect(sendResult.contract_net?.agent_id).to.equal(second.child_id);
+      expect(sendResult.contract_net?.cost).to.equal(3);
+      expect(contractNet.getAgent(second.child_id)?.activeAssignments).to.equal(0);
+
+      await handleChildKill(context, ChildKillInputSchema.parse({ child_id: first.child_id, timeout_ms: 250 }));
+      await handleChildKill(context, ChildKillInputSchema.parse({ child_id: second.child_id, timeout_ms: 250 }));
+      await supervisor.waitForExit(first.child_id, 1_000);
+      await supervisor.waitForExit(second.child_id, 1_000);
+      handleChildGc(context, ChildGcInputSchema.parse({ child_id: first.child_id }));
+      handleChildGc(context, ChildGcInputSchema.parse({ child_id: second.child_id }));
     } finally {
       await logger.flush();
       await supervisor.disposeAll();

@@ -11,16 +11,29 @@ import { LoggerOptions, StructuredLogger } from "./logger.js";
 import { EventStore, OrchestratorEvent } from "./eventStore.js";
 import { startHttpServer } from "./httpServer.js";
 import { MessageRecord, Role } from "./types.js";
-import { parseOrchestratorRuntimeOptions } from "./serverOptions.js";
+import {
+  FeatureToggles,
+  RuntimeTimingOptions,
+  parseOrchestratorRuntimeOptions,
+} from "./serverOptions.js";
 import { ChildSupervisor } from "./childSupervisor.js";
 import { ChildRecordSnapshot, UnknownChildError } from "./state/childrenIndex.js";
 import { ChildCollectedOutputs, ChildRuntimeStatus } from "./childRuntime.js";
+import { Autoscaler } from "./agents/autoscaler.js";
+import { OrchestratorSupervisor } from "./agents/supervisor.js";
 import { MetaCritic, ReviewKind, ReviewResult } from "./agents/metaCritic.js";
 import { reflect, ReflectionResult } from "./agents/selfReflect.js";
 import { scoreCode, scorePlan, scoreText, ScoreCodeInput, ScorePlanInput, ScoreTextInput } from "./quality/scoring.js";
 import { SharedMemoryStore } from "./memory/store.js";
 import { selectMemoryContext } from "./memory/attention.js";
 import { LoopDetector } from "./guard/loopDetector.js";
+import { BlackboardStore } from "./coord/blackboard.js";
+import { ContractNetCoordinator } from "./coord/contractNet.js";
+import { StigmergyField } from "./coord/stigmergy.js";
+import { KnowledgeGraph } from "./knowledge/knowledgeGraph.js";
+import { CausalMemory } from "./knowledge/causalMemory.js";
+import { ValueGraph } from "./values/valueGraph.js";
+import type { ValueFilterDecision } from "./values/valueGraph.js";
 import {
   ChildCancelInputShape,
   ChildCancelInputSchema,
@@ -53,18 +66,59 @@ import {
   PlanFanoutInputShape,
   PlanJoinInputSchema,
   PlanJoinInputShape,
+  PlanCompileBTInputSchema,
+  PlanCompileBTInputShape,
+  PlanRunBTInputSchema,
+  PlanRunBTInputShape,
   PlanReduceInputSchema,
   PlanReduceInputShape,
   PlanToolContext,
   handlePlanFanout,
   handlePlanJoin,
+  handlePlanCompileBT,
+  handlePlanRunBT,
   handlePlanReduce,
+  ValueGuardRejectionError,
 } from "./tools/planTools.js";
+import {
+  BbGetInputSchema,
+  BbGetInputShape,
+  BbQueryInputSchema,
+  BbQueryInputShape,
+  BbSetInputSchema,
+  BbSetInputShape,
+  BbWatchInputSchema,
+  BbWatchInputShape,
+  CnpAnnounceInputSchema,
+  CnpAnnounceInputShape,
+  CoordinationToolContext,
+  handleBbGet,
+  handleBbQuery,
+  handleBbSet,
+  handleBbWatch,
+  StigDecayInputSchema,
+  StigDecayInputShape,
+  StigMarkInputSchema,
+  StigMarkInputShape,
+  StigSnapshotInputSchema,
+  StigSnapshotInputShape,
+  handleStigDecay,
+  handleStigMark,
+  handleStigSnapshot,
+  handleCnpAnnounce,
+} from "./tools/coordTools.js";
+import {
+  AgentAutoscaleSetInputSchema,
+  AgentAutoscaleSetInputShape,
+  AgentToolContext,
+  handleAgentAutoscaleSet,
+} from "./tools/agentTools.js";
 import {
   GraphGenerateInputSchema,
   GraphGenerateInputShape,
   GraphMutateInputSchema,
   GraphMutateInputShape,
+  GraphDescriptorSchema,
   GraphPathsConstrainedInputSchema,
   GraphPathsConstrainedInputShape,
   GraphPathsKShortestInputSchema,
@@ -79,6 +133,8 @@ import {
   GraphOptimizeMooInputShape,
   GraphCausalAnalyzeInputSchema,
   GraphCausalAnalyzeInputShape,
+  GraphRewriteApplyInputSchema,
+  GraphRewriteApplyInputShape,
   GraphPartitionInputSchema,
   GraphPartitionInputShape,
   GraphSummarizeInputSchema,
@@ -89,6 +145,7 @@ import {
   GraphValidateInputShape,
   handleGraphGenerate,
   handleGraphMutate,
+  handleGraphRewriteApply,
   handleGraphPathsConstrained,
   handleGraphPathsKShortest,
   handleGraphCentralityBetweenness,
@@ -103,10 +160,50 @@ import {
   normaliseGraphPayload,
   serialiseNormalisedGraph,
 } from "./tools/graphTools.js";
+import type { GraphDescriptorPayload, GraphRewriteApplyInput } from "./tools/graphTools.js";
+import {
+  KgExportInputSchema,
+  KgExportInputShape,
+  KgInsertInputSchema,
+  KgInsertInputShape,
+  KgQueryInputSchema,
+  KgQueryInputShape,
+  KnowledgeToolContext,
+  handleKgExport,
+  handleKgInsert,
+  handleKgQuery,
+} from "./tools/knowledgeTools.js";
+import {
+  CausalExportInputSchema,
+  CausalExportInputShape,
+  CausalExplainInputSchema,
+  CausalExplainInputShape,
+  CausalToolContext,
+  handleCausalExport,
+  handleCausalExplain,
+} from "./tools/causalTools.js";
+import {
+  ValuesFilterInputSchema,
+  ValuesFilterInputShape,
+  ValuesScoreInputSchema,
+  ValuesScoreInputShape,
+  ValuesSetInputSchema,
+  ValuesSetInputShape,
+  ValueToolContext,
+  handleValuesFilter,
+  handleValuesScore,
+  handleValuesSet,
+} from "./tools/valueTools.js";
 import { renderMermaidFromGraph } from "./viz/mermaid.js";
 import { renderDotFromGraph } from "./viz/dot.js";
 import { renderGraphmlFromGraph } from "./viz/graphml.js";
 import { snapshotToGraphDescriptor } from "./viz/snapshot.js";
+import {
+  SUBGRAPH_REGISTRY_KEY,
+  collectMissingSubgraphDescriptors,
+  collectSubgraphReferences,
+} from "./graph/subgraphRegistry.js";
+import { extractSubgraphToFile } from "./graph/subgraphExtract.js";
 
 /*
 v1.3 - Orchestrateur MCP self-fork avec:
@@ -139,6 +236,76 @@ const graphState = new GraphState();
  * deterministic version bumps.
  */
 const graphTransactions = new GraphTransactionManager();
+/** Shared blackboard store powering coordination tools. */
+const blackboard = new BlackboardStore();
+/** Shared stigmergic field coordinating pheromone-driven prioritisation. */
+const stigmergy = new StigmergyField();
+/** Shared contract-net coordinator balancing task assignments. */
+const contractNet = new ContractNetCoordinator();
+/** Shared knowledge graph storing reusable plan patterns. */
+const knowledgeGraph = new KnowledgeGraph();
+/** Shared causal memory tracking runtime event relationships. */
+const causalMemory = new CausalMemory();
+/** Shared value graph guarding plan execution against policy violations. */
+const valueGraph = new ValueGraph();
+/** Registry storing the last guard decision for spawned children. */
+const valueGuardRegistry = new Map<string, ValueFilterDecision>();
+
+/** Default feature toggles used before CLI/flags are parsed. */
+const DEFAULT_FEATURE_TOGGLES: FeatureToggles = {
+  enableBT: false,
+  enableReactiveScheduler: false,
+  enableBlackboard: false,
+  enableStigmergy: false,
+  enableCNP: false,
+  enableConsensus: false,
+  enableAutoscaler: false,
+  enableSupervisor: false,
+  enableKnowledge: false,
+  enableCausalMemory: false,
+  enableValueGuard: false,
+};
+
+/** Default runtime timings exposed before configuration takes place. */
+const DEFAULT_RUNTIME_TIMINGS: RuntimeTimingOptions = {
+  btTickMs: 50,
+  stigHalfLifeMs: 30_000,
+  supervisorStallTicks: 6,
+};
+
+let runtimeFeatures: FeatureToggles = { ...DEFAULT_FEATURE_TOGGLES };
+let runtimeTimings: RuntimeTimingOptions = { ...DEFAULT_RUNTIME_TIMINGS };
+
+/** Returns the active feature toggles applied to the orchestrator. */
+export function getRuntimeFeatures(): FeatureToggles {
+  return { ...runtimeFeatures };
+}
+
+/** Applies a new set of feature toggles at runtime. */
+export function configureRuntimeFeatures(next: FeatureToggles): void {
+  runtimeFeatures = { ...next };
+}
+
+/** Returns the pacing configuration applied to optional modules. */
+export function getRuntimeTimings(): RuntimeTimingOptions {
+  return { ...runtimeTimings };
+}
+
+/** Applies a new pacing configuration for optional modules. */
+export function configureRuntimeTimings(next: RuntimeTimingOptions): void {
+  runtimeTimings = { ...next };
+}
+
+interface SubgraphSummary {
+  references: string[];
+  missing: string[];
+}
+
+function summariseSubgraphUsage(graph: GraphDescriptorPayload): SubgraphSummary {
+  const references = Array.from(collectSubgraphReferences(graph));
+  const missing = collectMissingSubgraphDescriptors(graph);
+  return { references, missing };
+}
 
 function parseSizeEnv(raw: string | undefined): number | undefined {
   if (!raw) {
@@ -290,6 +457,41 @@ const childSupervisor = new ChildSupervisor({
   defaultCommand: defaultChildCommand,
   defaultArgs: defaultChildArgs,
   defaultEnv: process.env,
+});
+
+const autoscaler = new Autoscaler({ supervisor: childSupervisor, logger });
+
+const orchestratorSupervisor = new OrchestratorSupervisor({
+  childManager: childSupervisor,
+  logger,
+  actions: {
+    emitAlert: async (incident) => {
+      const level = incident.severity === "critical" ? "error" : "warn";
+      const eventKind = level === "error" ? "ERROR" : "WARN";
+      if (level === "error") {
+        logger.error("supervisor_incident", {
+          type: incident.type,
+          reason: incident.reason,
+          context: incident.context,
+        });
+      } else {
+        logger.warn("supervisor_incident", {
+          type: incident.type,
+          reason: incident.reason,
+          context: incident.context,
+        });
+      }
+      pushEvent({ kind: eventKind, level, payload: { type: "supervisor_incident", incident } });
+    },
+    requestRewrite: async (incident) => {
+      logger.warn("supervisor_request_rewrite", incident.context);
+      pushEvent({ kind: "INFO", level: "warn", payload: { type: "supervisor_request_rewrite", incident } });
+    },
+    requestRedispatch: async (incident) => {
+      logger.warn("supervisor_request_redispatch", incident.context);
+      pushEvent({ kind: "INFO", level: "warn", payload: { type: "supervisor_request_redispatch", incident } });
+    },
+  },
 });
 
 function extractMetadataGoals(metadata: Record<string, unknown> | undefined): string[] {
@@ -713,7 +915,7 @@ function computeQualityAssessment(
 }
 
 function getChildToolContext(): ChildToolContext {
-  return { supervisor: childSupervisor, logger, loopDetector };
+  return { supervisor: childSupervisor, logger, loopDetector, contractNet, supervisorAgent: orchestratorSupervisor };
 }
 
 function getPlanToolContext(): PlanToolContext {
@@ -732,7 +934,68 @@ function getPlanToolContext(): PlanToolContext {
         payload: event.payload,
       });
     },
+    stigmergy,
+    supervisorAgent: orchestratorSupervisor,
+    causalMemory: runtimeFeatures.enableCausalMemory ? causalMemory : undefined,
+    valueGuard: runtimeFeatures.enableValueGuard
+      ? { graph: valueGraph, registry: valueGuardRegistry }
+      : undefined,
   };
+}
+
+function getCoordinationToolContext(): CoordinationToolContext {
+  return { blackboard, stigmergy, contractNet, logger };
+}
+
+function getAgentToolContext(): AgentToolContext {
+  return { autoscaler, logger };
+}
+
+function getKnowledgeToolContext(): KnowledgeToolContext {
+  return { knowledgeGraph, logger };
+}
+
+function getCausalToolContext(): CausalToolContext {
+  return { causalMemory, logger };
+}
+
+function getValueToolContext(): ValueToolContext {
+  return { valueGraph, logger };
+}
+
+interface NormalisedToolError {
+  code: string;
+  message: string;
+  hint?: string;
+  details?: unknown;
+}
+
+function normaliseToolError(
+  error: unknown,
+  defaultCode: string,
+): NormalisedToolError {
+  const message = error instanceof Error ? error.message : String(error);
+  let code = defaultCode;
+  let hint: string | undefined;
+  let details: unknown;
+
+  if (error instanceof z.ZodError) {
+    code = defaultCode;
+    hint = "invalid_input";
+    details = { issues: error.issues };
+  } else if (typeof (error as { code?: unknown }).code === "string") {
+    code = (error as { code: string }).code;
+    if (typeof (error as { hint?: unknown }).hint === "string") {
+      hint = (error as { hint: string }).hint;
+    }
+    if (Object.prototype.hasOwnProperty.call(error as object, "details")) {
+      details = (error as { details?: unknown }).details;
+    }
+  } else if (Object.prototype.hasOwnProperty.call(error as object, "details")) {
+    details = (error as { details?: unknown }).details;
+  }
+
+  return { code, message, hint, details };
 }
 
 function childToolError(
@@ -740,12 +1003,23 @@ function childToolError(
   error: unknown,
   context: Record<string, unknown> = {},
 ) {
-  const message = error instanceof Error ? error.message : String(error);
-  const code = error instanceof UnknownChildError ? "NOT_FOUND" : "CHILD_TOOL_ERROR";
-  logger.error(`${toolName}_failed`, { ...context, message });
+  const defaultCode = error instanceof UnknownChildError ? "NOT_FOUND" : "CHILD_TOOL_ERROR";
+  const normalised = normaliseToolError(error, defaultCode);
+  logger.error(`${toolName}_failed`, { ...context, message: normalised.message, code: normalised.code, details: normalised.details });
+  const payload: Record<string, unknown> = {
+    error: normalised.code,
+    tool: toolName,
+    message: normalised.message,
+  };
+  if (normalised.hint) {
+    payload.hint = normalised.hint;
+  }
+  if (normalised.details !== undefined) {
+    payload.details = normalised.details;
+  }
   return {
     isError: true,
-    content: [{ type: "text" as const, text: j({ error: code, tool: toolName, message }) }],
+    content: [{ type: "text" as const, text: j(payload) }],
   };
 }
 
@@ -753,17 +1027,24 @@ function planToolError(
   toolName: string,
   error: unknown,
   context: Record<string, unknown> = {},
+  defaultCode = "PLAN_TOOL_ERROR",
 ) {
-  const message = error instanceof Error ? error.message : String(error);
-  logger.error(`${toolName}_failed`, { ...context, message });
+  const normalised = normaliseToolError(error, defaultCode);
+  logger.error(`${toolName}_failed`, { ...context, message: normalised.message, code: normalised.code, details: normalised.details });
+  const payload: Record<string, unknown> = {
+    error: normalised.code,
+    tool: toolName,
+    message: normalised.message,
+  };
+  if (normalised.hint) {
+    payload.hint = normalised.hint;
+  }
+  if (normalised.details !== undefined) {
+    payload.details = normalised.details;
+  }
   return {
     isError: true,
-    content: [
-      {
-        type: "text" as const,
-        text: j({ error: "PLAN_TOOL_ERROR", tool: toolName, message }),
-      },
-    ],
+    content: [{ type: "text" as const, text: j(payload) }],
   };
 }
 
@@ -771,18 +1052,173 @@ function graphToolError(
   toolName: string,
   error: unknown,
   context: Record<string, unknown> = {},
+  defaultCode = "GRAPH_TOOL_ERROR",
 ) {
-  const message = error instanceof Error ? error.message : String(error);
-  logger.error(`${toolName}_failed`, { ...context, message });
+  const normalised = normaliseToolError(error, defaultCode);
+  logger.error(`${toolName}_failed`, { ...context, message: normalised.message, code: normalised.code, details: normalised.details });
+  const payload: Record<string, unknown> = {
+    error: normalised.code,
+    tool: toolName,
+    message: normalised.message,
+  };
+  if (normalised.hint) {
+    payload.hint = normalised.hint;
+  }
+  if (normalised.details !== undefined) {
+    payload.details = normalised.details;
+  }
   return {
     isError: true,
-    content: [
-      {
-        type: "text" as const,
-        text: j({ error: "GRAPH_TOOL_ERROR", tool: toolName, message }),
-      },
-    ],
+    content: [{ type: "text" as const, text: j(payload) }],
   };
+}
+
+function coordinationToolError(
+  toolName: string,
+  error: unknown,
+  context: Record<string, unknown> = {},
+  defaultCode = "COORD_TOOL_ERROR",
+) {
+  const normalised = normaliseToolError(error, defaultCode);
+  logger.error(`${toolName}_failed`, { ...context, message: normalised.message, code: normalised.code, details: normalised.details });
+  const payload: Record<string, unknown> = {
+    error: normalised.code,
+    tool: toolName,
+    message: normalised.message,
+  };
+  if (normalised.hint) {
+    payload.hint = normalised.hint;
+  }
+  if (normalised.details !== undefined) {
+    payload.details = normalised.details;
+  }
+  return {
+    isError: true,
+    content: [{ type: "text" as const, text: j(payload) }],
+  };
+}
+
+function knowledgeToolError(
+  toolName: string,
+  error: unknown,
+  context: Record<string, unknown> = {},
+  defaultCode = "KNOWLEDGE_TOOL_ERROR",
+) {
+  const normalised = normaliseToolError(error, defaultCode);
+  logger.error(`${toolName}_failed`, { ...context, message: normalised.message, code: normalised.code, details: normalised.details });
+  const payload: Record<string, unknown> = {
+    error: normalised.code,
+    tool: toolName,
+    message: normalised.message,
+  };
+  if (normalised.hint) {
+    payload.hint = normalised.hint;
+  }
+  if (normalised.details !== undefined) {
+    payload.details = normalised.details;
+  }
+  return {
+    isError: true,
+    content: [{ type: "text" as const, text: j(payload) }],
+  };
+}
+
+function causalToolError(
+  toolName: string,
+  error: unknown,
+  context: Record<string, unknown> = {},
+  defaultCode = "CAUSAL_TOOL_ERROR",
+) {
+  const normalised = normaliseToolError(error, defaultCode);
+  logger.error(`${toolName}_failed`, { ...context, message: normalised.message, code: normalised.code, details: normalised.details });
+  const payload: Record<string, unknown> = {
+    error: normalised.code,
+    tool: toolName,
+    message: normalised.message,
+  };
+  if (normalised.hint) {
+    payload.hint = normalised.hint;
+  }
+  if (normalised.details !== undefined) {
+    payload.details = normalised.details;
+  }
+  return {
+    isError: true,
+    content: [{ type: "text" as const, text: j(payload) }],
+  };
+}
+
+function valueToolError(
+  toolName: string,
+  error: unknown,
+  context: Record<string, unknown> = {},
+  defaultCode = "VALUE_TOOL_ERROR",
+) {
+  const normalised = normaliseToolError(error, defaultCode);
+  logger.error(`${toolName}_failed`, { ...context, message: normalised.message, code: normalised.code, details: normalised.details });
+  const payload: Record<string, unknown> = {
+    error: normalised.code,
+    tool: toolName,
+    message: normalised.message,
+  };
+  if (normalised.hint) {
+    payload.hint = normalised.hint;
+  }
+  if (normalised.details !== undefined) {
+    payload.details = normalised.details;
+  }
+  return {
+    isError: true,
+    content: [{ type: "text" as const, text: j(payload) }],
+  };
+}
+
+function ensureKnowledgeEnabled(toolName: string) {
+  if (!runtimeFeatures.enableKnowledge) {
+    logger.warn(`${toolName}_disabled`, { tool: toolName });
+    return {
+      isError: true,
+      content: [
+        {
+          type: "text" as const,
+          text: j({ error: "KNOWLEDGE_DISABLED", tool: toolName, message: "knowledge module disabled" }),
+        },
+      ],
+    };
+  }
+  return null;
+}
+
+function ensureCausalMemoryEnabled(toolName: string) {
+  if (!runtimeFeatures.enableCausalMemory) {
+    logger.warn(`${toolName}_disabled`, { tool: toolName });
+    return {
+      isError: true,
+      content: [
+        {
+          type: "text" as const,
+          text: j({ error: "CAUSAL_MEMORY_DISABLED", tool: toolName, message: "causal memory module disabled" }),
+        },
+      ],
+    };
+  }
+  return null;
+}
+
+function ensureValueGuardEnabled(toolName: string) {
+  if (!runtimeFeatures.enableValueGuard) {
+    logger.warn(`${toolName}_disabled`, { tool: toolName });
+    return {
+      isError: true,
+      content: [
+        {
+          type: "text" as const,
+          text: j({ error: "VALUE_GUARD_DISABLED", tool: toolName, message: "value guard disabled" }),
+        },
+      ],
+    };
+  }
+  return null;
 }
 
 interface Subscription {
@@ -800,6 +1236,17 @@ const SUBS = new Map<string, Subscription>();
 
 const now = () => Date.now();
 const j = (o: unknown) => JSON.stringify(o, null, 2);
+
+const GraphSubgraphExtractInputSchema = z.object({
+  graph: GraphDescriptorSchema,
+  node_id: z.string().min(1),
+  run_id: z.string().min(1),
+  directory: z.string().min(1).optional(),
+});
+
+const GraphSubgraphExtractInputShape = GraphSubgraphExtractInputSchema.shape;
+
+type GraphSubgraphExtractInput = z.infer<typeof GraphSubgraphExtractInputSchema>;
 
 function pushEvent(
   event: Omit<OrchestratorEvent, "seq" | "ts" | "source" | "level"> &
@@ -888,6 +1335,15 @@ function pruneExpired() {
       const jobId = child.jobId ?? findJobIdByChild(child.id);
       pushEvent({ kind: "KILL", jobId, childId: child.id, level: "warn", payload: { reason: "ttl" } });
     }
+  }
+  const expiredEntries = blackboard.evictExpired();
+  if (expiredEntries.length > 0) {
+    const keys = expiredEntries.map((event) => event.key);
+    logger.info("bb_expire", {
+      count: expiredEntries.length,
+      keys: keys.slice(0, 5),
+      truncated: keys.length > 5 ? keys.length - 5 : 0,
+    });
   }
 }
 
@@ -1990,14 +2446,40 @@ server.registerTool(
         preset: parsed.preset ?? null,
         has_tasks: parsed.tasks !== undefined,
       });
-      const result = handleGraphGenerate(parsed);
+      const result = handleGraphGenerate(parsed, {
+        knowledgeGraph: runtimeFeatures.enableKnowledge ? knowledgeGraph : undefined,
+        knowledgeEnabled: runtimeFeatures.enableKnowledge,
+      });
+      const summary = summariseSubgraphUsage(result.graph);
+      if (summary.references.length > 0) {
+        logger.info("graph_generate_subgraphs_detected", {
+          references: summary.references.length,
+          missing: summary.missing.length,
+        });
+      }
+      let notes = result.notes;
+      if (summary.missing.length > 0) {
+        const deduped = new Set(result.notes);
+        deduped.add("missing_subgraph_descriptors");
+        notes = Array.from(deduped);
+        logger.warn("graph_generate_missing_subgraphs", {
+          missing: summary.missing,
+          graph_id: result.graph.graph_id ?? null,
+        });
+      }
+      const enriched = {
+        ...result,
+        notes,
+        subgraph_refs: summary.references,
+        ...(summary.missing.length > 0 ? { missing_subgraph_descriptors: summary.missing } : {}),
+      };
       logger.info("graph_generate_succeeded", {
         nodes: result.graph.nodes.length,
         edges: result.graph.edges.length,
       });
       return {
-        content: [{ type: "text" as const, text: j({ tool: "graph_generate", result }) }],
-        structuredContent: result,
+        content: [{ type: "text" as const, text: j({ tool: "graph_generate", result: enriched }) }],
+        structuredContent: enriched,
       };
     } catch (error) {
       return graphToolError("graph_generate", error);
@@ -2037,7 +2519,26 @@ server.registerTool(
         committed = graphTransactions.commit(tx.txId, normaliseGraphPayload(intermediate.graph));
         const finalGraph = serialiseNormalisedGraph(committed.graph);
         const result = { ...intermediate, graph: finalGraph };
-        const changed = result.applied.filter((entry) => entry.changed).length;
+        const summary = summariseSubgraphUsage(result.graph);
+        if (summary.references.length > 0) {
+          logger.info("graph_mutate_subgraphs_detected", {
+            references: summary.references.length,
+            missing: summary.missing.length,
+            graph_id: committed.graphId,
+          });
+        }
+        if (summary.missing.length > 0) {
+          logger.warn("graph_mutate_missing_subgraphs", {
+            missing: summary.missing,
+            graph_id: committed.graphId,
+          });
+        }
+        const enrichedResult = {
+          ...result,
+          subgraph_refs: summary.references,
+          ...(summary.missing.length > 0 ? { missing_subgraph_descriptors: summary.missing } : {}),
+        };
+        const changed = enrichedResult.applied.filter((entry) => entry.changed).length;
 
         logger.info("graph_mutate_succeeded", {
           operations: parsed.operations.length,
@@ -2048,8 +2549,8 @@ server.registerTool(
         });
 
         return {
-          content: [{ type: "text" as const, text: j({ tool: "graph_mutate", result }) }],
-          structuredContent: result,
+          content: [{ type: "text" as const, text: j({ tool: "graph_mutate", result: enrichedResult }) }],
+          structuredContent: enrichedResult,
         };
       } catch (error) {
         if (!committed) {
@@ -2074,24 +2575,388 @@ server.registerTool(
       }
     } catch (error) {
       if (error instanceof GraphVersionConflictError) {
-        logger.warn("graph_mutate_conflict", {
+        return graphToolError("graph_mutate", error, {
           graph_id: graphIdForError,
           version: graphVersionForError,
-          message: error.message,
         });
-        return {
-          isError: true,
-          content: [
-            {
-              type: "text" as const,
-              text: j({ error: "GRAPH_VERSION_CONFLICT", tool: "graph_mutate", message: error.message }),
-            },
-          ],
-        };
       }
       return graphToolError("graph_mutate", error, {
         graph_id: graphIdForError,
         version: graphVersionForError ?? undefined,
+      });
+    }
+  },
+);
+
+server.registerTool(
+  "graph_subgraph_extract",
+  {
+    title: "Graph subgraph extract",
+    description: "Exporte le descripteur d'un sous-graphe vers le dossier de run.",
+    inputSchema: GraphSubgraphExtractInputShape,
+  },
+  async (input: unknown) => {
+    let parsed: GraphSubgraphExtractInput | undefined;
+    try {
+      parsed = GraphSubgraphExtractInputSchema.parse(input);
+      logger.info("graph_subgraph_extract_requested", {
+        node_id: parsed.node_id,
+        run_id: parsed.run_id,
+      });
+      const extraction = await extractSubgraphToFile({
+        graph: parsed.graph,
+        nodeId: parsed.node_id,
+        runId: parsed.run_id,
+        childrenRoot: CHILDREN_ROOT,
+        directoryName: parsed.directory,
+      });
+      logger.info("graph_subgraph_extract_succeeded", {
+        node_id: parsed.node_id,
+        run_id: extraction.runId,
+        subgraph_ref: extraction.subgraphRef,
+        version: extraction.version,
+      });
+      const descriptorPayload = {
+        run_id: extraction.runId,
+        node_id: extraction.nodeId,
+        subgraph_ref: extraction.subgraphRef,
+        version: extraction.version,
+        extracted_at: extraction.extractedAt,
+        absolute_path: extraction.absolutePath,
+        relative_path: extraction.relativePath,
+        graph_id: extraction.graphId,
+        graph_version: extraction.graphVersion,
+      };
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: j({ tool: "graph_subgraph_extract", result: descriptorPayload }),
+          },
+        ],
+        structuredContent: {
+          ...descriptorPayload,
+          descriptor: extraction.descriptor,
+          metadata_key: SUBGRAPH_REGISTRY_KEY,
+        },
+      };
+    } catch (error) {
+      return graphToolError("graph_subgraph_extract", error, {
+        node_id: parsed?.node_id,
+        run_id: parsed?.run_id,
+      });
+    }
+  },
+);
+
+server.registerTool(
+  "kg_insert",
+  {
+    title: "Knowledge insert",
+    description: "Insère ou met à jour des triplets dans le graphe de connaissances.",
+    inputSchema: KgInsertInputShape,
+  },
+  async (input) => {
+    const disabled = ensureKnowledgeEnabled("kg_insert");
+    if (disabled) {
+      return disabled;
+    }
+    try {
+      const parsed = KgInsertInputSchema.parse(input);
+      const result = handleKgInsert(getKnowledgeToolContext(), parsed);
+      return {
+        content: [{ type: "text" as const, text: j({ tool: "kg_insert", result }) }],
+        structuredContent: result,
+      };
+    } catch (error) {
+      return knowledgeToolError("kg_insert", error);
+    }
+  },
+);
+
+server.registerTool(
+  "kg_query",
+  {
+    title: "Knowledge query",
+    description: "Recherche des triplets par motif (joker * supporté).",
+    inputSchema: KgQueryInputShape,
+  },
+  async (input) => {
+    const disabled = ensureKnowledgeEnabled("kg_query");
+    if (disabled) {
+      return disabled;
+    }
+    try {
+      const parsed = KgQueryInputSchema.parse(input);
+      const result = handleKgQuery(getKnowledgeToolContext(), parsed);
+      return {
+        content: [{ type: "text" as const, text: j({ tool: "kg_query", result }) }],
+        structuredContent: result,
+      };
+    } catch (error) {
+      return knowledgeToolError("kg_query", error);
+    }
+  },
+);
+
+server.registerTool(
+  "kg_export",
+  {
+    title: "Knowledge export",
+    description: "Exporte l'intégralité du graphe de connaissances (ordre déterministe).",
+    inputSchema: KgExportInputShape,
+  },
+  async (input) => {
+    const disabled = ensureKnowledgeEnabled("kg_export");
+    if (disabled) {
+      return disabled;
+    }
+    try {
+      const parsed = KgExportInputSchema.parse(input);
+      const result = handleKgExport(getKnowledgeToolContext(), parsed);
+      return {
+        content: [{ type: "text" as const, text: j({ tool: "kg_export", result }) }],
+        structuredContent: result,
+      };
+    } catch (error) {
+      return knowledgeToolError("kg_export", error);
+    }
+  },
+);
+
+server.registerTool(
+  "values_set",
+  {
+    title: "Values graph set",
+    description: "Définit les valeurs, priorités et contraintes du garde-fou.",
+    inputSchema: ValuesSetInputShape,
+  },
+  async (input) => {
+    const disabled = ensureValueGuardEnabled("values_set");
+    if (disabled) {
+      return disabled;
+    }
+    try {
+      const parsed = ValuesSetInputSchema.parse(input);
+      const result = handleValuesSet(getValueToolContext(), parsed);
+      return {
+        content: [{ type: "text" as const, text: j({ tool: "values_set", result }) }],
+        structuredContent: result,
+      };
+    } catch (error) {
+      return valueToolError("values_set", error);
+    }
+  },
+);
+
+server.registerTool(
+  "values_score",
+  {
+    title: "Values score",
+    description: "Évalue un plan par rapport au graphe de valeurs.",
+    inputSchema: ValuesScoreInputShape,
+  },
+  async (input) => {
+    const disabled = ensureValueGuardEnabled("values_score");
+    if (disabled) {
+      return disabled;
+    }
+    try {
+      const parsed = ValuesScoreInputSchema.parse(input);
+      const result = handleValuesScore(getValueToolContext(), parsed);
+      return {
+        content: [{ type: "text" as const, text: j({ tool: "values_score", result }) }],
+        structuredContent: result,
+      };
+    } catch (error) {
+      return valueToolError("values_score", error);
+    }
+  },
+);
+
+server.registerTool(
+  "values_filter",
+  {
+    title: "Values filter",
+    description: "Applique le seuil du garde-fou et retourne la décision détaillée.",
+    inputSchema: ValuesFilterInputShape,
+  },
+  async (input) => {
+    const disabled = ensureValueGuardEnabled("values_filter");
+    if (disabled) {
+      return disabled;
+    }
+    try {
+      const parsed = ValuesFilterInputSchema.parse(input);
+      const result = handleValuesFilter(getValueToolContext(), parsed);
+      return {
+        content: [{ type: "text" as const, text: j({ tool: "values_filter", result }) }],
+        structuredContent: result,
+      };
+    } catch (error) {
+      return valueToolError("values_filter", error);
+    }
+  },
+);
+
+server.registerTool(
+  "causal_export",
+  {
+    title: "Causal memory export",
+    description: "Exporte la mémoire causale pour analyse hors-ligne.",
+    inputSchema: CausalExportInputShape,
+  },
+  async (input) => {
+    const disabled = ensureCausalMemoryEnabled("causal_export");
+    if (disabled) {
+      return disabled;
+    }
+    try {
+      const parsed = CausalExportInputSchema.parse(input);
+      const result = handleCausalExport(getCausalToolContext(), parsed);
+      return {
+        content: [{ type: "text" as const, text: j({ tool: "causal_export", result }) }],
+        structuredContent: result,
+      };
+    } catch (error) {
+      return causalToolError("causal_export", error);
+    }
+  },
+);
+
+server.registerTool(
+  "causal_explain",
+  {
+    title: "Causal memory explain",
+    description: "Reconstruit l'arbre des causes pour un événement donné.",
+    inputSchema: CausalExplainInputShape,
+  },
+  async (input: unknown) => {
+    const disabled = ensureCausalMemoryEnabled("causal_explain");
+    if (disabled) {
+      return disabled;
+    }
+    let parsed: z.infer<typeof CausalExplainInputSchema> | undefined;
+    try {
+      parsed = CausalExplainInputSchema.parse(input);
+      const result = handleCausalExplain(getCausalToolContext(), parsed);
+      return {
+        content: [{ type: "text" as const, text: j({ tool: "causal_explain", result }) }],
+        structuredContent: result,
+      };
+    } catch (error) {
+      return causalToolError("causal_explain", error, parsed ? { outcome_id: parsed.outcome_id } : {});
+    }
+  },
+);
+
+server.registerTool(
+  "graph_rewrite_apply",
+  {
+    title: "Graph rewrite apply",
+    description: "Applique les règles de réécriture (manuelles ou adaptatives) sur un graphe hiérarchique.",
+    inputSchema: GraphRewriteApplyInputShape,
+  },
+  async (input: unknown) => {
+    let parsed: GraphRewriteApplyInput | undefined;
+    let graphIdForError: string | null = null;
+    let graphVersionForError: number | null = null;
+    try {
+      parsed = GraphRewriteApplyInputSchema.parse(input);
+      graphIdForError = parsed.graph.graph_id ?? null;
+      graphVersionForError = parsed.graph.graph_version ?? null;
+      logger.info("graph_rewrite_apply_requested", {
+        mode: parsed.mode,
+        graph_id: graphIdForError,
+        version: graphVersionForError,
+      });
+
+      const baseGraph = normaliseGraphPayload(parsed.graph);
+      const tx = graphTransactions.begin(baseGraph);
+      let committed: ReturnType<typeof graphTransactions.commit> | undefined;
+      try {
+        const rewriteInput: GraphRewriteApplyInput = {
+          ...parsed,
+          graph: serialiseNormalisedGraph(tx.workingCopy),
+        };
+        const intermediate = handleGraphRewriteApply(rewriteInput);
+        committed = graphTransactions.commit(
+          tx.txId,
+          normaliseGraphPayload(intermediate.graph),
+        );
+        const finalGraph = serialiseNormalisedGraph(committed.graph);
+        const result = { ...intermediate, graph: finalGraph };
+        const summary = summariseSubgraphUsage(result.graph);
+        if (summary.references.length > 0) {
+          logger.info("graph_rewrite_apply_subgraphs_detected", {
+            graph_id: committed.graphId,
+            references: summary.references.length,
+            missing: summary.missing.length,
+          });
+        }
+        if (summary.missing.length > 0) {
+          logger.warn("graph_rewrite_apply_missing_subgraphs", {
+            graph_id: committed.graphId,
+            missing: summary.missing,
+          });
+        }
+        const enrichedResult = {
+          ...result,
+          subgraph_refs: summary.references,
+          ...(summary.missing.length > 0
+            ? { missing_subgraph_descriptors: summary.missing }
+            : {}),
+        };
+        logger.info("graph_rewrite_apply_succeeded", {
+          mode: parsed.mode,
+          total_applied: enrichedResult.total_applied,
+          changed: enrichedResult.changed,
+          graph_id: committed.graphId,
+          version: committed.version,
+          committed_at: committed.committedAt,
+        });
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: j({ tool: "graph_rewrite_apply", result: enrichedResult }),
+            },
+          ],
+          structuredContent: enrichedResult,
+        };
+      } catch (error) {
+        if (!committed) {
+          try {
+            graphTransactions.rollback(tx.txId);
+            logger.warn("graph_rewrite_apply_rolled_back", {
+              graph_id: tx.graphId,
+              base_version: tx.baseVersion,
+              reason: error instanceof Error ? error.message : String(error),
+            });
+          } catch (rollbackError) {
+            logger.error("graph_rewrite_apply_rollback_failed", {
+              graph_id: tx.graphId,
+              message:
+                rollbackError instanceof Error
+                  ? rollbackError.message
+                  : String(rollbackError),
+            });
+          }
+        }
+        throw error;
+      }
+    } catch (error) {
+      if (error instanceof GraphVersionConflictError) {
+        return graphToolError("graph_rewrite_apply", error, {
+          graph_id: graphIdForError ?? undefined,
+          version: graphVersionForError ?? undefined,
+          mode: parsed?.mode,
+        });
+      }
+      return graphToolError("graph_rewrite_apply", error, {
+        graph_id: graphIdForError ?? undefined,
+        version: graphVersionForError ?? undefined,
+        mode: parsed?.mode,
       });
     }
   },
@@ -2162,7 +3027,7 @@ server.registerTool(
     description: "Calcule les k plus courts chemins (Yen) entre deux noeuds.",
     inputSchema: GraphPathsKShortestInputShape,
   },
-  async (input) => {
+  async (input: unknown) => {
     try {
       const parsed = GraphPathsKShortestInputSchema.parse(input);
       logger.info("graph_paths_k_shortest_requested", {
@@ -2450,6 +3315,35 @@ server.registerTool(
         structuredContent: result,
       };
     } catch (error) {
+      if (error instanceof ValueGuardRejectionError) {
+        logger.error("plan_fanout_rejected_by_value_guard", {
+          rejected: error.rejections.length,
+        });
+        const rejected = error.rejections.map((entry) => ({
+          name: entry.name,
+          value_guard: {
+            allowed: entry.decision.allowed,
+            score: entry.decision.score,
+            total: entry.decision.total,
+            threshold: entry.decision.threshold,
+            violations: entry.decision.violations,
+          },
+        }));
+        return {
+          isError: true,
+          content: [
+            {
+              type: "text" as const,
+              text: j({
+                error: "E-VALUES-VIOLATION",
+                tool: "plan_fanout",
+                message: error.message,
+                rejected,
+              }),
+            },
+          ],
+        };
+      }
       return planToolError("plan_fanout", error);
     }
   },
@@ -2494,6 +3388,255 @@ server.registerTool(
       };
     } catch (error) {
       return planToolError("plan_reduce", error);
+    }
+  },
+);
+
+server.registerTool(
+  "plan_compile_bt",
+  {
+    title: "Plan compile Behaviour Tree",
+    description: "Compile un graphe hiérarchique en Behaviour Tree exécutable.",
+    inputSchema: PlanCompileBTInputShape,
+  },
+  async (input) => {
+    try {
+      const parsed = PlanCompileBTInputSchema.parse(input);
+      const result = handlePlanCompileBT(getPlanToolContext(), parsed);
+      return {
+        content: [{ type: "text" as const, text: j({ tool: "plan_compile_bt", result }) }],
+        structuredContent: result,
+      };
+    } catch (error) {
+      return planToolError("plan_compile_bt", error, {}, "E-BT-INVALID");
+    }
+  },
+);
+
+server.registerTool(
+  "plan_run_bt",
+  {
+    title: "Plan run Behaviour Tree",
+    description: "Exécute un Behaviour Tree et trace chaque invocation de tool.",
+    inputSchema: PlanRunBTInputShape,
+  },
+  async (input) => {
+    try {
+      const parsed = PlanRunBTInputSchema.parse(input);
+      const result = await handlePlanRunBT(getPlanToolContext(), parsed);
+      return {
+        content: [{ type: "text" as const, text: j({ tool: "plan_run_bt", result }) }],
+        structuredContent: result,
+      };
+    } catch (error) {
+      return planToolError("plan_run_bt", error, {}, "E-BT-INVALID");
+    }
+  },
+);
+
+server.registerTool(
+  "bb_set",
+  {
+    title: "Blackboard set",
+    description: "Définit ou met à jour une clé sur le tableau noir partagé.",
+    inputSchema: BbSetInputShape,
+  },
+  async (input) => {
+    try {
+      pruneExpired();
+      const parsed = BbSetInputSchema.parse(input);
+      const result = handleBbSet(getCoordinationToolContext(), parsed);
+      return {
+        content: [{ type: "text" as const, text: j({ tool: "bb_set", result }) }],
+        structuredContent: result,
+      };
+    } catch (error) {
+      return coordinationToolError("bb_set", error);
+    }
+  },
+);
+
+server.registerTool(
+  "bb_get",
+  {
+    title: "Blackboard get",
+    description: "Récupère la dernière valeur connue pour une clé.",
+    inputSchema: BbGetInputShape,
+  },
+  async (input) => {
+    try {
+      pruneExpired();
+      const parsed = BbGetInputSchema.parse(input);
+      const result = handleBbGet(getCoordinationToolContext(), parsed);
+      return {
+        content: [{ type: "text" as const, text: j({ tool: "bb_get", result }) }],
+        structuredContent: result,
+      };
+    } catch (error) {
+      return coordinationToolError("bb_get", error);
+    }
+  },
+);
+
+server.registerTool(
+  "bb_query",
+  {
+    title: "Blackboard query",
+    description: "Liste les entrées filtrées par tags et/ou clés.",
+    inputSchema: BbQueryInputShape,
+  },
+  async (input) => {
+    try {
+      pruneExpired();
+      const parsed = BbQueryInputSchema.parse(input);
+      const result = handleBbQuery(getCoordinationToolContext(), parsed);
+      return {
+        content: [{ type: "text" as const, text: j({ tool: "bb_query", result }) }],
+        structuredContent: result,
+      };
+    } catch (error) {
+      return coordinationToolError("bb_query", error);
+    }
+  },
+);
+
+server.registerTool(
+  "bb_watch",
+  {
+    title: "Blackboard watch",
+    description: "Retourne les événements après une version donnée pour suivre les changements.",
+    inputSchema: BbWatchInputShape,
+  },
+  async (input) => {
+    try {
+      pruneExpired();
+      const parsed = BbWatchInputSchema.parse(input);
+      const result = handleBbWatch(getCoordinationToolContext(), parsed);
+      return {
+        content: [{ type: "text" as const, text: j({ tool: "bb_watch", result }) }],
+        structuredContent: result,
+      };
+    } catch (error) {
+      return coordinationToolError("bb_watch", error);
+    }
+  },
+);
+
+server.registerTool(
+  "stig_mark",
+  {
+    title: "Stigmergie mark",
+    description: "Dépose des phéromones sur un nœud pour influencer la planification.",
+    inputSchema: StigMarkInputShape,
+  },
+  async (input) => {
+    try {
+      pruneExpired();
+      const parsed = StigMarkInputSchema.parse(input);
+      const result = handleStigMark(getCoordinationToolContext(), parsed);
+      return {
+        content: [{ type: "text" as const, text: j({ tool: "stig_mark", result }) }],
+        structuredContent: result,
+      };
+    } catch (error) {
+      return coordinationToolError("stig_mark", error);
+    }
+  },
+);
+
+server.registerTool(
+  "stig_decay",
+  {
+    title: "Stigmergie decay",
+    description: "Fait s'évaporer les phéromones selon une demi-vie déterministe.",
+    inputSchema: StigDecayInputShape,
+  },
+  async (input) => {
+    try {
+      pruneExpired();
+      const parsed = StigDecayInputSchema.parse(input);
+      const result = handleStigDecay(getCoordinationToolContext(), parsed);
+      return {
+        content: [{ type: "text" as const, text: j({ tool: "stig_decay", result }) }],
+        structuredContent: result,
+      };
+    } catch (error) {
+      return coordinationToolError("stig_decay", error);
+    }
+  },
+);
+
+server.registerTool(
+  "stig_snapshot",
+  {
+    title: "Stigmergie snapshot",
+    description: "Expose l'intensité des phéromones pour chaque nœud et type.",
+    inputSchema: StigSnapshotInputShape,
+  },
+  async (input) => {
+    try {
+      pruneExpired();
+      const parsed = StigSnapshotInputSchema.parse(input);
+      const result = handleStigSnapshot(getCoordinationToolContext(), parsed);
+      return {
+        content: [{ type: "text" as const, text: j({ tool: "stig_snapshot", result }) }],
+        structuredContent: result,
+      };
+    } catch (error) {
+      return coordinationToolError("stig_snapshot", error);
+    }
+  },
+);
+
+server.registerTool(
+  "cnp_announce",
+  {
+    title: "Contract-Net announce",
+    description: "Annonce une tâche au protocole Contract-Net et retourne l'attribution.",
+    inputSchema: CnpAnnounceInputShape,
+  },
+  async (input) => { 
+    try {
+      pruneExpired();
+      const parsed = CnpAnnounceInputSchema.parse(input);
+      const result = handleCnpAnnounce(getCoordinationToolContext(), parsed);
+      return {
+        content: [{ type: "text" as const, text: j({ tool: "cnp_announce", result }) }],
+        structuredContent: result,
+      };
+    } catch (error) {
+      return coordinationToolError("cnp_announce", error);
+    }
+  },
+);
+
+server.registerTool(
+  "agent_autoscale_set",
+  {
+    title: "Agent autoscale set",
+    description: "Configure les bornes de l'autoscaler de runtimes enfants.",
+    inputSchema: AgentAutoscaleSetInputShape,
+  },
+  async (input) => {
+    try {
+      const parsed = AgentAutoscaleSetInputSchema.parse(input);
+      const result = handleAgentAutoscaleSet(getAgentToolContext(), parsed);
+      return {
+        content: [{ type: "text" as const, text: j({ tool: "agent_autoscale_set", result }) }],
+        structuredContent: result as unknown as Record<string, unknown>,
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      logger.error("agent_autoscale_set_failed", { message });
+      return {
+        isError: true,
+        content: [
+          {
+            type: "text" as const,
+            text: j({ error: "AGENT_AUTOSCALE_ERROR", message }),
+          },
+        ],
+      };
     }
   },
 );
@@ -3616,6 +4759,8 @@ if (isMain) {
     process.exit(1);
   }
 
+  configureRuntimeFeatures(options.features);
+  configureRuntimeTimings(options.timings);
   reflectionEnabled = options.enableReflection;
   qualityGateEnabled = options.enableQualityGate;
   qualityGateThreshold = options.qualityThreshold;

@@ -1,8 +1,10 @@
 import { flatten, type HierGraph } from "./hierarchy.js";
 import type { NormalisedGraph, GraphEdgeRecord, GraphNodeRecord, GraphAttributeValue } from "./types.js";
-
-/** Unique key storing the serialized registry of sub-graphs embedded inside a normalised graph. */
-const SUBGRAPH_REGISTRY_KEY = "hierarchy:subgraphs";
+import {
+  SUBGRAPH_REGISTRY_KEY,
+  type SubgraphDescriptor,
+  parseSubgraphRegistry,
+} from "./subgraphRegistry.js";
 /** Attribute flag automatically added to edges produced by the split-parallel rule. */
 const SPLIT_PARALLEL_FLAG = "rewritten_split_parallel";
 /** Attribute flag automatically added to edges produced by the inline-subgraph rule. */
@@ -17,17 +19,10 @@ interface GraphSnapshot {
   serialised: string;
 }
 
-/** Metadata describing how an embedded sub-graph should be inlined within the host graph. */
-interface InlineDescriptor {
-  graph: HierGraph | NormalisedGraph;
-  entryPoints?: string[];
-  exitPoints?: string[];
-}
-
 /** Description of a match surfaced by a rewrite rule. */
 export type RewriteMatch =
   | { type: "split-parallel"; edge: GraphEdgeRecord; proposedNodeId: string }
-  | { type: "inline-subgraph"; node: GraphNodeRecord; descriptor: InlineDescriptor }
+  | { type: "inline-subgraph"; node: GraphNodeRecord; descriptor: SubgraphDescriptor }
   | { type: "reroute-avoid"; node: GraphNodeRecord };
 
 /** Result of evaluating a rule to locate potential rewrite candidates. */
@@ -396,26 +391,6 @@ function applyRule(graph: NormalisedGraph, rule: RewriteRule): {
     }
   }
   return { graph: current, applied, matches };
-}
-
-/** Extract and validate the subgraph registry stored in the metadata map. */
-function parseSubgraphRegistry(value: GraphAttributeValue | undefined): Map<string, InlineDescriptor> | null {
-  if (!value || typeof value !== "string") {
-    return null;
-  }
-  try {
-    const parsed = JSON.parse(value) as Record<string, InlineDescriptor>;
-    const registry = new Map<string, InlineDescriptor>();
-    for (const [key, descriptor] of Object.entries(parsed)) {
-      if (!descriptor || typeof descriptor !== "object") {
-        continue;
-      }
-      registry.set(key, descriptor);
-    }
-    return registry;
-  } catch {
-    return null;
-  }
 }
 
 /** Ensure that a node identifier remains unique within the provided graph. */

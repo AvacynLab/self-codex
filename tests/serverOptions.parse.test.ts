@@ -24,6 +24,24 @@ describe("parseOrchestratorRuntimeOptions", () => {
     expect(result.enableReflection).to.equal(true);
     expect(result.enableQualityGate).to.equal(true);
     expect(result.qualityThreshold).to.equal(70);
+    expect(result.features).to.deep.equal({
+      enableBT: false,
+      enableReactiveScheduler: false,
+      enableBlackboard: false,
+      enableStigmergy: false,
+      enableCNP: false,
+      enableConsensus: false,
+      enableAutoscaler: false,
+      enableSupervisor: false,
+      enableKnowledge: false,
+      enableCausalMemory: false,
+      enableValueGuard: false,
+    });
+    expect(result.timings).to.deep.equal({
+      btTickMs: 50,
+      stigHalfLifeMs: 30_000,
+      supervisorStallTicks: 6,
+    });
   });
 
   it("accepte les options HTTP explicites", () => {
@@ -83,6 +101,53 @@ describe("parseOrchestratorRuntimeOptions", () => {
     const result = parseOrchestratorRuntimeOptions(["--no-reflection", "--no-quality-gate"]);
     expect(result.enableReflection).to.equal(false);
     expect(result.enableQualityGate).to.equal(false);
+  });
+
+  it("active sélectivement les modules optionnels", () => {
+    const result = parseOrchestratorRuntimeOptions([
+      "--enable-bt",
+      "--enable-reactive-scheduler",
+      "--enable-blackboard",
+      "--enable-stigmergy",
+      "--enable-cnp",
+      "--enable-consensus",
+      "--enable-autoscaler",
+      "--enable-supervisor",
+      "--enable-knowledge",
+      "--enable-causal-memory",
+      "--enable-value-guard",
+    ]);
+
+    expect(result.features).to.deep.equal({
+      enableBT: true,
+      enableReactiveScheduler: true,
+      enableBlackboard: true,
+      enableStigmergy: true,
+      enableCNP: true,
+      enableConsensus: true,
+      enableAutoscaler: true,
+      enableSupervisor: true,
+      enableKnowledge: true,
+      enableCausalMemory: true,
+      enableValueGuard: true,
+    });
+  });
+
+  it("applique les délais personnalisés", () => {
+    const result = parseOrchestratorRuntimeOptions([
+      "--bt-tick-ms",
+      "75",
+      "--stig-half-life-ms",
+      "45000",
+      "--supervisor-stall-ticks",
+      "9",
+    ]);
+
+    expect(result.timings).to.deep.equal({
+      btTickMs: 75,
+      stigHalfLifeMs: 45_000,
+      supervisorStallTicks: 9,
+    });
   });
 
   it("applique le seuil qualité lorsque fourni", () => {
