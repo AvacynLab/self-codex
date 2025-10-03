@@ -49,6 +49,9 @@ class LoopingChildSupervisorStub implements SupervisorChildManager {
       exitSignal: null,
       forcedTermination: false,
       stopReason: null,
+      role: "analyst",
+      limits: null,
+      attachedAt: null,
     };
   }
 

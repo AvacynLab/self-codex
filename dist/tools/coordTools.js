@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { ConsensusConfigSchema, majority, quorum, weighted, } from "../coord/consensus.js";
+import { ConsensusConfigSchema, majority, publishConsensusEvent, quorum, weighted, } from "../coord/consensus.js";
 /**
  * Error raised when a requested blackboard key cannot be found. The dedicated
  * code ensures MCP clients can distinguish between missing entries and actual
@@ -22,6 +22,21 @@ export const BbSetInputSchema = z.object({
     ttl_ms: z.number().int().min(1).max(86_400_000).optional(),
 });
 export const BbSetInputShape = BbSetInputSchema.shape;
+/** Schema validating the payload accepted by the `bb_batch_set` tool. */
+export const BbBatchSetInputSchema = z.object({
+    entries: z
+        .array(z
+        .object({
+        key: z.string().min(1, "key must not be empty"),
+        value: z.unknown(),
+        tags: z.array(z.string().min(1)).max(16).default([]),
+        ttl_ms: z.number().int().min(1).max(86_400_000).optional(),
+    })
+        .strict())
+        .min(1, "at least one entry must be provided")
+        .max(100, "cannot update more than 100 entries at once"),
+});
+export const BbBatchSetInputShape = BbBatchSetInputSchema.shape;
 /** Schema validating the payload accepted by the `bb_get` tool. */
 export const BbGetInputSchema = z.object({
     key: z.string().min(1, "key must not be empty"),
@@ -77,6 +92,21 @@ export const StigMarkInputSchema = z.object({
     intensity: z.number().positive().max(10_000, "intensity must remain bounded"),
 });
 export const StigMarkInputShape = StigMarkInputSchema.shape;
+export const StigBatchInputSchema = z
+    .object({
+    entries: z
+        .array(z
+        .object({
+        node_id: z.string().min(1, "node_id must not be empty"),
+        type: z.string().min(1, "type must not be empty"),
+        intensity: z.number().positive().max(10_000, "intensity must remain bounded"),
+    })
+        .strict())
+        .min(1, "at least one entry must be provided")
+        .max(200, "cannot apply more than 200 entries at once"),
+})
+    .strict();
+export const StigBatchInputShape = StigBatchInputSchema.shape;
 /** Schema validating the payload accepted by the `stig_decay` tool. */
 export const StigDecayInputSchema = z.object({
     half_life_ms: z.number().int().positive().max(86_400_000, "half_life_ms too large"),
@@ -113,6 +143,7 @@ export const CnpAnnounceInputSchema = z
         .strict())
         .max(128)
         .optional(),
+    idempotency_key: z.string().min(1).optional(),
 })
     .strict();
 export const CnpAnnounceInputShape = CnpAnnounceInputSchema.shape;
@@ -132,6 +163,25 @@ export function handleBbSet(context, input) {
         ttl_ms: input.ttl_ms ?? null,
     });
     return serialiseEntry(snapshot);
+}
+/**
+ * Atomically applies multiple {@link handleBbSet} style mutations on the
+ * blackboard. The helper ensures downstream observers receive a consistent
+ * batch even if one of the values cannot be cloned.
+ */
+export function handleBbBatchSet(context, input) {
+    const payloads = input.entries.map((entry) => ({
+        key: entry.key,
+        value: entry.value,
+        tags: entry.tags,
+        ttlMs: entry.ttl_ms,
+    }));
+    const snapshots = context.blackboard.batchSet(payloads);
+    context.logger.info("bb_batch_set", {
+        entries: snapshots.length,
+        keys: snapshots.map((entry) => entry.key),
+    });
+    return { entries: snapshots.map(serialiseEntry) };
 }
 /** Retrieves a single entry when available. */
 export function handleBbGet(context, input) {
@@ -240,6 +290,24 @@ export function handleStigDecay(context, input) {
         })),
     };
 }
+/** Applies several pheromone markings atomically. */
+export function handleStigBatch(context, input) {
+    const applied = context.stigmergy.batchMark(input.entries.map((entry) => ({
+        nodeId: entry.node_id,
+        type: entry.type,
+        intensity: entry.intensity,
+    })));
+    const serialised = applied.map((change) => ({
+        point: serialisePoint(change.point),
+        node_total: serialiseTotal(change.nodeTotal),
+    }));
+    const uniqueNodes = new Set(serialised.map((change) => change.point.node_id));
+    context.logger.info("stig_batch", {
+        entries: input.entries.length,
+        nodes: uniqueNodes.size,
+    });
+    return { changes: serialised };
+}
 /** Returns a deterministic snapshot of the stigmergic field. */
 export function handleStigSnapshot(context, _input) {
     const snapshot = context.stigmergy.fieldSnapshot();
@@ -273,38 +341,57 @@ function serialiseFieldSnapshot(snapshot) {
 }
 /** Announces a task to the Contract-Net and immediately awards the best bid. */
 export function handleCnpAnnounce(context, input) {
-    const announcement = context.contractNet.announce({
-        taskId: input.task_id,
-        payload: input.payload,
-        tags: input.tags,
-        metadata: input.metadata,
-        deadlineMs: input.deadline_ms ?? null,
-        autoBid: input.auto_bid,
-        heuristics: {
-            preferAgents: input.heuristics?.prefer_agents,
-            agentBias: input.heuristics?.agent_bias,
-            busyPenalty: input.heuristics?.busy_penalty,
-            preferenceBonus: input.heuristics?.preference_bonus,
-        },
-    });
-    if (input.manual_bids) {
-        for (const bid of input.manual_bids) {
-            context.contractNet.bid(announcement.callId, bid.agent_id, bid.cost, {
-                metadata: bid.metadata ?? {},
+    const execute = () => {
+        const announcement = context.contractNet.announce({
+            taskId: input.task_id,
+            payload: input.payload,
+            tags: input.tags,
+            metadata: input.metadata,
+            deadlineMs: input.deadline_ms ?? null,
+            autoBid: input.auto_bid,
+            heuristics: {
+                preferAgents: input.heuristics?.prefer_agents,
+                agentBias: input.heuristics?.agent_bias,
+                busyPenalty: input.heuristics?.busy_penalty,
+                preferenceBonus: input.heuristics?.preference_bonus,
+            },
+        });
+        if (input.manual_bids) {
+            for (const bid of input.manual_bids) {
+                context.contractNet.bid(announcement.callId, bid.agent_id, bid.cost, {
+                    metadata: bid.metadata ?? {},
+                });
+            }
+        }
+        const decision = context.contractNet.award(announcement.callId);
+        const snapshot = context.contractNet.getCall(announcement.callId);
+        if (!snapshot) {
+            throw new Error(`call ${announcement.callId} disappeared after award`);
+        }
+        context.logger.info("cnp_announce", {
+            call_id: snapshot.callId,
+            bids: snapshot.bids.length,
+            awarded_agent_id: decision.agentId,
+            idempotency_key: input.idempotency_key ?? null,
+        });
+        return serialiseContractNetResult(snapshot, decision);
+    };
+    const key = input.idempotency_key ?? null;
+    if (context.idempotency && key) {
+        const hit = context.idempotency.rememberSync(`cnp_announce:${key}`, execute);
+        if (hit.idempotent) {
+            const snapshot = hit.value;
+            context.logger.info("cnp_announce_replayed", {
+                call_id: snapshot.call_id,
+                awarded_agent_id: snapshot.awarded_agent_id,
+                idempotency_key: key,
             });
         }
+        const snapshot = hit.value;
+        return { ...snapshot, idempotent: hit.idempotent, idempotency_key: key };
     }
-    const decision = context.contractNet.award(announcement.callId);
-    const snapshot = context.contractNet.getCall(announcement.callId);
-    if (!snapshot) {
-        throw new Error(`call ${announcement.callId} disappeared after award`);
-    }
-    context.logger.info("cnp_announce", {
-        call_id: snapshot.callId,
-        bids: snapshot.bids.length,
-        awarded_agent_id: decision.agentId,
-    });
-    return serialiseContractNetResult(snapshot, decision);
+    const snapshot = execute();
+    return { ...snapshot, idempotent: false, idempotency_key: key };
 }
 /**
  * Computes a consensus decision from raw ballots. The helper mirrors the
@@ -342,6 +429,28 @@ export function handleConsensusVote(context, input) {
         satisfied: decision.satisfied,
         votes: votes.length,
         total_weight: decision.totalWeight,
+    });
+    // Broadcast the computed decision so observers subscribed to the consensus
+    // bridge receive a structured update on quorum evaluations triggered via the
+    // coordination tool surface.
+    publishConsensusEvent({
+        kind: "decision",
+        source: "consensus_vote",
+        mode: decision.mode,
+        outcome: decision.outcome,
+        satisfied: decision.satisfied,
+        tie: decision.tie,
+        threshold: decision.threshold ?? null,
+        totalWeight: decision.totalWeight,
+        tally: decision.tally,
+        votes: votes.length,
+        metadata: {
+            requested_mode: config.mode,
+            requested_quorum: config.quorum ?? null,
+            weights: config.weights ?? {},
+            tie_breaker: config.tie_breaker,
+            prefer_value: config.prefer_value ?? null,
+        },
     });
     return {
         mode: decision.mode,

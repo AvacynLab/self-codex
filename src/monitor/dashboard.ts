@@ -5,6 +5,7 @@ import { z } from "zod";
 
 import { EventStore, OrchestratorEvent } from "../eventStore.js";
 import { GraphState, GraphStateMetrics } from "../graphState.js";
+import type { ChildRuntimeLimits } from "../childRuntime.js";
 import { ChildSupervisor } from "../childSupervisor.js";
 import { StructuredLogger } from "../logger.js";
 import { StigmergyField } from "../coord/stigmergy.js";
@@ -36,6 +37,12 @@ export interface DashboardSnapshot {
     lastHeartbeatAt: number | null;
     lastActivityAt: number | null;
     waitingFor: string | null;
+    /** High-level role currently advertised for the child. */
+    role: string | null;
+    /** Timestamp of the latest explicit attachment acknowledgement, when available. */
+    attachedAt: number | null;
+    /** Declarative runtime limits captured from the supervisor, if any. */
+    limits: ChildRuntimeLimits | null;
   }>;
 }
 
@@ -515,6 +522,9 @@ function buildSnapshot(
       lastHeartbeatAt: child.lastHeartbeatAt,
       lastActivityAt,
       waitingFor: child.waitingFor,
+      role: child.role,
+      attachedAt: child.attachedAt,
+      limits: child.limits,
     };
   });
   return {

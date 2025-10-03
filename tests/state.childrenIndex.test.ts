@@ -32,6 +32,9 @@ describe("ChildrenIndex", () => {
 
     expect(snapshot.state).to.equal("starting");
     expect(snapshot.metadata).to.deep.equal({ role: "tester" });
+    expect(snapshot.role).to.equal(null);
+    expect(snapshot.limits).to.equal(null);
+    expect(snapshot.attachedAt).to.equal(null);
 
     expect(() => index.registerChild(baseChild())).to.throw(DuplicateChildError);
   });
@@ -100,6 +103,9 @@ describe("ChildrenIndex", () => {
     index.updateState("child-1", "idle");
     index.updateHeartbeat("child-1", started + 100);
     index.incrementRetries("child-1");
+    index.setRole("child-1", "operator");
+    index.setLimits("child-1", { tokens: 5 });
+    index.markAttached("child-1", started + 200);
 
     const serialised = index.serialize();
     expect(serialised["child-1"].state).to.equal("idle");
@@ -113,7 +119,34 @@ describe("ChildrenIndex", () => {
     const snapshot = restored.getChild("child-1");
     expect(snapshot?.state).to.equal("idle");
     expect(snapshot?.startedAt).to.be.at.least(started);
+    expect(snapshot?.role).to.equal("operator");
+    expect(snapshot?.limits).to.deep.equal({ tokens: 5 });
+    expect(snapshot?.attachedAt).to.equal(started + 200);
     expect(restored.getChild("invalid")).to.equal(undefined);
+  });
+
+  it("updates role, limits and attachment metadata", () => {
+    index.registerChild(baseChild());
+
+    const withRole = index.setRole("child-1", "analyst");
+    expect(withRole.role).to.equal("analyst");
+    expect(withRole.metadata.role).to.equal("analyst");
+
+    const limits = { tokens: 42, wallclock_ms: 5000 };
+    const withLimits = index.setLimits("child-1", limits);
+    expect(withLimits.limits).to.deep.equal(limits);
+    expect(withLimits.metadata.limits).to.deep.equal(limits);
+
+    const attached = index.markAttached("child-1", 123);
+    expect(attached.attachedAt).to.equal(123);
+
+    const clearedRole = index.setRole("child-1", null);
+    expect(clearedRole.role).to.equal(null);
+    expect(clearedRole.metadata).to.not.have.property("role");
+
+    const clearedLimits = index.setLimits("child-1", null);
+    expect(clearedLimits.limits).to.equal(null);
+    expect(clearedLimits.metadata).to.not.have.property("limits");
   });
 
   it("throws when targeting unknown identifiers", () => {

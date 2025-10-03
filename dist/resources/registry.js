@@ -37,6 +37,22 @@ function clampPositive(value, fallback) {
 function clone(value) {
     return structuredClone(value);
 }
+function normaliseOptionalString(value) {
+    if (value === null || value === undefined) {
+        return null;
+    }
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : null;
+}
+function normaliseOptionalNumber(value) {
+    if (value === null || value === undefined) {
+        return null;
+    }
+    if (!Number.isFinite(value)) {
+        return null;
+    }
+    return Math.floor(value);
+}
 /** Extract the namespace portion of a blackboard key. */
 function extractNamespace(key) {
     const separators = [":", "/", "|"]; // keep flexible to accommodate multiple conventions
@@ -78,6 +94,9 @@ export class ResourceRegistry {
             finalVersion: null,
             baseGraph: clone(input.graph),
             finalGraph: null,
+            owner: normaliseOptionalString(input.owner),
+            note: normaliseOptionalString(input.note),
+            expiresAt: normaliseOptionalNumber(input.expiresAt),
         };
         normalised.set(input.txId, snapshot);
     }
@@ -136,12 +155,20 @@ export class ResourceRegistry {
             return;
         }
         const history = this.getOrCreateRunHistory(runId);
+        // Even though histories are bucketed per run, materialise the identifier so
+        // downstream clients consuming the snapshots can reason about cross-run
+        // correlations without relying on the URI they queried.
+        const correlatedRunId = event.runId && event.runId.trim() ? event.runId : runId;
         const payload = {
             seq: event.seq,
             ts: event.ts,
             kind: event.kind,
             level: event.level,
             jobId: event.jobId ?? null,
+            runId: correlatedRunId,
+            opId: event.opId ?? null,
+            graphId: event.graphId ?? null,
+            nodeId: event.nodeId ?? null,
             childId: event.childId ?? null,
             payload: clone(event.payload ?? null),
         };
@@ -164,6 +191,14 @@ export class ResourceRegistry {
             ts: entry.ts,
             stream: entry.stream,
             message: entry.message,
+            jobId: entry.jobId ?? null,
+            runId: entry.runId ?? null,
+            opId: entry.opId ?? null,
+            graphId: entry.graphId ?? null,
+            nodeId: entry.nodeId ?? null,
+            childId: entry.childId?.trim() ? entry.childId : childId,
+            raw: entry.raw ?? null,
+            parsed: clone(entry.parsed ?? null),
         };
         history.entries.push(record);
         history.lastSeq = seq;
@@ -193,10 +228,23 @@ export class ResourceRegistry {
         }
         for (const [graphId, bucket] of this.graphSnapshots.entries()) {
             for (const snapshot of bucket.values()) {
+                const metadata = {
+                    state: snapshot.state,
+                    base_version: snapshot.baseVersion,
+                };
+                if (snapshot.owner) {
+                    metadata.owner = snapshot.owner;
+                }
+                if (snapshot.note) {
+                    metadata.note = snapshot.note;
+                }
+                if (snapshot.expiresAt !== null) {
+                    metadata.expires_at = snapshot.expiresAt;
+                }
                 entries.push({
                     uri: `sc://snapshots/${graphId}/${snapshot.txId}`,
                     kind: "snapshot",
-                    metadata: { state: snapshot.state, base_version: snapshot.baseVersion },
+                    metadata,
                 });
             }
         }

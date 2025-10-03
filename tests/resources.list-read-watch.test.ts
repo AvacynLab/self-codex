@@ -78,7 +78,14 @@ describe("resources registry", () => {
     });
 
     registry.recordChildLogEntry("child-9", { ts: 2_050, stream: "stdout", message: "ready" });
-    registry.recordChildLogEntry("child-9", { ts: 2_120, stream: "stderr", message: "warning" });
+    registry.recordChildLogEntry("child-9", {
+      ts: 2_120,
+      stream: "stderr",
+      message: "warning",
+      jobId: "job-1",
+      runId: "run-77",
+      opId: "op-1",
+    });
 
     const uris = registry.list().map((entry) => entry.uri);
     expect(uris).to.deep.equal([
@@ -117,6 +124,10 @@ describe("resources registry", () => {
           kind: "PLAN",
           level: "info",
           jobId: "job-1",
+          runId: "run-77",
+          opId: null,
+          graphId: null,
+          nodeId: null,
           childId: null,
           payload: { run_id: "run-77", note: "start" },
         },
@@ -126,6 +137,10 @@ describe("resources registry", () => {
           kind: "STATUS",
           level: "info",
           jobId: "job-1",
+          runId: "run-77",
+          opId: null,
+          graphId: null,
+          nodeId: null,
           childId: "child-9",
           payload: { run_id: "run-77", step: "fanout" },
         },
@@ -137,8 +152,34 @@ describe("resources registry", () => {
     expect(childLogs.payload).to.deep.equal({
       childId: "child-9",
       logs: [
-        { seq: 1, ts: 2_050, stream: "stdout", message: "ready" },
-        { seq: 2, ts: 2_120, stream: "stderr", message: "warning" },
+        {
+          seq: 1,
+          ts: 2_050,
+          stream: "stdout",
+          message: "ready",
+          jobId: null,
+          runId: null,
+          opId: null,
+          graphId: null,
+          nodeId: null,
+          childId: "child-9",
+          raw: null,
+          parsed: null,
+        },
+        {
+          seq: 2,
+          ts: 2_120,
+          stream: "stderr",
+          message: "warning",
+          jobId: "job-1",
+          runId: "run-77",
+          opId: "op-1",
+          graphId: null,
+          nodeId: null,
+          childId: "child-9",
+          raw: null,
+          parsed: null,
+        },
       ],
     });
 
@@ -175,19 +216,88 @@ describe("resources registry", () => {
       payload: { run_id: "run-123", reply: "ok" },
     });
 
+    registry.recordRunEvent("run-123", {
+      seq: 13,
+      ts: 5_250,
+      kind: "STATUS",
+      level: "info",
+      jobId: "job-xyz",
+      runId: "run-123",
+      opId: "op-7",
+      graphId: "graph-42",
+      nodeId: "node-beta",
+      childId: "child-b",
+      payload: { run_id: "run-123", op_id: "op-7", graph_id: "graph-42", node_id: "node-beta" },
+    });
+
     const firstPage = registry.watch("sc://runs/run-123/events", { fromSeq: 0, limit: 2 });
     expect(firstPage.events.map((event) => event.seq)).to.deep.equal([10, 11]);
     expect(firstPage.nextSeq).to.equal(11);
 
     const secondPage = registry.watch("sc://runs/run-123/events", { fromSeq: firstPage.nextSeq, limit: 2 });
-    expect(secondPage.events.map((event) => event.seq)).to.deep.equal([12]);
-    expect(secondPage.nextSeq).to.equal(12);
+    expect(secondPage.events.map((event) => event.seq)).to.deep.equal([12, 13]);
+    expect(secondPage.nextSeq).to.equal(13);
+
+    const correlatedEvent = secondPage.events[1];
+    expect(correlatedEvent).to.deep.equal({
+      seq: 13,
+      ts: 5_250,
+      kind: "STATUS",
+      level: "info",
+      jobId: "job-xyz",
+      runId: "run-123",
+      opId: "op-7",
+      graphId: "graph-42",
+      nodeId: "node-beta",
+      childId: "child-b",
+      payload: {
+        run_id: "run-123",
+        op_id: "op-7",
+        graph_id: "graph-42",
+        node_id: "node-beta",
+      },
+    });
 
     registry.recordChildLogEntry("child-a", { ts: 5_050, stream: "stdout", message: "tick" });
-    registry.recordChildLogEntry("child-a", { ts: 5_060, stream: "stdout", message: "tock" });
+    registry.recordChildLogEntry("child-a", {
+      ts: 5_060,
+      stream: "stdout",
+      message: "tock",
+      runId: "run-123",
+      opId: "op-8",
+    });
 
     const logPage = registry.watch("sc://children/child-a/logs", { fromSeq: 0 });
-    expect(logPage.events.map((entry) => (entry as typeof logPage.events[number]).seq)).to.deep.equal([1, 2]);
+    expect(logPage.events).to.deep.equal([
+      {
+        seq: 1,
+        ts: 5_050,
+        stream: "stdout",
+        message: "tick",
+        jobId: null,
+        runId: null,
+        opId: null,
+        graphId: null,
+        nodeId: null,
+        childId: "child-a",
+        raw: null,
+        parsed: null,
+      },
+      {
+        seq: 2,
+        ts: 5_060,
+        stream: "stdout",
+        message: "tock",
+        jobId: null,
+        runId: "run-123",
+        opId: "op-8",
+        graphId: null,
+        nodeId: null,
+        childId: "child-a",
+        raw: null,
+        parsed: null,
+      },
+    ]);
     expect(logPage.nextSeq).to.equal(2);
   });
 

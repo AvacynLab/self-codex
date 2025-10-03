@@ -87,6 +87,12 @@ Réponse condensée :
 > Les toggles désactivés (`enableEventsBus`, `enableTx`, `enableBulk`, etc.) correspondent aux modules en cours d'implémentation.
 > Consultez `docs/mcp-api.md` pour suivre leur statut et leurs schémas attendus.
 
+Lorsque `enableIdempotency` est actif, les outils `child_create`, `child_spawn_codex`,
+`plan_run_bt`, `plan_run_reactive`, `cnp_announce`, `tx_begin` et
+`graph_batch_mutate` acceptent un `idempotency_key` optionnel et renvoient
+`idempotent: true` lors des relectures afin de signaler qu'aucune action
+supplémentaire n'a été effectuée côté serveur.
+
 ### `mcp_capabilities`
 
 ```bash
@@ -139,14 +145,25 @@ Pour une consommation STDIO batch, enchaînez les appels via le CLI MCP
 Chaque outil est validé par zod et loggé en JSONL. Les fichiers d'un enfant sont
 confinés dans `children/<childId>/`.
 
+> ℹ️ Tous les retours `child_*` incluent désormais les hints de corrélation
+> (`run_id`, `op_id`, `job_id`, `graph_id`, `node_id`, `child_id`) lorsqu'ils
+> sont fournis par l'appelant ou générés par l'orchestrateur. Les événements du
+> bus MCP et les journaux `sc://children/<id>/logs` reflètent automatiquement ces
+> identifiants pour faciliter le suivi bout-en-bout.
+
 | Tool | Objectif | Détails clés |
 | --- | --- | --- |
 | `child_create` | Démarre un clone Codex | `prompt`, `tools_allow`, `timeouts`, `budget`, `initial_payload` |
-| `child_send` | Injecte un prompt/signal | Génère un `messageId` unique, `expect` (`stream`/`final`) |
-| `child_status` | Snapshot runtime | `lifecycle`, `lastHeartbeatAt`, ressources |
-| `child_collect` | Récupère messages + artefacts | Parcourt l'outbox et retourne le manifeste |
-| `child_stream` | Paginer stdout/stderr | Curseur `after_sequence`, filtre `streams` |
-| `child_cancel` | SIGINT/SIGTERM gracieux | Supporte `timeout_ms` avant escalation |
+| `child_spawn_codex` | Provisionne un enfant spécialisé | Utilise un manifeste `codex.json`, options `role`, `limits`, corrélations `run_id`/`op_id` |
+| `child_batch_create` | Démarre plusieurs clones Codex | Transaction atomique avec rollback et clés d'idempotence par entrée |
+| `child_attach` | Rattache un runtime existant | Resynchronise manifeste + index, renseigne `attached_at` |
+| `child_set_role` | Met à jour le rôle logique | Applique immédiatement `role`, journalise sur bus MCP et ressources |
+| `child_set_limits` | Ajuste CPU/mémoire/budget | Enforce soft-limits (`messages`, `wallclock_ms`, `cpu_percent`) |
+| `child_send` | Injecte un prompt/signal | Génère un `messageId` unique, `expect` (`stream`/`final`), conserve hints de corrélation |
+| `child_status` | Snapshot runtime | `lifecycle`, `lastHeartbeatAt`, ressources, rôle & limites |
+| `child_collect` | Récupère messages + artefacts | Parcourt l'outbox, retourne manifeste + corrélations |
+| `child_stream` | Paginer stdout/stderr | Curseur `after_sequence`, filtre `streams`, inclut `runId/opId` |
+| `child_cancel` | SIGINT/SIGTERM gracieux | Supporte `timeout_ms` avant escalation, relai `jobId/graphId/nodeId` |
 | `child_kill` | Terminaison forcée | SIGKILL configurable |
 | `child_gc` | Nettoyage FS + index | Supprime logs, manifestes et réindexe |
 
@@ -178,6 +195,33 @@ confinés dans `children/<childId>/`.
   "input": { "child_id": "child_123" }
 }
 ```
+
+**Exemple `child_batch_create`**
+
+```json
+{
+  "tool": "child_batch_create",
+  "input": {
+    "entries": [
+      {
+        "role": "planner",
+        "prompt": { "system": "Tu es un copilote.", "user": ["Prépare le plan"] },
+        "idempotency_key": "plan-1"
+      },
+      {
+        "role": "reviewer",
+        "prompt": { "system": "Tu es un copilote.", "user": ["Relis le plan"] },
+        "idempotency_key": "plan-2"
+      }
+    ]
+  }
+}
+```
+
+L'orchestrateur spawn les enfants séquentiellement ; si une création échoue, les
+précédents sont stoppés (`rollback`). En rejouant la même requête avec les mêmes
+clés, la réponse est rejouée (`idempotent_entries = 2`). Le champ `created`
+compte uniquement les nouveaux runtimes démarrés pendant l'appel courant.
 
 **Paginer le transcript avec `child_stream`**
 
@@ -350,6 +394,18 @@ entièrement hors ligne et s'intègrent au scheduler réactif.
 ```
 
 ```json
+{
+  "tool": "bb_batch_set",
+  "input": {
+    "entries": [
+      { "key": "mission", "value": { "status": "ready" }, "tags": ["sync"] },
+      { "key": "backlog", "value": { "tickets": 3 }, "ttl_ms": 300000 }
+    ]
+  }
+}
+```
+
+```json
 { "tool": "bb_get", "input": { "key": "mission" } }
 ```
 
@@ -360,6 +416,18 @@ journal des écritures.
 
 ```json
 { "tool": "stig_mark", "input": { "node_id": "triage", "type": "backlog", "intensity": 2.5 } }
+```
+
+```json
+{
+  "tool": "stig_batch",
+  "input": {
+    "entries": [
+      { "node_id": "triage", "type": "backlog", "intensity": 2.5 },
+      { "node_id": "triage", "type": "latency", "intensity": 1.25 }
+    ]
+  }
+}
 ```
 
 ```json
@@ -514,6 +582,17 @@ Tous les outils manipulent des DAGs pondérés et sont testés hors ligne.
   patron (pipeline lint → test → build → package).
 - `graph_mutate` — Opérations idempotentes : ajout/retrait/renommage de nœuds ou
   d'arêtes, mise à jour des poids/labels.
+- `graph_batch_mutate` — Applique un lot d'opérations côté serveur (transaction
+  en mémoire avec rollback automatique et support des clés d'idempotence).
+- `graph_diff` — Produit un patch JSON (RFC 6902) entre deux versions (latest,
+  version précise ou descripteur inline) avec un résumé des sections modifiées.
+- `graph_patch` — Applique un patch JSON sur le graphe courant, applique les
+  invariants (DAG/labels/ports/cardinalités) et commit automatiquement via le
+  gestionnaire de transactions.
+- `graph_lock` / `graph_unlock` — Acquièrent/libèrent un verrou coopératif par
+  `holder`. Tant qu'un verrou actif subsiste, seules les mutations (`graph_patch`,
+  `tx_*`) portant le même `owner` sont acceptées ; le TTL peut être rafraîchi via
+  `graph_lock`.
 - `graph_validate` — Détection de cycles, poids invalides, nœuds inaccessibles
   avec suggestions d'auto-fix.
 - `graph_summarize` — Couches, degrés, goulets d'étranglement et nœuds critiques.
@@ -592,6 +671,29 @@ absentes (`deploy → notify`).
 
 Chaque opération retourne un enregistrement `applied` précisant si la mutation
 a effectivement changé le graphe (diff structuré insensible à l'ordre).
+
+**Exemple `graph_batch_mutate`**
+
+```json
+{
+  "tool": "graph_batch_mutate",
+  "input": {
+    "graph_id": "pipeline",
+    "expected_version": 3,
+    "operations": [
+      { "op": "add_node", "node": { "id": "qa", "label": "QA" } },
+      { "op": "add_edge", "edge": { "from": "build", "to": "qa", "weight": 1 } }
+    ],
+    "idempotency_key": "deploy-qa"
+  }
+}
+```
+
+Le serveur ouvre une transaction en mémoire, applique toutes les opérations,
+valide les verrous et commit la nouvelle version (`committed_version`). Les
+rejouées (`idempotent = true`) renvoient la même version sans répéter les
+effets de bord. Le champ `changed` signale si la version progresse ; lorsqu'il
+vaut `false`, la version reste stable et le timestamp de commit est conservé.
 
 **Exemple `graph_validate`**
 

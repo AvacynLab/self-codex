@@ -6,10 +6,12 @@ import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { resolve as resolvePath, dirname as pathDirname, basename as pathBasename } from "node:path";
 import { pathToFileURL } from "url";
 import { GraphState } from "./graphState.js";
-import { GraphTransactionManager, GraphVersionConflictError } from "./graph/tx.js";
+import { GraphTransactionManager, GraphTransactionError, GraphVersionConflictError } from "./graph/tx.js";
+import { GraphLockManager } from "./graph/locks.js";
 import { StructuredLogger } from "./logger.js";
 import { EventStore } from "./eventStore.js";
 import { EventBus } from "./events/bus.js";
+import { bridgeBlackboardEvents, bridgeCancellationEvents, bridgeConsensusEvents, bridgeContractNetEvents, bridgeValueEvents, bridgeStigmergyEvents, } from "./events/bridges.js";
 import { startHttpServer } from "./httpServer.js";
 import { startDashboardServer } from "./monitor/dashboard.js";
 import { BehaviorTreeStatusRegistry } from "./monitor/btStatusRegistry.js";
@@ -31,15 +33,20 @@ import { KnowledgeGraph } from "./knowledge/knowledgeGraph.js";
 import { CausalMemory } from "./knowledge/causalMemory.js";
 import { ValueGraph } from "./values/valueGraph.js";
 import { ResourceRegistry, ResourceRegistryError } from "./resources/registry.js";
-import { ChildCancelInputShape, ChildCancelInputSchema, ChildCollectInputShape, ChildCollectInputSchema, ChildCreateInputShape, ChildCreateInputSchema, ChildGcInputShape, ChildGcInputSchema, ChildKillInputShape, ChildKillInputSchema, ChildSendInputShape, ChildSendInputSchema, ChildStreamInputShape, ChildStreamInputSchema, ChildStatusInputShape, ChildStatusInputSchema, handleChildCancel, handleChildCollect, handleChildCreate, handleChildGc, handleChildKill, handleChildSend, handleChildStream, handleChildStatus, } from "./tools/childTools.js";
-import { PlanFanoutInputSchema, PlanFanoutInputShape, PlanJoinInputSchema, PlanJoinInputShape, PlanCompileBTInputSchema, PlanCompileBTInputShape, PlanRunBTInputSchema, PlanRunBTInputShape, PlanRunReactiveInputSchema, PlanRunReactiveInputShape, PlanReduceInputSchema, PlanReduceInputShape, handlePlanFanout, handlePlanJoin, handlePlanCompileBT, handlePlanRunBT, handlePlanRunReactive, handlePlanReduce, ValueGuardRejectionError, } from "./tools/planTools.js";
-import { BbGetInputSchema, BbGetInputShape, BbQueryInputSchema, BbQueryInputShape, BbSetInputSchema, BbSetInputShape, BbWatchInputSchema, BbWatchInputShape, CnpAnnounceInputSchema, CnpAnnounceInputShape, handleBbGet, handleBbQuery, handleBbSet, handleBbWatch, StigDecayInputSchema, StigDecayInputShape, StigMarkInputSchema, StigMarkInputShape, StigSnapshotInputSchema, StigSnapshotInputShape, handleStigDecay, handleStigMark, handleStigSnapshot, handleCnpAnnounce, ConsensusVoteInputSchema, ConsensusVoteInputShape, handleConsensusVote, } from "./tools/coordTools.js";
-import { requestCancellation, cancelRun } from "./executor/cancel.js";
+import { IdempotencyRegistry } from "./infra/idempotency.js";
+import { ChildCancelInputShape, ChildCancelInputSchema, ChildCollectInputShape, ChildCollectInputSchema, ChildCreateInputShape, ChildCreateInputSchema, ChildGcInputShape, ChildGcInputSchema, ChildKillInputShape, ChildKillInputSchema, ChildSendInputShape, ChildSendInputSchema, ChildStreamInputShape, ChildStreamInputSchema, ChildStatusInputShape, ChildStatusInputSchema, ChildSpawnCodexInputShape, ChildSpawnCodexInputSchema, ChildBatchCreateInputShape, ChildBatchCreateInputSchema, ChildAttachInputShape, ChildAttachInputSchema, ChildSetRoleInputShape, ChildSetRoleInputSchema, ChildSetLimitsInputShape, ChildSetLimitsInputSchema, handleChildCancel, handleChildCollect, handleChildCreate, handleChildSpawnCodex, handleChildBatchCreate, handleChildAttach, handleChildSetRole, handleChildSetLimits, handleChildGc, handleChildKill, handleChildSend, handleChildStream, handleChildStatus, } from "./tools/childTools.js";
+import { PlanFanoutInputSchema, PlanFanoutInputShape, PlanJoinInputSchema, PlanJoinInputShape, PlanCompileBTInputSchema, PlanCompileBTInputShape, PlanRunBTInputSchema, PlanRunBTInputShape, PlanRunReactiveInputSchema, PlanRunReactiveInputShape, PlanReduceInputSchema, PlanReduceInputShape, PlanDryRunInputSchema, PlanDryRunInputShape, handlePlanFanout, handlePlanJoin, handlePlanCompileBT, handlePlanRunBT, handlePlanRunReactive, handlePlanReduce, handlePlanDryRun, ValueGuardRejectionError, } from "./tools/planTools.js";
+import { BbGetInputSchema, BbGetInputShape, BbQueryInputSchema, BbQueryInputShape, BbSetInputSchema, BbSetInputShape, BbBatchSetInputSchema, BbBatchSetInputShape, BbWatchInputSchema, BbWatchInputShape, CnpAnnounceInputSchema, CnpAnnounceInputShape, handleBbGet, handleBbBatchSet, handleBbQuery, handleBbSet, handleBbWatch, StigDecayInputSchema, StigDecayInputShape, StigMarkInputSchema, StigMarkInputShape, StigBatchInputSchema, StigBatchInputShape, StigSnapshotInputSchema, StigSnapshotInputShape, handleStigDecay, handleStigMark, handleStigBatch, handleStigSnapshot, handleCnpAnnounce, ConsensusVoteInputSchema, ConsensusVoteInputShape, handleConsensusVote, } from "./tools/coordTools.js";
+import { requestCancellation, cancelRun, getCancellation } from "./executor/cancel.js";
 import { AgentAutoscaleSetInputSchema, AgentAutoscaleSetInputShape, handleAgentAutoscaleSet, } from "./tools/agentTools.js";
 import { GraphGenerateInputSchema, GraphGenerateInputShape, GraphMutateInputSchema, GraphMutateInputShape, GraphDescriptorSchema, GraphPathsConstrainedInputSchema, GraphPathsConstrainedInputShape, GraphPathsKShortestInputSchema, GraphPathsKShortestInputShape, GraphCentralityBetweennessInputSchema, GraphCentralityBetweennessInputShape, GraphCriticalPathInputSchema, GraphCriticalPathInputShape, GraphOptimizeInputSchema, GraphOptimizeInputShape, GraphOptimizeMooInputSchema, GraphOptimizeMooInputShape, GraphCausalAnalyzeInputSchema, GraphCausalAnalyzeInputShape, GraphRewriteApplyInputSchema, GraphRewriteApplyInputShape, GraphHyperExportInputSchema, GraphHyperExportInputShape, GraphPartitionInputSchema, GraphPartitionInputShape, GraphSummarizeInputSchema, GraphSummarizeInputShape, GraphSimulateInputSchema, GraphSimulateInputShape, GraphValidateInputSchema, GraphValidateInputShape, handleGraphGenerate, handleGraphMutate, handleGraphRewriteApply, handleGraphHyperExport, handleGraphPathsConstrained, handleGraphPathsKShortest, handleGraphCentralityBetweenness, handleGraphCriticalPath, handleGraphOptimize, handleGraphOptimizeMoo, handleGraphCausalAnalyze, handleGraphPartition, handleGraphSummarize, handleGraphSimulate, handleGraphValidate, normaliseGraphPayload, serialiseNormalisedGraph, } from "./tools/graphTools.js";
+import { GraphBatchMutateInputSchema, GraphBatchMutateInputShape, handleGraphBatchMutate, } from "./tools/graphBatchTools.js";
+import { GraphLockInputShape, GraphLockInputSchema, GraphUnlockInputShape, GraphUnlockInputSchema, handleGraphLock, handleGraphUnlock, } from "./tools/graphLockTools.js";
+import { GraphDiffInputSchema, GraphDiffInputShape, GraphPatchInputSchema, GraphPatchInputShape, handleGraphDiff, handleGraphPatch, } from "./tools/graphDiffTools.js";
+import { TxBeginInputSchema, TxBeginInputShape, TxApplyInputSchema, TxApplyInputShape, TxCommitInputSchema, TxCommitInputShape, TxRollbackInputSchema, TxRollbackInputShape, handleTxBegin, handleTxApply, handleTxCommit, handleTxRollback, } from "./tools/txTools.js";
 import { KgExportInputSchema, KgExportInputShape, KgInsertInputSchema, KgInsertInputShape, KgQueryInputSchema, KgQueryInputShape, handleKgExport, handleKgInsert, handleKgQuery, } from "./tools/knowledgeTools.js";
 import { CausalExportInputSchema, CausalExportInputShape, CausalExplainInputSchema, CausalExplainInputShape, handleCausalExport, handleCausalExplain, } from "./tools/causalTools.js";
-import { ValuesFilterInputSchema, ValuesFilterInputShape, ValuesScoreInputSchema, ValuesScoreInputShape, ValuesSetInputSchema, ValuesSetInputShape, handleValuesFilter, handleValuesScore, handleValuesSet, } from "./tools/valueTools.js";
+import { ValuesExplainInputSchema, ValuesExplainInputShape, ValuesFilterInputSchema, ValuesFilterInputShape, ValuesScoreInputSchema, ValuesScoreInputShape, ValuesSetInputSchema, ValuesSetInputShape, handleValuesExplain, handleValuesFilter, handleValuesScore, handleValuesSet, } from "./tools/valueTools.js";
 import { renderMermaidFromGraph } from "./viz/mermaid.js";
 import { renderDotFromGraph } from "./viz/dot.js";
 import { renderGraphmlFromGraph } from "./viz/graphml.js";
@@ -57,6 +64,7 @@ const graphState = new GraphState();
  * deterministic version bumps.
  */
 const graphTransactions = new GraphTransactionManager();
+const graphLocks = new GraphLockManager();
 /** Shared blackboard store powering coordination tools. */
 const blackboard = new BlackboardStore();
 /** Registry exposing normalised MCP resources (graphs, runs, logs, namespaces). */
@@ -65,6 +73,8 @@ const resources = new ResourceRegistry({ blackboard });
 const stigmergy = new StigmergyField();
 /** Shared contract-net coordinator balancing task assignments. */
 const contractNet = new ContractNetCoordinator();
+/** Registry replaying cached results for idempotent operations. */
+const idempotencyRegistry = new IdempotencyRegistry();
 /** Shared knowledge graph storing reusable plan patterns. */
 const knowledgeGraph = new KnowledgeGraph();
 /** Shared causal memory tracking runtime event relationships. */
@@ -250,6 +260,16 @@ let activeLoggerOptions = { ...baseLoggerOptions };
 let logger = new StructuredLogger(activeLoggerOptions);
 const eventStore = new EventStore({ maxHistory: 5000, logger });
 const eventBus = new EventBus({ historyLimit: 5000 });
+// Bridge coordination primitives to the unified event bus so downstream MCP
+// clients can observe blackboard and stigmergic activity without bespoke
+// wiring. The returned disposers are intentionally ignored because the server
+// keeps these observers for its entire lifetime.
+void bridgeBlackboardEvents({ blackboard, bus: eventBus });
+void bridgeStigmergyEvents({ field: stigmergy, bus: eventBus });
+void bridgeCancellationEvents({ bus: eventBus });
+void bridgeContractNetEvents({ coordinator: contractNet, bus: eventBus });
+void bridgeConsensusEvents({ bus: eventBus });
+void bridgeValueEvents({ graph: valueGraph, bus: eventBus });
 if (activeLoggerOptions.logFile) {
     logger.info("logger_configured", {
         log_file: activeLoggerOptions.logFile,
@@ -304,6 +324,22 @@ const childSupervisor = new ChildSupervisor({
         maxChildren: runtimeChildSafety.maxChildren,
         memoryLimitMb: runtimeChildSafety.memoryLimitMb,
         cpuPercent: runtimeChildSafety.cpuPercent,
+    },
+    eventBus,
+    recordChildLogEntry: (childId, entry) => {
+        resources.recordChildLogEntry(childId, {
+            ts: entry.ts,
+            stream: entry.stream,
+            message: entry.message,
+            childId: entry.childId ?? childId,
+            jobId: entry.jobId ?? null,
+            runId: entry.runId ?? null,
+            opId: entry.opId ?? null,
+            graphId: entry.graphId ?? null,
+            nodeId: entry.nodeId ?? null,
+            raw: entry.raw ?? null,
+            parsed: entry.parsed ?? null,
+        });
     },
 });
 const autoscaler = new Autoscaler({ supervisor: childSupervisor, logger });
@@ -688,7 +724,14 @@ function computeQualityAssessment(kind, summaryText, review) {
     }
 }
 function getChildToolContext() {
-    return { supervisor: childSupervisor, logger, loopDetector, contractNet, supervisorAgent: orchestratorSupervisor };
+    return {
+        supervisor: childSupervisor,
+        logger,
+        loopDetector,
+        contractNet,
+        supervisorAgent: orchestratorSupervisor,
+        idempotency: runtimeFeatures.enableIdempotency ? idempotencyRegistry : undefined,
+    };
 }
 function getPlanToolContext() {
     return {
@@ -716,10 +759,48 @@ function getPlanToolContext() {
         loopDetector,
         autoscaler: runtimeFeatures.enableAutoscaler ? autoscaler : undefined,
         btStatusRegistry,
+        idempotency: runtimeFeatures.enableIdempotency ? idempotencyRegistry : undefined,
     };
 }
+function getTxToolContext() {
+    return {
+        transactions: graphTransactions,
+        resources,
+        locks: graphLocks,
+        idempotency: runtimeFeatures.enableIdempotency ? idempotencyRegistry : undefined,
+    };
+}
+function getGraphBatchToolContext() {
+    return {
+        transactions: graphTransactions,
+        resources,
+        locks: graphLocks,
+        idempotency: runtimeFeatures.enableIdempotency ? idempotencyRegistry : undefined,
+    };
+}
+function getGraphDiffToolContext() {
+    return { transactions: graphTransactions, resources, locks: graphLocks };
+}
+function getGraphLockToolContext() {
+    return { locks: graphLocks };
+}
+function describeSelectorForLog(selector) {
+    if ("graph" in selector) {
+        return "descriptor";
+    }
+    if ("version" in selector) {
+        return `version:${selector.version}`;
+    }
+    return "latest";
+}
 function getCoordinationToolContext() {
-    return { blackboard, stigmergy, contractNet, logger };
+    return {
+        blackboard,
+        stigmergy,
+        contractNet,
+        logger,
+        idempotency: runtimeFeatures.enableIdempotency ? idempotencyRegistry : undefined,
+    };
 }
 function getAgentToolContext() {
     return { autoscaler, logger };
@@ -807,6 +888,30 @@ function planToolError(toolName, error, context = {}, defaultCode = "PLAN_TOOL_E
 function graphToolError(toolName, error, context = {}, defaultCode = "GRAPH_TOOL_ERROR") {
     const normalised = normaliseToolError(error, defaultCode);
     logger.error(`${toolName}_failed`, { ...context, message: normalised.message, code: normalised.code, details: normalised.details });
+    const payload = {
+        error: normalised.code,
+        tool: toolName,
+        message: normalised.message,
+    };
+    if (normalised.hint) {
+        payload.hint = normalised.hint;
+    }
+    if (normalised.details !== undefined) {
+        payload.details = normalised.details;
+    }
+    return {
+        isError: true,
+        content: [{ type: "text", text: j(payload) }],
+    };
+}
+function transactionToolError(toolName, error, context = {}) {
+    const normalised = normaliseToolError(error, "E-TX-UNEXPECTED");
+    logger.error(`${toolName}_failed`, {
+        ...context,
+        message: normalised.message,
+        code: normalised.code,
+        details: normalised.details,
+    });
     const payload = {
         error: normalised.code,
         tool: toolName,
@@ -990,6 +1095,21 @@ function ensureEventsBusEnabled(toolName) {
     }
     return null;
 }
+function ensureTransactionsEnabled(toolName) {
+    if (!runtimeFeatures.enableTx) {
+        logger.warn(`${toolName}_disabled`, { tool: toolName });
+        return {
+            isError: true,
+            content: [
+                {
+                    type: "text",
+                    text: j({ error: "TRANSACTIONS_DISABLED", tool: toolName, message: "transactions module disabled" }),
+                },
+            ],
+        };
+    }
+    return null;
+}
 // ---------------------------
 // Utils
 // ---------------------------
@@ -1140,6 +1260,10 @@ function pushEvent(event) {
             kind: emitted.kind,
             level: emitted.level,
             jobId: emitted.jobId,
+            runId,
+            opId,
+            graphId,
+            nodeId,
             childId: emitted.childId,
             payload: emitted.payload,
         });
@@ -1226,6 +1350,9 @@ function pruneExpired() {
             keys: keys.slice(0, 5),
             truncated: keys.length > 5 ? keys.length - 5 : 0,
         });
+    }
+    if (runtimeFeatures.enableIdempotency) {
+        idempotencyRegistry.pruneExpired(t);
     }
 }
 // ---------------------------
@@ -2333,6 +2460,7 @@ server.registerTool("graph_mutate", {
             version: graphVersionForError,
         });
         const baseGraph = normaliseGraphPayload(parsed.graph);
+        graphLocks.assertCanMutate(baseGraph.graphId, null);
         const tx = graphTransactions.begin(baseGraph);
         resources.recordGraphSnapshot({
             graphId: tx.graphId,
@@ -2348,6 +2476,7 @@ server.registerTool("graph_mutate", {
                 graph: serialiseNormalisedGraph(tx.workingCopy),
             };
             const intermediate = handleGraphMutate(mutateInput);
+            graphLocks.assertCanMutate(baseGraph.graphId, null);
             committed = graphTransactions.commit(tx.txId, normaliseGraphPayload(intermediate.graph));
             resources.markGraphSnapshotCommitted({
                 graphId: committed.graphId,
@@ -2430,6 +2559,174 @@ server.registerTool("graph_mutate", {
             graph_id: graphIdForError,
             version: graphVersionForError ?? undefined,
         });
+    }
+});
+server.registerTool("graph_batch_mutate", {
+    title: "Graph batch mutate",
+    description: "Applique un lot d'opérations sur le graphe côté serveur avec rollback atomique.",
+    inputSchema: GraphBatchMutateInputShape,
+}, async (input) => {
+    pruneExpired();
+    let graphIdForError = null;
+    try {
+        const parsed = GraphBatchMutateInputSchema.parse(input);
+        graphIdForError = parsed.graph_id;
+        logger.info("graph_batch_mutate_requested", {
+            graph_id: parsed.graph_id,
+            operations: parsed.operations.length,
+            expected_version: parsed.expected_version ?? null,
+            owner: parsed.owner ?? null,
+            note: parsed.note ?? null,
+            idempotency_key: parsed.idempotency_key ?? null,
+        });
+        const result = await handleGraphBatchMutate(getGraphBatchToolContext(), parsed);
+        const logPayload = {
+            graph_id: result.graph_id,
+            base_version: result.base_version,
+            committed_version: result.committed_version,
+            committed_at: result.committed_at,
+            changed: result.changed,
+            operations: parsed.operations.length,
+            idempotent: result.idempotent,
+            idempotency_key: result.idempotency_key,
+        };
+        if (result.idempotent) {
+            logger.info("graph_batch_mutate_replayed", logPayload);
+        }
+        else {
+            logger.info("graph_batch_mutate_succeeded", logPayload);
+        }
+        return {
+            content: [{ type: "text", text: j({ tool: "graph_batch_mutate", result }) }],
+            structuredContent: result,
+        };
+    }
+    catch (error) {
+        if (error instanceof GraphVersionConflictError) {
+            return graphToolError("graph_batch_mutate", error, { graph_id: graphIdForError });
+        }
+        if (error instanceof GraphTransactionError) {
+            return graphToolError("graph_batch_mutate", error, { graph_id: graphIdForError });
+        }
+        return graphToolError("graph_batch_mutate", error, {
+            graph_id: graphIdForError ?? undefined,
+        });
+    }
+});
+server.registerTool("graph_diff", {
+    title: "Graph diff",
+    description: "Calcule un patch JSON (RFC 6902) entre deux versions ou descripteurs de graphe.",
+    inputSchema: GraphDiffInputShape,
+}, async (input) => {
+    try {
+        const parsed = GraphDiffInputSchema.parse(input);
+        logger.info("graph_diff_requested", {
+            graph_id: parsed.graph_id,
+            from: describeSelectorForLog(parsed.from),
+            to: describeSelectorForLog(parsed.to),
+        });
+        const result = handleGraphDiff(getGraphDiffToolContext(), parsed);
+        logger.info("graph_diff_succeeded", {
+            graph_id: result.graph_id,
+            changed: result.changed,
+            operations: result.operations.length,
+        });
+        return {
+            content: [{ type: "text", text: j({ tool: "graph_diff", result }) }],
+            structuredContent: result,
+        };
+    }
+    catch (error) {
+        return graphToolError("graph_diff", error);
+    }
+});
+server.registerTool("graph_patch", {
+    title: "Graph patch",
+    description: "Applique un patch JSON sur le dernier graphe committe en verifiant les invariants structurels.",
+    inputSchema: GraphPatchInputShape,
+}, async (input) => {
+    let graphIdForError;
+    try {
+        const parsed = GraphPatchInputSchema.parse(input);
+        graphIdForError = parsed.graph_id;
+        logger.info("graph_patch_requested", {
+            graph_id: parsed.graph_id,
+            operations: parsed.patch.length,
+            base_version: parsed.base_version ?? null,
+            enforce_invariants: parsed.enforce_invariants,
+        });
+        const result = handleGraphPatch(getGraphDiffToolContext(), parsed);
+        logger.info("graph_patch_succeeded", {
+            graph_id: result.graph_id,
+            committed_version: result.committed_version,
+            changed: result.changed,
+            operations: result.operations_applied,
+            invariants_ok: result.invariants ? result.invariants.ok : true,
+        });
+        return {
+            content: [{ type: "text", text: j({ tool: "graph_patch", result }) }],
+            structuredContent: result,
+        };
+    }
+    catch (error) {
+        return graphToolError("graph_patch", error, {
+            graph_id: graphIdForError,
+        });
+    }
+});
+server.registerTool("graph_lock", {
+    title: "Graph lock",
+    description: "Acquiert ou rafraichit un verrou cooperatif sur un graphe afin de proteger les mutations.",
+    inputSchema: GraphLockInputShape,
+}, async (input) => {
+    try {
+        const parsed = GraphLockInputSchema.parse(input);
+        logger.info("graph_lock_requested", {
+            graph_id: parsed.graph_id,
+            holder: parsed.holder,
+            ttl_ms: parsed.ttl_ms ?? null,
+        });
+        const result = handleGraphLock(getGraphLockToolContext(), parsed);
+        logger.info("graph_lock_acquired", {
+            graph_id: result.graph_id,
+            holder: result.holder,
+            lock_id: result.lock_id,
+            expires_at: result.expires_at ?? null,
+        });
+        return {
+            content: [{ type: "text", text: j({ tool: "graph_lock", result }) }],
+            structuredContent: result,
+        };
+    }
+    catch (error) {
+        return graphToolError("graph_lock", error);
+    }
+});
+server.registerTool("graph_unlock", {
+    title: "Graph unlock",
+    description: "Libere un verrou cooperatif precedemment acquis sur un graphe.",
+    inputSchema: GraphUnlockInputShape,
+}, async (input) => {
+    let lockIdForError;
+    try {
+        const parsed = GraphUnlockInputSchema.parse(input);
+        lockIdForError = parsed.lock_id;
+        logger.info("graph_unlock_requested", {
+            lock_id: parsed.lock_id,
+        });
+        const result = handleGraphUnlock(getGraphLockToolContext(), parsed);
+        logger.info("graph_unlock_succeeded", {
+            lock_id: result.lock_id,
+            graph_id: result.graph_id,
+            expired: result.expired,
+        });
+        return {
+            content: [{ type: "text", text: j({ tool: "graph_unlock", result }) }],
+            structuredContent: result,
+        };
+    }
+    catch (error) {
+        return graphToolError("graph_unlock", error, { lock_id: lockIdForError });
     }
 });
 server.registerTool("graph_subgraph_extract", {
@@ -2645,6 +2942,27 @@ server.registerTool("values_filter", {
         return valueToolError("values_filter", error);
     }
 });
+server.registerTool("values_explain", {
+    title: "Values explain",
+    description: "Explique les violations du garde-fou avec corrélations plan.",
+    inputSchema: ValuesExplainInputShape,
+}, async (input) => {
+    const disabled = ensureValueGuardEnabled("values_explain");
+    if (disabled) {
+        return disabled;
+    }
+    try {
+        const parsed = ValuesExplainInputSchema.parse(input);
+        const result = handleValuesExplain(getValueToolContext(), parsed);
+        return {
+            content: [{ type: "text", text: j({ tool: "values_explain", result }) }],
+            structuredContent: result,
+        };
+    }
+    catch (error) {
+        return valueToolError("values_explain", error);
+    }
+});
 server.registerTool("causal_export", {
     title: "Causal memory export",
     description: "Exporte la mémoire causale pour analyse hors-ligne.",
@@ -2812,6 +3130,150 @@ server.registerTool("graph_rewrite_apply", {
             version: graphVersionForError ?? undefined,
             mode: parsed?.mode,
         });
+    }
+});
+server.registerTool("tx_begin", {
+    title: "Transaction begin",
+    description: "Ouvre une transaction optimiste et retourne une copie de travail du graphe.",
+    inputSchema: TxBeginInputShape,
+}, async (input) => {
+    const disabled = ensureTransactionsEnabled("tx_begin");
+    if (disabled) {
+        return disabled;
+    }
+    let graphIdForError = null;
+    try {
+        const parsed = TxBeginInputSchema.parse(input ?? {});
+        graphIdForError = parsed.graph_id;
+        logger.info("tx_begin_requested", {
+            graph_id: parsed.graph_id,
+            expected_version: parsed.expected_version ?? null,
+            owner: parsed.owner ?? null,
+            ttl_ms: parsed.ttl_ms ?? null,
+            idempotency_key: parsed.idempotency_key ?? null,
+        });
+        const result = handleTxBegin(getTxToolContext(), parsed);
+        if (result.idempotent) {
+            logger.info("tx_begin_replayed", {
+                graph_id: result.graph_id,
+                tx_id: result.tx_id,
+                base_version: result.base_version,
+                owner: result.owner,
+                expires_at: result.expires_at,
+                idempotency_key: result.idempotency_key,
+            });
+        }
+        else {
+            logger.info("tx_begin_opened", {
+                graph_id: result.graph_id,
+                tx_id: result.tx_id,
+                base_version: result.base_version,
+                owner: result.owner,
+                expires_at: result.expires_at,
+                idempotency_key: result.idempotency_key,
+            });
+        }
+        return {
+            content: [{ type: "text", text: j({ tool: "tx_begin", result }) }],
+            structuredContent: result,
+        };
+    }
+    catch (error) {
+        return transactionToolError("tx_begin", error, { graph_id: graphIdForError ?? undefined });
+    }
+});
+server.registerTool("tx_apply", {
+    title: "Transaction apply",
+    description: "Applique des opérations sur la copie de travail d'une transaction en cours.",
+    inputSchema: TxApplyInputShape,
+}, async (input) => {
+    const disabled = ensureTransactionsEnabled("tx_apply");
+    if (disabled) {
+        return disabled;
+    }
+    let txIdForError = null;
+    try {
+        const parsed = TxApplyInputSchema.parse(input);
+        txIdForError = parsed.tx_id;
+        logger.info("tx_apply_requested", {
+            tx_id: parsed.tx_id,
+            operations: parsed.operations.length,
+        });
+        const result = handleTxApply(getTxToolContext(), parsed);
+        logger.info("tx_apply_mutated", {
+            tx_id: result.tx_id,
+            graph_id: result.graph_id,
+            base_version: result.base_version,
+            preview_version: result.preview_version,
+            changed: result.changed,
+        });
+        return {
+            content: [{ type: "text", text: j({ tool: "tx_apply", result }) }],
+            structuredContent: result,
+        };
+    }
+    catch (error) {
+        return transactionToolError("tx_apply", error, { tx_id: txIdForError ?? undefined });
+    }
+});
+server.registerTool("tx_commit", {
+    title: "Transaction commit",
+    description: "Valide la transaction en appliquant les mutations du graphe.",
+    inputSchema: TxCommitInputShape,
+}, async (input) => {
+    const disabled = ensureTransactionsEnabled("tx_commit");
+    if (disabled) {
+        return disabled;
+    }
+    let txIdForError = null;
+    try {
+        const parsed = TxCommitInputSchema.parse(input);
+        txIdForError = parsed.tx_id;
+        logger.info("tx_commit_requested", { tx_id: parsed.tx_id });
+        const result = handleTxCommit(getTxToolContext(), parsed);
+        logger.info("tx_commit_succeeded", {
+            tx_id: result.tx_id,
+            graph_id: result.graph_id,
+            version: result.version,
+            committed_at: result.committed_at,
+        });
+        return {
+            content: [{ type: "text", text: j({ tool: "tx_commit", result }) }],
+            structuredContent: result,
+        };
+    }
+    catch (error) {
+        return transactionToolError("tx_commit", error, { tx_id: txIdForError ?? undefined });
+    }
+});
+server.registerTool("tx_rollback", {
+    title: "Transaction rollback",
+    description: "Annule une transaction et restaure le snapshot d'origine.",
+    inputSchema: TxRollbackInputShape,
+}, async (input) => {
+    const disabled = ensureTransactionsEnabled("tx_rollback");
+    if (disabled) {
+        return disabled;
+    }
+    let txIdForError = null;
+    try {
+        const parsed = TxRollbackInputSchema.parse(input);
+        txIdForError = parsed.tx_id;
+        logger.info("tx_rollback_requested", { tx_id: parsed.tx_id });
+        const result = handleTxRollback(getTxToolContext(), parsed);
+        logger.info("tx_rollback_succeeded", {
+            tx_id: result.tx_id,
+            graph_id: result.graph_id,
+            version: result.version,
+            rolled_back_at: result.rolled_back_at,
+        });
+        return {
+            content: [{ type: "text", text: j({ tool: "tx_rollback", result }) }],
+            structuredContent: result,
+        };
+    }
+    catch (error) {
+        return transactionToolError("tx_rollback", error, { tx_id: txIdForError ?? undefined });
     }
 });
 server.registerTool("graph_validate", {
@@ -3236,6 +3698,23 @@ server.registerTool("plan_run_reactive", {
         return planToolError("plan_run_reactive", error, {}, "E-BT-INVALID");
     }
 });
+server.registerTool("plan_dry_run", {
+    title: "Plan dry run",
+    description: "Compile un plan et projette ses impacts valeurs sans exécuter les outils, afin d'anticiper les violations potentielles.",
+    inputSchema: PlanDryRunInputShape,
+}, async (input) => {
+    try {
+        const parsed = PlanDryRunInputSchema.parse(input);
+        const result = handlePlanDryRun(getPlanToolContext(), parsed);
+        return {
+            content: [{ type: "text", text: j({ tool: "plan_dry_run", result }) }],
+            structuredContent: result,
+        };
+    }
+    catch (error) {
+        return planToolError("plan_dry_run", error, {}, "E-PLAN-DRY-RUN");
+    }
+});
 server.registerTool("op_cancel", {
     title: "Operation cancel",
     description: "Demande l'annulation d'une opération identifiée par son op_id.",
@@ -3247,8 +3726,21 @@ server.registerTool("op_cancel", {
         }
         const parsed = OpCancelInputSchema.parse(input);
         const outcome = requestCancellation(parsed.op_id, { reason: parsed.reason ?? null });
-        logger.info("op_cancel", { op_id: parsed.op_id, outcome, reason: parsed.reason ?? null });
-        const result = { op_id: parsed.op_id, outcome, reason: parsed.reason ?? null };
+        const handle = getCancellation(parsed.op_id);
+        // Surface the correlation metadata recorded when the operation was
+        // registered so observers can link cancellation requests to plan
+        // lifecycle artefacts.
+        const result = {
+            op_id: parsed.op_id,
+            outcome,
+            reason: handle?.reason ?? parsed.reason ?? null,
+            run_id: handle?.runId ?? null,
+            job_id: handle?.jobId ?? null,
+            graph_id: handle?.graphId ?? null,
+            node_id: handle?.nodeId ?? null,
+            child_id: handle?.childId ?? null,
+        };
+        logger.info("op_cancel", result);
         return {
             content: [{ type: "text", text: j({ tool: "op_cancel", result }) }],
             structuredContent: result,
@@ -3269,12 +3761,25 @@ server.registerTool("plan_cancel", {
         }
         const parsed = PlanCancelInputSchema.parse(input);
         const operations = cancelRun(parsed.run_id, { reason: parsed.reason ?? null });
+        // Normalise the registry metadata so downstream MCP clients receive
+        // consistent snake_cased correlation hints for every cancelled operation.
+        const serialisedOperations = operations.map((operation) => ({
+            op_id: operation.opId,
+            outcome: operation.outcome,
+            run_id: operation.runId,
+            job_id: operation.jobId,
+            graph_id: operation.graphId,
+            node_id: operation.nodeId,
+            child_id: operation.childId,
+        }));
+        const reason = parsed.reason ?? null;
         logger.info("plan_cancel", {
             run_id: parsed.run_id,
-            reason: parsed.reason ?? null,
-            affected: operations.length,
+            reason,
+            affected: serialisedOperations.length,
+            operations: serialisedOperations,
         });
-        const result = { run_id: parsed.run_id, reason: parsed.reason ?? null, operations };
+        const result = { run_id: parsed.run_id, reason, operations: serialisedOperations };
         return {
             content: [{ type: "text", text: j({ tool: "plan_cancel", result }) }],
             structuredContent: result,
@@ -3282,6 +3787,24 @@ server.registerTool("plan_cancel", {
     }
     catch (error) {
         return planToolError("plan_cancel", error, {}, "E-CANCEL-PLAN");
+    }
+});
+server.registerTool("bb_batch_set", {
+    title: "Blackboard batch set",
+    description: "Met à jour plusieurs entrées du tableau noir dans une transaction atomique.",
+    inputSchema: BbBatchSetInputShape,
+}, async (input) => {
+    try {
+        pruneExpired();
+        const parsed = BbBatchSetInputSchema.parse(input);
+        const result = handleBbBatchSet(getCoordinationToolContext(), parsed);
+        return {
+            content: [{ type: "text", text: j({ tool: "bb_batch_set", result }) }],
+            structuredContent: result,
+        };
+    }
+    catch (error) {
+        return coordinationToolError("bb_batch_set", error);
     }
 });
 server.registerTool("bb_set", {
@@ -3372,6 +3895,24 @@ server.registerTool("stig_mark", {
     }
     catch (error) {
         return coordinationToolError("stig_mark", error);
+    }
+});
+server.registerTool("stig_batch", {
+    title: "Stigmergie batch",
+    description: "Applique plusieurs dépôts de phéromones de façon atomique (rollback sur erreur).",
+    inputSchema: StigBatchInputShape,
+}, async (input) => {
+    try {
+        pruneExpired();
+        const parsed = StigBatchInputSchema.parse(input);
+        const result = handleStigBatch(getCoordinationToolContext(), parsed);
+        return {
+            content: [{ type: "text", text: j({ tool: "stig_batch", result }) }],
+            structuredContent: result,
+        };
+    }
+    catch (error) {
+        return coordinationToolError("stig_batch", error);
     }
 });
 server.registerTool("stig_decay", {
@@ -3507,6 +4048,119 @@ server.registerTool("start", { title: "Start job", description: "Met les enfants
     return { content: [{ type: "text", text: j({ started, job_id }) }] };
 });
 // child runtime management (process-based)
+server.registerTool("child_batch_create", {
+    title: "Child batch create",
+    description: "Démarre plusieurs enfants Codex avec rollback atomique en cas d'échec.",
+    inputSchema: ChildBatchCreateInputShape,
+}, async (input) => {
+    pruneExpired();
+    try {
+        const parsed = ChildBatchCreateInputSchema.parse(input);
+        const result = await handleChildBatchCreate(getChildToolContext(), parsed);
+        result.children.forEach((child, index) => {
+            const entry = parsed.entries[index] ?? parsed.entries[parsed.entries.length - 1];
+            ensureChildVisibleInGraph({
+                childId: child.child_id,
+                snapshot: child.index_snapshot,
+                metadata: child.index_snapshot.metadata,
+                prompt: entry.prompt,
+                runtimeStatus: child.runtime_status,
+                startedAt: child.started_at,
+            });
+        });
+        const payload = { tool: "child_batch_create", result };
+        return {
+            content: [{ type: "text", text: j(payload) }],
+            structuredContent: result,
+        };
+    }
+    catch (error) {
+        return childToolError("child_batch_create", error, { child_id: null });
+    }
+});
+server.registerTool("child_spawn_codex", {
+    title: "Child spawn Codex",
+    description: "Démarre un enfant Codex avec un prompt structuré et des limites optionnelles.",
+    inputSchema: ChildSpawnCodexInputShape,
+}, async (input) => {
+    try {
+        const parsed = ChildSpawnCodexInputSchema.parse(input);
+        const result = await handleChildSpawnCodex(getChildToolContext(), parsed);
+        ensureChildVisibleInGraph({
+            childId: result.child_id,
+            snapshot: result.index_snapshot,
+            metadata: result.index_snapshot.metadata,
+            prompt: parsed.prompt,
+            runtimeStatus: result.runtime_status,
+            startedAt: result.started_at,
+        });
+        const payload = { tool: "child_spawn_codex", result };
+        return {
+            content: [{ type: "text", text: j(payload) }],
+            structuredContent: result,
+        };
+    }
+    catch (error) {
+        return childToolError("child_spawn_codex", error, { child_id: null });
+    }
+});
+server.registerTool("child_attach", {
+    title: "Child attach",
+    description: "Rafraîchit le manifest d'un enfant déjà actif et note la ré-connexion.",
+    inputSchema: ChildAttachInputShape,
+}, async (input) => {
+    try {
+        const parsed = ChildAttachInputSchema.parse(input);
+        const result = await handleChildAttach(getChildToolContext(), parsed);
+        graphState.syncChildIndexSnapshot(result.index_snapshot);
+        const payload = { tool: "child_attach", result };
+        return {
+            content: [{ type: "text", text: j(payload) }],
+            structuredContent: result,
+        };
+    }
+    catch (error) {
+        return childToolError("child_attach", error, { child_id: input?.child_id ?? null });
+    }
+});
+server.registerTool("child_set_role", {
+    title: "Child set role",
+    description: "Met à jour le rôle annoncé d'un enfant en cours d'exécution.",
+    inputSchema: ChildSetRoleInputShape,
+}, async (input) => {
+    try {
+        const parsed = ChildSetRoleInputSchema.parse(input);
+        const result = await handleChildSetRole(getChildToolContext(), parsed);
+        graphState.syncChildIndexSnapshot(result.index_snapshot);
+        const payload = { tool: "child_set_role", result };
+        return {
+            content: [{ type: "text", text: j(payload) }],
+            structuredContent: result,
+        };
+    }
+    catch (error) {
+        return childToolError("child_set_role", error, { child_id: input?.child_id ?? null });
+    }
+});
+server.registerTool("child_set_limits", {
+    title: "Child set limits",
+    description: "Ajuste les limites déclaratives d'un enfant actif (tokens, temps, etc.).",
+    inputSchema: ChildSetLimitsInputShape,
+}, async (input) => {
+    try {
+        const parsed = ChildSetLimitsInputSchema.parse(input);
+        const result = await handleChildSetLimits(getChildToolContext(), parsed);
+        graphState.syncChildIndexSnapshot(result.index_snapshot);
+        const payload = { tool: "child_set_limits", result };
+        return {
+            content: [{ type: "text", text: j(payload) }],
+            structuredContent: result,
+        };
+    }
+    catch (error) {
+        return childToolError("child_set_limits", error, { child_id: input?.child_id ?? null });
+    }
+});
 server.registerTool("child_create", {
     title: "Child create",
     description: "Démarre un runtime enfant sandboxé (Codex) et peut envoyer un payload initial.",

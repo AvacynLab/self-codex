@@ -15,15 +15,43 @@ describe("plan cancellation registry", () => {
   });
 
   it("cancels every operation associated with a run identifier", () => {
-    registerCancellation("op-1", { runId: "run-cascade" });
-    registerCancellation("op-2", { runId: "run-cascade" });
+    registerCancellation("op-1", {
+      runId: "run-cascade",
+      jobId: "job-1",
+      graphId: "graph-7",
+      nodeId: "node-3",
+      childId: "child-1",
+    });
+    registerCancellation("op-2", {
+      runId: "run-cascade",
+      jobId: "job-1",
+      graphId: "graph-7",
+      nodeId: "node-4",
+      childId: "child-2",
+    });
     registerCancellation("op-ignored", { runId: "other" });
 
     const outcomes = cancelRun("run-cascade", { reason: "manual" });
 
     expect(outcomes).to.deep.equal([
-      { opId: "op-1", outcome: "requested" },
-      { opId: "op-2", outcome: "requested" },
+      {
+        opId: "op-1",
+        outcome: "requested",
+        runId: "run-cascade",
+        jobId: "job-1",
+        graphId: "graph-7",
+        nodeId: "node-3",
+        childId: "child-1",
+      },
+      {
+        opId: "op-2",
+        outcome: "requested",
+        runId: "run-cascade",
+        jobId: "job-1",
+        graphId: "graph-7",
+        nodeId: "node-4",
+        childId: "child-2",
+      },
     ]);
 
     expect(isCancelled("op-1")).to.equal(true);
@@ -34,6 +62,8 @@ describe("plan cancellation registry", () => {
     const second = getCancellation("op-2");
     expect(first?.reason).to.equal("manual");
     expect(second?.reason).to.equal("manual");
+    expect(first?.jobId).to.equal("job-1");
+    expect(second?.nodeId).to.equal("node-4");
   });
 
   it("returns an empty array when no operations are registered for the run", () => {

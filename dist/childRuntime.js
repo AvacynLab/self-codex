@@ -23,8 +23,15 @@ export class ChildSpawnError extends Error {
 }
 /**
  * Wraps a spawned child process and exposes helpers for messaging, logging and
- * heartbeat tracking. The class is intentionally event based so it can be
- * composed easily with orchestrator tools.
+ * heartbeat tracking. The runtime emits two event streams so observers can
+ * react deterministically:
+ *
+ * - `message` whenever a JSONL line is recorded on stdout or stderr.
+ * - `lifecycle` when the underlying process spawns, exits or surfaces a fatal
+ *   error prior to exiting.
+ *
+ * The class is intentionally event based so it can be composed easily with
+ * orchestrator tools.
  */
 export class ChildRuntime extends EventEmitter {
     childId;
@@ -36,8 +43,12 @@ export class ChildRuntime extends EventEmitter {
     manifestPath;
     metadata;
     envKeys;
+    /** Snapshot of the additional manifest fields persisted by the orchestrator. */
+    manifestExtras;
     /** Constraints persisted in the manifest for monitoring and guards. */
-    limits;
+    currentLimits;
+    /** High level role assigned to the runtime for downstream observability. */
+    currentRole;
     /** Tools explicitly allowed for the child (used by guard rails). */
     toolsAllow;
     child;
@@ -67,7 +78,9 @@ export class ChildRuntime extends EventEmitter {
         this.manifestPath = params.manifestPath;
         this.metadata = Object.freeze({ ...params.metadata });
         this.envKeys = Object.freeze([...params.envKeys]);
-        this.limits = params.limits ? { ...params.limits } : null;
+        this.manifestExtras = { ...params.manifestExtras };
+        this.currentLimits = params.limits ? { ...params.limits } : null;
+        this.currentRole = params.role ?? null;
         this.toolsAllow = Object.freeze([...params.toolsAllow]);
         this.child = params.child;
         this.startedAt = Date.now();
@@ -100,6 +113,17 @@ export class ChildRuntime extends EventEmitter {
         this.flushStdout();
         this.flushStderr();
         return this.messages.map((message) => ({ ...message }));
+    }
+    /** Returns the declarative limits currently attached to the runtime. */
+    getLimits() {
+        if (!this.currentLimits) {
+            return null;
+        }
+        return { ...this.currentLimits };
+    }
+    /** Returns the human readable role advertised for the runtime. */
+    getRole() {
+        return this.currentRole;
     }
     /**
      * Streams messages recorded so far. The method clamps pagination bounds and
@@ -221,6 +245,31 @@ export class ChildRuntime extends EventEmitter {
         };
     }
     /**
+     * Updates the declarative limits and persists them into the manifest. The
+     * helper clones the provided structure to avoid accidental external
+     * mutations.
+     */
+    async setLimits(limits, extras = {}) {
+        this.currentLimits = limits ? { ...limits } : null;
+        await this.writeManifest(extras);
+    }
+    /**
+     * Updates the advertised role for the runtime and rewrites the manifest so
+     * downstream tooling can observe the change in real time.
+     */
+    async setRole(role, extras = {}) {
+        this.currentRole = role ?? null;
+        await this.writeManifest(extras);
+    }
+    /**
+     * Persists the current manifest state again, allowing the supervisor to
+     * refresh metadata when re-attaching to an already running child.
+     */
+    async attach(extras = {}) {
+        this.recordInternal("lifecycle", "attach-requested");
+        await this.writeManifest(extras);
+    }
+    /**
      * Sends a payload to the child over STDIN. Strings are transmitted as-is
      * while other values are serialised as JSON.
      */
@@ -331,6 +380,16 @@ export class ChildRuntime extends EventEmitter {
      * Persists a manifest describing the child runtime.
      */
     async writeManifest(extras = {}) {
+        if (Object.keys(extras).length > 0) {
+            const cloned = structuredClone(extras);
+            delete cloned.role;
+            delete cloned.limits;
+            this.manifestExtras = { ...this.manifestExtras, ...cloned };
+        }
+        const sanitizedExtras = { ...this.manifestExtras };
+        delete sanitizedExtras.role;
+        delete sanitizedExtras.limits;
+        this.manifestExtras = sanitizedExtras;
         const manifest = {
             childId: this.childId,
             command: this.command,
@@ -344,9 +403,10 @@ export class ChildRuntime extends EventEmitter {
             },
             envKeys: this.envKeys,
             metadata: this.metadata,
-            limits: this.limits,
+            limits: this.currentLimits,
+            role: this.currentRole,
             tools_allow: this.toolsAllow,
-            ...extras,
+            ...sanitizedExtras,
         };
         await writeFile(this.manifestPath, JSON.stringify(manifest, null, 2), "utf8");
     }
@@ -413,8 +473,16 @@ export class ChildRuntime extends EventEmitter {
         }
         this.child.once("spawn", () => {
             this.spawnSettled = true;
-            this.lastHeartbeatAt = Date.now();
+            const at = Date.now();
+            this.lastHeartbeatAt = at;
             this.recordInternal("lifecycle", "spawned");
+            this.emit("lifecycle", {
+                phase: "spawned",
+                at,
+                pid: this.pid,
+                forced: false,
+                reason: null,
+            });
             this.spawnResolve?.();
         });
         this.child.on("error", (error) => {
@@ -423,30 +491,48 @@ export class ChildRuntime extends EventEmitter {
                 this.spawnReject?.(error);
             }
             this.recordInternal("stderr", `process-error:${error.message}`);
+            const at = Date.now();
             if (!this.exitEvent) {
                 const event = {
                     code: null,
                     signal: null,
-                    at: Date.now(),
+                    at,
                     forced: this.forcedKill,
                     error,
                 };
                 this.exitEvent = event;
                 this.exitResolve?.(event);
             }
+            this.emit("lifecycle", {
+                phase: "error",
+                at,
+                pid: this.pid,
+                forced: this.forcedKill,
+                reason: error.message,
+            });
             this.cleanup();
         });
         this.child.once("exit", (code, signal) => {
+            const at = Date.now();
             const event = {
                 code,
                 signal,
-                at: Date.now(),
+                at,
                 forced: this.forcedKill,
                 error: null,
             };
             this.exitEvent = event;
             this.recordInternal("lifecycle", `exit:${code ?? "null"}:${signal ?? "null"}`);
             this.exitResolve?.(event);
+            this.emit("lifecycle", {
+                phase: "exit",
+                at,
+                pid: this.pid,
+                forced: this.forcedKill,
+                code,
+                signal,
+                reason: null,
+            });
             this.cleanup();
         });
     }
@@ -535,6 +621,7 @@ export async function startChildRuntime(options) {
     const env = { ...process.env, ...(options.env ?? {}) };
     const envKeys = Object.keys(env).sort();
     const metadata = options.metadata ? { ...options.metadata } : {};
+    const manifestExtras = options.manifestExtras ? { ...options.manifestExtras } : {};
     const limits = options.limits ? { ...options.limits } : null;
     const toolsAllow = options.toolsAllow ? Array.from(new Set(options.toolsAllow)) : [];
     const spawnFactory = options.spawnFactory ?? spawn;
@@ -573,14 +660,16 @@ export async function startChildRuntime(options) {
             logPath,
             manifestPath,
             metadata,
+            manifestExtras,
             envKeys,
             limits,
+            role: options.role ?? null,
             toolsAllow,
             child,
         });
         try {
             await runtime.waitUntilSpawned();
-            await runtime.writeManifest(options.manifestExtras ?? {});
+            await runtime.writeManifest(manifestExtras);
             return runtime;
         }
         catch (error) {

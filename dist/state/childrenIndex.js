@@ -49,6 +49,15 @@ function isSerializedChildRecord(value) {
     if (!isStringOrNull(candidate.stopReason ?? null)) {
         return false;
     }
+    if (candidate.role !== undefined && !isStringOrNull(candidate.role ?? null)) {
+        return false;
+    }
+    if (candidate.limits !== undefined && typeof candidate.limits !== "object") {
+        return false;
+    }
+    if (!isNumberOrNull(candidate.attachedAt ?? null)) {
+        return false;
+    }
     return true;
 }
 /**
@@ -91,6 +100,9 @@ function cloneRecord(record) {
         exitSignal: record.exitSignal,
         forcedTermination: record.forcedTermination,
         stopReason: record.stopReason,
+        role: record.role,
+        limits: record.limits ? { ...record.limits } : null,
+        attachedAt: record.attachedAt,
     };
 }
 /**
@@ -124,6 +136,9 @@ export class ChildrenIndex {
             exitSignal: null,
             forcedTermination: false,
             stopReason: null,
+            role: options.role ?? null,
+            limits: options.limits ? { ...options.limits } : null,
+            attachedAt: options.attachedAt ?? null,
         };
         this.children.set(options.childId, record);
         return cloneRecord(record);
@@ -199,6 +214,42 @@ export class ChildrenIndex {
         record.metadata = { ...record.metadata, ...metadata };
         return cloneRecord(record);
     }
+    /** Updates the advertised role for a child while keeping metadata in sync. */
+    setRole(childId, role) {
+        const record = this.requireChild(childId);
+        record.role = role ?? null;
+        if (role === null) {
+            if ("role" in record.metadata) {
+                const { role: _removed, ...rest } = record.metadata;
+                record.metadata = rest;
+            }
+        }
+        else {
+            record.metadata = { ...record.metadata, role };
+        }
+        return cloneRecord(record);
+    }
+    /** Updates the declarative limits tracked for a child runtime. */
+    setLimits(childId, limits) {
+        const record = this.requireChild(childId);
+        record.limits = limits ? { ...limits } : null;
+        if (limits === null) {
+            if ("limits" in record.metadata) {
+                const { limits: _removed, ...rest } = record.metadata;
+                record.metadata = rest;
+            }
+        }
+        else {
+            record.metadata = { ...record.metadata, limits: structuredClone(limits) };
+        }
+        return cloneRecord(record);
+    }
+    /** Marks the child as re-attached and records the timestamp for observability. */
+    markAttached(childId, timestamp) {
+        const record = this.requireChild(childId);
+        record.attachedAt = timestamp ?? Date.now();
+        return cloneRecord(record);
+    }
     /**
      * Removes a child from the index.
      */
@@ -234,6 +285,9 @@ export class ChildrenIndex {
                 startedAt: record.startedAt,
                 metadata: { ...record.metadata },
                 stopReason: record.stopReason,
+                role: record.role,
+                limits: record.limits ? { ...record.limits } : null,
+                attachedAt: record.attachedAt,
             },
         ]);
         return Object.fromEntries(entries);
@@ -261,6 +315,9 @@ export class ChildrenIndex {
                 exitSignal: raw.exitSignal ?? null,
                 forcedTermination: raw.forcedTermination ?? false,
                 stopReason: raw.stopReason ?? null,
+                role: raw.role ?? null,
+                limits: raw.limits ? { ...raw.limits } : null,
+                attachedAt: raw.attachedAt ?? null,
             };
             this.children.set(childId, record);
         }

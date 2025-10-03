@@ -80,6 +80,9 @@ describe("GraphState", () => {
       exitSignal: null,
       forcedTermination: false,
       stopReason: null,
+      role: "navigator",
+      limits: { cpu_ms: 1_500, tokens: 5_000 },
+      attachedAt: baseTs + 50,
     };
 
     state.syncChildIndexSnapshot(snapshot);
@@ -94,6 +97,9 @@ describe("GraphState", () => {
     expect(synced?.exitCode).to.be.null;
     expect(synced?.exitSignal).to.be.null;
     expect(synced?.forcedTermination).to.equal(false);
+    expect(synced?.role).to.equal("navigator");
+    expect(synced?.limits).to.deep.equal({ cpu_ms: 1_500, tokens: 5_000 });
+    expect(synced?.attachedAt).to.equal(baseTs + 50);
 
     const terminatedSnapshot: ChildRecordSnapshot = {
       ...snapshot,
@@ -112,6 +118,9 @@ describe("GraphState", () => {
     expect(terminated?.exitSignal).to.equal("SIGTERM");
     expect(terminated?.forcedTermination).to.equal(true);
     expect(terminated?.stopReason).to.equal("timeout");
+    expect(terminated?.role).to.equal("navigator");
+    expect(terminated?.limits).to.deep.equal({ cpu_ms: 1_500, tokens: 5_000 });
+    expect(terminated?.attachedAt).to.equal(baseTs + 50);
   });
 
   it("ignore les instantanés inconnus sans lever d'erreur", () => {
@@ -130,6 +139,9 @@ describe("GraphState", () => {
       exitSignal: null,
       forcedTermination: false,
       stopReason: null,
+      role: null,
+      limits: null,
+      attachedAt: null,
     };
 
     expect(() => state.syncChildIndexSnapshot(orphanSnapshot)).to.not.throw();

@@ -1,3 +1,4 @@
+import { EventEmitter } from "node:events";
 import { randomUUID } from "node:crypto";
 
 /**
@@ -121,6 +122,59 @@ export interface ContractNetAwardDecision {
   bids: ContractNetBidSnapshot[];
 }
 
+/**
+ * Structured event emitted by {@link ContractNetCoordinator} whenever its
+ * internal state changes. Bridging helpers translate these events onto the
+ * unified MCP bus so downstream observers can follow Contract-Net auctions
+ * without bespoke wiring.
+ */
+export type ContractNetEvent =
+  | {
+      kind: "agent_registered";
+      at: number;
+      agent: ContractNetAgentSnapshot;
+      /** Indicates whether the registration updated an existing profile. */
+      updated: boolean;
+    }
+  | {
+      kind: "agent_unregistered";
+      at: number;
+      agentId: string;
+      /** Assignments retained for auditability. */
+      remainingAssignments: number;
+    }
+  | {
+      kind: "call_announced";
+      at: number;
+      call: ContractNetCallSnapshot;
+    }
+  | {
+      kind: "bid_recorded";
+      at: number;
+      callId: string;
+      agentId: string;
+      bid: ContractNetBidSnapshot;
+      /** Previous bid kind, when a manual bid overrides an heuristic one. */
+      previousKind: ContractNetBidKind | null;
+    }
+  | {
+      kind: "call_awarded";
+      at: number;
+      call: ContractNetCallSnapshot;
+      decision: ContractNetAwardDecision;
+    }
+  | {
+      kind: "call_completed";
+      at: number;
+      call: ContractNetCallSnapshot;
+    };
+
+/** Callback invoked when the coordinator emits lifecycle events. */
+export type ContractNetEventListener = (event: ContractNetEvent) => void;
+
+/** Internal event channel identifier used by the coordinator emitter. */
+const CONTRACT_NET_EVENT = "event";
+
 interface NormalisedHeuristics {
   preferAgents: string[];
   agentBias: Map<string, number>;
@@ -172,10 +226,24 @@ export class ContractNetCoordinator {
   private readonly calls = new Map<string, CallInternal>();
   private readonly now: () => number;
   private readonly defaultBusyPenalty: number;
+  /** Event emitter broadcasting lifecycle changes to observers. */
+  private readonly emitter = new EventEmitter();
 
   constructor(options: ContractNetCoordinatorOptions = {}) {
     this.now = options.now ?? (() => Date.now());
     this.defaultBusyPenalty = normalizeBusyPenalty(options.defaultBusyPenalty);
+  }
+
+  /**
+   * Subscribes to coordinator lifecycle events. The disposer detaches the
+   * listener which keeps tests deterministic and prevents leaks when
+   * orchestrators shut down.
+   */
+  observe(listener: ContractNetEventListener): () => void {
+    this.emitter.on(CONTRACT_NET_EVENT, listener);
+    return () => {
+      this.emitter.off(CONTRACT_NET_EVENT, listener);
+    };
   }
 
   /** Lists the registered agents. */
@@ -204,12 +272,29 @@ export class ContractNetCoordinator {
     if (!this.activeAssignments.has(agentId)) {
       this.activeAssignments.set(agentId, existing?.agentId === agentId ? this.activeAssignments.get(agentId) ?? 0 : 0);
     }
-    return this.snapshotAgent(profile);
+    const snapshot = this.snapshotAgent(profile);
+    this.emitEvent({
+      kind: "agent_registered",
+      at: this.now(),
+      agent: snapshot,
+      updated: existing !== undefined,
+    });
+    return snapshot;
   }
 
   /** Removes an agent from the coordinator. Active assignments are preserved. */
   unregisterAgent(agentId: string): boolean {
-    return this.agents.delete(agentId);
+    const existed = this.agents.delete(agentId);
+    if (!existed) {
+      return false;
+    }
+    this.emitEvent({
+      kind: "agent_unregistered",
+      at: this.now(),
+      agentId,
+      remainingAssignments: this.activeAssignments.get(agentId) ?? 0,
+    });
+    return true;
   }
 
   /** Announces a new task and optionally emits heuristic bids for registered agents. */
@@ -243,7 +328,13 @@ export class ContractNetCoordinator {
       }
     }
 
-    return this.snapshotCall(call);
+    const snapshot = this.snapshotCall(call);
+    this.emitEvent({
+      kind: "call_announced",
+      at: call.announcedAt,
+      call: snapshot,
+    });
+    return snapshot;
   }
 
   /** Returns the snapshot of a call when present. */
@@ -296,7 +387,14 @@ export class ContractNetCoordinator {
     call.status = "awarded";
     call.awardedAt = this.now();
     this.incrementAssignments(bid.agentId);
-    return this.buildDecision(call, bid);
+    const decision = this.buildDecision(call, bid);
+    this.emitEvent({
+      kind: "call_awarded",
+      at: call.awardedAt!,
+      call: this.snapshotCall(call),
+      decision,
+    });
+    return decision;
   }
 
   /** Marks a previously awarded call as completed, releasing the assignment. */
@@ -310,7 +408,13 @@ export class ContractNetCoordinator {
     }
     call.status = "completed";
     this.decrementAssignments(call.awardedBid.agentId);
-    return this.snapshotCall(call);
+    const snapshot = this.snapshotCall(call);
+    this.emitEvent({
+      kind: "call_completed",
+      at: this.now(),
+      call: snapshot,
+    });
+    return snapshot;
   }
 
   /** Internal helper that snapshots an agent profile. */
@@ -357,6 +461,17 @@ export class ContractNetCoordinator {
     };
   }
 
+  /** Serialises an internal bid representation for observers. */
+  private snapshotBid(bid: BidInternal): ContractNetBidSnapshot {
+    return {
+      agentId: bid.agentId,
+      cost: bid.cost,
+      submittedAt: bid.submittedAt,
+      metadata: structuredClone(bid.metadata),
+      kind: bid.kind,
+    };
+  }
+
   private requireCall(callId: string): CallInternal {
     const call = this.calls.get(callId);
     if (!call) {
@@ -372,6 +487,7 @@ export class ContractNetCoordinator {
     metadata: Record<string, unknown>,
     kind: ContractNetBidKind,
   ): void {
+    const previous = call.bids.get(agentId) ?? null;
     const bid: BidInternal = {
       agentId,
       cost,
@@ -380,6 +496,14 @@ export class ContractNetCoordinator {
       kind,
     };
     call.bids.set(agentId, bid);
+    this.emitEvent({
+      kind: "bid_recorded",
+      at: bid.submittedAt,
+      callId: call.callId,
+      agentId,
+      bid: this.snapshotBid(bid),
+      previousKind: previous?.kind ?? null,
+    });
   }
 
   private selectBestBid(call: CallInternal): BidInternal {
@@ -457,6 +581,11 @@ export class ContractNetCoordinator {
       awardedAt: call.awardedAt ?? this.now(),
       bids: this.snapshotCall(call).bids,
     };
+  }
+
+  /** Emits a lifecycle event to subscribed observers. */
+  private emitEvent(event: ContractNetEvent): void {
+    this.emitter.emit(CONTRACT_NET_EVENT, event);
   }
 }
 

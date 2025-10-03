@@ -67,62 +67,320 @@ export const ChildCreateInputSchema = z.object({
     ready_type: z.string().min(1).optional(),
     ready_timeout_ms: z.number().int().positive().optional(),
     initial_payload: z.unknown().optional(),
+    idempotency_key: z.string().min(1).optional(),
 });
 export const ChildCreateInputShape = ChildCreateInputSchema.shape;
+const ChildRuntimeLimitsValueSchema = z.union([
+    z.string(),
+    z.number(),
+    z.boolean(),
+    z.null(),
+]);
+export const ChildSpawnCodexInputSchema = z.object({
+    role: z
+        .string()
+        .min(1, "role must be a non-empty string")
+        .max(120, "role must be reasonably small")
+        .optional(),
+    prompt: PromptSchema,
+    model_hint: z.string().min(1).optional(),
+    limits: z
+        .record(ChildRuntimeLimitsValueSchema)
+        .optional()
+        .refine((value) => value === undefined || Object.keys(value).length > 0, {
+        message: "limits must define at least one entry when provided",
+    }),
+    metadata: z.record(z.unknown()).optional(),
+    manifest_extras: z.record(z.unknown()).optional(),
+    idempotency_key: z.string().min(1).optional(),
+});
+export const ChildSpawnCodexInputShape = ChildSpawnCodexInputSchema.shape;
+const ChildBatchCreateEntrySchema = ChildSpawnCodexInputSchema.strict();
+export const ChildBatchCreateInputSchema = z
+    .object({
+    entries: z
+        .array(ChildBatchCreateEntrySchema)
+        .min(1, "at least one entry must be provided")
+        .max(16, "cannot create more than 16 children at once"),
+})
+    .strict();
+export const ChildBatchCreateInputShape = ChildBatchCreateInputSchema.shape;
+export const ChildAttachInputSchema = z.object({
+    child_id: z.string().min(1, "child_id must be provided"),
+    manifest_extras: z.record(z.unknown()).optional(),
+});
+export const ChildAttachInputShape = ChildAttachInputSchema.shape;
+export const ChildSetRoleInputSchema = z.object({
+    child_id: z.string().min(1, "child_id must be provided"),
+    role: z.string().min(1, "role must be a non-empty string"),
+    manifest_extras: z.record(z.unknown()).optional(),
+});
+export const ChildSetRoleInputShape = ChildSetRoleInputSchema.shape;
+export const ChildSetLimitsInputSchema = z.object({
+    child_id: z.string().min(1, "child_id must be provided"),
+    limits: z
+        .record(ChildRuntimeLimitsValueSchema)
+        .optional()
+        .refine((value) => value === undefined || Object.keys(value).length > 0, {
+        message: "limits must define at least one entry when provided",
+    }),
+    manifest_extras: z.record(z.unknown()).optional(),
+});
+export const ChildSetLimitsInputShape = ChildSetLimitsInputSchema.shape;
 /**
  * Launches a new child runtime and optionally forwards an initial payload.
  */
 export async function handleChildCreate(context, input) {
-    const options = {
-        childId: input.child_id,
-        command: input.command,
-        args: input.args,
-        env: input.env,
-        metadata: input.metadata,
-        manifestExtras: buildManifestExtras(input),
-        toolsAllow: input.tools_allow ?? null,
-        waitForReady: input.wait_for_ready,
-        readyType: input.ready_type,
-        readyTimeoutMs: input.ready_timeout_ms,
-    };
-    context.logger.info("child_create_requested", {
-        child_id: options.childId ?? null,
-        command: options.command ?? null,
-        args: options.args?.length ?? 0,
-    });
-    const created = await context.supervisor.createChild(options);
-    const runtimeStatus = created.runtime.getStatus();
-    const readyMessage = created.readyMessage ? created.readyMessage.parsed ?? created.readyMessage.raw : null;
-    let sentInitialPayload = false;
-    if (input.initial_payload !== undefined) {
-        await context.supervisor.send(created.childId, input.initial_payload);
-        sentInitialPayload = true;
-    }
-    context.logger.info("child_create_succeeded", {
-        child_id: created.childId,
-        pid: runtimeStatus.pid,
-        workdir: runtimeStatus.workdir,
-    });
-    if (context.contractNet) {
-        const profile = deriveContractNetProfile(input);
-        const snapshot = context.contractNet.registerAgent(created.childId, profile);
-        context.logger.info("contract_net_agent_registered", {
-            agent_id: snapshot.agentId,
-            base_cost: snapshot.baseCost,
-            reliability: snapshot.reliability,
-            tags: snapshot.tags,
+    const execute = async () => {
+        const options = {
+            childId: input.child_id,
+            command: input.command,
+            args: input.args,
+            env: input.env,
+            metadata: input.metadata,
+            manifestExtras: buildManifestExtras(input),
+            toolsAllow: input.tools_allow ?? null,
+            waitForReady: input.wait_for_ready,
+            readyType: input.ready_type,
+            readyTimeoutMs: input.ready_timeout_ms,
+        };
+        context.logger.info("child_create_requested", {
+            child_id: options.childId ?? null,
+            command: options.command ?? null,
+            args: options.args?.length ?? 0,
+            idempotency_key: input.idempotency_key ?? null,
         });
+        const created = await context.supervisor.createChild(options);
+        const runtimeStatus = created.runtime.getStatus();
+        const readyMessage = created.readyMessage ? created.readyMessage.parsed ?? created.readyMessage.raw : null;
+        let sentInitialPayload = false;
+        if (input.initial_payload !== undefined) {
+            await context.supervisor.send(created.childId, input.initial_payload);
+            sentInitialPayload = true;
+        }
+        context.logger.info("child_create_succeeded", {
+            child_id: created.childId,
+            pid: runtimeStatus.pid,
+            workdir: runtimeStatus.workdir,
+            idempotency_key: input.idempotency_key ?? null,
+        });
+        if (context.contractNet) {
+            const profile = deriveContractNetProfile(input);
+            const snapshot = context.contractNet.registerAgent(created.childId, profile);
+            context.logger.info("contract_net_agent_registered", {
+                agent_id: snapshot.agentId,
+                base_cost: snapshot.baseCost,
+                reliability: snapshot.reliability,
+                tags: snapshot.tags,
+            });
+        }
+        return {
+            child_id: created.childId,
+            runtime_status: runtimeStatus,
+            index_snapshot: created.index,
+            manifest_path: created.runtime.manifestPath,
+            log_path: created.runtime.logPath,
+            workdir: runtimeStatus.workdir,
+            started_at: runtimeStatus.startedAt,
+            ready_message: readyMessage,
+            sent_initial_payload: sentInitialPayload,
+        };
+    };
+    const key = input.idempotency_key ?? null;
+    if (context.idempotency && key) {
+        const hit = await context.idempotency.remember(`child_create:${key}`, execute);
+        if (hit.idempotent) {
+            const snapshot = hit.value;
+            context.logger.info("child_create_replayed", {
+                idempotency_key: key,
+                child_id: snapshot.child_id,
+            });
+        }
+        const snapshot = hit.value;
+        return { ...snapshot, idempotent: hit.idempotent, idempotency_key: key };
     }
+    const result = await execute();
+    return { ...result, idempotent: false, idempotency_key: key };
+}
+/** Spawns a Codex child with a structured prompt and optional limits. */
+export async function handleChildSpawnCodex(context, input) {
+    const execute = async () => {
+        const manifestExtras = buildSpawnCodexManifestExtras(input);
+        const metadata = structuredClone(input.metadata ?? {});
+        if (input.role) {
+            metadata.role = input.role;
+        }
+        if (input.model_hint) {
+            metadata.model_hint = input.model_hint;
+        }
+        if (input.idempotency_key) {
+            metadata.idempotency_key = input.idempotency_key;
+        }
+        if (input.limits) {
+            metadata.limits = structuredClone(input.limits);
+        }
+        context.logger.info("child_spawn_codex_requested", {
+            role: input.role ?? null,
+            limit_keys: input.limits ? Object.keys(input.limits).length : 0,
+            idempotency_key: input.idempotency_key ?? null,
+        });
+        const created = await context.supervisor.createChild({
+            role: input.role ?? null,
+            manifestExtras,
+            metadata,
+            limits: input.limits ?? null,
+            waitForReady: true,
+            readyTimeoutMs: 2000,
+        });
+        const runtimeStatus = created.runtime.getStatus();
+        const readyMessage = created.readyMessage ? created.readyMessage.parsed ?? created.readyMessage.raw : null;
+        context.logger.info("child_spawn_codex_ready", {
+            child_id: created.childId,
+            pid: runtimeStatus.pid,
+            workdir: runtimeStatus.workdir,
+            idempotency_key: input.idempotency_key ?? null,
+        });
+        return {
+            child_id: created.childId,
+            runtime_status: runtimeStatus,
+            index_snapshot: created.index,
+            manifest_path: created.runtime.manifestPath,
+            log_path: created.runtime.logPath,
+            workdir: runtimeStatus.workdir,
+            started_at: runtimeStatus.startedAt,
+            ready_message: readyMessage,
+            role: created.index.role,
+            limits: created.index.limits,
+            idempotency_key: input.idempotency_key ?? null,
+        };
+    };
+    const key = input.idempotency_key ?? null;
+    if (context.idempotency && key) {
+        const hit = await context.idempotency.remember(`child_spawn_codex:${key}`, execute);
+        if (hit.idempotent) {
+            const snapshot = hit.value;
+            context.logger.info("child_spawn_codex_replayed", {
+                idempotency_key: key,
+                child_id: snapshot.child_id,
+            });
+        }
+        const snapshot = hit.value;
+        return { ...snapshot, idempotent: hit.idempotent };
+    }
+    const result = await execute();
+    return { ...result, idempotent: false };
+}
+/**
+ * Spawns multiple Codex children in a single atomic batch. When any entry fails
+ * the helper tears down previously created runtimes to keep orchestrator state
+ * consistent.
+ */
+export async function handleChildBatchCreate(context, input) {
+    context.logger.info("child_batch_create_requested", { entries: input.entries.length });
+    const results = [];
+    const createdChildIds = [];
+    try {
+        for (const entry of input.entries) {
+            const snapshot = await handleChildSpawnCodex(context, entry);
+            results.push(snapshot);
+            if (!snapshot.idempotent) {
+                createdChildIds.push(snapshot.child_id);
+            }
+        }
+    }
+    catch (error) {
+        for (const childId of createdChildIds.reverse()) {
+            try {
+                context.logger.warn("child_batch_create_rollback", { child_id: childId });
+                await context.supervisor.kill(childId, { timeoutMs: 200 });
+                await context.supervisor.waitForExit(childId, 1_000);
+            }
+            catch (shutdownError) {
+                context.logger.error("child_batch_create_rollback_failed", {
+                    child_id: childId,
+                    reason: shutdownError instanceof Error ? shutdownError.message : String(shutdownError),
+                });
+            }
+            finally {
+                try {
+                    context.supervisor.gc(childId);
+                }
+                catch {
+                    // The child might have already been reclaimed by the supervisor.
+                }
+                clearLoopSignature(childId);
+            }
+        }
+        throw error;
+    }
+    const idempotentCount = results.filter((entry) => entry.idempotent).length;
+    context.logger.info("child_batch_create_succeeded", {
+        entries: input.entries.length,
+        created: results.length - idempotentCount,
+        replayed: idempotentCount,
+    });
     return {
-        child_id: created.childId,
-        runtime_status: runtimeStatus,
-        index_snapshot: created.index,
-        manifest_path: created.runtime.manifestPath,
-        log_path: created.runtime.logPath,
-        workdir: runtimeStatus.workdir,
-        started_at: runtimeStatus.startedAt,
-        ready_message: readyMessage,
-        sent_initial_payload: sentInitialPayload,
+        children: results,
+        created: results.length - idempotentCount,
+        idempotent_entries: idempotentCount,
+    };
+}
+/** Refreshes manifest metadata for an existing child runtime. */
+export async function handleChildAttach(context, input) {
+    context.logger.info("child_attach_requested", { child_id: input.child_id });
+    const result = await context.supervisor.attachChild(input.child_id, {
+        manifestExtras: input.manifest_extras ?? {},
+    });
+    context.logger.info("child_attach_succeeded", {
+        child_id: input.child_id,
+        attached_at: result.index.attachedAt,
+    });
+    return {
+        child_id: input.child_id,
+        runtime_status: result.runtime,
+        index_snapshot: result.index,
+        attached_at: result.index.attachedAt,
+    };
+}
+/** Adjusts the advertised role for a running child runtime. */
+export async function handleChildSetRole(context, input) {
+    context.logger.info("child_set_role_requested", {
+        child_id: input.child_id,
+        role: input.role,
+    });
+    const result = await context.supervisor.setChildRole(input.child_id, input.role, {
+        manifestExtras: input.manifest_extras ?? {},
+    });
+    context.logger.info("child_set_role_succeeded", {
+        child_id: input.child_id,
+        role: result.index.role,
+    });
+    return {
+        child_id: input.child_id,
+        role: result.index.role ?? input.role,
+        runtime_status: result.runtime,
+        index_snapshot: result.index,
+    };
+}
+/** Applies new declarative limits to a running child runtime. */
+export async function handleChildSetLimits(context, input) {
+    const requested = input.limits ?? null;
+    context.logger.info("child_set_limits_requested", {
+        child_id: input.child_id,
+        limit_keys: requested ? Object.keys(requested).length : 0,
+    });
+    const result = await context.supervisor.setChildLimits(input.child_id, requested, {
+        manifestExtras: input.manifest_extras ?? {},
+    });
+    context.logger.info("child_set_limits_succeeded", {
+        child_id: input.child_id,
+        limit_keys: result.limits ? Object.keys(result.limits).length : 0,
+    });
+    return {
+        child_id: input.child_id,
+        limits: result.limits,
+        runtime_status: result.runtime,
+        index_snapshot: result.index,
     };
 }
 /** Derives a contract-net profile from the child creation payload. */
@@ -210,6 +468,24 @@ function buildManifestExtras(input) {
         extras.budget = input.budget;
     }
     return Object.keys(extras).length > 0 ? extras : undefined;
+}
+function buildSpawnCodexManifestExtras(input) {
+    const extras = {
+        prompt: structuredClone(input.prompt),
+    };
+    if (input.manifest_extras) {
+        Object.assign(extras, structuredClone(input.manifest_extras));
+    }
+    if (input.model_hint) {
+        extras.model_hint = input.model_hint;
+    }
+    if (input.idempotency_key) {
+        extras.idempotency_key = input.idempotency_key;
+    }
+    if (input.role) {
+        extras.role = input.role;
+    }
+    return extras;
 }
 /** Schema for the `child_send` tool. */
 const ChildSendExpectationSchema = z.enum(["stream", "final"]);

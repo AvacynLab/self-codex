@@ -1,5 +1,7 @@
 import { inspect } from "node:util";
 
+import type { ChildRuntimeLimits } from "../childRuntime.js";
+
 /**
  * Lifecycle states supported by the orchestrator for child processes.
  *
@@ -34,6 +36,12 @@ export interface ChildRecordSnapshot {
   exitSignal: NodeJS.Signals | null;
   forcedTermination: boolean;
   stopReason: string | null;
+  /** High level role advertised by the orchestrator for this child. */
+  role: string | null;
+  /** Declarative limits enforced or tracked for the child runtime. */
+  limits: ChildRuntimeLimits | null;
+  /** Timestamp of the last explicit attachment, null if never attached. */
+  attachedAt: number | null;
 }
 
 /**
@@ -46,6 +54,9 @@ export interface RegisterChildOptions {
   state?: ChildLifecycleState;
   startedAt?: number;
   metadata?: Record<string, unknown>;
+  role?: string | null;
+  limits?: ChildRuntimeLimits | null;
+  attachedAt?: number | null;
 }
 
 /**
@@ -75,6 +86,9 @@ export interface SerializedChildRecord {
   startedAt?: number;
   metadata?: Record<string, unknown>;
   stopReason?: string | null;
+  role?: string | null;
+  limits?: ChildRuntimeLimits | null;
+  attachedAt?: number | null;
 }
 
 function isSerializedChildRecord(value: unknown): value is SerializedChildRecord {
@@ -141,6 +155,18 @@ function isSerializedChildRecord(value: unknown): value is SerializedChildRecord
     return false;
   }
 
+  if (candidate.role !== undefined && !isStringOrNull(candidate.role ?? null)) {
+    return false;
+  }
+
+  if (candidate.limits !== undefined && typeof candidate.limits !== "object") {
+    return false;
+  }
+
+  if (!isNumberOrNull(candidate.attachedAt ?? null)) {
+    return false;
+  }
+
   return true;
 }
 
@@ -188,6 +214,9 @@ function cloneRecord(record: MutableChildRecord): ChildRecordSnapshot {
     exitSignal: record.exitSignal,
     forcedTermination: record.forcedTermination,
     stopReason: record.stopReason,
+    role: record.role,
+    limits: record.limits ? { ...record.limits } : null,
+    attachedAt: record.attachedAt,
   };
 }
 
@@ -225,6 +254,9 @@ export class ChildrenIndex {
       exitSignal: null,
       forcedTermination: false,
       stopReason: null,
+      role: options.role ?? null,
+      limits: options.limits ? { ...options.limits } : null,
+      attachedAt: options.attachedAt ?? null,
     };
 
     this.children.set(options.childId, record);
@@ -309,6 +341,43 @@ export class ChildrenIndex {
     return cloneRecord(record);
   }
 
+  /** Updates the advertised role for a child while keeping metadata in sync. */
+  setRole(childId: string, role: string | null): ChildRecordSnapshot {
+    const record = this.requireChild(childId);
+    record.role = role ?? null;
+    if (role === null) {
+      if ("role" in record.metadata) {
+        const { role: _removed, ...rest } = record.metadata;
+        record.metadata = rest;
+      }
+    } else {
+      record.metadata = { ...record.metadata, role };
+    }
+    return cloneRecord(record);
+  }
+
+  /** Updates the declarative limits tracked for a child runtime. */
+  setLimits(childId: string, limits: ChildRuntimeLimits | null): ChildRecordSnapshot {
+    const record = this.requireChild(childId);
+    record.limits = limits ? { ...limits } : null;
+    if (limits === null) {
+      if ("limits" in record.metadata) {
+        const { limits: _removed, ...rest } = record.metadata;
+        record.metadata = rest;
+      }
+    } else {
+      record.metadata = { ...record.metadata, limits: structuredClone(limits) };
+    }
+    return cloneRecord(record);
+  }
+
+  /** Marks the child as re-attached and records the timestamp for observability. */
+  markAttached(childId: string, timestamp?: number): ChildRecordSnapshot {
+    const record = this.requireChild(childId);
+    record.attachedAt = timestamp ?? Date.now();
+    return cloneRecord(record);
+  }
+
   /**
    * Removes a child from the index.
    */
@@ -347,6 +416,9 @@ export class ChildrenIndex {
         startedAt: record.startedAt,
         metadata: { ...record.metadata },
         stopReason: record.stopReason,
+        role: record.role,
+        limits: record.limits ? { ...record.limits } : null,
+        attachedAt: record.attachedAt,
       } satisfies SerializedChildRecord,
     ]);
 
@@ -378,6 +450,9 @@ export class ChildrenIndex {
         exitSignal: raw.exitSignal ?? null,
         forcedTermination: raw.forcedTermination ?? false,
         stopReason: raw.stopReason ?? null,
+        role: raw.role ?? null,
+        limits: raw.limits ? { ...raw.limits } : null,
+        attachedAt: raw.attachedAt ?? null,
       };
 
       this.children.set(childId, record);

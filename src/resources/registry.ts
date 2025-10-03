@@ -51,6 +51,9 @@ export interface ResourceSnapshotPayload {
   finalVersion: number | null;
   baseGraph: NormalisedGraph;
   finalGraph: NormalisedGraph | null;
+  owner: string | null;
+  note: string | null;
+  expiresAt: number | null;
 }
 
 /** Snapshot describing a run event delivered by the registry. */
@@ -60,6 +63,14 @@ export interface ResourceRunEvent {
   kind: string;
   level: string;
   jobId: string | null;
+  /** Run identifier correlated to the event (mirrors the registry bucket). */
+  runId: string;
+  /** Optional operation identifier allowing clients to group sub-steps. */
+  opId: string | null;
+  /** Optional graph identifier when the event pertains to a graph lifecycle. */
+  graphId: string | null;
+  /** Optional node identifier (behaviour tree node, graph node, …). */
+  nodeId: string | null;
   childId: string | null;
   payload: unknown;
 }
@@ -69,7 +80,24 @@ export interface ResourceChildLogEntry {
   seq: number;
   ts: number;
   stream: "stdout" | "stderr" | "meta";
+  /** Human readable representation of the entry (usually the raw line). */
   message: string;
+  /** Optional job identifier correlated with the log entry. */
+  jobId: string | null;
+  /** Optional run identifier propagated from the orchestrator. */
+  runId: string | null;
+  /** Optional operation identifier for fine-grained tracing. */
+  opId: string | null;
+  /** Optional graph identifier associated with the log emission. */
+  graphId: string | null;
+  /** Optional node identifier (behaviour tree node, graph node, ...). */
+  nodeId: string | null;
+  /** Child identifier echoed to keep the snapshot self-describing. */
+  childId: string;
+  /** Raw message emitted by the runtime, if any. */
+  raw: string | null;
+  /** Structured payload decoded from the runtime output when available. */
+  parsed: unknown;
 }
 
 /** Result returned when reading a resource. */
@@ -156,6 +184,9 @@ interface GraphSnapshotRecord {
   finalVersion: number | null;
   baseGraph: NormalisedGraph;
   finalGraph: NormalisedGraph | null;
+  owner: string | null;
+  note: string | null;
+  expiresAt: number | null;
 }
 
 /** History tracked for a single plan/run identifier. */
@@ -183,6 +214,24 @@ function clampPositive(value: number | undefined, fallback: number): number {
 /** Creates a defensive deep clone so callers cannot mutate stored state. */
 function clone<T>(value: T): T {
   return structuredClone(value) as T;
+}
+
+function normaliseOptionalString(value: string | null | undefined): string | null {
+  if (value === null || value === undefined) {
+    return null;
+  }
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function normaliseOptionalNumber(value: number | null | undefined): number | null {
+  if (value === null || value === undefined) {
+    return null;
+  }
+  if (!Number.isFinite(value)) {
+    return null;
+  }
+  return Math.floor(value);
 }
 
 /** Extract the namespace portion of a blackboard key. */
@@ -229,6 +278,9 @@ export class ResourceRegistry {
     baseVersion: number;
     startedAt: number;
     graph: NormalisedGraph;
+    owner?: string | null;
+    note?: string | null;
+    expiresAt?: number | null;
   }): void {
     const normalised = this.getOrCreateSnapshotBucket(input.graphId);
     const snapshot: GraphSnapshotRecord = {
@@ -241,6 +293,9 @@ export class ResourceRegistry {
       finalVersion: null,
       baseGraph: clone(input.graph),
       finalGraph: null,
+      owner: normaliseOptionalString(input.owner),
+      note: normaliseOptionalString(input.note),
+      expiresAt: normaliseOptionalNumber(input.expiresAt),
     };
     normalised.set(input.txId, snapshot);
   }
@@ -314,20 +369,33 @@ export class ResourceRegistry {
     ts: number;
     kind: string;
     level: string;
-    jobId?: string;
-    childId?: string;
+    jobId?: string | null;
+    runId?: string | null;
+    opId?: string | null;
+    graphId?: string | null;
+    nodeId?: string | null;
+    childId?: string | null;
     payload?: unknown;
   }): void {
     if (!runId.trim()) {
       return;
     }
     const history = this.getOrCreateRunHistory(runId);
+    // Even though histories are bucketed per run, materialise the identifier so
+    // downstream clients consuming the snapshots can reason about cross-run
+    // correlations without relying on the URI they queried.
+    const correlatedRunId = event.runId && event.runId.trim() ? event.runId : runId;
+
     const payload: ResourceRunEvent = {
       seq: event.seq,
       ts: event.ts,
       kind: event.kind,
       level: event.level,
       jobId: event.jobId ?? null,
+      runId: correlatedRunId,
+      opId: event.opId ?? null,
+      graphId: event.graphId ?? null,
+      nodeId: event.nodeId ?? null,
       childId: event.childId ?? null,
       payload: clone(event.payload ?? null),
     };
@@ -340,11 +408,22 @@ export class ResourceRegistry {
   }
 
   /** Records a log entry produced by a child runtime. */
-  recordChildLogEntry(childId: string, entry: {
-    ts: number;
-    stream: "stdout" | "stderr" | "meta";
-    message: string;
-  }): void {
+  recordChildLogEntry(
+    childId: string,
+    entry: {
+      ts: number;
+      stream: "stdout" | "stderr" | "meta";
+      message: string;
+      childId?: string | null;
+      jobId?: string | null;
+      runId?: string | null;
+      opId?: string | null;
+      graphId?: string | null;
+      nodeId?: string | null;
+      raw?: string | null;
+      parsed?: unknown;
+    },
+  ): void {
     if (!childId.trim()) {
       return;
     }
@@ -355,6 +434,14 @@ export class ResourceRegistry {
       ts: entry.ts,
       stream: entry.stream,
       message: entry.message,
+      jobId: entry.jobId ?? null,
+      runId: entry.runId ?? null,
+      opId: entry.opId ?? null,
+      graphId: entry.graphId ?? null,
+      nodeId: entry.nodeId ?? null,
+      childId: entry.childId?.trim() ? entry.childId : childId,
+      raw: entry.raw ?? null,
+      parsed: clone(entry.parsed ?? null),
     };
     history.entries.push(record);
     history.lastSeq = seq;
@@ -385,10 +472,23 @@ export class ResourceRegistry {
     }
     for (const [graphId, bucket] of this.graphSnapshots.entries()) {
       for (const snapshot of bucket.values()) {
+        const metadata: Record<string, unknown> = {
+          state: snapshot.state,
+          base_version: snapshot.baseVersion,
+        };
+        if (snapshot.owner) {
+          metadata.owner = snapshot.owner;
+        }
+        if (snapshot.note) {
+          metadata.note = snapshot.note;
+        }
+        if (snapshot.expiresAt !== null) {
+          metadata.expires_at = snapshot.expiresAt;
+        }
         entries.push({
           uri: `sc://snapshots/${graphId}/${snapshot.txId}`,
           kind: "snapshot",
-          metadata: { state: snapshot.state, base_version: snapshot.baseVersion },
+          metadata,
         });
       }
     }
