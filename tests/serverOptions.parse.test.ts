@@ -36,11 +36,26 @@ describe("parseOrchestratorRuntimeOptions", () => {
       enableKnowledge: false,
       enableCausalMemory: false,
       enableValueGuard: false,
+      enableMcpIntrospection: false,
+      enableResources: false,
+      enableEventsBus: false,
+      enableCancellation: false,
+      enableTx: false,
+      enableBulk: false,
+      enableIdempotency: false,
+      enableLocks: false,
+      enableDiffPatch: false,
+      enablePlanLifecycle: false,
+      enableChildOpsFine: false,
+      enableValuesExplain: false,
+      enableAssist: false,
     });
     expect(result.timings).to.deep.equal({
       btTickMs: 50,
       stigHalfLifeMs: 30_000,
       supervisorStallTicks: 6,
+      defaultTimeoutMs: 60_000,
+      autoscaleCooldownMs: 10_000,
     });
     expect(result.dashboard).to.deep.equal({
       enabled: false,
@@ -159,6 +174,19 @@ describe("parseOrchestratorRuntimeOptions", () => {
       "--enable-knowledge",
       "--enable-causal-memory",
       "--enable-value-guard",
+      "--enable-mcp-introspection",
+      "--enable-resources",
+      "--enable-events-bus",
+      "--enable-cancellation",
+      "--enable-tx",
+      "--enable-bulk",
+      "--enable-idempotency",
+      "--enable-locks",
+      "--enable-diff-patch",
+      "--enable-plan-lifecycle",
+      "--enable-child-ops-fine",
+      "--enable-values-explain",
+      "--enable-assist",
     ]);
 
     expect(result.features).to.deep.equal({
@@ -173,6 +201,19 @@ describe("parseOrchestratorRuntimeOptions", () => {
       enableKnowledge: true,
       enableCausalMemory: true,
       enableValueGuard: true,
+      enableMcpIntrospection: true,
+      enableResources: true,
+      enableEventsBus: true,
+      enableCancellation: true,
+      enableTx: true,
+      enableBulk: true,
+      enableIdempotency: true,
+      enableLocks: true,
+      enableDiffPatch: true,
+      enablePlanLifecycle: true,
+      enableChildOpsFine: true,
+      enableValuesExplain: true,
+      enableAssist: true,
     });
   });
 
@@ -184,6 +225,10 @@ describe("parseOrchestratorRuntimeOptions", () => {
       "45000",
       "--supervisor-stall-ticks",
       "9",
+      "--default-timeout-ms",
+      "45000",
+      "--autoscale-cooldown-ms",
+      "3000",
       "--dashboard",
       "--dashboard-interval-ms",
       "100",
@@ -193,6 +238,8 @@ describe("parseOrchestratorRuntimeOptions", () => {
       btTickMs: 75,
       stigHalfLifeMs: 45_000,
       supervisorStallTicks: 9,
+      defaultTimeoutMs: 45_000,
+      autoscaleCooldownMs: 3_000,
     });
     expect(result.dashboard.streamIntervalMs).to.equal(250);
   });

@@ -9,6 +9,7 @@ import { GraphState } from "./graphState.js";
 import { GraphTransactionManager, GraphVersionConflictError } from "./graph/tx.js";
 import { LoggerOptions, StructuredLogger } from "./logger.js";
 import { EventStore, OrchestratorEvent } from "./eventStore.js";
+import { EventBus, type EventLevel as BusEventLevel } from "./events/bus.js";
 import { startHttpServer } from "./httpServer.js";
 import { startDashboardServer } from "./monitor/dashboard.js";
 import { BehaviorTreeStatusRegistry } from "./monitor/btStatusRegistry.js";
@@ -37,6 +38,7 @@ import { KnowledgeGraph } from "./knowledge/knowledgeGraph.js";
 import { CausalMemory } from "./knowledge/causalMemory.js";
 import { ValueGraph } from "./values/valueGraph.js";
 import type { ValueFilterDecision } from "./values/valueGraph.js";
+import { ResourceRegistry, ResourceRegistryError } from "./resources/registry.js";
 import {
   ChildCancelInputShape,
   ChildCancelInputSchema,
@@ -116,6 +118,7 @@ import {
   ConsensusVoteInputShape,
   handleConsensusVote,
 } from "./tools/coordTools.js";
+import { requestCancellation, cancelRun } from "./executor/cancel.js";
 import {
   AgentAutoscaleSetInputSchema,
   AgentAutoscaleSetInputShape,
@@ -216,6 +219,11 @@ import {
   collectSubgraphReferences,
 } from "./graph/subgraphRegistry.js";
 import { extractSubgraphToFile } from "./graph/subgraphExtract.js";
+import {
+  getMcpCapabilities,
+  getMcpInfo,
+  updateMcpRuntimeSnapshot,
+} from "./mcp/info.js";
 
 /*
 v1.3 - Orchestrateur MCP self-fork avec:
@@ -250,6 +258,8 @@ const graphState = new GraphState();
 const graphTransactions = new GraphTransactionManager();
 /** Shared blackboard store powering coordination tools. */
 const blackboard = new BlackboardStore();
+/** Registry exposing normalised MCP resources (graphs, runs, logs, namespaces). */
+const resources = new ResourceRegistry({ blackboard });
 /** Shared stigmergic field coordinating pheromone-driven prioritisation. */
 const stigmergy = new StigmergyField();
 /** Shared contract-net coordinator balancing task assignments. */
@@ -278,6 +288,19 @@ const DEFAULT_FEATURE_TOGGLES: FeatureToggles = {
   enableKnowledge: false,
   enableCausalMemory: false,
   enableValueGuard: false,
+  enableMcpIntrospection: false,
+  enableResources: false,
+  enableEventsBus: false,
+  enableCancellation: false,
+  enableTx: false,
+  enableBulk: false,
+  enableIdempotency: false,
+  enableLocks: false,
+  enableDiffPatch: false,
+  enablePlanLifecycle: false,
+  enableChildOpsFine: false,
+  enableValuesExplain: false,
+  enableAssist: false,
 };
 
 /** Default runtime timings exposed before configuration takes place. */
@@ -285,6 +308,8 @@ const DEFAULT_RUNTIME_TIMINGS: RuntimeTimingOptions = {
   btTickMs: 50,
   stigHalfLifeMs: 30_000,
   supervisorStallTicks: 6,
+  defaultTimeoutMs: 60_000,
+  autoscaleCooldownMs: 10_000,
 };
 
 const DEFAULT_CHILD_SAFETY_LIMITS: ChildSafetyOptions = {
@@ -297,6 +322,12 @@ let runtimeFeatures: FeatureToggles = { ...DEFAULT_FEATURE_TOGGLES };
 let runtimeTimings: RuntimeTimingOptions = { ...DEFAULT_RUNTIME_TIMINGS };
 let runtimeChildSafety: ChildSafetyOptions = { ...DEFAULT_CHILD_SAFETY_LIMITS };
 
+updateMcpRuntimeSnapshot({
+  features: runtimeFeatures,
+  timings: runtimeTimings,
+  safety: runtimeChildSafety,
+});
+
 /** Returns the active feature toggles applied to the orchestrator. */
 export function getRuntimeFeatures(): FeatureToggles {
   return { ...runtimeFeatures };
@@ -305,6 +336,12 @@ export function getRuntimeFeatures(): FeatureToggles {
 /** Applies a new set of feature toggles at runtime. */
 export function configureRuntimeFeatures(next: FeatureToggles): void {
   runtimeFeatures = { ...next };
+  updateMcpRuntimeSnapshot({ features: runtimeFeatures });
+}
+
+/** Expose the unified event bus for observability tooling and tests. */
+export function getEventBusInstance(): EventBus {
+  return eventBus;
 }
 
 /** Returns the pacing configuration applied to optional modules. */
@@ -315,6 +352,7 @@ export function getRuntimeTimings(): RuntimeTimingOptions {
 /** Applies a new pacing configuration for optional modules. */
 export function configureRuntimeTimings(next: RuntimeTimingOptions): void {
   runtimeTimings = { ...next };
+  updateMcpRuntimeSnapshot({ timings: runtimeTimings });
 }
 
 /** Returns the safety guardrails applied to child runtimes. */
@@ -330,6 +368,7 @@ export function configureChildSafetyLimits(next: ChildSafetyOptions): void {
     memoryLimitMb: runtimeChildSafety.memoryLimitMb,
     cpuPercent: runtimeChildSafety.cpuPercent,
   });
+  updateMcpRuntimeSnapshot({ safety: runtimeChildSafety });
 }
 
 interface SubgraphSummary {
@@ -434,6 +473,7 @@ const baseLoggerOptions: LoggerOptions = {
 let activeLoggerOptions: LoggerOptions = { ...baseLoggerOptions };
 let logger = new StructuredLogger(activeLoggerOptions);
 const eventStore = new EventStore({ maxHistory: 5000, logger });
+const eventBus = new EventBus({ historyLimit: 5000 });
 
 if (activeLoggerOptions.logFile) {
   logger.info("logger_configured", {
@@ -1008,6 +1048,16 @@ function getValueToolContext(): ValueToolContext {
   return { valueGraph, logger };
 }
 
+class CancellationFeatureDisabledError extends Error {
+  public readonly code = "E-CANCEL-DISABLED";
+  public readonly hint = "enable_cancellation";
+
+  constructor() {
+    super("cancellation feature disabled");
+    this.name = "CancellationFeatureDisabledError";
+  }
+}
+
 interface NormalisedToolError {
   code: string;
   message: string;
@@ -1218,6 +1268,43 @@ function valueToolError(
   };
 }
 
+function resourceToolError(
+  toolName: string,
+  error: unknown,
+  context: Record<string, unknown> = {},
+) {
+  const normalised =
+    error instanceof ResourceRegistryError
+      ? {
+          code: error.code,
+          message: error.message,
+          hint: error.hint,
+          details: error.details,
+        }
+      : normaliseToolError(error, "E-RES-UNEXPECTED");
+  logger.error(`${toolName}_failed`, {
+    ...context,
+    message: normalised.message,
+    code: normalised.code,
+    details: normalised.details,
+  });
+  const payload: Record<string, unknown> = {
+    error: normalised.code,
+    tool: toolName,
+    message: normalised.message,
+  };
+  if (normalised.hint) {
+    payload.hint = normalised.hint;
+  }
+  if (normalised.details !== undefined) {
+    payload.details = normalised.details;
+  }
+  return {
+    isError: true,
+    content: [{ type: "text" as const, text: j(payload) }],
+  };
+}
+
 function ensureKnowledgeEnabled(toolName: string) {
   if (!runtimeFeatures.enableKnowledge) {
     logger.warn(`${toolName}_disabled`, { tool: toolName });
@@ -1266,14 +1353,21 @@ function ensureValueGuardEnabled(toolName: string) {
   return null;
 }
 
-interface Subscription {
-  id: string;
-  jobId?: string;
-  childId?: string;
-  lastSeq: number;
-  createdAt: number;
+function ensureEventsBusEnabled(toolName: string) {
+  if (!runtimeFeatures.enableEventsBus) {
+    logger.warn(`${toolName}_disabled`, { tool: toolName });
+    return {
+      isError: true,
+      content: [
+        {
+          type: "text" as const,
+          text: j({ error: "EVENTS_BUS_DISABLED", tool: toolName, message: "events bus disabled" }),
+        },
+      ],
+    };
+  }
+  return null;
 }
-const SUBS = new Map<string, Subscription>();
 
 // ---------------------------
 // Utils
@@ -1281,6 +1375,73 @@ const SUBS = new Map<string, Subscription>();
 
 const now = () => Date.now();
 const j = (o: unknown) => JSON.stringify(o, null, 2);
+
+const OpCancelInputSchema = z
+  .object({
+    op_id: z.string().min(1),
+    reason: z.string().min(1).max(200).optional(),
+  })
+  .strict();
+const OpCancelInputShape = OpCancelInputSchema.shape;
+
+const PlanCancelInputSchema = z
+  .object({
+    run_id: z.string().min(1),
+    reason: z.string().min(1).max(200).optional(),
+  })
+  .strict();
+const PlanCancelInputShape = PlanCancelInputSchema.shape;
+
+/**
+ * Schema guarding MCP introspection tools. They do not accept parameters to
+ * keep the handshake deterministic therefore the schema is a strict empty
+ * object.
+ */
+const McpIntrospectionInputSchema = z.object({}).strict();
+const McpIntrospectionInputShape = McpIntrospectionInputSchema.shape;
+
+/**
+ * Input schema guarding the `resources_list` tool. Accepts optional prefix and
+ * limit parameters so clients can page deterministically through the registry.
+ */
+const ResourceListInputSchema = z
+  .object({
+    prefix: z.string().trim().min(1).optional(),
+    limit: z.number().int().positive().max(500).optional(),
+  })
+  .strict();
+const ResourceListInputShape = ResourceListInputSchema.shape;
+
+/** Input schema guarding the `resources_read` tool. */
+const ResourceReadInputSchema = z.object({ uri: z.string().min(1) }).strict();
+const ResourceReadInputShape = ResourceReadInputSchema.shape;
+
+/** Input schema guarding the `resources_watch` tool. */
+const ResourceWatchInputSchema = z
+  .object({
+    uri: z.string().min(1),
+    from_seq: z.number().int().min(0).optional(),
+    limit: z.number().int().positive().max(500).optional(),
+  })
+  .strict();
+const ResourceWatchInputShape = ResourceWatchInputSchema.shape;
+
+const EventSubscribeInputSchema = z
+  .object({
+    cats: z.array(z.string().trim().min(1)).max(10).optional(),
+    levels: z.array(z.enum(["debug", "info", "warn", "error"])).max(4).optional(),
+    run_id: z.string().trim().min(1).optional(),
+    job_id: z.string().trim().min(1).optional(),
+    child_id: z.string().trim().min(1).optional(),
+    op_id: z.string().trim().min(1).optional(),
+    graph_id: z.string().trim().min(1).optional(),
+    node_id: z.string().trim().min(1).optional(),
+    from_seq: z.number().int().min(0).optional(),
+    limit: z.number().int().positive().max(500).optional(),
+    format: z.enum(["jsonlines", "sse"]).optional(),
+  })
+  .strict();
+const EventSubscribeInputShape = EventSubscribeInputSchema.shape;
 
 /**
  * Input schema guarding the `graph_subgraph_extract` tool. The strict contract
@@ -1298,6 +1459,43 @@ const GraphSubgraphExtractInputSchema = z
 const GraphSubgraphExtractInputShape = GraphSubgraphExtractInputSchema.shape;
 
 type GraphSubgraphExtractInput = z.infer<typeof GraphSubgraphExtractInputSchema>;
+
+function extractStringProperty(payload: unknown, key: string): string | null {
+  if (!payload || typeof payload !== "object") {
+    return null;
+  }
+  const candidate = payload as Record<string, unknown>;
+  const raw = candidate[key];
+  if (typeof raw !== "string") {
+    return null;
+  }
+  const trimmed = raw.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function extractRunId(payload: unknown): string | null {
+  return extractStringProperty(payload, "run_id");
+}
+
+function extractOpId(payload: unknown): string | null {
+  return extractStringProperty(payload, "op_id") ?? extractStringProperty(payload, "operation_id");
+}
+
+function extractGraphId(payload: unknown): string | null {
+  return extractStringProperty(payload, "graph_id") ?? null;
+}
+
+function extractNodeId(payload: unknown): string | null {
+  return extractStringProperty(payload, "node_id") ?? null;
+}
+
+function deriveEventMessage(kind: string, payload: unknown): string {
+  const msg = extractStringProperty(payload, "msg");
+  if (msg) {
+    return msg;
+  }
+  return kind.toLowerCase();
+}
 
 function pushEvent(
   event: Omit<OrchestratorEvent, "seq" | "ts" | "source" | "level"> &
@@ -1319,26 +1517,67 @@ function pushEvent(
     jobId: emitted.jobId,
     childId: emitted.childId
   });
+  const runId = extractRunId(event.payload);
+  const opId = extractOpId(event.payload);
+  const graphId = extractGraphId(event.payload);
+  const nodeId = extractNodeId(event.payload);
+  const message = deriveEventMessage(event.kind, event.payload);
+  eventBus.publish({
+    cat: event.kind,
+    level: (event.level ?? emitted.level) as BusEventLevel,
+    jobId: event.jobId ?? null,
+    runId,
+    opId,
+    graphId,
+    nodeId,
+    childId: event.childId ?? null,
+    msg: message,
+    data: event.payload,
+  });
+  if (runId) {
+    resources.recordRunEvent(runId, {
+      seq: emitted.seq,
+      ts: emitted.ts,
+      kind: emitted.kind,
+      level: emitted.level,
+      jobId: emitted.jobId,
+      childId: emitted.childId,
+      payload: emitted.payload,
+    });
+  }
   return emitted;
 }
 
-function listEventsSince(lastSeq: number, jobId?: string, childId?: string): OrchestratorEvent[] {
-  return eventStore.list({ minSeq: lastSeq, jobId, childId });
-}
-
 function buildLiveEvents(input: { job_id?: string; child_id?: string; limit?: number; order?: "asc" | "desc"; min_seq?: number }) {
-  const base = eventStore.list({ jobId: input.job_id, childId: input.child_id });
-  const filtered = base.filter((evt) =>
-    typeof input.min_seq === "number" ? evt.seq >= input.min_seq : true
-  );
-  const ordered = [...filtered].sort((a, b) => (input.order === "asc" ? a.seq - b.seq : b.seq - a.seq));
   const limit = input.limit && input.limit > 0 ? Math.min(input.limit, 500) : 100;
+  const afterSeq = typeof input.min_seq === "number" ? input.min_seq - 1 : undefined;
+  const snapshot = eventBus.list({
+    jobId: input.job_id,
+    childId: input.child_id,
+    afterSeq,
+    limit,
+  });
+  const ordered = [...snapshot].sort((a, b) => (input.order === "asc" ? a.seq - b.seq : b.seq - a.seq));
   return ordered.slice(0, limit).map((evt) => {
-    const deepLink = evt.childId ? `vscode://local.self-fork-orchestrator-viewer/open?child_id=${encodeURIComponent(evt.childId)}` : null;
-    const commandUri = evt.childId
-      ? `command:selfForkViewer.openConversation?${encodeURIComponent(JSON.stringify({ child_id: evt.childId }))}`
+    const childId = evt.childId ?? null;
+    const deepLink = childId ? `vscode://local.self-fork-orchestrator-viewer/open?child_id=${encodeURIComponent(childId)}` : null;
+    const commandUri = childId
+      ? `command:selfForkViewer.openConversation?${encodeURIComponent(JSON.stringify({ child_id: childId }))}`
       : null;
-    return { ...evt, vscode_deeplink: deepLink, vscode_command: commandUri };
+    return {
+      seq: evt.seq,
+      ts: evt.ts,
+      kind: evt.cat.toUpperCase(),
+      level: evt.level,
+      jobId: evt.jobId ?? null,
+      childId,
+      runId: evt.runId ?? null,
+      opId: evt.opId ?? null,
+      msg: evt.msg,
+      payload: evt.data,
+      vscode_deeplink: deepLink,
+      vscode_command: commandUri,
+    };
   });
 }
 
@@ -1595,38 +1834,6 @@ const GraphForgeSchema = GraphForgeSchemaBase.refine(
 );
 type GraphForgeInput = z.infer<typeof GraphForgeSchema>;
 
-const SubscribeShape = { job_id: z.string().optional(), child_id: z.string().optional(), last_seq: z.number().optional() } as const;
-const SubscribeSchema = z.object(SubscribeShape);
-type SubscribeInput = z.infer<typeof SubscribeSchema>;
-
-const PollShape = {
-  subscription_id: z.string(),
-  since_seq: z.number().optional(),
-  max_events: z.number().optional(),
-  wait_ms: z.number().optional(),
-  suppress: z.array(z.enum([
-    "PLAN",
-    "START",
-    "PROMPT",
-    "PENDING",
-    "REPLY_PART",
-    "REPLY",
-    "STATUS",
-    "AGGREGATE",
-    "KILL",
-    "HEARTBEAT",
-    "INFO",
-    "WARN",
-    "ERROR"
-  ])).optional()
-} as const;
-const PollSchema = z.object(PollShape);
-type PollInput = z.infer<typeof PollSchema>;
-
-const UnsubscribeShape = { subscription_id: z.string() } as const;
-const UnsubscribeSchema = z.object(UnsubscribeShape);
-type UnsubscribeInput = z.infer<typeof UnsubscribeSchema>;
-
 // Graph export/save/load
 const GraphExportShape = {
   format: z.enum(["json", "mermaid", "dot", "graphml"]).default("json"),
@@ -1817,7 +2024,215 @@ function runGraphForgeAnalysis(
   }
 }
 
-const server = new McpServer({ name: "mcp-self-fork-orchestrator", version: "1.3.0" });
+const SERVER_NAME = "mcp-self-fork-orchestrator";
+const SERVER_VERSION = "1.3.0";
+const MCP_PROTOCOL_VERSION = "1.0";
+
+updateMcpRuntimeSnapshot({
+  server: { name: SERVER_NAME, version: SERVER_VERSION, mcpVersion: MCP_PROTOCOL_VERSION },
+});
+
+const server = new McpServer({ name: SERVER_NAME, version: SERVER_VERSION });
+
+/**
+ * Tool exposing the runtime metadata so MCP clients can negotiate transports
+ * and limits before issuing heavier requests.
+ */
+server.registerTool(
+  "mcp_info",
+  {
+    title: "MCP info",
+    description: "Expose les métadonnées du serveur MCP (transports, limites, flags).",
+    inputSchema: McpIntrospectionInputShape,
+  },
+  async () => {
+    const info = getMcpInfo();
+    return { content: [{ type: "text", text: j({ format: "json", info }) }] };
+  },
+);
+
+/**
+ * Tool exposing the namespace and schema catalogue so clients can discover the
+ * enabled optional modules.
+ */
+server.registerTool(
+  "mcp_capabilities",
+  {
+    title: "MCP capabilities",
+    description: "Détaille les namespaces disponibles et leurs schémas résumés.",
+    inputSchema: McpIntrospectionInputShape,
+  },
+  async () => {
+    const capabilities = getMcpCapabilities();
+    return { content: [{ type: "text", text: j({ format: "json", capabilities }) }] };
+  },
+);
+
+server.registerTool(
+  "resources_list",
+  {
+    title: "Resources list",
+    description: "Répertorie les ressources MCP (graphes, runs, journaux, blackboard).",
+    inputSchema: ResourceListInputShape,
+  },
+  async (input: unknown) => {
+    try {
+      const parsed = ResourceListInputSchema.parse(input ?? {});
+      const entries = resources.list(parsed.prefix);
+      const limited = parsed.limit ? entries.slice(0, parsed.limit) : entries;
+      const result = { items: limited };
+      return {
+        content: [{ type: "text" as const, text: j({ tool: "resources_list", result }) }],
+        structuredContent: result,
+      };
+    } catch (error) {
+      const prefix =
+        input && typeof input === "object" && input !== null
+          ? (input as Record<string, unknown>).prefix ?? null
+          : null;
+      return resourceToolError("resources_list", error, { prefix });
+    }
+  },
+);
+
+server.registerTool(
+  "resources_read",
+  {
+    title: "Resources read",
+    description: "Lit le contenu normalisé d'une ressource MCP (graphes, runs, logs, namespaces).",
+    inputSchema: ResourceReadInputShape,
+  },
+  async (input: unknown) => {
+    try {
+      const parsed = ResourceReadInputSchema.parse(input);
+      const result = resources.read(parsed.uri);
+      return {
+        content: [{ type: "text" as const, text: j({ tool: "resources_read", result }) }],
+        structuredContent: result,
+      };
+    } catch (error) {
+      const uri =
+        input && typeof input === "object" && input !== null
+          ? (input as Record<string, unknown>).uri ?? null
+          : null;
+      return resourceToolError("resources_read", error, { uri });
+    }
+  },
+);
+
+server.registerTool(
+  "resources_watch",
+  {
+    title: "Resources watch",
+    description: "Récupère les événements séquentiels pour une ressource observable.",
+    inputSchema: ResourceWatchInputShape,
+  },
+  async (input: unknown) => {
+    try {
+      const parsed = ResourceWatchInputSchema.parse(input);
+      const result = resources.watch(parsed.uri, {
+        fromSeq: parsed.from_seq,
+        limit: parsed.limit,
+      });
+      const structured = {
+        uri: result.uri,
+        kind: result.kind,
+        events: result.events,
+        next_seq: result.nextSeq,
+      };
+      return {
+        content: [{ type: "text" as const, text: j({ tool: "resources_watch", result: structured }) }],
+        structuredContent: structured,
+      };
+    } catch (error) {
+      const uri =
+        input && typeof input === "object" && input !== null
+          ? (input as Record<string, unknown>).uri ?? null
+          : null;
+      return resourceToolError("resources_watch", error, { uri });
+    }
+  },
+);
+
+server.registerTool(
+  "events_subscribe",
+  {
+    title: "Events subscribe",
+    description: "Diffuse les événements corrélés du bus MCP en JSON Lines ou SSE.",
+    inputSchema: EventSubscribeInputShape,
+  },
+  async (input: unknown) => {
+    const disabled = ensureEventsBusEnabled("events_subscribe");
+    if (disabled) {
+      return disabled;
+    }
+    try {
+      const parsed = EventSubscribeInputSchema.parse(input ?? {});
+      const limit = parsed.limit ?? 100;
+      const catsRaw = parsed.cats?.map((value) => value.trim().toLowerCase()).filter((value) => value.length > 0);
+      const cats = catsRaw && catsRaw.length > 0 ? catsRaw : undefined;
+      const filter = {
+        cats,
+        levels: parsed.levels as BusEventLevel[] | undefined,
+        jobId: parsed.job_id,
+        runId: parsed.run_id,
+        opId: parsed.op_id,
+        graphId: parsed.graph_id,
+        nodeId: parsed.node_id,
+        childId: parsed.child_id,
+        afterSeq: typeof parsed.from_seq === "number" ? parsed.from_seq : undefined,
+        limit,
+      };
+      const events = eventBus.list(filter).sort((a, b) => a.seq - b.seq);
+      const serialised = events.map((evt) => ({
+        seq: evt.seq,
+        ts: evt.ts,
+        cat: evt.cat,
+        kind: evt.cat.toUpperCase(),
+        level: evt.level,
+        job_id: evt.jobId ?? null,
+        run_id: evt.runId ?? null,
+        op_id: evt.opId ?? null,
+        graph_id: evt.graphId ?? null,
+        node_id: evt.nodeId ?? null,
+        child_id: evt.childId ?? null,
+        msg: evt.msg,
+        data: evt.data ?? null,
+      }));
+      const format = parsed.format ?? "jsonlines";
+      const stream =
+        format === "sse"
+          ? serialised
+              .map((evt) => [`id: ${evt.seq}`, `event: ${evt.cat}`, `data: ${JSON.stringify(evt)}`, ``].join("\n"))
+              .join("\n")
+          : serialised.map((evt) => JSON.stringify(evt)).join("\n");
+      const nextSeq = events.length ? events[events.length - 1].seq : parsed.from_seq ?? null;
+      const structured = {
+        format,
+        events: serialised,
+        stream,
+        next_seq: nextSeq,
+        count: serialised.length,
+      };
+      return {
+        content: [{ type: "text" as const, text: j({ tool: "events_subscribe", result: structured }) }],
+        structuredContent: structured,
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      logger.warn("events_subscribe_failed", { message });
+      return {
+        isError: true,
+        content: [
+          {
+            type: "text" as const,
+            text: j({ error: "E-EVT-INVALID", message, hint: "invalid_filters" }),
+          },
+        ],
+      };
+    }
+  },
+);
 
 // job_view (apercu d'un job avec previsualisation transcript + liens VS Code)
 server.registerTool(
@@ -2560,6 +2975,13 @@ server.registerTool(
 
       const baseGraph = normaliseGraphPayload(parsed.graph);
       const tx = graphTransactions.begin(baseGraph);
+      resources.recordGraphSnapshot({
+        graphId: tx.graphId,
+        txId: tx.txId,
+        baseVersion: tx.baseVersion,
+        startedAt: tx.startedAt,
+        graph: tx.workingCopy,
+      });
       let committed: ReturnType<typeof graphTransactions.commit> | undefined;
       try {
         const mutateInput = {
@@ -2568,6 +2990,19 @@ server.registerTool(
         };
         const intermediate = handleGraphMutate(mutateInput);
         committed = graphTransactions.commit(tx.txId, normaliseGraphPayload(intermediate.graph));
+        resources.markGraphSnapshotCommitted({
+          graphId: committed.graphId,
+          txId: tx.txId,
+          committedAt: committed.committedAt,
+          finalVersion: committed.version,
+          finalGraph: committed.graph,
+        });
+        resources.recordGraphVersion({
+          graphId: committed.graphId,
+          version: committed.version,
+          committedAt: committed.committedAt,
+          graph: committed.graph,
+        });
         const finalGraph = serialiseNormalisedGraph(committed.graph);
         const result = { ...intermediate, graph: finalGraph };
         const summary = summariseSubgraphUsage(result.graph);
@@ -2607,6 +3042,7 @@ server.registerTool(
         if (!committed) {
           try {
             graphTransactions.rollback(tx.txId);
+            resources.markGraphSnapshotRolledBack(tx.graphId, tx.txId);
             logger.warn("graph_mutate_rolled_back", {
               graph_id: tx.graphId,
               base_version: tx.baseVersion,
@@ -2958,6 +3394,13 @@ server.registerTool(
 
       const baseGraph = normaliseGraphPayload(parsed.graph);
       const tx = graphTransactions.begin(baseGraph);
+      resources.recordGraphSnapshot({
+        graphId: tx.graphId,
+        txId: tx.txId,
+        baseVersion: tx.baseVersion,
+        startedAt: tx.startedAt,
+        graph: tx.workingCopy,
+      });
       let committed: ReturnType<typeof graphTransactions.commit> | undefined;
       try {
         const rewriteInput: GraphRewriteApplyInput = {
@@ -2969,6 +3412,19 @@ server.registerTool(
           tx.txId,
           normaliseGraphPayload(intermediate.graph),
         );
+        resources.markGraphSnapshotCommitted({
+          graphId: committed.graphId,
+          txId: tx.txId,
+          committedAt: committed.committedAt,
+          finalVersion: committed.version,
+          finalGraph: committed.graph,
+        });
+        resources.recordGraphVersion({
+          graphId: committed.graphId,
+          version: committed.version,
+          committedAt: committed.committedAt,
+          graph: committed.graph,
+        });
         const finalGraph = serialiseNormalisedGraph(committed.graph);
         const result = { ...intermediate, graph: finalGraph };
         const summary = summariseSubgraphUsage(result.graph);
@@ -3013,6 +3469,7 @@ server.registerTool(
         if (!committed) {
           try {
             graphTransactions.rollback(tx.txId);
+            resources.markGraphSnapshotRolledBack(tx.graphId, tx.txId);
             logger.warn("graph_rewrite_apply_rolled_back", {
               graph_id: tx.graphId,
               base_version: tx.baseVersion,
@@ -3537,6 +3994,62 @@ server.registerTool(
       };
     } catch (error) {
       return planToolError("plan_run_reactive", error, {}, "E-BT-INVALID");
+    }
+  },
+);
+
+server.registerTool(
+  "op_cancel",
+  {
+    title: "Operation cancel",
+    description: "Demande l'annulation d'une opération identifiée par son op_id.",
+    inputSchema: OpCancelInputShape,
+  },
+  async (input) => {
+    try {
+      if (!runtimeFeatures.enableCancellation) {
+        throw new CancellationFeatureDisabledError();
+      }
+      const parsed = OpCancelInputSchema.parse(input);
+      const outcome = requestCancellation(parsed.op_id, { reason: parsed.reason ?? null });
+      logger.info("op_cancel", { op_id: parsed.op_id, outcome, reason: parsed.reason ?? null });
+      const result = { op_id: parsed.op_id, outcome, reason: parsed.reason ?? null };
+      return {
+        content: [{ type: "text" as const, text: j({ tool: "op_cancel", result }) }],
+        structuredContent: result,
+      };
+    } catch (error) {
+      return planToolError("op_cancel", error, {}, "E-CANCEL-OP");
+    }
+  },
+);
+
+server.registerTool(
+  "plan_cancel",
+  {
+    title: "Plan cancel",
+    description: "Annule toutes les opérations associées à un run_id.",
+    inputSchema: PlanCancelInputShape,
+  },
+  async (input) => {
+    try {
+      if (!runtimeFeatures.enableCancellation) {
+        throw new CancellationFeatureDisabledError();
+      }
+      const parsed = PlanCancelInputSchema.parse(input);
+      const operations = cancelRun(parsed.run_id, { reason: parsed.reason ?? null });
+      logger.info("plan_cancel", {
+        run_id: parsed.run_id,
+        reason: parsed.reason ?? null,
+        affected: operations.length,
+      });
+      const result = { run_id: parsed.run_id, reason: parsed.reason ?? null, operations };
+      return {
+        content: [{ type: "text" as const, text: j({ tool: "plan_cancel", result }) }],
+        structuredContent: result,
+      };
+    } catch (error) {
+      return planToolError("plan_cancel", error, {}, "E-CANCEL-PLAN");
     }
   },
 );
@@ -4826,65 +5339,6 @@ server.registerTool(
 
 
 
-// events_subscribe
-server.registerTool(
-  "events_subscribe",
-  { title: "Events subscribe", description: "S abonner aux evenements (filtrage job_id/child_id).", inputSchema: SubscribeShape },
-  async (input: SubscribeInput) => {
-    const sub: Subscription = {
-      id: `sub_${randomUUID()}`,
-      jobId: input.job_id,
-      childId: input.child_id,
-      lastSeq: typeof input.last_seq === "number" ? input.last_seq : eventStore.getLastSequence(),
-      createdAt: now()
-    };
-    SUBS.set(sub.id, sub);
-    graphState.createSubscription({ id: sub.id, jobId: sub.jobId, childId: sub.childId, lastSeq: sub.lastSeq, createdAt: sub.createdAt });
-    pushEvent({ kind: "INFO", payload: { msg: "subscription_opened", subId: sub.id, jobId: sub.jobId, childId: sub.childId } });
-    return { content: [{ type: "text", text: j({ subscription_id: sub.id, last_seq: sub.lastSeq }) }] };
-  }
-);
-
-// events_poll
-server.registerTool(
-  "events_poll",
-  { title: "Events poll", description: "Recupere les evenements depuis la derniere sequence (long-poll via wait_ms).", inputSchema: PollShape },
-  async (input: PollInput) => {
-    const sub = SUBS.get(input.subscription_id);
-    if (!sub) return { isError: true, content: [{ type: "text", text: j({ error: "NOT_FOUND", message: "subscription_id inconnu" }) }] };
-
-    const since = typeof input.since_seq === "number" ? input.since_seq : sub.lastSeq;
-    const max = input.max_events && input.max_events > 0 ? Math.min(input.max_events, 500) : 100;
-    const wait = Math.min(Math.max(input.wait_ms ?? 0, 0), 8000);
-
-    let raw = listEventsSince(since, sub.jobId, sub.childId);
-    const deadline = Date.now() + wait;
-    while (!raw.length && Date.now() < deadline) {
-      await new Promise(r => setTimeout(r, 250));
-      raw = listEventsSince(since, sub.jobId, sub.childId);
-    }
-    const suppressed = new Set(input.suppress ?? []);
-    let evts = raw.filter(e => !suppressed.has(e.kind)).slice(0, max);
-    if (raw.length) {
-      sub.lastSeq = raw[raw.length - 1].seq;
-      graphState.updateSubscription(sub.id, { lastSeq: sub.lastSeq });
-    }
-    return { content: [{ type: "text", text: j({ format: "json", events: evts, last_seq: sub.lastSeq }) }] };
-  }
-);
-
-// events_unsubscribe
-server.registerTool(
-  "events_unsubscribe",
-  { title: "Events unsubscribe", description: "Ferme un abonnement.", inputSchema: UnsubscribeShape },
-  async (input: UnsubscribeInput) => {
-    const ok = SUBS.delete(input.subscription_id);
-    graphState.deleteSubscription(input.subscription_id);
-    if (ok) pushEvent({ kind: "INFO", payload: { msg: "subscription_closed", subId: input.subscription_id } });
-    return { content: [{ type: "text", text: j({ ok }) }] };
-  }
-);
-
 // --- Transports ---
 const isMain = process.argv[1] ? pathToFileURL(process.argv[1]).href === import.meta.url : false;
 
@@ -4919,9 +5373,25 @@ if (isMain) {
   }
 
   eventStore.setMaxHistory(options.maxEventHistory);
+  eventBus.setHistoryLimit(options.maxEventHistory);
+  updateMcpRuntimeSnapshot({ limits: { maxEventHistory: options.maxEventHistory } });
 
   let enableStdio = options.enableStdio;
   const httpEnabled = options.http.enabled;
+
+  updateMcpRuntimeSnapshot({
+    transports: {
+      stdio: { enabled: enableStdio },
+      http: {
+        enabled: httpEnabled,
+        host: httpEnabled ? options.http.host : null,
+        port: httpEnabled ? options.http.port : null,
+        path: httpEnabled ? options.http.path : null,
+        enableJson: options.http.enableJson,
+        stateless: options.http.stateless,
+      },
+    },
+  });
 
   if (!enableStdio && !httpEnabled) {
     logger.error("no_transport_enabled", {});

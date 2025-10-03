@@ -25,6 +25,13 @@ function isTerminal(status: BTStatus): boolean {
   return status === "success" || status === "failure";
 }
 
+/** Guard helper executing the runtime cancellation callback when available. */
+function ensureNotCancelled(runtime: TickRuntime): void {
+  if (typeof runtime.throwIfCancelled === "function") {
+    runtime.throwIfCancelled();
+  }
+}
+
 /** Behaviour Tree sequence composite node. */
 export class SequenceNode implements BehaviorNode {
   private currentIndex = 0;
@@ -42,6 +49,7 @@ export class SequenceNode implements BehaviorNode {
   async tick(runtime: TickRuntime): Promise<BehaviorTickResult> {
     while (this.currentIndex < this.children.length) {
       const child = this.children[this.currentIndex];
+      ensureNotCancelled(runtime);
       const result = await child.tick(runtime);
       if (result.status === "running") {
         return result;
@@ -81,6 +89,7 @@ export class SelectorNode implements BehaviorNode {
   async tick(runtime: TickRuntime): Promise<BehaviorTickResult> {
     while (this.currentIndex < this.children.length) {
       const child = this.children[this.currentIndex];
+      ensureNotCancelled(runtime);
       const result = await child.tick(runtime);
       if (result.status === "running") {
         return result;
@@ -121,12 +130,14 @@ export class ParallelNode implements BehaviorNode {
    * - `any`: success once one child succeeds, failure when all fail
    */
   async tick(runtime: TickRuntime): Promise<BehaviorTickResult> {
+    ensureNotCancelled(runtime);
     const results = await Promise.all(
       this.children.map(async (child) => {
         const previous = this.childStates.get(child.id);
         if (previous && isTerminal(previous)) {
           return { status: previous } satisfies BehaviorTickResult;
         }
+        ensureNotCancelled(runtime);
         const result = await child.tick(runtime);
         if (isTerminal(result.status)) {
           this.childStates.set(child.id, result.status);
@@ -188,6 +199,7 @@ export class RetryNode implements BehaviorNode {
    * between attempts.
    */
   async tick(runtime: TickRuntime): Promise<BehaviorTickResult> {
+    ensureNotCancelled(runtime);
     const result = await this.child.tick(runtime);
     if (result.status === "success") {
       this.reset();
@@ -206,6 +218,7 @@ export class RetryNode implements BehaviorNode {
     this.child.reset();
     const delayFn = runtime.wait ?? defaultDelay;
     if (this.backoffMs > 0) {
+      ensureNotCancelled(runtime);
       await delayFn(this.backoffMs);
     }
     return { status: "running" };
@@ -240,6 +253,7 @@ export class TimeoutNode implements BehaviorNode {
    * duration to the runtime so loop detectors can adjust future budgets.
    */
   async tick(runtime: TickRuntime): Promise<BehaviorTickResult> {
+    ensureNotCancelled(runtime);
     const wait = runtime.wait ?? defaultDelay;
     const start = runtime.now ? runtime.now() : Date.now();
     const budget = this.resolveBudget(runtime);
@@ -313,6 +327,7 @@ export class GuardNode implements BehaviorNode {
    * does not hold the guard short-circuits with a failure and resets the child.
    */
   async tick(runtime: TickRuntime): Promise<BehaviorTickResult> {
+    ensureNotCancelled(runtime);
     const actual = runtime.variables[this.conditionKey];
     const matches = this.expected === undefined ? Boolean(actual) : actual === this.expected;
     if (!matches) {
@@ -351,8 +366,10 @@ export class TaskLeaf implements BehaviorNode {
    * the runtime.
    */
   async tick(runtime: TickRuntime): Promise<BehaviorTickResult> {
+    ensureNotCancelled(runtime);
     const rawInput = this.inputKey ? runtime.variables[this.inputKey] : undefined;
     const parsedInput = this.schema ? this.schema.parse(rawInput ?? {}) : rawInput ?? {};
+    ensureNotCancelled(runtime);
     const output = await runtime.invokeTool(this.toolName, parsedInput);
     return { status: "success", output };
   }
@@ -360,5 +377,26 @@ export class TaskLeaf implements BehaviorNode {
   /** Task leaves are stateless, nothing to reset. */
   reset(): void {
     // no-op
+  }
+}
+
+/** Behaviour Tree decorator that enforces cooperative cancellation. */
+export class CancellableNode implements BehaviorNode {
+  constructor(
+    public readonly id: string,
+    private readonly child: BehaviorNode,
+  ) {}
+
+  async tick(runtime: TickRuntime): Promise<BehaviorTickResult> {
+    ensureNotCancelled(runtime);
+    const result = await this.child.tick(runtime);
+    if (result.status !== "running") {
+      this.reset();
+    }
+    return result;
+  }
+
+  reset(): void {
+    this.child.reset();
   }
 }

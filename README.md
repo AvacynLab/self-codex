@@ -27,6 +27,113 @@ configuration éventuelle de `~/.codex/config.toml`.
 - **HTTP optionnel** — `npm run start:http` active le transport streamable HTTP
   (`--no-stdio`). À réserver aux scénarios cloud avec reverse proxy MCP.
 
+## Introspection MCP & négociation
+
+Avant de déclencher des opérations longues, interrogez l'orchestrateur à l'aide
+des outils `mcp_info` et `mcp_capabilities`. Ils reflètent les options
+d'exécution configurées via `serverOptions.ts` et permettent de vérifier les
+limites (`maxInputBytes`, `defaultTimeoutMs`, `maxEventHistory`) ainsi que les
+modules activés (blackboard, BT, ressources, etc.).
+
+### `mcp_info`
+
+```bash
+# STDIO (via le CLI MCP officiel)
+npx @modelcontextprotocol/cli call stdio \
+  --command "node dist/server.js" \
+  --tool mcp_info
+
+# HTTP JSON (si `--http` est activé)
+curl -s http://localhost:4000/mcp \
+  -H 'Content-Type: application/json' \
+  -d '{
+        "jsonrpc":"2.0",
+        "id":1,
+        "method":"tools/call",
+        "params":{ "name":"mcp_info", "arguments":{} }
+      }' | jq
+```
+
+Réponse condensée :
+
+```json
+{
+  "server": { "name": "mcp-self-fork-orchestrator", "version": "1.3.0", "mcpVersion": "1.0" },
+  "transports": {
+    "stdio": { "enabled": true },
+    "http": { "enabled": false, "host": null, "port": null, "path": null, "enableJson": true, "stateless": false }
+  },
+  "features": {
+    "enableMcpIntrospection": true,
+    "enableResources": true,
+    "enableEventsBus": false,
+    "enableCancellation": false,
+    "enableTx": false,
+    "enableBulk": false,
+    "enableIdempotency": false,
+    "enableLocks": false,
+    "enableDiffPatch": false,
+    "enablePlanLifecycle": false,
+    "enableChildOpsFine": false,
+    "enableValuesExplain": false,
+    "enableAssist": false
+  },
+  "timings": { "btTickMs": 50, "stigHalfLifeMs": 30000, "supervisorStallTicks": 6, "defaultTimeoutMs": 60000, "autoscaleCooldownMs": 10000 },
+  "safety": { "maxChildren": 16, "memoryLimitMb": 512, "cpuPercent": 100 },
+  "limits": { "maxInputBytes": 524288, "defaultTimeoutMs": 60000, "maxEventHistory": 1000 }
+}
+```
+
+> Les toggles désactivés (`enableEventsBus`, `enableTx`, `enableBulk`, etc.) correspondent aux modules en cours d'implémentation.
+> Consultez `docs/mcp-api.md` pour suivre leur statut et leurs schémas attendus.
+
+### `mcp_capabilities`
+
+```bash
+npx @modelcontextprotocol/cli call stdio \
+  --command "node dist/server.js" \
+  --tool mcp_capabilities
+```
+
+La réponse liste les namespaces disponibles et un résumé pour chaque schéma
+(par exemple `coord.blackboard`, `graph.core`, `values.guard`).
+
+## Registre de ressources `sc://`
+
+Le registre MCP expose des identifiants stables pour consulter l'état interne
+du serveur. Chaque URI suit le schéma `sc://<kind>/…`.
+
+| URI | Description |
+| --- | --- |
+| `sc://graphs/<graphId>` | Graphe normalisé et sa dernière version commitée. |
+| `sc://graphs/<graphId>@v<version>` | Version spécifique commitée. |
+| `sc://snapshots/<graphId>/<txId>` | Snapshot d'une transaction ouverte (état, base, projection). |
+| `sc://runs/<runId>/events` | Chronologie des événements corrélés à un run. |
+| `sc://children/<childId>/logs` | Journaux stdout/stderr normalisés d'un enfant. |
+| `sc://blackboard/<namespace>` | Instantané clé/valeur d'un namespace blackboard. |
+
+### Outils `resources_*`
+
+- `resources_list` — Filtre facultativement par préfixe et pagine (`limit ≤ 500`).
+- `resources_read` — Retourne le payload normalisé de l'URI.
+- `resources_watch` — Suivi incrémental des événements (`from_seq`, `next_seq`).
+
+Exemple (HTTP JSON) pour lister les graphes :
+
+```bash
+curl -s http://localhost:4000/mcp \
+  -H 'Content-Type: application/json' \
+  -d '{
+        "jsonrpc":"2.0",
+        "id":2,
+        "method":"tools/call",
+        "params":{ "name":"resources_list", "arguments":{ "prefix":"sc://graphs/" } }
+      }'
+```
+
+Pour une consommation STDIO batch, enchaînez les appels via le CLI MCP
+(`--tool resources_read --args '{"uri":"sc://graphs/demo"}'`).
+
 ## Outils runtime enfant (`child_*`)
 
 Chaque outil est validé par zod et loggé en JSONL. Les fichiers d'un enfant sont

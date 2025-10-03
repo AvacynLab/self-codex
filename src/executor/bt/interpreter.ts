@@ -16,6 +16,7 @@ import {
   SequenceNode,
   TaskLeaf,
   TimeoutNode,
+  CancellableNode,
 } from "./nodes.js";
 
 /** Options accepted while instantiating Behaviour Tree nodes. */
@@ -43,6 +44,11 @@ export class BehaviorTreeInterpreter {
       now: runtime.now ?? (() => Date.now()),
       wait: runtime.wait ?? ((ms: number) => new Promise((resolve) => setTimeout(resolve, ms))),
       variables: runtime.variables ?? {},
+      cancellationSignal: runtime.cancellationSignal,
+      isCancelled: runtime.isCancelled,
+      throwIfCancelled: runtime.throwIfCancelled,
+      recommendTimeout: runtime.recommendTimeout,
+      recordTimeoutOutcome: runtime.recordTimeoutOutcome,
     };
     const result = await this.root.tick(resolvedRuntime);
     if (result.status !== "running") {
@@ -136,6 +142,11 @@ export function buildBehaviorTree(
         const id = nextId(`${prefix}-guard`, node.id);
         const child = instantiate(node.child, `${id}-child`);
         return track(new GuardNode(id, node.condition_key, node.expected, child));
+      }
+      case "cancellable": {
+        const id = nextId(`${prefix}-cancellable`, node.id);
+        const child = instantiate(node.child, `${id}-child`);
+        return track(new CancellableNode(id, child));
       }
       case "task": {
         const id = nextId(`${prefix}-task`, node.id ?? node.node_id);
