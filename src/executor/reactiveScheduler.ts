@@ -1,5 +1,7 @@
 import { EventEmitter } from "node:events";
 
+import type { CancellationHandle } from "./cancel.js";
+
 import { CausalMemory } from "../knowledge/causalMemory.js";
 import { BehaviorTreeInterpreter } from "./bt/interpreter.js";
 import type {
@@ -113,6 +115,8 @@ export interface ReactiveSchedulerOptions {
   onTick?: (trace: SchedulerTickTrace) => void;
   getPheromoneIntensity?: (nodeId: string) => number;
   causalMemory?: CausalMemory;
+  /** Optional cancellation handle propagated from the orchestrator. */
+  cancellation?: CancellationHandle;
 }
 
 /** Default base priority assigned to each event type. */
@@ -140,6 +144,7 @@ export class ReactiveScheduler {
   private readonly onTick?: (trace: SchedulerTickTrace) => void;
   private readonly getPheromoneIntensity?: (nodeId: string) => number;
   private readonly causalMemory?: CausalMemory;
+  private readonly cancellation?: CancellationHandle;
 
   private readonly queue: ScheduledTick[] = [];
   private processing = false;
@@ -148,9 +153,13 @@ export class ReactiveScheduler {
   private sequence = 0;
   private tickCountInternal = 0;
   private lastResult: BehaviorTickResult = { status: "running" };
-  private settleResolvers: Array<(result: BehaviorTickResult) => void> = [];
+  private settleResolvers: Array<{
+    resolve: (result: BehaviorTickResult) => void;
+    reject: (error: unknown) => void;
+  }> = [];
   private lastTickResultEventId: string | null = null;
   private currentTickEventId: string | null = null;
+  private cancellationSubscription: (() => void) | null = null;
 
   private readonly taskReadyHandler = (payload: TaskReadyEvent) => {
     this.enqueue("taskReady", payload);
@@ -178,11 +187,19 @@ export class ReactiveScheduler {
     this.onTick = options.onTick;
     this.getPheromoneIntensity = options.getPheromoneIntensity;
     this.causalMemory = options.causalMemory;
+    this.cancellation = options.cancellation;
 
     this.events.on("taskReady", this.taskReadyHandler);
     this.events.on("taskDone", this.taskDoneHandler);
     this.events.on("blackboardChanged", this.blackboardChangedHandler);
     this.events.on("stigmergyChanged", this.stigmergyChangedHandler);
+
+    if (this.cancellation) {
+      this.cancellationSubscription = this.cancellation.onCancel(() => {
+        this.stop();
+        this.rejectSettlers(this.cancellation!.toError());
+      });
+    }
   }
 
   /** Number of ticks executed since the scheduler was created. */
@@ -205,6 +222,10 @@ export class ReactiveScheduler {
     this.events.off("taskDone", this.taskDoneHandler);
     this.events.off("blackboardChanged", this.blackboardChangedHandler);
     this.events.off("stigmergyChanged", this.stigmergyChangedHandler);
+    if (this.cancellationSubscription) {
+      this.cancellationSubscription();
+      this.cancellationSubscription = null;
+    }
   }
 
   /** Enqueue a new event manually. Mainly exposed for tests. */
@@ -217,6 +238,7 @@ export class ReactiveScheduler {
     type: E;
     payload: SchedulerEventMap[E];
   }): Promise<BehaviorTickResult> {
+    this.ensureNotCancelled();
     if (initialEvent) {
       this.enqueue(initialEvent.type, initialEvent.payload);
     }
@@ -225,10 +247,16 @@ export class ReactiveScheduler {
       this.scheduleProcessing();
     }
 
-    return new Promise<BehaviorTickResult>((resolve) => {
-      this.settleResolvers.push(resolve);
+    return new Promise<BehaviorTickResult>((resolve, reject) => {
+      const entry = { resolve, reject };
+      this.settleResolvers.push(entry);
       if (!this.processing && this.queue.length === 0) {
-        this.resolveSettlers();
+        try {
+          this.ensureNotCancelled();
+          this.resolveSettlers();
+        } catch (error) {
+          this.rejectSettlers(error);
+        }
       }
     });
   }
@@ -275,7 +303,9 @@ export class ReactiveScheduler {
     this.scheduled = true;
     queueMicrotask(() => {
       this.scheduled = false;
-      void this.drainQueue();
+      void this.drainQueue().catch((error) => {
+        this.rejectSettlers(error);
+      });
     });
   }
 
@@ -286,6 +316,7 @@ export class ReactiveScheduler {
     this.processing = true;
     try {
       while (!this.stopped && this.queue.length > 0) {
+        this.ensureNotCancelled();
         const now = this.now();
         const nextIndex = this.selectNextIndex(now);
         const [next] = this.queue.splice(nextIndex, 1);
@@ -341,6 +372,11 @@ export class ReactiveScheduler {
           return;
         }
       }
+    } catch (error) {
+      this.currentTickEventId = null;
+      this.stop();
+      this.rejectSettlers(error);
+      throw error;
     } finally {
       this.processing = false;
     }
@@ -360,8 +396,19 @@ export class ReactiveScheduler {
     const finalResult = result ?? this.lastResult;
     const pending = [...this.settleResolvers];
     this.settleResolvers = [];
-    for (const resolver of pending) {
-      resolver(finalResult);
+    for (const { resolve } of pending) {
+      resolve(finalResult);
+    }
+  }
+
+  private rejectSettlers(error: unknown): void {
+    if (this.settleResolvers.length === 0) {
+      return;
+    }
+    const pending = [...this.settleResolvers];
+    this.settleResolvers = [];
+    for (const { reject } of pending) {
+      reject(error);
     }
   }
 
@@ -532,5 +579,9 @@ export class ReactiveScheduler {
       return null;
     }
     return String(value);
+  }
+
+  private ensureNotCancelled(): void {
+    this.cancellation?.throwIfCancelled();
   }
 }

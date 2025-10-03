@@ -50,6 +50,12 @@ import {
 import { EventKind, EventLevel } from "../eventStore.js";
 import type { LoopDetector } from "../guard/loopDetector.js";
 import { BehaviorTreeStatusRegistry } from "../monitor/btStatusRegistry.js";
+import {
+  registerCancellation,
+  unregisterCancellation,
+  type CancellationHandle,
+  OperationCancelledError,
+} from "../executor/cancel.js";
 
 /**
  * Type used when emitting orchestration events. The server injects a concrete
@@ -195,6 +201,33 @@ function summariseForCausalMemory(value: unknown, depth = 0): unknown {
     return null;
   }
   return String(value);
+}
+
+/**
+ * Await for a duration while respecting cooperative cancellation. The helper
+ * removes listeners eagerly to keep fake timers based tests deterministic and
+ * leak-free.
+ */
+async function waitWithCancellation(handle: CancellationHandle, ms: number): Promise<void> {
+  handle.throwIfCancelled();
+  if (ms <= 0) {
+    return;
+  }
+  await new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      cleanup();
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      cleanup();
+      reject(handle.toError());
+    };
+    const cleanup = () => {
+      clearTimeout(timer);
+      handle.signal.removeEventListener("abort", onAbort);
+    };
+    handle.signal.addEventListener("abort", onAbort, { once: true });
+  });
 }
 
 /** Snapshot persisted when surfacing value guard decisions to callers. */
@@ -520,6 +553,10 @@ export interface PlanRunBTResult extends Record<string, unknown> {
     output: unknown;
     executed: boolean;
   }>;
+  /** Correlation identifier attached to the Behaviour Tree run. */
+  run_id: string;
+  /** Operation identifier allowing cancellation tools to target the run. */
+  op_id: string;
 }
 
 /**
@@ -555,6 +592,10 @@ export interface PlanRunReactiveResult extends Record<string, unknown> {
     output: unknown;
     executed: boolean;
   }>;
+  /** Correlation identifier attached to the reactive plan run. */
+  run_id: string;
+  /** Operation identifier exposing the scheduler loop as a cancellable unit. */
+  op_id: string;
 }
 
 /** Default schema registry used by the Behaviour Tree interpreter. */
@@ -1568,32 +1609,77 @@ export async function handlePlanRunBT(
   const invocations: PlanRunBTResult["invocations"] = [];
   let lastOutput: unknown = null;
   let lastResultStatus: BTStatus = "running";
+  let sawFailure = false;
+  let reportedError = false;
 
   const dryRun = input.dry_run ?? false;
+  const runId = `bt_run_${randomUUID()}`;
+  const opId = `bt_op_${randomUUID()}`;
   context.logger.info("plan_run_bt", {
     tree_id: input.tree.id,
     dry_run: dryRun,
+    run_id: runId,
+    op_id: opId,
   });
+
+  /**
+   * Helper emitting lifecycle breadcrumbs to the orchestration event pipeline.
+   * Keeping the payload shape centralised guarantees that every event carries
+   * the correlation identifiers expected by the unified MCP bus.
+   */
+  const publishLifecycleEvent = (
+    phase: "start" | "node" | "tick" | "complete" | "error" | "cancel",
+    payload: Record<string, unknown>,
+  ) => {
+    context.emitEvent({
+      kind: "BT_RUN",
+      level: phase === "error" ? "error" : "info",
+      payload: {
+        phase,
+        run_id: runId,
+        op_id: opId,
+        tree_id: input.tree.id,
+        dry_run: dryRun,
+        mode: "bt",
+        ...payload,
+      },
+    });
+  };
+
+  publishLifecycleEvent("start", {});
+
+  const cancellation = registerCancellation(opId, { runId });
+  let cancellationSubscription: (() => void) | null = null;
 
   if (context.btStatusRegistry) {
     context.btStatusRegistry.reset(input.tree.id);
   }
-  const statusReporter = context.btStatusRegistry
-    ? (nodeId: string, status: BTStatus) => {
-        context.btStatusRegistry?.record(input.tree.id, nodeId, status);
-      }
-    : undefined;
+  const statusReporter = (nodeId: string, status: BTStatus) => {
+    context.btStatusRegistry?.record(input.tree.id, nodeId, status);
+    publishLifecycleEvent("node", { node_id: nodeId, status });
+  };
 
   const interpreter = new BehaviorTreeInterpreter(
     buildBehaviorTree(input.tree.root, { taskSchemas: schemaRegistry, statusReporter }),
   );
 
   const causalMemory = context.causalMemory;
-  let scheduler: ReactiveScheduler;
+  let scheduler: ReactiveScheduler | null = null;
+  cancellationSubscription = cancellation.onCancel(({ reason }) => {
+    context.logger.info("plan_run_bt_cancel_requested", {
+      tree_id: input.tree.id,
+      run_id: runId,
+      op_id: opId,
+      reason: reason ?? null,
+    });
+    publishLifecycleEvent("cancel", { reason: reason ?? null });
+    scheduler?.stop();
+  });
   const loopDetector = context.loopDetector ?? null;
 
   const runtime = {
     invokeTool: async (tool: string, taskInput: unknown) => {
+      cancellation.throwIfCancelled();
       if (dryRun) {
         invocations.push({ tool, input: taskInput, output: null, executed: false });
         return null;
@@ -1646,12 +1732,12 @@ export async function handlePlanRunBT(
     },
     now: () => Date.now(),
     wait: async (ms: number) => {
-      if (ms <= 0) {
-        return;
-      }
-      await delay(ms);
+      await waitWithCancellation(cancellation, ms);
     },
     variables: input.variables,
+    cancellationSignal: cancellation.signal,
+    isCancelled: () => cancellation.isCancelled(),
+    throwIfCancelled: () => cancellation.throwIfCancelled(),
     recommendTimeout: loopDetector
       ? (category: string, complexityScore?: number, fallbackMs?: number) => {
           try {
@@ -1686,8 +1772,17 @@ export async function handlePlanRunBT(
     now: runtime.now,
     onTick: ({ result, pendingAfter }) => {
       lastResultStatus = result.status;
+      if (result.status === "failure") {
+        sawFailure = true;
+      }
+      const tickCount = scheduler?.tickCount ?? 0;
+      publishLifecycleEvent("tick", {
+        status: result.status,
+        pending_after: pendingAfter,
+        ticks: tickCount,
+      });
       context.supervisorAgent?.recordSchedulerSnapshot({
-        schedulerTick: scheduler.tickCount,
+        schedulerTick: tickCount,
         backlog: pendingAfter,
         completed: result.status === "success" ? 1 : 0,
         failed: result.status === "failure" ? 1 : 0,
@@ -1697,8 +1792,13 @@ export async function handlePlanRunBT(
     causalMemory,
   });
 
+  const schedulerRef = scheduler;
+  if (!schedulerRef) {
+    throw new Error("scheduler initialisation failed");
+  }
+
   const unsubscribeStigmergy = context.stigmergy.onChange((change) => {
-    scheduler.emit("stigmergyChanged", {
+    schedulerRef.emit("stigmergyChanged", {
       nodeId: change.nodeId,
       intensity: change.totalIntensity,
       type: change.type,
@@ -1713,7 +1813,7 @@ export async function handlePlanRunBT(
   const timeoutMs = input.timeout_ms ?? null;
 
   try {
-    const runPromise = scheduler.runUntilSettled({
+    const runPromise = schedulerRef.runUntilSettled({
       type: "taskReady",
       payload: { nodeId: rootId, criticality: 1 },
     });
@@ -1724,7 +1824,7 @@ export async function handlePlanRunBT(
         delay(timeoutMs).then(() => ({ kind: "timeout" as const })),
       ]);
       if (outcome.kind === "timeout") {
-        scheduler.stop();
+        schedulerRef.stop();
         await runPromise.catch(() => undefined);
         throw new BehaviorTreeRunTimeoutError(timeoutMs);
       }
@@ -1737,23 +1837,56 @@ export async function handlePlanRunBT(
       tree_id: input.tree.id,
       status: result.status,
       invocations: invocations.length,
-      ticks: scheduler.tickCount,
+      ticks: schedulerRef.tickCount,
+      run_id: runId,
+      op_id: opId,
+    });
+
+    publishLifecycleEvent("complete", {
+      status: result.status,
+      ticks: schedulerRef.tickCount,
+      invocations: invocations.length,
+      last_output: lastOutput,
     });
 
     return {
       status: result.status,
-      ticks: scheduler.tickCount,
+      ticks: schedulerRef.tickCount,
       last_output: lastOutput,
       invocations,
+      run_id: runId,
+      op_id: opId,
     };
+  } catch (error) {
+    if (error instanceof OperationCancelledError) {
+      sawFailure = true;
+      reportedError = true;
+      lastResultStatus = "failure";
+      context.logger.info("plan_run_bt_cancelled", {
+        tree_id: input.tree.id,
+        run_id: runId,
+        op_id: opId,
+        reason: error.details.reason ?? null,
+      });
+      publishLifecycleEvent("error", { status: "cancelled", reason: error.details.reason ?? null });
+    }
+    throw error;
   } finally {
     unsubscribeStigmergy();
-    scheduler.stop();
+    schedulerRef.stop();
+    cancellationSubscription?.();
+    cancellationSubscription = null;
+    unregisterCancellation(opId);
     context.logger.info("plan_run_bt_status", {
       tree_id: input.tree.id,
       status: lastResultStatus,
-      ticks: scheduler.tickCount,
+      ticks: schedulerRef.tickCount,
+      run_id: runId,
+      op_id: opId,
     });
+    if (sawFailure && !reportedError) {
+      publishLifecycleEvent("error", { status: lastResultStatus });
+    }
   }
 }
 
@@ -1773,26 +1906,58 @@ export async function handlePlanRunReactive(
   let lastOutput: unknown = null;
   let lastResultStatus: BTStatus = "running";
 
+  const runId = `bt_reactive_run_${randomUUID()}`;
+  const opId = `bt_reactive_op_${randomUUID()}`;
   context.logger.info("plan_run_reactive", {
     tree_id: input.tree.id,
     tick_ms: input.tick_ms,
     dry_run: dryRun,
+    run_id: runId,
+    op_id: opId,
   });
+
+  /**
+   * Emit reactive lifecycle breadcrumbs on the MCP event bus so the scheduler
+   * loop can be observed alongside Behaviour Tree progress in dashboards and
+   * tests.
+   */
+  const publishLifecycleEvent = (
+    phase: "start" | "node" | "tick" | "loop" | "complete" | "error" | "cancel",
+    payload: Record<string, unknown>,
+  ) => {
+    context.emitEvent({
+      kind: "BT_RUN",
+      level: phase === "error" ? "error" : "info",
+      payload: {
+        phase,
+        run_id: runId,
+        op_id: opId,
+        tree_id: input.tree.id,
+        dry_run: dryRun,
+        mode: "reactive",
+        ...payload,
+      },
+    });
+  };
+
+  publishLifecycleEvent("start", { tick_ms: input.tick_ms, budget_ms: input.budget_ms ?? null });
 
   const causalMemory = context.causalMemory;
   const loopDetector = context.loopDetector ?? null;
   const autoscaler = context.autoscaler ?? null;
   let scheduler: ReactiveScheduler | null = null;
+  let loop: ExecutionLoop | null = null;
   let unsubscribeBlackboard: (() => void) | null = null;
+  const cancellation = registerCancellation(opId, { runId });
+  let cancellationSubscription: (() => void) | null = null;
 
   if (context.btStatusRegistry) {
     context.btStatusRegistry.reset(input.tree.id);
   }
-  const statusReporter = context.btStatusRegistry
-    ? (nodeId: string, status: BTStatus) => {
-        context.btStatusRegistry?.record(input.tree.id, nodeId, status);
-      }
-    : undefined;
+  const statusReporter = (nodeId: string, status: BTStatus) => {
+    context.btStatusRegistry?.record(input.tree.id, nodeId, status);
+    publishLifecycleEvent("node", { node_id: nodeId, status });
+  };
 
   const interpreter = new BehaviorTreeInterpreter(
     buildBehaviorTree(input.tree.root, { taskSchemas: schemaRegistry, statusReporter }),
@@ -1800,6 +1965,7 @@ export async function handlePlanRunReactive(
 
   const runtime = {
     invokeTool: async (tool: string, taskInput: unknown) => {
+      cancellation.throwIfCancelled();
       if (dryRun) {
         invocations.push({ tool, input: taskInput, output: null, executed: false });
         return null;
@@ -1852,12 +2018,12 @@ export async function handlePlanRunReactive(
     },
     now: () => Date.now(),
     wait: async (ms: number) => {
-      if (ms <= 0) {
-        return;
-      }
-      await delay(ms);
+      await waitWithCancellation(cancellation, ms);
     },
     variables: input.variables,
+    cancellationSignal: cancellation.signal,
+    isCancelled: () => cancellation.isCancelled(),
+    throwIfCancelled: () => cancellation.throwIfCancelled(),
     recommendTimeout: loopDetector
       ? (category: string, complexityScore?: number, fallbackMs?: number) => {
           try {
@@ -1892,8 +2058,15 @@ export async function handlePlanRunReactive(
     now: runtime.now,
     getPheromoneIntensity: (nodeId) => context.stigmergy.getNodeIntensity(nodeId)?.intensity ?? 0,
     causalMemory,
+    cancellation,
     onTick: (trace) => {
       lastResultStatus = trace.result.status;
+      publishLifecycleEvent("tick", {
+        status: trace.result.status,
+        pending_after: trace.pendingAfter,
+        scheduler_ticks: scheduler?.tickCount ?? 0,
+        event: trace.event,
+      });
       context.supervisorAgent?.recordSchedulerSnapshot({
         schedulerTick: scheduler?.tickCount ?? 0,
         backlog: trace.pendingAfter,
@@ -1977,7 +2150,7 @@ export async function handlePlanRunReactive(
     };
   });
 
-  const loop = new ExecutionLoop({
+  loop = new ExecutionLoop({
     intervalMs: input.tick_ms ?? 100,
     now: runtime.now,
     budgetMs: input.budget_ms,
@@ -1989,6 +2162,7 @@ export async function handlePlanRunReactive(
       if (runCompleted || !scheduler) {
         return;
       }
+      cancellation.throwIfCancelled();
       const initialEvent =
         loopContext.tickIndex === 0
           ? { type: "taskReady" as const, payload: { nodeId: rootId, criticality: 1 } }
@@ -1996,6 +2170,10 @@ export async function handlePlanRunReactive(
       try {
         const result = await scheduler.runUntilSettled(initialEvent);
         executedLoopTicks = Math.max(executedLoopTicks, loopContext.tickIndex + 1);
+        publishLifecycleEvent("loop", {
+          loop_tick: loopContext.tickIndex,
+          executed_ticks: executedLoopTicks,
+        });
         if (result.output !== undefined) {
           lastOutput = result.output;
         }
@@ -2015,6 +2193,18 @@ export async function handlePlanRunReactive(
     }, input.timeout_ms);
   }
 
+  cancellationSubscription = cancellation.onCancel(({ reason }) => {
+    context.logger.info("plan_run_reactive_cancel_requested", {
+      tree_id: input.tree.id,
+      run_id: runId,
+      op_id: opId,
+      reason: reason ?? null,
+    });
+    publishLifecycleEvent("cancel", { reason: reason ?? null });
+    scheduler?.stop();
+    void loop?.stop();
+  });
+
   const startedAt = runtime.now();
   loop.start();
 
@@ -2028,6 +2218,16 @@ export async function handlePlanRunReactive(
       scheduler_ticks: scheduler.tickCount,
       duration_ms: durationMs,
       invocations: invocations.length,
+      run_id: runId,
+      op_id: opId,
+    });
+
+    publishLifecycleEvent("complete", {
+      status: result.status,
+      loop_ticks: executedLoopTicks,
+      scheduler_ticks: scheduler.tickCount,
+      duration_ms: durationMs,
+      last_output: lastOutput,
     });
 
     return {
@@ -2037,13 +2237,31 @@ export async function handlePlanRunReactive(
       duration_ms: durationMs,
       last_output: lastOutput,
       invocations,
+      run_id: runId,
+      op_id: opId,
     };
   } catch (error) {
-    context.logger.error("plan_run_reactive_failed", {
-      tree_id: input.tree.id,
-      status: lastResultStatus,
-      message: error instanceof Error ? error.message : String(error),
-    });
+    if (error instanceof OperationCancelledError) {
+      lastResultStatus = "failure";
+      context.logger.info("plan_run_reactive_cancelled", {
+        tree_id: input.tree.id,
+        run_id: runId,
+        op_id: opId,
+        reason: error.details.reason ?? null,
+      });
+    } else {
+      context.logger.error("plan_run_reactive_failed", {
+        tree_id: input.tree.id,
+        status: lastResultStatus,
+        message: error instanceof Error ? error.message : String(error),
+        run_id: runId,
+        op_id: opId,
+      });
+      publishLifecycleEvent("error", {
+        status: lastResultStatus,
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
     throw error;
   } finally {
     if (timeoutHandle) {
@@ -2055,11 +2273,16 @@ export async function handlePlanRunReactive(
     unsubscribeStigmergy();
     scheduler?.stop();
     await loop.stop();
+    cancellationSubscription?.();
+    cancellationSubscription = null;
+    unregisterCancellation(opId);
     context.logger.info("plan_run_reactive_status", {
       tree_id: input.tree.id,
       status: lastResultStatus,
       loop_ticks: executedLoopTicks,
       scheduler_ticks: scheduler?.tickCount ?? 0,
+      run_id: runId,
+      op_id: opId,
     });
   }
 }

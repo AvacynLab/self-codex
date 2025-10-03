@@ -41,6 +41,11 @@ export const BehaviorNodeDefinitionSchema = z.lazy(() => z
         child: BehaviorNodeDefinitionSchema,
     }),
     z.object({
+        type: z.literal("cancellable"),
+        id: z.string().min(1).optional(),
+        child: BehaviorNodeDefinitionSchema,
+    }),
+    z.object({
         type: z.literal("task"),
         id: z.string().min(1).optional(),
         node_id: z.string().min(1),

@@ -8,6 +8,11 @@ import {
   handlePlanRunReactive,
 } from "../src/tools/planTools.js";
 import { StigmergyField } from "../src/coord/stigmergy.js";
+import {
+  cancelRun,
+  resetCancellationRegistry,
+  OperationCancelledError,
+} from "../src/executor/cancel.js";
 
 class StubAutoscaler {
   public backlogUpdates: number[] = [];
@@ -45,6 +50,7 @@ describe("plan_run_reactive tool", () => {
 
   beforeEach(() => {
     clock = sinon.useFakeTimers();
+    resetCancellationRegistry();
   });
 
   afterEach(() => {
@@ -54,6 +60,7 @@ describe("plan_run_reactive tool", () => {
   function buildContext(options: {
     autoscaler?: StubAutoscaler;
     supervisorAgent?: StubSupervisorAgent;
+    events?: Array<{ kind: string; level?: string; payload?: unknown }>;
   } = {}): PlanToolContext {
     const logger = {
       info: sinon.spy(),
@@ -62,7 +69,7 @@ describe("plan_run_reactive tool", () => {
       debug: sinon.spy(),
     } as unknown as PlanToolContext["logger"];
 
-    const events: Array<{ kind: string }> = [];
+    const events = options.events ?? [];
     return {
       supervisor: {} as PlanToolContext["supervisor"],
       graphState: {} as PlanToolContext["graphState"],
@@ -70,7 +77,7 @@ describe("plan_run_reactive tool", () => {
       childrenRoot: "/tmp",
       defaultChildRuntime: "codex",
       emitEvent: (event) => {
-        events.push({ kind: event.kind });
+        events.push({ kind: event.kind, level: event.level, payload: event.payload });
       },
       stigmergy: new StigmergyField(),
       autoscaler: options.autoscaler as unknown as PlanToolContext["autoscaler"],
@@ -143,5 +150,74 @@ describe("plan_run_reactive tool", () => {
     expect(result.invocations).to.have.length(1);
     expect(result.invocations[0]).to.include({ executed: false, output: null });
     expect(result.last_output).to.equal(null);
+  });
+
+  it("aborts the reactive run when cancellation is requested", async () => {
+    const events: Array<{ kind: string; payload?: unknown }> = [];
+    const context = buildContext({ events });
+
+    const input = PlanRunReactiveInputSchema.parse({
+      tree: {
+        id: "cancel-demo",
+        root: {
+          type: "retry",
+          id: "retry-node",
+          max_attempts: 5,
+          backoff_ms: 1_000,
+          child: {
+            type: "guard",
+            condition_key: "allow",
+            expected: true,
+            child: {
+              type: "task",
+              id: "noop-node",
+              node_id: "noop-node",
+              tool: "noop",
+              input_key: "payload",
+            },
+          },
+        },
+      },
+      variables: { allow: false, payload: { count: 0 } },
+      tick_ms: 25,
+    });
+
+    const executionPromise = handlePlanRunReactive(context, input);
+
+    const startEvent = events.find((event) => {
+      if (event.kind !== "BT_RUN" || !event.payload || typeof event.payload !== "object") {
+        return false;
+      }
+      return (event.payload as Record<string, unknown>).phase === "start";
+    });
+    expect(startEvent, "expected BT_RUN start event").to.exist;
+    const startPayload = startEvent?.payload as Record<string, unknown> | undefined;
+    const runId = String((startPayload?.run_id ?? "") as string);
+    expect(runId).to.have.length.greaterThan(0);
+
+    await clock.tickAsync(25);
+
+    const cancelOutcomes = cancelRun(runId, { reason: "test" });
+    expect(cancelOutcomes).to.have.length(1);
+    expect(cancelOutcomes[0]?.outcome).to.equal("requested");
+
+    let caught: unknown;
+    try {
+      await executionPromise;
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).to.be.instanceOf(OperationCancelledError);
+
+    const cancelEvent = events.find((event) => {
+      if (event.kind !== "BT_RUN" || !event.payload || typeof event.payload !== "object") {
+        return false;
+      }
+      return (event.payload as Record<string, unknown>).phase === "cancel";
+    });
+    expect(cancelEvent, "expected cancellation lifecycle event").to.exist;
+    const cancelPayload = cancelEvent?.payload as Record<string, unknown> | undefined;
+    expect(cancelPayload?.reason).to.equal("test");
   });
 });

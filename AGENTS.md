@@ -1,735 +1,500 @@
-----------  
-Voici ta **liste de tâches à cocher** (adressée directement à toi, l’agent) pour intégrer — finement et intelligemment — les innovations de mes deux dernières recherches dans la **version actuelle** du dépôt.
-Elle précise **objectifs**, **correctifs attendus**, **fichiers à créer/modifier**, **sous-étapes** (avec sous-sous-étapes), ainsi que ce qu’il faut **respecter pour les tests et le build**.
-Contexte inchangé : TypeScript/Node ESM, exécution locale, une instance Codex par enfant, pas d’auth, CI Node 18/20/22.
+Remet à zero le fichier AGENTS.md et importe la liste des taches fournit ci dessous ainsi que les informations (au mot près) dans le fichier. Une fois effectué, commence l'implementation, et prend ton temps. 
+
+---------- 
+Voici ta **liste exhaustive de tâches à cocher** (adressée directement à toi, l’agent) pour corriger/ajouter/supprimer/modifier ce qu’il reste dans la **version actuelle du dépôt** (celle que j’ai auditée) en t’appuyant sur les résultats de mes deux recherches et de mon analyse MCP-centrée.
+Je détaille **objectifs**, **acceptance criteria**, **fichiers à créer/modifier**, **sous-étapes (et sous-sous-étapes)**, ainsi que **règles build/tests**.
+Contexte : TypeScript/Node ESM, local-first, une instance Codex par enfant, pas d’auth. CI Node 18/20/22.
 
 ---
 
 ## BRIEF (lis-moi d’abord)
 
-**Objectif général**
-Élever la puissance d’**utilisation/implémentation** des graphes et du système multi-agent, sans dépendre d’infra externe :
+**Objectifs attendus**
 
-* Graphes **hiérarchiques/adaptatifs** (sous-graphes, hyper-arêtes ciblées, réécriture transactionnelle).
-* Exécution **réactive/itérative** (interpréteur Behavior Tree + scheduler réactif à événements).
-* **Coordination** avancée (blackboard, stigmergie, Contract-Net, consensus) et **auto-organisation** (autoscaling d’enfants, superviseur “global workspace”).
-* **Mémoire structurée** d’implémentation (graphe de connaissance interne + mémoire causale d’événements) pour *réutiliser* et *reconfigurer* les plans en direct.
-* **Filtrage par valeurs** (graphe de valeurs → garde-fous éthiques/fonctionnels).
-* Intégration serveur (nouvelles tools MCP) + visualisations temps réel.
+* Rendre le serveur **MCP-friendly** pour un agent exigeant : introspection/capabilities, URIs de ressources, event bus unifié avec corrélation `runId/opId`, cancellations uniformes, transactions exposées, opérations bulk, idempotency keys, locks, diff/patch, lifecycle plan complet, child ops fines, “values explain” en dry-run, assistance KG/causal, logs corrélés.
+* **Affiner** les briques existantes (BT/scheduler/stigmergie/autoscaler/superviseur/réécriture) pour plus de finesse opérationnelle (pas de famine, budgets, invariants, réécritures idempotentes).
+* Améliorer **observabilité** (streams unifiés, tail de logs) et **explicabilité** (values/causal/KG dans le pipeline).
 
-**Correctifs attendus**
+**Correctifs à apporter (résumé)**
 
-* Zod pour *toute* nouvelle tool, erreurs codifiées, timeouts contrôlés.
-* Aucune écriture dans le repo, uniquement `children/<id>/` et répertoires de run.
-* Tests **offline** déterministes (fake timers), CI **verte** 18/20/22.
-* Feature flags *off* par défaut, activables via `serverOptions`.
+* Ajouter de **nouvelles tools MCP** ciblées (introspection, resources, events, cancel, tx, bulk, idempotency/locks, diff/patch, lifecycle plan, child spawn/attach/limits, values_explain, kg/causal suggest, logs_tail).
+* Renforcer la **cohérence transactionnelle** (snapshots, versionning, invariants sur patch).
+* Standardiser **IDs/corrélation** et **codes d’erreurs**.
+* Couvrir par des **tests déterministes** (fake timers), y compris concurrence/annulation.
 
-**Critères d’acceptation**
+**Acceptance criteria généraux**
 
-* Plans hiérarchiques exécutables, réécriture sûre (snapshot/rollback).
-* Moteur BT fonctionnel (Sequence/Selector/Parallel/Decorator) + scheduler réactif.
-* Blackboard, stigmergie, contract-net et consensus **opérationnels** + tests.
-* Autoscaler et Superviseur débloquent les impasses sans fuite de processus.
-* Mémoire (KG + causal) branchée à la planification, exportable.
-* Graphe de valeurs filtrant réellement les plans.
-* Dashboard : heatmaps stigmergiques + statut BT en temps réel.
+* Toute opération longue renvoie **`{opId, runId?}`**, publie des **events** corrélés et accepte **op_cancel**.
+* Les outils “bulk/tx/patch/locks” sont **atomiques** et **safe** en concurrence (tests concurrents ok).
+* Les invariants graphe sont préservés (acyclicité si DAG, ports/labels requis).
+* Le scheduler est **fair** (pas de starvation), autoscaler ne “pompe” pas (cooldown), superviseur débloque les impasses.
+* `values_filter` bloque les violations **critiques**, `values_explain` justifie clairement.
 
----
+**Règles Build/Tests (à respecter partout)**
 
-## RÈGLES BUILD/TEST (à respecter partout)
-
-* **Install**
-
-  * Si lockfile : `npm ci`
-  * Sinon : `npm install --omit=dev --no-save --no-package-lock`
-* **Build** : `npm run build` (racine + `graph-forge`)
-* **Lint** : `npm run lint` (double `tsc --noEmit`)
-* **Tests** : `npm test` offline, déterministes (use `sinon.useFakeTimers()`), seeds fixées
-* **Zod** : messages `code`/`message`/`hint` courts, stables
-* **FS** : pas de `..`, chemins normalisés (utilise `src/paths.ts`)
-* **Logs** : JSONL compact + rotation, pas de blobs lourds en CI
+* Install : `npm ci` si lockfile ; sinon `npm install --omit=dev --no-save --no-package-lock`
+* Build : `npm run build` (racine puis `graph-forge`)
+* Lint : `npm run lint` (tsc strict, noEmit)
+* Tests : `npm test` offline, **fake timers** pour tout ce qui attend/timeout
+* CI : Node 18/20/22, coverage artifact ; pas de réseau externe
+* Zod : pour **toutes** nouvelles tools, messages courts et codifiés
+* FS : pas de `..` ni chemins relatifs non normalisés ; n’écrire que dans runs/children
 
 ---
 
-## A) Graphes : expressivité, hiérarchie, réécriture, transactions
+## 1) Surface MCP — Introspection, Ressources, Événements, Cancellation
 
-### A1. Sous-graphes hiérarchiques (plans imbriqués)
+### 1.1 Introspection/Handshake
 
-* [x] **Créer** `src/graph/hierarchy.ts`
+* [x] **Créer** `src/mcp/info.ts`
 
-  * [x] Types :
-
-    * `HierNode = TaskNode | SubgraphNode`
-    * `SubgraphNode = { id, kind:"subgraph", ref:string, params?:Record<string,any> }`
-    * `HierGraph = { id, nodes:HierNode[], edges:Edge[] }`
-  * [x] API : `embedSubgraph(parent:HierGraph, nodeId, sub:HierGraph)`, `flatten(h:HierGraph): Graph` (expansion contrôlée)
-  * [x] **Validation** (no cycles inter-niveaux, ports d’entrée/sortie nommés)
+  * [x] Implémente `getMcpInfo()` et `getMcpCapabilities()` (schemas et namespaces)
+  * [x] Inclure versions, transports, features/flags, limites (max input bytes, default timeouts)
 * [x] **Modifier** `src/server.ts`
 
-  * [x] Étendre `graph_generate`/`graph_mutate` pour `kind:"subgraph"`
-  * [x] Nouvelle tool `graph_subgraph_extract` (extrait un sous-plan en fichier JSON, versionné dans run dir)
-* [x] **Tests**
+  * [x] Ajouter tool `mcp_info` (→ `McpInfo`)
+  * [x] Ajouter tool `mcp_capabilities` (schemas résumés en JSON)
+* [x] **Tests** : `tests/mcp.info-capabilities.test.ts`
 
-  * [x] `tests/graph.hierarchy.generate-embed.test.ts` (embed + validate)
-  * [x] `tests/graph.hierarchy.flatten.test.ts` (flatten = graphe équivalent, topologie conservée)
+  * [x] Valider shape, cohérence avec `serverOptions` et flags actifs
 
-### A2. Hyper-arêtes minimales (relations n-aires ciblées)
+### 1.2 Ressources adressables (URIs stables)
 
-* [x] **Créer** `src/graph/hypergraph.ts`
+* [x] **Créer** `src/resources/registry.ts`
 
-  * [x] `HyperEdge = { id, sources:string[], targets:string[], label?, weight? }`
-  * [x] Projection automatique → arêtes binaires (pour algos existants) avec métadonnées
-* [x] **Modifier** `graph_export` (Mermaid/DOT) pour indiquer hyper-arêtes (annotation)
-* [x] **Tests**
+  * [x] Résoudre URIs :
 
-  * [x] `tests/graph.hyper.project.test.ts` (projection correcte)
-  * [x] `tests/graph.export.hyper.test.ts` (export annoté lisible)
-
-### A3. Moteur de réécriture & adaptativité contrôlée
-
-* [x] **Créer** `src/graph/rewrite.ts`
-
-  * [x] `Rule = { name, match:(g)=>MatchSet, apply:(g, m)=>g’ }`
-  * [x] Banque de règles : *split-parallel*, *inline-subgraph*, *reroute-avoid(node/label)*
-  * [x] Combinator : `applyAll(g, rules, stopOnNoChange=true)`
-* [x] **Relier** à `src/graph/adaptive.ts` (renforcement/élagage déclenchent règles)
-* [x] **Tests**
-
-  * [x] `tests/graph.rewrite.rules.test.ts` (idempotence, pas de cycles induits)
-  * [x] `tests/graph.adaptive.rewrite.test.ts` (réécriture pilotée par score)
-
-### A4. Transactions & versions
-
-* [x] **Créer** `src/graph/tx.ts`
-
-  * [x] Snapshot/rollback : `begin(g)->txId`, `commit(txId)`, `rollback(txId)`
-  * [x] Numéro de **version** incrémental + horodatage
-* [x] **Intégrer** à *toutes* mutations serveur (wrap `graph_mutate`, `graph_rewrite_apply`)
-  * [x] Wrap `graph_mutate`
-  * [x] Wrap `graph_rewrite_apply`
-* [x] **Tests**
-
-  * [x] `tests/graph.tx.snapshot-rollback.test.ts`
-  * [x] `tests/graph.tx.concurrency.test.ts` (refus MAJ si version diverge)
-
----
-
-## B) Exécution **réactive** et **itérative**
-
-### B1. Interpréteur Behavior Tree (BT)
-
-* [x] **Créer** `src/executor/bt/types.ts` (Status: `SUCCESS|FAILURE|RUNNING`)
-* [x] **Créer** `src/executor/bt/nodes.ts`
-
-  * [x] Composites : `Sequence`, `Selector`, `Parallel(policy:all/any)`
-  * [x] Décorateurs : `Retry(n, backoff)`, `Timeout(ms)`, `Guard(cond)`
-  * [x] Feuilles : `TaskLeaf(toolName, inputSchema)` → appelle tools existants (child_send, graph_*…)
-* [x] **Créer** `src/executor/bt/interpreter.ts` (tick async, persistance état nœuds)
-* [x] **Créer** `src/executor/bt/compiler.ts` (compile `HierGraph` → BT selon patrons)
+    * `sc://graphs/<graphId>` ; `sc://graphs/<graphId>@v<version>`
+    * `sc://runs/<runId>/events` ; `sc://children/<childId>/logs`
+    * `sc://blackboard/<ns>` ; `sc://snapshots/<graphId>/<txId>`
+  * [x] `list(prefix?)`, `read(uri)`, `watch(uri, fromSeq?)` (SSE pipeline interne)
 * [x] **Modifier** `src/server.ts`
 
-  * [x] Nouvelle tool `plan_compile_bt` (retourne JSON BT)
-  * [x] Nouvelle tool `plan_run_bt` (lance interpréteur + expose events)
-* [x] **Tests**
+  * [x] tools `resources_list`, `resources_read`, `resources_watch`
+* [x] **Tests** : `tests/resources.list-read-watch.test.ts`
 
-  * [x] `tests/bt.nodes.sequence-selector.test.ts`
-  * [x] `tests/bt.decorators.retry-timeout.test.ts` (fake timers)
-  * [x] `tests/bt.compiler.from-hiergraph.test.ts`
-  * [x] `tests/bt.run.integration.test.ts` (BT → outils réels mockés)
+  * [x] Lister par préfixe ; lire snapshots/graph ; watch ordonné (seq monotone)
 
-### B2. Scheduler réactif & bus d’événements
+### 1.3 Event bus unifié & corrélation
 
-* [x] **Créer** `src/executor/reactiveScheduler.ts`
+* [x] **Créer** `src/events/bus.ts`
 
-  * [x] EventBus (Node `EventEmitter`) : `taskReady`, `taskDone`, `blackboardChanged`, `stigmergyChanged`
-  * [x] Politique : priorité dynamique (âge, criticité, phéromones)
-* [x] **Relier** BT → Scheduler (ticks pilotés par événements)
-* [x] **Tests**
+  * [x] Type `Event {ts, cat, level, runId?, opId?, graphId?, nodeId?, childId?, msg, data?, seq}`
+  * [ ] Wrapper sur émetteurs existants (BT, scheduler, bb, stig, cnp, consensus, values, children)
+    * [x] BT + scheduler : `plan_run_bt` / `plan_run_reactive` publient `BT_RUN` corrélé (`run_id`, `op_id`, `mode`)
+* [ ] **Modifier** `src/executor/*`, `src/coord/*`, `src/agents/*`
 
-  * [x] `tests/executor.scheduler.reactivity.test.ts` (réaction immédiate aux events)
-  * [x] `tests/executor.scheduler.prio.test.ts` (priorités évolutives)
-
-### B3. Boucle de *ticks* & budgets
-
-* [x] **Créer** `src/executor/loop.ts`
-
-  * [x] Tick cadencé (`setInterval`) + `pause/resume/stop`
-  * [x] Budgets : tâches longues → coopérative (yield)
-* [x] **Tests**
-
-  * [x] `tests/executor.loop.timing.test.ts` (fake timers, no drift)
-  * [x] `tests/executor.loop.budget.test.ts`
-
----
-
-## C) Coordination & communication (blackboard, stigmergie, contrat, consensus)
-
-### C1. **Blackboard** (tableau noir)
-
-* [x] **Créer** `src/coord/blackboard.ts`
-
-  * [x] KV typé + tags + TTL + watch (events)
-  * [x] Snapshots (pour débogage, export)
+  * [ ] Publier évènements standardisés avec `opId/runId`
 * [x] **Modifier** `src/server.ts`
 
-  * [x] Tools : `bb_set`, `bb_get`, `bb_query`, `bb_watch(startFromVersion)` (stream)
-* [x] **Tests**
+  * [x] tool `events_subscribe({cats?, runId?})` (stream SSE/jsonlines)
+* [x] **Tests** : `tests/events.subscribe.progress.test.ts`
 
-  * [x] `tests/coord.blackboard.kv.test.ts`
-  * [x] `tests/coord.blackboard.watch.test.ts` (dédup + ordre)
+  * [x] Filtrage par catégorie ; ordre ; corrélation idempotente
 
-### C2. **Stigmergie** (phéromones)
+### 1.4 Cancellation uniforme
 
-* [x] **Créer** `src/coord/stigmergy.ts`
+* [x] **Créer** `src/executor/cancel.ts`
 
-  * [x] API : `mark(nodeId, type, intensity)`, `evaporate(halfLifeMs)`, `fieldSnapshot()`
-* [x] **Modifier** scheduler pour pondérer sélection de tâches par champ de phéromones
-* [x] **Server tools** : `stig_mark`, `stig_decay`, `stig_snapshot`
-* [x] **Tests**
+  * [x] Stock tokens/flags par `opId` ; API `requestCancel(opId)` / `isCancelled(opId)`
+* [x] **Modifier** `src/executor/bt/nodes.ts`, `interpreter.ts`, `reactiveScheduler.ts`
 
-  * [x] `tests/coord.stigmergy.field.test.ts` (accumulation/évaporation)
-  * [x] `tests/coord.stigmergy.scheduler.test.ts` (impact mesurable sur choix)
+  * [x] Points d’annulation (I/O, sleeps, backoff) + décorateur `Cancellable()`
+  * [x] Scheduler réactif : arrêt coopératif + propagation `throwIfCancelled`
+* [x] **Modifier** `src/server.ts`
 
-### C3. **Contract-Net Protocol**
+  * [x] tool `op_cancel({opId})` ; tool `plan_cancel({runId})` (cascade)
+* [x] **Tests** :
 
-* [x] **Créer** `src/coord/contractNet.ts`
-
-  * [x] Messages : `announce(task)`, `bid(agentId,cost)`, `award(agentId)`
-  * [x] Stratégie d’attribution (min cost, heuristique)
-* [x] **Intégrer** à `child_create`/`child_send` (routeur de tâches via CNP si activé)
-* [x] **Server tool** : `cnp_announce` (expérimental)
-* [x] **Tests**
-
-  * [x] `tests/coord.contractnet.basic.test.ts`
-  * [x] `tests/coord.contractnet.tie-breaker.test.ts`
-
-### C4. **Consensus / Vote**
-
-* [x] **Créer** `src/coord/consensus.ts`
-
-  * [x] `majority`, `quorum(k)`, `weighted(weights)`
-* [x] **Relier** à `plan_join` / `plan_reduce` (mode `vote`)
-* [x] **Tests**
-
-  * [x] `tests/coord.consensus.modes.test.ts`
-  * [x] `tests/plan.join.vote.integration.test.ts`
+  * [x] `tests/cancel.bt.decorator.test.ts` (arrêt net, cleanup)
+  * [x] `tests/cancel.plan.run.test.ts` (annulation cascaded)
 
 ---
 
-## D) Auto-organisation & robustesse (autoscaler, superviseur, sécurité)
+## 2) Transactions, Diff/Patch, Locks, Idempotency, Bulk
 
-### D1. **Autoscaler d’enfants**
+### 2.1 Transactions exposées
 
-* [x] **Créer** `src/agents/autoscaler.ts`
+* [ ] **Modifier** `src/graph/tx.ts` (compléter métadonnées, horodatage, owner)
+* [ ] **Modifier** `src/server.ts`
 
-  * [x] Metrics : backlog scheduler, latence, taux d’échec
-  * [x] Politique : spawn/retire avec bornes et *cooldown*
-* [x] **Intégrer** au loop (tick → `reconcile()`)
-* [x] **Server tool** : `agent_autoscale_set({min,max,cooldown})`
-* [x] **Tests**
+  * [ ] tools `tx_begin({graphId})`, `tx_apply({txId, ops:GraphOp[]})`, `tx_commit({txId})`, `tx_rollback({txId})`
+  * [ ] Validation Zod des `GraphOp` (add/remove node/edge, metadata patch, rewrite nommée)
+* [ ] **Tests** : `tests/tx.begin-apply-commit.test.ts`
 
-  * [x] `tests/agents.autoscaler.scale-updown.test.ts` (sans fuite de process)
-  * [x] `tests/agents.autoscaler.cooldown.test.ts`
+  * [ ] Conflit de version ; rollback idempotent ; aperçu version `previewVersion`
 
-### D2. **Superviseur (Global Workspace)**
+### 2.2 Diff/Patch & invariants
 
-* [x] **Créer** `src/agents/supervisor.ts`
+* [ ] **Créer** `src/graph/diff.ts` (JSON Patch RFC 6902)
+* [ ] **Créer** `src/graph/patch.ts` (appliquer patch avec vérification)
+* [ ] **Créer** `src/graph/invariants.ts`
 
-  * [x] Détecte stagnation (aucun progrès N ticks), deadlocks, starvation
-  * [x] Actions : réécriture de plan ciblée, redispatch, alertes
-* [x] **Relier** à `loopDetector` et `rewrite`
-* [x] **Tests**
+  * [ ] Acyclicité (si DAG), ports/labels requis, contraintes edge cardinality
+* [ ] **Modifier** `src/server.ts`
 
-  * [x] `tests/agents.supervisor.stagnation.test.ts`
-  * [x] `tests/agents.supervisor.unblock.test.ts`
+  * [ ] tools `graph_diff({graphId, from, to})`, `graph_patch({graphId, patch})`
+* [ ] **Tests** :
 
-### D3. **Sécurité/opération**
+  * [ ] `tests/graph.diff-patch.test.ts` (roundtrip)
+  * [ ] `tests/graph.invariants.enforced.test.ts` (rejet patch invalide)
 
-* [x] Limiteurs : nb max d’enfants, mémoire/CPU par enfant (config)
-* [x] Timeouts catégorisés (BT decorators)
-* [x] **Tests** : `tests/op.safety.limits.test.ts`
+### 2.3 Locks de graphe
 
----
+* [ ] **Créer** `src/graph/locks.ts`
 
-## E) Mémoire d’implémentation (réutilisation pratique des plans)
+  * [ ] `graph_lock({graphId, holder, ttlMs}) -> {lockId}` ; `graph_unlock({lockId})`
+  * [ ] Rafraîchissement ; expiration ; re-entrance par holder
+* [ ] **Modifier** mutations/tx pour **refuser** si lock détenu par autre holder
+* [ ] **Tests** : `tests/graph.locks.concurrent.test.ts`
 
-### E1. **Graphe de connaissances interne (KG)**
+  * [ ] Pas de deadlock ; re-entrance ; expiration propre
 
-* [x] **Créer** `src/knowledge/knowledgeGraph.ts`
+### 2.4 Idempotency keys
 
-  * [x] Triplets `{subject,predicate,object,source?,confidence?}` + index
-  * [x] Query simple par motif (sans dépendance RDF)
-* [x] **Relier** `graph_generate` pour *suggérer* patrons de plan depuis KG
-* [x] **Server tools** : `kg_insert`, `kg_query`, `kg_export`
-* [x] **Tests**
+* [ ] **Créer** `src/infra/idempotency.ts` (store TTL)
+* [ ] **Modifier** tools : `child_create`, `plan_run_bt`, `cnp_announce`, `graph_batch_mutate`, `tx_begin`
 
-  * [x] `tests/knowledge.kg.insert-query.test.ts`
-  * [x] `tests/graph.generate.from-kg.test.ts` (patrons appliqués)
+  * [ ] Accepter `idempotencyKey?` → rejouer résultat si déjà vu
+* [ ] **Tests** : `tests/idempotency.replay.test.ts` (simuler retry réseau)
 
-### E2. **Mémoire causale d’événements**
+### 2.5 Opérations bulk atomiques
 
-* [x] **Créer** `src/knowledge/causalMemory.ts`
+* [ ] **Modifier** `src/server.ts`
 
-  * [x] Noeuds = événements, arêtes cause→effet (exécution réelle)
-  * [x] API : `record(event, causes[])`, `explain(outcome)`
-* [x] **Brancher** exécution (BT & scheduler) pour enregistrer événements
-* [x] **Server tools** : `causal_export`, `causal_explain(outcomeId)`
-* [x] **Tests**
+  * [ ] tools `bb_batch_set([{ns,key,value,ttlMs?}])`
+  * [ ] `graph_batch_mutate({graphId, ops:GraphOp[]})`
+  * [ ] `child_batch_create([{idempotencyKey?, role?, prompt, limits?}])`
+  * [ ] `stig_batch([{nodeId,type,intensity}])`
+* [ ] **Tests** : `tests/bulk.bb-graph-child-stig.test.ts`
 
-  * [x] `tests/knowledge.causal.record-explain.test.ts`
-  * [x] `tests/causal.integration.bt-scheduler.test.ts`
+  * [ ] Atomicité : rollback si erreur partielle
 
 ---
 
-## F) **Graphe de valeurs** & filtrage des plans
+## 3) Lifecycle Plan, Compilation/Exécution, Child Ops fines
 
-* [x] **Créer** `src/values/valueGraph.ts`
+### 3.1 Lifecycle uniforme
 
-  * [x] Noeuds : valeurs (sécurité, confidentialité, coût, perfo…), arêtes : priorités/contraintes
-  * [x] `scorePlan(plan):{score,total,violations[]}` + `filter(plan)`
-* [x] **Intégrer** à `plan_fanout` (pré-filtrer), `plan_reduce` (pondérer)
-* [x] **Server tools** : `values_set`, `values_score`, `values_filter`
-* [x] **Tests**
+* [ ] **Créer** `src/executor/planLifecycle.ts`
 
-  * [x] `tests/values.score-filter.test.ts`
-  * [x] `tests/plan.values-integration.test.ts` (plan rejeté si violation critique)
+  * [ ] États : `running|paused|done|failed`, progression %, last event seq
+* [ ] **Modifier** `src/server.ts`
 
----
+  * [ ] tools `plan_status({runId})`, `plan_pause({runId})`, `plan_resume({runId})`
+  * [ ] `plan_dry_run({graphId|btJson})` → compile, applique `values_explain`, `rewrite` **en preview**
+* [ ] **Tests** : `tests/plan.lifecycle.test.ts`, `tests/plan.dry-run.test.ts`
 
-## G) Intégration serveur (nouvelles tools, schémas, erreurs)
+### 3.2 Child operations
 
-* [x] **Modifier** `src/server.ts` (registre tools)
+* [ ] **Modifier** `src/childRuntime.ts`, `src/state/childrenIndex.ts`
 
-  * [ ] Ajouter :
+  * [ ] Exposer `setRole`, `setLimits`, `attach` si déjà en vie
+* [ ] **Modifier** `src/server.ts`
 
-    * [x] `graph_subgraph_extract`, `graph_rewrite_apply`, `graph_hyper_export`
-    * [x] `plan_compile_bt`, `plan_run_bt`, `plan_run_reactive`
-    * [x] `bb_set/get/query/watch`, `stig_mark/decay/snapshot`
-    * [x] `cnp_announce`, `consensus_vote`
-    * [x] `agent_autoscale_set`
-    * `kg_insert/query/export`, `causal_export/explain` ✅
-    * `values_set/score/filter` ✅
-* [x] **Zod schemas** pour chaque input, validation stricte
-    * [x] `plan_compile_bt` / `plan_run_bt` / `plan_run_reactive` marqués `.strict()`
-    * [x] `graph_subgraph_extract` verrouille les propriétés inattendues
-  * [x] Codes d’erreurs :
-
-    * [x] `E-BT-INVALID`, `E-BT-RUN-TIMEOUT`
-    * [x] `E-BB-NOTFOUND`, `E-STIG-TYPE`
-    * [x] `E-CNP-NO-BIDS`, `E-CONSENSUS-NO-QUORUM`
-    * [x] `E-KG-BAD-TRIPLE`, `E-CAUSAL-NO-PATH`
-    * [x] `E-VALUES-VIOLATION`, `E-REWRITE-CONFLICT`
-* [x] **Tests**
-
-  * [x] `tests/server.tools.schemas.test.ts` (validation négative)
-  * [x] `tests/server.tools.errors.test.ts` (codes/msgs cohérents)
-* [x] Stabiliser `plan_reduce` (vote) pour normaliser les résumés JSON/textuels et éviter les erreurs de quorum.
+  * [ ] tools `child_spawn_codex({role?, prompt, modelHint?, limits?, idempotencyKey?})`
+  * [ ] `child_attach({childId})`, `child_set_role({childId, role})`, `child_set_limits(...)`
+* [ ] **Tests** : `tests/child.spawn-attach-limits.test.ts`
 
 ---
 
-## H) Visualisation & Dashboard (temps réel, interprétable)
+## 4) Affinage exécution : BT, Scheduler, Stigmergie, Autoscaler, Superviseur, Réécriture
 
-* [x] **Modifier** `src/monitor/dashboard.ts`
+### 4.1 Behavior Tree (finesse)
 
-  * [x] Streams : état BT (nœuds RUNNING/OK/KO), heatmap stigmergie (champ par nœud), backlog scheduler
-  * [x] Endpoints JSON + SSE/WebSocket (local by default)
-* [x] **Modifier** `src/viz/mermaid.ts`
+* [ ] **Modifier** `src/executor/bt/nodes.ts`
 
-  * [x] Overlays (labels couleur par intensité stigmergique, badges BT)
-* [x] **Tests**
+  * [ ] Décorateurs : `Retry(n, backoffJitter)`, `Timeout(ms)`, `Guard(cond)`, `Cancellable`
+  * [ ] Parallel policy : `all|any|quota(k)`
+* [ ] **Modifier** `src/executor/bt/interpreter.ts`
 
-  * [x] `tests/monitor.dashboard.streams.test.ts` (smoke + shape)
-  * [x] `tests/viz.mermaid.overlays.test.ts` (échappement/attributs stables)
+  * [ ] Persistance d’état par nœud (resume après pause/cancel) ; progress %
+* [ ] **Tests** :
 
----
+  * [ ] `tests/bt.decorators.retry-timeout-cancel.test.ts` (fake timers)
+  * [ ] `tests/bt.parallel.quota.test.ts`
 
-## I) Build, tsconfig, CI
+### 4.2 Scheduler réactif (fairness & budgets)
 
-* [x] **tsconfig.json**
+* [ ] **Modifier** `src/executor/reactiveScheduler.ts`
 
-  * [x] Ajouter paths pour `executor/*`, `coord/*`, `knowledge/*`, `values/*`, `graph/*`
-  * [x] `types:["node"]`, `strict:true`, `moduleResolution:"node"`, `lib:["ES2022"]`
+  * [ ] Priorité = f(âge, criticité, stigmergie) avec **aging** (anti-starvation)
+  * [ ] Budgets CPU coopératifs (yield après quantum)
+* [ ] **Tests** :
 
-* [ ] **package.json**
+  * [ ] `tests/executor.scheduler.prio-aging.test.ts`
+  * [ ] `tests/executor.scheduler.budgets.test.ts`
 
-  * [x] Scripts : `test:unit`, `test:int`, `coverage` (nyc/c8)
-  * [x] `start:dashboard` si déport UI local facultatif
-* [x] **.github/workflows/ci.yml**
+### 4.3 Stigmergie paramétrable
 
-  * [x] Matrice Node 18/20/22, steps : install → build → lint → test → coverage artifact
-* [x] **Tests**
+* [ ] **Modifier** `src/coord/stigmergy.ts`
 
-  * [x] `tests/ci.smoke-all-tools.test.ts` (appelle rapidement chaque tool en mode mock)
+  * [ ] Demi-vie configurable `halfLifeMs`, borne min/max intensité
+  * [ ] Snapshot heatmap (pour dashboard)
+* [ ] **Tests** : `tests/coord.stigmergy.field.test.ts` (évaporation contrôlée)
 
----
+### 4.4 Autoscaler & Superviseur
 
-## J) Documentation & démos
+* [ ] **Modifier** `src/agents/autoscaler.ts`
 
-* [x] **README.md**
+  * [ ] Métriques : backlog, latence, échecs ; scale up/down avec **cooldown**
+* [ ] **Modifier** `src/agents/supervisor.ts`
 
-  * [x] Section “Mode réactif (BT + scheduler)” avec exemples JSON d’un BT
-  * [x] Usage blackboard/stigmergie/contract-net/consensus
-  * [x] Valeurs/KG/causal : exemples courts
-* [x] **AGENTS.md**
+  * [ ] Détection stagnation (N ticks sans progrès), relance/réallocation
+  * [ ] Intégrer **rewrite** ciblée (règle `reroute-avoid`) en cas d’impasse
+* [ ] **Tests** :
 
-  * [x] Recettes :
+  * [ ] `tests/agents.autoscaler.scale-updown.test.ts` (no thrash)
+  * [ ] `tests/agents.supervisor.unblock.test.ts`
 
-    * Fan-out via CNP → Join par `quorum` → Reduce `vote`
-    * Plan réécrit dynamiquement (rewrite rules) en fonction des échecs
-    * Autoscaler + superviseur pour déblocage automatique
+### 4.5 Réécriture & invariants (idempotence)
 
-### Recettes opérationnelles (aide-mémoire)
+* [ ] **Modifier** `src/graph/rewrite.ts`
 
-#### Fan-out via CNP → Join quorum → Reduce vote
-1. Lancer le serveur avec `--enable-cnp --enable-consensus` (et `--enable-value-guard`
-   si le filtre doit rejeter des clones avant le join).
-2. Appeler `cnp_announce` avec `manual_bids` ou `auto_bid` pour sélectionner les
-   agents les plus pertinents. Les champs `bids` et `awarded_agent_id` permettent
-   de construire la liste finale.
-3. Injecter les gagnants dans `plan_fanout` via `children_spec.list` afin de
-   personnaliser prompt/metadata par agent.
-4. Utiliser `plan_join` avec `join_policy: "quorum"` et `quorum_count` pour
-   arrêter dès qu'un sous-ensemble valide répond.
-5. Clore avec `plan_reduce` (`reducer: "vote"`, `spec: { prefer_value, tie_breaker }`
-   optionnels). La décision réplique la structure `consensus_vote`.
-
-#### Plan réécrit dynamiquement après échecs
-1. Démarrer avec `--enable-bt --enable-reactive-scheduler --enable-supervisor` afin
-   que le superviseur détecte les stagnations et alimente le LoopDetector.
-2. Lancer `plan_run_reactive` (ou `plan_run_bt`) sur le plan initial pour observer
-   les nœuds fautifs (`invocations`, `status`, télémétrie dashboard).
-3. Appliquer `graph_rewrite_apply` en mode `manual` avec `rules: ["reroute_avoid"]`
-   ou `"split_parallel"` pour dériver un graphe corrigé; utiliser les options
-   `reroute_avoid_node_ids`/`labels` selon le diagnostic.
-4. Recompiler le graphe via `plan_compile_bt` et ré-exécuter le plan réactif.
-5. Consigner l'avant/après dans le knowledge graph (`kg_insert`) pour tracer les
-   variantes validées.
-
-#### Autoscaler + superviseur pour déblocage automatique
-1. Lancer le serveur avec `--enable-reactive-scheduler --enable-autoscaler --enable-supervisor`
-   et configurer les budgets via `--bt-tick-ms`, `--supervisor-stall-ticks`.
-2. Ajuster les limites dynamiques en appelant `agent_autoscale_set` (cible,
-   cooldown, backlog max) et en passant `--max-children`/`--child-memory-mb` au
-   démarrage.
-3. Publier les signaux de charge (`stig_mark` pour backlog, `bb_set` pour tâches
-   critiques) afin d'alimenter les heuristiques.
-4. Exécuter `plan_run_reactive` : le superviseur enregistre les snapshots et
-   déclenche des réallocations si le backlog stagne; l'autoscaler scale up/down
-   automatiquement.
-5. Inspecter `monitor/dashboard` (`/metrics`, `/stream`) pour vérifier la
-   réduction du backlog et la libération des clones excédentaires.
-
-* [ ] **playground_codex_demo/**
-
-  * [ ] Scénarios couvrant : BT, stigmergie visible, consensus, values filter, KG bootstrap
+  * [ ] Règles : `split-parallel`, `inline-subgraph`, `reroute-avoid(label|nodeId)`
+  * [ ] **Idempotence** : même règle appliquée 2× → même graphe
+* [ ] **Tests** : `tests/graph.rewrite.rules.test.ts` (idempotence, pas de cycles)
 
 ---
 
-## K) Feature flags & configuration
+## 5) Mémoire d’implémentation, Valeurs, Assistance
+
+### 5.1 Knowledge Graph (réutilisation)
+
+* [ ] **Modifier** `src/knowledge/knowledgeGraph.ts`
+
+  * [ ] Triplets `{s,p,o,source?,confidence?}` ; index par `(s,p)` et `(o,p)`
+* [ ] **Créer** `src/knowledge/assist.ts`
+
+  * [ ] `kg_suggest_plan({goal, context?}) -> {fragments: HierGraph[], rationale[]}`
+* [ ] **Modifier** `src/server.ts`
+
+  * [ ] tool `kg_suggest_plan`
+* [ ] **Tests** : `tests/assist.kg.suggest.test.ts` (mocks)
+
+### 5.2 Mémoire causale
+
+* [ ] **Modifier** `src/knowledge/causalMemory.ts`
+
+  * [ ] `record(event, causes[])`, `explain(outcome)` ; export DAG
+  * [ ] Accrochage BT/scheduler (début/fin/échec nœuds)
+* [ ] **Modifier** `src/server.ts`
+
+  * [ ] tools `causal_export`, `causal_explain`
+* [ ] **Tests** :
+
+  * [ ] `tests/knowledge.causal.record-explain.test.ts`
+  * [ ] `tests/causal.integration.bt-scheduler.test.ts`
+
+### 5.3 Graphe de valeurs (filtrage + explication)
+
+* [ ] **Modifier** `src/values/valueGraph.ts`
+
+  * [ ] `values_explain({plan}) -> {violations:[{nodeId, value, severity, hint}]}`
+* [ ] **Modifier** `src/server.ts`
+
+  * [ ] tool `values_explain` et intégration dans `plan_dry_run`
+* [ ] **Tests** : `tests/values.explain.integration.test.ts`
+
+---
+
+## 6) Observabilité/Logs/Dashboard
+
+### 6.1 Logs corrélés & tail
+
+* [ ] **Créer** `src/monitor/log.ts`
+
+  * [ ] Log JSONL avec `runId|opId|graphId|childId|seq` ; rotation
+* [ ] **Modifier** `src/server.ts`
+
+  * [ ] tool `logs_tail({stream:"server"|"run"|"child", id?, limit?, fromSeq?})`
+* [ ] **Tests** : `tests/logs.tail.filters.test.ts` (filtres, fromSeq)
+
+### 6.2 Dashboard overlays
+
+* [ ] **Modifier** `src/monitor/dashboard.ts`
+
+  * [ ] Streams SSE : état BT, heatmap stigmergie, backlog scheduler
+* [ ] **Modifier** `src/viz/mermaid.ts`
+
+  * [ ] Overlays : badges BT (RUNNING/OK/KO), intensités stigmergiques
+* [ ] **Tests** :
+
+  * [ ] `tests/monitor.dashboard.streams.test.ts`
+  * [ ] `tests/viz.mermaid.overlays.test.ts`
+
+---
+
+## 7) Concurrence, Robustesse, Perf
+
+### 7.1 Tests de concurrence
+
+* [ ] **Créer** `tests/concurrency.graph-mutations.test.ts`
+
+  * [ ] Threads simulés : diffs concurrents → locks ; aucun deadlock
+* [ ] **Créer** `tests/concurrency.events-backpressure.test.ts`
+
+  * [ ] `events_subscribe/resources_watch` : limites, keep-alive, perte zéro
+
+### 7.2 Cancellation & ressources
+
+* [ ] **Créer** `tests/cancel.random-injection.test.ts`
+
+  * [ ] Annuler aléatoirement pendant BT/scheduler ; vérifier cleanup
+
+### 7.3 Flakiness & perf micro-bench (non-CI)
+
+* [ ] **Créer** `tests/perf/scheduler.bench.ts` (local-only)
+
+  * [ ] Mesurer latence avant/après stigmergie & aging
+* [ ] **Créer** script `scripts/retry-flaky.sh`
+
+  * [ ] Réexécuter 10× suites sensibles → vérifier stabilité
+
+---
+
+## 8) Server Options / Feature Flags / Docs
+
+### 8.1 Options & flags
 
 * [x] **Modifier** `src/serverOptions.ts`
 
-  * [x] Flags (off par défaut) :
+  * [x] Ajouter flags : `enableMcpIntrospection`, `enableResources`, `enableEventsBus`, `enableCancellation`, `enableTx`, `enableBulk`, `enableIdempotency`, `enableLocks`, `enableDiffPatch`, `enablePlanLifecycle`, `enableChildOpsFine`, `enableValuesExplain`, `enableAssist`
+  * [x] Defaults : **false** (retro-compatibilité) ; temps : `defaultTimeoutMs`, `btTickMs`, `stigHalfLifeMs`, `supervisorStallTicks`, `autoscaleCooldownMs`
+* [x] **Tests** : `tests/options.flags.wiring.test.ts` (activation/désactivation propre)
 
-    * `enableBT`, `enableReactiveScheduler`
-    * `enableBlackboard`, `enableStigmergy`, `enableCNP`, `enableConsensus`
-    * `enableAutoscaler`, `enableSupervisor`
-    * `enableKnowledge`, `enableCausalMemory`, `enableValueGuard`
-  * [x] Timeouts/délais : `btTickMs`, `stigHalfLifeMs`, `supervisorStallTicks`
-* [x] **Tests**
+### 8.2 Documentation
 
-  * [x] `tests/options.flags.wiring.test.ts` (activation/désactivation propre)
+* [x] **Modifier** `README.md`
 
----
+  * [x] Introspection/capabilities, URIs `sc://...`, events_subscribe, tx/bulk, locks/idempotency, diff/patch, lifecycle plan, child ops fines
+  * [x] Exemples curl (stdio/http-json)
+* [x] **Modifier** `AGENTS.md`
 
-## L) Suites d’intégration (end-to-end ciblées)
+  * [x] Recettes :
 
-* [x] **E2E-1 : Plan hiérarchique réactif**
-
-  * [x] Génère `HierGraph` → compile BT → run réactif → succès avec re-ordonnancement après `bb_set`
-* [x] **E2E-2 : Stigmergie + autoscaling**
-
-  * [x] Backlog lourd → champs phéromones → autoscaler scale-up → drain → scale-down
-* [x] **E2E-3 : Contract-Net + consensus**
-
-  * [x] `cnp_announce` 3 enfants → bids → attribution → `plan_join quorum=2/3` → reduce vote
-* [x] **E2E-4 : Values guard**
-
-  * [x] 2 plans, 1 viole “confidentialité” → filtré → autre plan choisi
-* [x] **E2E-5 : Rewrite sous pression**
-
-  * [x] Échecs répétés → superviseur déclenche `rewrite` → plan passe
+    * Fan-out via CNP + consensus quorum + reduce vote
+    * Dry-run : values_explain + kg/causal suggest + rewrite preview
+    * Autoscaler + superviseur + stigmergie (heatmap visible)
+* [x] **Ajouter** `docs/mcp-api.md` (schémas Zod en pseudo-schema lisible)
 
 ---
 
-## M) Qualité, perfs et robustesse
+## 9) Nettoyage & Sécurité applicative
 
-* [x] **Micro-bench** scheduler (avant/après stigmergie) dans `tests/perf/` (non-CI)
-* [x] **Robustesse** : chaos tests légers (enfant qui crash → récupération)
-  * [x] `tests/robustness.child-crash-recovery.test.ts` (enfant qui explose → collecte → respawn)
-* [x] **Flakiness** : ré-exécuter 10× tests sensibles avec timers fake
-* [x] **Build tooling** : restaurer le bundle `ts-node` (`dist/esm`) ou adapter le loader pour que `npm test` passe sans copie manuelle
+* [ ] **Supprimer** code mort et TODOs obsolètes (grep TODO/FIXME)
+* [ ] **Renforcer** normalisation chemins (utiliser `src/paths.ts` partout)
+* [ ] **Limiter** side-effects par défaut (no network write si `values` interdit)
+* [ ] **Codes d’erreurs** homogènes :
 
----
-
-### Notes d’implémentation (pragmatiques)
-
-* **Interop avec existants** : reposer sur `graph-forge` pour algos de base, ne pas réinventer. Les hyper-arêtes restent *internes* et sont projetées avant passage aux algos.
-* **Feuilles BT** : mapper chaque leaf vers une tool existante (ou vers `child_send`), sérialiser l’input validé Zod, journaliser `start/stop/status`.
-* **Blackboard** : commencer en mémoire (Map + index par tag). Snapshot sur disque *optionnel* (JSON) dans le run dir.
-* **Stigmergie** : champ = dictionnaire `{nodeId: intensity}`, appliquer décroissance à chaque tick.
-* **Contract-Net** : implémenter d’abord attribution “min-cost”, puis heuristique.
-* **Consensus** : préférer `quorum(k)` pour intégration simple avec `plan_join`.
-* **Autoscaler** : bornes strictes, `cooldown` pour éviter oscillations.
-* **Supervisor** : s’appuyer sur `loopDetector` existant, ajouter seuils de stagnation + actions prioritaires.
-* **ValueGuard** : commencer avec règles déclaratives JSON (ex : “no network write” sans flag explicite).
-* **CausalMemory** : enregistrer *seulement* événements clés (début/fin/échec de nœuds), lier par dépendances + erreurs.
-* **Dashboard** : SSE pour simplicité (SSE > WS si pas besoin de duplex).
-* **Erreurs** : codes stables, messages courts, `hint` actionnable.
+  * [ ] `E-MCP-*`, `E-RES-*`, `E-EVT-*`, `E-CANCEL-*`, `E-TX-*`, `E-LOCK-*`, `E-PATCH-*`, `E-PLAN-*`, `E-CHILD-*`, `E-VALUES-*`, `E-ASSIST-*`
+* [ ] **Tests** : `tests/server.tools.errors.test.ts` (codes/messages/hints)
 
 ---
 
-Si tu veux, je peux ensuite te générer les **squelettes TypeScript** (fichiers & exports) et les **fichiers de tests Mocha** correspondants aux modules marqués “Créer”, pour te faire gagner du temps sur l’amorçage.
+## 10) Exemples E2E (scénarios de vérification)
 
-### 2025-10-01 – Agent `gpt-5-codex` (iteration 30)
-- ✅ Créé `src/graph/hierarchy.ts` avec types hiérarchiques, validations anti-cycles et expansion `flatten` documentée.
-- ✅ Rédigé les tests `tests/graph.hierarchy.generate-embed.test.ts` et `tests/graph.hierarchy.flatten.test.ts` couvrant l’embed multi-niveaux et la projection.
-- ✅ Vérifié l’intégrité des ports et le rejet des cycles via les nouvelles validations.
+* [ ] **E2E-1 :** Plan hiérarchique → compile BT → `plan_run_bt` → events_subscribe (pause/resume) → `plan_cancel` → tail des logs
+* [ ] **E2E-2 :** Backlog massif → stig_mergie + autoscaler (scale up/down) → superviseur débloque → metrics ok
+* [ ] **E2E-3 :** CNP announce → bids → award → `plan_join quorum=2/3` → `plan_reduce vote`
+* [ ] **E2E-4 :** `plan_dry_run` → `values_explain` rejette un plan → `kg_suggest_plan` propose fragment alternatif → `rewrite` preview → exécution
+* [ ] **E2E-5 :** `tx_begin` → `tx_apply` (ops multiples) → `graph_diff/patch` → `tx_commit` → `resources_read sc://graphs/<id>@vX`
 
-### 2025-10-01 – Agent `gpt-5-codex` (iteration 31)
-- ✅ Ajouté `src/graph/hypergraph.ts` avec projection des hyper-arêtes vers des arêtes binaires annotées et validations robustes.
-- ✅ Étendu les exports Mermaid/DOT pour afficher les annotations hyper-arêtes et couvert avec `tests/graph.export.hyper.test.ts`.
-- ✅ Couvert la projection hypergraphe avec `tests/graph.hyper.project.test.ts` et aligné la checklist A2.
+---
 
-### 2025-10-01 – Agent `gpt-5-codex` (iteration 32)
-- ✅ Implémenté `src/graph/rewrite.ts` (règles split-parallel / inline-subgraph / reroute-avoid + combinator `applyAll`).
-- ✅ Relié les réécritures adaptatives dans `src/graph/adaptive.ts` via `applyAdaptiveRewrites`.
-- ✅ Ajouté les tests `tests/graph.rewrite.rules.test.ts` et `tests/graph.adaptive.rewrite.test.ts` couvrant idempotence et pilotage par renforcement.
+## Recettes opérationnelles (documentation rapide)
 
-### 2025-10-01 – Agent `gpt-5-codex` (iteration 33)
-- ✅ Créé le gestionnaire transactionnel `src/graph/tx.ts` (snapshots, rollback, version + horodatage, métadonnée `__txCommittedAt`).
-- ✅ Ajouté les tests `tests/graph.tx.snapshot-rollback.test.ts` et `tests/graph.tx.concurrency.test.ts` validant rollback et conflits de version.
-- ⏳ Intégration serveur à venir : wrap des mutations MCP avec le gestionnaire transactionnel.
+### Fan-out CNP → quorum consensus → reduce vote
 
-### 2025-10-01 – Agent `gpt-5-codex` (iteration 34)
-- ✅ Intégré le gestionnaire transactionnel côté serveur pour `graph_mutate` avec rollback automatique et journalisation dédiée.
-- ✅ Exposé des helpers de normalisation/sérialisation pour relier les outils de graphe aux transactions.
-- ✅ Ajouté le test `tests/graph.tx.mutate-integration.test.ts` couvrant l'interop entre mutations et transactions.
+1. **Activer les modules** : lancer le serveur avec `--enable-cnp --enable-consensus --enable-plan-lifecycle` (et `--enable-resources`
+   pour suivre les runs via `sc://runs/<runId>/events`).
+2. **Annonce CNP** : utiliser `cnp_announce` avec un `goal_id`, `constraints` et `quorum` attendu. Les children répondent via
+   `child_send`/`plan_fanout` selon la stratégie actuelle.
+3. **Collecte des offres** : surveiller `resources_watch` sur `sc://runs/<runId>/events` (catégorie `CNP_BID` à ajouter lors de
+   l'implémentation du bus d'événements).
+4. **Sélection** : appeler `plan_join` avec `join_policy: { kind: "quorum", threshold: 0.66 }` pour matérialiser le quorum.
+5. **Agrégation** : terminer avec `plan_reduce` (`reducer: "vote"`) pour sortir la recommandation majoritaire. Consigner le vote dans
+   la mémoire partagée pour audit (`bb_set`).
 
-### 2025-10-01 – Agent `gpt-5-codex` (iteration 35)
-- ✅ Étendu les outils `graph_generate` et `graph_mutate` pour détecter/consigner les sous-graphes et signaler les descripteurs manquants.
-- ✅ Implémenté la tool `graph_subgraph_extract` avec export versionné vers le run dir et journalisation MCP.
-- ✅ Créé la bibliothèque `subgraphRegistry` + `subgraphExtract` et le test `graph.subgraph.extract.test.ts` (horodatage déterministe, nettoyage run dir).
+> En attente : instrumentation bus d'événements (`events_subscribe`) pour tracer `runId/opId` lors des offres CNP.
 
-### 2025-10-01 – Agent `gpt-5-codex` (iteration 36)
-- ✅ Implémenté `graph_rewrite_apply` côté outils avec schéma Zod, sélection manuelle/adaptative des règles et invalidation du cache.
-- ✅ Enregistré la tool `graph_rewrite_apply` sur le serveur avec transactions, journalisation détaillée et suivi des sous-graphes.
-- ✅ Ajouté `tests/graph.rewrite.apply.test.ts` et `tests/graph.tx.rewrite-integration.test.ts` couvrant règles manuelles/adaptatives et commits optimistes.
+### Dry-run explicable (values_explain + KG/causal + rewrite)
 
-### 2025-10-01 – Agent `gpt-5-codex` (iteration 37)
-- ✅ Créé la suite Behaviour Tree (`types.ts`, `nodes.ts`, `interpreter.ts`, `compiler.ts`) avec commentaires détaillés et nœuds Sequence/Selector/Parallel/Retry/Timeout/Guard/TaskLeaf.
-- ✅ Ajouté les outils MCP `plan_compile_bt` et `plan_run_bt` (Zod, invocations tracées, mode dry-run `noop`) et intégré au serveur.
-- ✅ Couvert l’interpréteur avec `tests/bt.nodes.sequence-selector.test.ts`, `tests/bt.decorators.retry-timeout.test.ts`, `tests/bt.compiler.from-hiergraph.test.ts`, `tests/bt.run.integration.test.ts` (fake timers, flux stub).
+1. **Préparation** : activer `--enable-plan-lifecycle --enable-values-explain --enable-assist --enable-diff-patch`.
+2. **Dry-run** : appeler `plan_dry_run` avec le graphe cible ou un JSON BT. La réponse doit inclure la projection des valeurs et les
+   violations candidates.
+3. **Analyse valeurs** : lancer `values_explain` pour récupérer `{ violations: [...] }` et déterminer les contraintes critiques.
+4. **Assistance KG/Causale** : enchaîner `kg_suggest_plan` (fragments alternatifs) puis `causal_explain` (causes des blocages) une fois
+   implémentés.
+5. **Réécriture** : appliquer `graph_diff`/`graph_patch` ou `graph_rewrite` en mode preview afin de corriger le graphe avant exécution
+   réelle.
 
-### 2025-10-01 – Agent `gpt-5-codex` (iteration 38)
-- ✅ Implémenté `src/executor/reactiveScheduler.ts` avec bus d’événements typé, calculs de priorité (criticité + phéromones + vieillissement) et traçabilité des ticks.
-- ✅ Relié `plan_run_bt` au scheduler réactif pour piloter l’interpréteur via les signaux et exposer le nombre de ticks exécutés.
-- ✅ Ajouté `tests/executor.scheduler.reactivity.test.ts` et `tests/executor.scheduler.prio.test.ts` (horloge manuelle déterministe) et maintenu `npm test` vert.
-- 🔜 Suivi : brancher les futurs modules (blackboard/stigmergie réels) sur le bus pour enrichir les signaux et ajouter des handlers d’outils BT non-« noop ».
+> Bloquants actuels : `plan_dry_run`, `values_explain`, `kg_suggest_plan` et `causal_explain` restent à implémenter.
 
-### 2025-10-01 – Agent `gpt-5-codex` (iteration 39)
-- ✅ Créé `src/executor/loop.ts` avec boucle cadencée, budget coopératif et API `whenIdle`/`stop` documentées pour orchestrer les ticks.
-- ✅ Écrit `tests/executor.loop.timing.test.ts` et `tests/executor.loop.budget.test.ts` avec horloges manuelles pour valider cadence, pause/reprise et yields coopératifs.
-- ✅ Exécuté `npm test` pour garantir que l’ensemble de la suite reste déterministe et verte après l’ajout de la boucle.
+### Autoscaler + superviseur + stigmergie (heatmap)
 
-### 2025-10-01 – Agent `gpt-5-codex` (iteration 40)
-- ✅ Implémenté `src/coord/blackboard.ts` avec KV typé, TTL déterministe, journal d’événements borné et API de watch synchronisée.
-- ✅ Ajouté les tools `bb_set/get/query/watch` côté serveur (schémas Zod, logs dédiés, intégration au nettoyage TTL) et enregistrés via MCP.
-- ✅ Créé les tests `coord.blackboard.kv.test.ts` & `coord.blackboard.watch.test.ts` (horloge manuelle) pour couvrir stockage, expiration et streaming; suite `npm test` vérifiée.
+1. **Flags** : démarrer avec `--enable-reactive-scheduler --enable-stigmergy --enable-autoscaler --enable-supervisor`.
+2. **Heatmap** : consommer `monitor/dashboard.ts` via `/dashboard/stream` (SSE) pour visualiser `stigHeatmap`. Lorsque la réécriture
+   des overlays Mermaid sera prête, superposer les intensités sur `viz/mermaid`.
+3. **Autoscaling** : surveiller les métriques backlog/latence dans le snapshot dashboard et ajuster les cool-down (`autoscaleCooldownMs`).
+4. **Supervision** : vérifier que le superviseur relance les nœuds stagnants et déclenche `rewrite` ciblée (`reroute-avoid`).
+5. **Audit** : archiver les événements et logs via `resources_watch` / `sc://children/<id>/logs` pour documenter les décisions.
 
-### 2025-10-01 – Agent `gpt-5-codex` (iteration 41)
-- ✅ Implémenté `src/coord/stigmergy.ts` avec accumulation déterministe, évaporation exponentielle et notifications de changements.
-- ✅ Branché le scheduler réactif sur le champ de phéromones (priorités pondérées, rebalancement live) et exposé les tools `stig_mark/decay/snapshot` via le serveur MCP.
-- ✅ Ajouté les tests `coord.stigmergy.field.test.ts` et `coord.stigmergy.scheduler.test.ts` garantissant évaporation, snapshots et impact sur la sélection des tâches.
+> À planifier : exposer une tail MCP (`logs_tail`) et un bus d'événements unifié pour corréler autoscaler/superviseur/stigmergie.
 
-### 2025-10-01 – Agent `gpt-5-codex` (iteration 42)
-- ✅ Ajouté le coordinateur Contract-Net (annonce/bid/award avec biais heuristiques et pénalité de charge) et documentation inline.
-- ✅ Relié `child_create`/`child_send` au CNP (sélection automatique, résumé de dispatch, completion auto) et exposé la tool MCP `cnp_announce`.
-- ✅ Créé les tests `coord.contractnet.*` et un scénario `child_send` validant le routage Contract-Net.
+### Notes de mise en œuvre (pour t’éviter les pièges)
 
-### 2025-10-01 – Agent `gpt-5-codex` (iteration 43)
-- ✅ Implémenté `src/coord/consensus.ts` avec calculs `majority`/`quorum`/`weighted`, normalisation des options et schéma Zod réutilisable.
-- ✅ Relié le consensus aux outils `plan_join` et `plan_reduce` (mode vote) avec exposition des résultats dans les traces et les événements.
-- ✅ Ajouté les tests `coord.consensus.modes.test.ts`, `plan.join.vote.integration.test.ts`, mis à jour `plan.fanout-join.test.ts` et `plan.reduce.test.ts`, puis exécuté `npm test`.
+* **Corrélation** : génère `opId` dès l’entrée `server.ts`, propage partout, logge systématiquement.
+* **Annulation** : vérifie le token **avant** chaque appel tool externe / attendeurs (`await`) ; annule proprement les enfants si `plan_cancel`.
+* **Atomicité** : pour bulk ops, regroupe actions dans une **mini-transaction** en mémoire ; rollback si une étape échoue.
+* **Invariants** : fais tourner `invariants.check()` dans **tx_apply**, **patch**, **rewrite** ; rejette tôt.
+* **Fairness** : ajoute **aging** dans la formule de priorité du scheduler pour éviter la famine.
+* **Cool-down** autoscaler : protège contre l’oscillation ; garde traces pour post-mortem.
+* **Tests** : substitue tous timers réels par **fake timers** ; injecte seeds fixes pour aléa.
+* **Docs** : montre URIs `sc://` dans les exemples, c’est ce que l’agent utilisera pour “monter” dans tes ressources.
 
-### 2025-10-01 – Agent `gpt-5-codex` (iteration 44)
-- ✅ Créé `src/agents/autoscaler.ts` (métriques backlog/latence/taux d’échec, politique bornée avec cooldown) et connecté au loop via l’interface `LoopReconciler`.
-- ✅ Ajouté le tool `agent_autoscale_set` (schéma Zod + logging) et instancié l’autoscaler côté serveur.
-- ✅ Écrit les tests `agents.autoscaler.scale-updown.test.ts`, `agents.autoscaler.cooldown.test.ts`, `executor.loop.reconciler.test.ts` (horloge manuelle) et vérifié `npm test`.
+---
 
-### 2025-10-02 – Agent `gpt-5-codex` (iteration 46)
-- ✅ Introduit `src/agents/supervisor.ts` (détection stagnation/starvation, gestion des alertes de loop, interface `LoopReconciler`).
-- ✅ Relié le superviseur au serveur (`childTools`, `planTools`, `loopDetector`) avec événements MCP (`supervisor_*`) et callbacks de réécriture/redispatch.
-- ✅ Ajouté `tests/agents.supervisor.stagnation.test.ts` & `tests/agents.supervisor.unblock.test.ts`, ajusté le scheduler pour exposer le backlog post-tick et maintenu `npm test` vert (248 tests).
+Si tu veux, je peux te générer à la demande les **squelettes TypeScript** exacts (fichiers & exports) des nouvelles tools (`mcp_info`, `resources_*`, `events_subscribe`, `op_cancel`, `tx_*`, `graph_diff/patch`, `plan_* lifecycle`, `child_* fines`, `values_explain`, `kg_suggest_plan`, `causal_*`, `logs_tail`) + **mocks de tests** prêts à l’emploi, pour accélérer l’implémentation.
 
-### 2025-10-02 – Agent `gpt-5-codex` (iteration 47)
-- ✅ Étendu `serverOptions` avec les toggles de modules et délais (`btTickMs`, `stigHalfLifeMs`, `supervisorStallTicks`) et exposé l’API de configuration runtime.
-- ✅ Mis à jour `tests/serverOptions.parse.test.ts` pour couvrir l’activation/désactivation et les délais personnalisés.
-- ✅ Ajouté `tests/options.flags.wiring.test.ts` pour vérifier l’application dynamique des toggles et timings via le serveur.
+### 2025-10-03 – Agent `gpt-5-codex` (iteration 79)
+- ✅ Créé `src/mcp/info.ts` avec `getMcpInfo`/`getMcpCapabilities` et stockage snapshot runtime.
+- ✅ Ajouté les tools `mcp_info` / `mcp_capabilities` dans `src/server.ts` avec schéma strict et mise à jour runtime snapshot.
+- ✅ Écrit `tests/mcp.info-capabilities.test.ts`, exécuté `npm run lint` puis `npm test` (après `npm ci`) – toutes les suites passent.
 
-### 2025-10-02 – Agent `gpt-5-codex` (iteration 48)
-- ✅ Créé `src/knowledge/knowledgeGraph.ts` (index triple, motifs wildcard, patterns de plan) et horloge injectée pour tests déterministes.
-- ✅ Relié `handleGraphGenerate` aux patterns KG et ajouté les tools MCP `kg_insert/query/export` avec garde feature flag.
-- ✅ Ajouté `tests/knowledge.kg.insert-query.test.ts` et `tests/graph.generate.from-kg.test.ts` couvrant stockage, requêtes et génération pilotée; suite `npm test` (254) verte.
+### 2025-10-04 – Agent `gpt-5-codex` (iteration 80)
+- ✅ Créé `src/resources/registry.ts` pour référencer graphes/versions/snapshots, runs (events), logs enfants et namespaces blackboard avec `list/read/watch` déterministes.
+- ✅ Intégré l’enregistrement des snapshots/commits et ajouté les tools MCP `resources_list`, `resources_read`, `resources_watch` dans `src/server.ts` (corrélation run_id incluse).
+- ✅ Ajouté `tests/resources.list-read-watch.test.ts`, exécuté `npm ci`, `npm run lint` et `npm test` – toutes les suites passent.
 
-### 2025-10-02 – Agent `gpt-5-codex` (iteration 49)
-- ✅ Implémenté `src/knowledge/causalMemory.ts` (enregistrement d'événements, explication ascendante, export complet) et résumé JSON compact.
-- ✅ Branché la mémoire causale sur le scheduler réactif et `plan_run_bt` (événements `bt.tool.*`, `scheduler.tick.*`) avec garde feature flag.
-- ✅ Ajouté les tools MCP `causal_export` / `causal_explain`, journalisation dédiée et tests ciblés (`knowledge.causal.record-explain`, `causal.integration.bt-scheduler`).
+### 2025-10-04 – Agent `gpt-5-codex` (iteration 81)
+- ✅ Étendu `serverOptions.ts`/`server.ts`/`mcp/info.ts` pour introduire les nouveaux flags MCP (introspection, resources, events, cancel, tx, bulk, idempotency, locks, diff/patch, lifecycle, child ops, values, assist) et les délais `defaultTimeoutMs`/`autoscaleCooldownMs`.
+- ✅ Aligné les snapshots MCP par défaut avec ces nouveaux champs et ajouté la batterie de tests `tests/options.flags.wiring.test.ts` + compléments dans `tests/serverOptions.parse.test.ts`.
+- ✅ Re-construit les sorties compilées (`npm test` → build + lint séparé) après `npm ci` afin de rafraîchir `dist/`.
 
-### 2025-10-02 – Agent `gpt-5-codex` (iteration 50)
-- ✅ Créé `src/values/valueGraph.ts` avec scoring, propagation des contraintes et filtrage par seuil configurable.
-- ✅ Intégré le garde-fou dans `plan_fanout` (pré-filtrage + journalisation) et `plan_reduce` (pondération des votes) avec enregistrement des décisions par enfant.
-- ✅ Ajouté les tools `values_set/score/filter`, les tests unitaires `values.score-filter` et l'intégration `plan.values-integration`, plus la signalisation d'erreur `E-VALUES-VIOLATION` côté serveur.
+### 2025-10-04 – Agent `gpt-5-codex` (iteration 82)
+- ✅ Documenté l'introspection MCP et le registre `sc://` dans `README.md` avec exemples STDIO/HTTP (`mcp_info`, `resources_*`).
+- ✅ Ajouté `docs/mcp-api.md` détaillant les pseudo-schémas Zod et la cartographie des flags MCP.
+- ✅ Complété `AGENTS.md` (checklist documentation + recettes opérationnelles + historique) pour guider les prochaines itérations.
 
-### 2025-10-02 – Agent `gpt-5-codex` (iteration 51)
-- ✅ Harmonisé les codes d’erreurs MCP (`E-BT-INVALID`, `E-BT-RUN-TIMEOUT`, `E-BB-NOTFOUND`, `E-STIG-TYPE`, `E-CNP-NO-BIDS`, `E-CONSENSUS-NO-QUORUM`, `E-KG-BAD-TRIPLE`, `E-CAUSAL-NO-PATH`, `E-VALUES-VIOLATION`, `E-REWRITE-CONFLICT`) via des classes dédiées et la normalisation serveur.
-- ✅ Étendu `plan_run_bt` avec `timeout_ms`, ajouté le timeout runtime `BehaviorTreeRunTimeoutError` et câblé `plan_reduce` pour lever `ConsensusNoQuorumError` lors des votes infructueux.
-- ✅ Ajouté les suites ciblées `tests/server.tools.schemas.test.ts` et `tests/server.tools.errors.test.ts` vérifiant les validations négatives et la remontée des codes; exécuté les nouvelles suites Mocha.
+### 2025-10-04 – Agent `gpt-5-codex` (iteration 83)
+- ✅ Introduit `src/events/bus.ts` avec séquençage, filtres run/op/graph et ajustement du tampon (`setHistoryLimit`) – wrappers BT/scheduler à faire.
+- ✅ Mis à jour `src/server.ts` pour publier sur le bus, exposer `events_subscribe` (JSONL/SSE) et synchroniser le `maxEventHistory` CLI.
+- ✅ Ajouté `tests/events.subscribe.progress.test.ts`, exécuté `npm run lint`, `npm ci` (deps dev) puis `npm test` – toutes les suites passent.
 
-### 2025-10-02 – Agent `gpt-5-codex` (iteration 52)
-- ✅ Ajouté la tool `graph_hyper_export` (projection hyper-graphe → graphe standard) avec exports Mermaid/DOT et test dédié.
-- ✅ Enregistré `plan_run_reactive` (ExecutionLoop + scheduler réactif) et couvert le flux avec `tests/plan.run-reactive.test.ts`.
-- ✅ Exposé `consensus_vote` côté coordination, schéma Zod et test majoritaire pour valider le calcul.
-- 🔄 Étendu `tests/server.tools.schemas.test.ts` pour inclure les nouveaux schémas (`graph_hyper_export`, `plan_run_reactive`, `consensus_vote`).
+### 2025-10-04 – Agent `gpt-5-codex` (iteration 84)
+- ✅ Corrélé `plan_run_bt` et `plan_run_reactive` via `BT_RUN` en injectant `run_id`/`op_id`, événements `start/node/tick/loop/complete/error` et journaux augmentés.
+- ✅ Ajouté `tests/plan.bt.events.test.ts` pour valider la cohérence des phases et des identifiants sur les exécutions BT et boucle réactive (fake timers pour le scheduler).
+- ✅ Exécuté `npm run lint` + `npm test` (post-modifs) afin de sécuriser la régression sur la télémétrie des plans.
 
-### 2025-10-02 – Agent `gpt-5-codex` (iteration 53)
-- ✅ Normalisé les résumés de vote dans `plan_reduce` pour extraire les champs `vote`/`value` lorsque disponibles et conserver des sources de diagnostic.
-- ✅ Ajouté une assertion sur la valeur gagnante dans `tests/plan.fanout-join.test.ts` et relancé la suite ciblée (verts).
-- 🔜 Audit global des schémas Zod (Section G) toujours ouvert.
+### 2025-10-04 – Agent `gpt-5-codex` (iteration 85)
+- ✅ Créé `src/executor/cancel.ts` avec registre `AbortController`, helpers `requestCancellation/cancelRun/getCancellation` et exposé `OperationCancelledError` + reset pour les tests.
+- ✅ Intégré la coopération à l’annulation côté Behaviour Tree (`CancellableNode`, `ensureNotCancelled`, runtime `throwIfCancelled`/wait helper) et ajouté les tools MCP `op_cancel` / `plan_cancel` + schémas Zod + réponses structurées.
+- ✅ Ajouté `tests/cancel.bt.decorator.test.ts` & `tests/cancel.plan.run.test.ts`, exécuté `npm ci`, `npm run lint`, `npm test` → toutes les suites passent.
+- ⚠️ Reste à traiter : cascade d’annulation vers les runtimes enfants + enrichissement du bus d’événements lors des phases cancel.
 
-### 2025-10-02 – Agent `gpt-5-codex` (iteration 54)
-- 🔍 Audit de la branche timeout `plan_run_reactive` (comportement actuel : arrêt du scheduler sans cleanup → TODO dédié dans M/build tooling).
-- ✅ Repassé `tsc --noEmit` (scripts `npm run lint`) pour valider l’absence d’avertissements type sur `planTools`/`graphTools`.
-- ⚠️ `npm test` toujours bloqué par `ts-node` incomplet (`dist/esm` manquant) malgré tentative de build (`npm explore ts-node -- npm run build`). À traiter via la nouvelle tâche M/build tooling.
-
-### 2025-10-02 – Agent `gpt-5-codex` (iteration 55)
-- ✅ Implémenté `src/values/valueGraph.ts` (scoring, propagation, violations) et la toolchain `src/tools/valueTools.ts` avec schémas Zod.
-- ✅ Ajouté les tests `tests/values.score-filter.test.ts` et `tests/plan.values-integration.test.ts` couvrant le garde-fou + intégration plan.
-- ✅ Adapté le runner de tests à `tsx` pour restaurer `npm test` (build tooling M) et mis à jour les expectations des suites consensus/votes.
-
-### 2025-10-02 – Agent `gpt-5-codex` (iteration 56)
-- 🔍 Vérifié la checklist racine et confirmé que la tâche build tooling/tsx est bien cochée côté dépôt.
-- ✅ Exécuté `npm run lint` pour s’assurer que la double passe `tsc --noEmit` reste verte après l’intégration du value guard.
-- ✅ Exécuté `npm test` (tsx + 272 suites) pour valider la couverture unitaire/intégration sans régressions.
-
-### 2025-10-02 – Agent `gpt-5-codex` (iteration 57)
-- ✅ Mis à jour `tsconfig.json` avec `baseUrl`/`paths` couvrant `executor/*`, `coord/*`, `knowledge/*`, `values/*`, `graph/*` et normalisé `lib:["ES2022"]`.
-- ✅ Repassé `npm run lint` puis `npm test` (272 suites) pour s’assurer que la configuration TypeScript mise à jour reste compatible.
-
-### 2025-10-02 – Agent `gpt-5-codex` (iteration 58)
-- ✅ Implémenté les limiteurs opérationnels (`maxChildren`, plafonds mémoire/CPU) dans `ChildSupervisor` avec erreurs structurées (`E-CHILD-LIMIT`).
-- ✅ Étendu `parseOrchestratorRuntimeOptions` et le serveur pour accepter les nouveaux flags CLI (`--max-children`, `--child-memory-mb`, `--child-cpu-percent`) et exposer `configureChildSafetyLimits`/`getChildSafetyLimits`.
-- ✅ Créé la suite `tests/op.safety.limits.test.ts` couvrant le plafond d’enfants, la propagation des limites dans le manifeste et la reconfiguration serveur.
-- ✅ Exécuté `npm run lint` puis `npm test` après installation de `tsx` via `npm install` (dépendance manquante avant la passe tests).
-
-### 2025-10-02 – Agent `gpt-5-codex` (iteration 59)
-- ✅ Catégorisé les décorateurs `timeout` des Behaviour Trees : schéma `timeout_category`/`complexity_score`, budget dynamique via `LoopDetector` et télémétrie enregistrée.
-- ✅ Étendu `PlanToolContext`/`handlePlanRunBT` pour injecter le `LoopDetector` côté runtime et journaliser les recommandations échouées.
-- ✅ Ajouté les tests ciblés (`bt.decorators.retry-timeout`, `server.tools.schemas`) couvrant budgets catégorisés et validation des schémas.
-- ✅ Relancé `npm run lint` et `npm test` après `npm install` (tsx requis pour Mocha).
-- 🔜 Stress-tests concurrency pour `LoopDetector` & budgets dynamiques (ex: courses multiples) à envisager.
-
-### 2025-10-02 – Agent `gpt-5-codex` (iteration 60)
-- ✅ Enregistré `graph_hyper_export` côté serveur avec projection + métriques et ajouté la suite `graph.hyper.export-tool.test.ts`.
-- ✅ Exposé la tool `consensus_vote` (schéma zod, calcul majorité/pondéré) avec tests dédiés et validations serveur.
-- ✅ Étendu `tests/server.tools.schemas.test.ts` pour couvrir les nouveaux schémas et relancé `npm run lint` puis `npm test` (tsx installé).
-
-### 2025-10-02 – Agent `gpt-5-codex` (iteration 61)
-- ✅ Enregistré `plan_run_reactive` via la boucle d’exécution réactive (ExecutionLoop + ReactiveScheduler) et câblé autoscaler/superviseur côté serveur.
-- ✅ Ajouté `tests/plan.run-reactive.test.ts` (fake timers avec sinon) et enrichi `tests/server.tools.schemas.test.ts` pour les validations du scheduler réactif.
-- ✅ Déclaré `sinon` dans les devDependencies afin de stabiliser les tests temporels et relancé `npm run lint` / `npm test` complets.
-
-### 2025-10-02 – Agent `gpt-5-codex` (iteration 62)
-- ✅ Étendu `renderMermaidFromGraph` avec une couche d’overlays : classes Mermaid `stig-low/medium/high` dérivées des intensités et badges BT (RUNNING/OK/KO) injectés dans les labels.
-- ✅ Ajouté la suite `tests/viz.mermaid.overlays.test.ts` couvrant les classes générées et l’échappement des labels, puis relancé `npm run lint` et `npm test` (verts).
-
-### 2025-10-02 – Agent `gpt-5-codex` (iteration 63)
-- ✅ Créé `tests/monitor.dashboard.streams.test.ts` pour valider le streaming SSE du dashboard via un flux déterministe sans intervalle automatique.
-- ✅ Mis à jour la checklist Section H et relancé `npm run lint`, `npm ci`, puis `npm test` pour confirmer la stabilité complète.
-
-### 2025-10-02 – Agent `gpt-5-codex` (iteration 64)
-- ✅ Ajouté le parseur CLI du dashboard (`--dashboard-*`) et branché `startDashboardServer` dans l’orchestrateur avec arrêt propre.
-- ✅ Créé `scripts/start-dashboard.mjs` (lance l’orchestrateur HTTP + dashboard avec signaux forwardés) et les scripts npm `start:dashboard`/`coverage` (`c8`).
-- ✅ Étendu `tests/serverOptions.parse.test.ts` pour couvrir les nouveaux flags et la borne minimale d’intervalle, puis exécuté lint + tests complets.
-
-### 2025-10-02 – Agent `gpt-5-codex` (iteration 65)
-- ✅ Instrumenté le dashboard pour diffuser le backlog scheduler, les statuts BT (RUNNING/OK/KO) et la heatmap stigmergique en s’appuyant sur un nouveau registre `BehaviorTreeStatusRegistry`.
-- ✅ Relié `plan_run_bt` / `plan_run_reactive` au registre de statuts et exposé le snapshot via `startDashboardServer`, tout en enrichissant le SSE `/stream` et l’endpoint `/metrics`.
-- ✅ Étendu `tests/monitor.dashboard.streams.test.ts` avec stigmergie/scheduler/BT et ajouté `tests/monitor.bt-status-registry.test.ts`; lint + tests complets.
-
-### 2025-10-02 – Agent `gpt-5-codex` (iteration 66)
-- ✅ Nettoyé l’environnement (`node_modules`, `children/`) après les installs automatiques puis régénéré `dist/` via `npm run build`.
-- ✅ Vérifié que les artefacts compilés (`dist/server.js`, `dist/tools/planTools.js`, dashboard/monitor) reflètent les ajouts BT dashboard.
-- ✅ Rejoué `npm run lint` et `npm test` (294 tests) pour confirmer l’état vert post-compilation.
-
-### 2025-10-02 – Agent `gpt-5-codex` (iteration 67)
-- ✅ Renforcé les schémas Zod des tools `plan_compile_bt`, `plan_run_bt`, `plan_run_reactive` et `graph_subgraph_extract` en les marquant `.strict()` + documentation.
-- ✅ Étendu `tests/server.tools.schemas.test.ts` pour rejeter les champs inconnus et exporté le schéma `graph_subgraph_extract` côté serveur.
-- ✅ Rejoué `npm ci`, `npm run lint`, puis `npm test` (298 tests) pour vérifier la stricte validation.
-
-### 2025-10-02 – Agent `gpt-5-codex` (iteration 68)
-- ✅ Ajusté `GraphTransactionManager.commit` pour ne retirer la transaction qu'après validation complète, permettant un rollback explicite en cas de conflit de version.
-- ✅ Mis à jour `tests/graph.tx.concurrency.test.ts` afin de couvrir le rollback suite à un conflit et vérifier la restitution du snapshot d'origine.
-- ✅ Exécuté `npm run lint` puis `npm test` (298 suites) pour confirmer la stabilité du gestionnaire transactionnel.
-
-### 2025-10-02 – Agent `gpt-5-codex` (iteration 69)
-- ✅ Raffiné le workflow CI pour exécuter `npm ci`, build, lint, tests et coverage sur Node 18/20/22 avec export des artefacts.
-- ✅ Ajouté `tests/ci.smoke-all-tools.test.ts` pour appeler chaque tool via le transport in-memory avec des payloads invalides contrôlés.
-- ✅ Relancé `npm run lint` puis `npm test` pour vérifier la nouvelle suite.
-
-### 2025-10-02 – Agent `gpt-5-codex` (iteration 70)
-- ✅ Étendu `README.md` avec une section dédiée au mode réactif (BT + scheduler), la documentation des outils de coordination et des exemples valeurs/KG/causal.
-- ✅ Ajouté les recettes opérationnelles détaillées dans `AGENTS.md`, coché les entrées correspondantes et clarifié les drapeaux à activer.
-- ✅ Exécuté `npm run lint` puis `npm test` pour valider la documentation actualisée (aucun impact code mais conformité vérifiée).
-
-### 2025-10-02 – Agent `gpt-5-codex` (iteration 71)
-- ✅ Exposé le blackboard dans `PlanToolContext` et abonné `plan_run_reactive` aux événements `bb_set` pour réordonner le scheduler avec une télémétrie dédiée.
-- ✅ Ajouté le support du task `bb_set` côté Behaviour Tree (validation Zod, sérialisation et erreurs explicites si le module est désactivé).
-- ✅ Créé le test `tests/e2e.plan.hier-reactive.test.ts` couvrant le flux HierGraph → compilation BT → exécution réactive et exécuté `npm run lint` + `npm test`.
-
-### 2025-10-02 – Agent `gpt-5-codex` (iteration 72)
-- ✅ Ajouté `tests/e2e.stigmergy.autoscaling.test.ts` pour simuler une montée de stigmergie, déclencher l'autoscaler et vérifier la phase scale-down après drainage.
-- ✅ Marqué les scénarios E2E-1/E2E-2 comme couverts dans `AGENTS.md` et documenté l'approche scheduler manuel + autoscaler scripté.
-- ✅ Rejoué `npm run lint` puis `npm test` (301 suites) pour valider les nouvelles couvertures.
-
-### 2025-10-02 – Agent `gpt-5-codex` (iteration 73)
-- ✅ Créé `tests/e2e.contract-net.consensus.test.ts` pour rejouer le flux `cnp_announce` → attribution → `plan_join` quorum → `plan_reduce` vote, avec artefacts déterministes et commentaires documentant les étapes.
-- ✅ Coché la case E2E-3 dans la checklist et noté la couverture contract-net + consensus pour le prochain agent.
-- ✅ Exécuté `npm run lint` puis `npm test` (302 suites) pour valider la nouvelle couverture d'intégration.
-
-### 2025-10-02 – Agent `gpt-5-codex` (iteration 74)
-- ✅ Ajouté `tests/e2e.values.guard.test.ts` pour valider qu'un plan risqué est filtré et que la réduction ne retient que la stratégie respectueuse de la confidentialité.
-- ✅ Mis à jour `AGENTS.md` en cochant l'E2E-4 et en documentant le scénario de garde de valeurs pour le prochain passage.
-- ✅ Rejoué `npm run lint` puis `npm test` (incluant la nouvelle suite e2e) afin de confirmer la réussite complète.
-
-### 2025-10-02 – Agent `gpt-5-codex` (iteration 75)
-- ✅ Implémenté `tests/e2e.rewrite.recovery.test.ts` couvrant les alertes boucle → requête de rewrite → succès post-réécriture avec un stub superviseur/child et exécution BT contrôlée.
-- ✅ Durci le stub logger utilisé par `handleChildSend`, ajusté la simulation de flux pour refléter les séquences enfants réelles et toléré l'escalade `kill` une fois la réécriture demandée.
-- ✅ Exécuté `npm run lint` puis `npm test` après `npm ci` pour restaurer `tsx`, confirmant que les 304 suites passent avec la nouvelle couverture.
-
-### 2025-10-02 – Agent `gpt-5-codex` (iteration 76)
-- ✅ Ajouté `tests/perf/scheduler.micro-bench.ts` pour comparer la latence du scheduler avec/sans stigmergie via un runtime déterministe et un rapport CLI formaté.
-- ✅ Introduit le script `npm run bench:scheduler` et documenté les variables d'environnement disponibles dans le README.
-- ✅ Mis à jour la checklist (Section M) puis relancé `npm run lint` et `npm test` (bench hors CI) pour confirmer l'état vert.
-
-### 2025-10-02 – Agent `gpt-5-codex` (iteration 77)
-- ✅ Créé `tests/robustness.child-crash-recovery.test.ts` pour simuler un enfant qui s'éteint brutalement puis vérifier la collecte et le respawn supervisés.
-- ✅ Ajouté le runner `tests/fixtures/crashy-runner.js` reproduisant un crash déterministe avec télémétrie `fatal`.
-- ✅ Exécuté `npm run lint` puis `npm test` pour valider la robustesse et garder la CI verte.
-- 🔜 Couvrir la checklist « Flakiness » en répétant les suites sensibles 10× avec timers fake.
-
-### 2025-10-03 – Agent `gpt-5-codex` (iteration 78)
-- ✅ Ajouté `tests/flakiness.plan-run-reactive-repeat.test.ts` pour rejouer 10 fois la boucle réactive et détecter les fuites de timers ou de télémétrie.
-- ✅ Coche la checklist Flakiness après validation locale (`npm run lint`, `npm test`).
-- 🔜 Explorer des scénarios demo pour `playground_codex_demo/` (BT + stigmergie + consensus + values + KG).
+### 2025-10-04 – Agent `gpt-5-codex` (iteration 86)
+- ✅ Étendu `ReactiveScheduler` pour supporter les handles d’annulation (stop coopératif, rejet des promesses en cas de cancel, garde sur les drains) et nettoyer les abonnements.
+- ✅ Adapté `handlePlanRunReactive` pour enregistrer le handle, propager `throwIfCancelled` (runtime/loop), publier les événements `cancel` et rejeter avec `OperationCancelledError`.
+- ✅ Ajouté un scénario déterministe dans `tests/plan.run-reactive.test.ts` couvrant l’annulation via `cancelRun` (fake timers) + exécuté `npm run lint`, `npm test` (post `npm ci`).
+- ⚠️ À poursuivre : étendre la cascade d’annulation aux runtimes enfants et enrichir le bus MCP avec des événements dédiés au cancel.

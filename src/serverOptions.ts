@@ -61,6 +61,32 @@ export interface FeatureToggles {
   enableCausalMemory: boolean;
   /** Enable value guard checks filtering unsafe plans. */
   enableValueGuard: boolean;
+  /** Expose MCP handshake metadata and negotiated namespaces. */
+  enableMcpIntrospection: boolean;
+  /** Allow listing and reading stable `sc://` resources. */
+  enableResources: boolean;
+  /** Publish correlated runtime events over the unified bus. */
+  enableEventsBus: boolean;
+  /** Honour cancellation tokens across long-running operations. */
+  enableCancellation: boolean;
+  /** Surface graph transactions over the MCP API. */
+  enableTx: boolean;
+  /** Accept atomic bulk operations across orchestration primitives. */
+  enableBulk: boolean;
+  /** Record and replay idempotent operations when keys match. */
+  enableIdempotency: boolean;
+  /** Guard concurrent graph mutation through cooperative locks. */
+  enableLocks: boolean;
+  /** Expose diff/patch helpers for graph evolution. */
+  enableDiffPatch: boolean;
+  /** Provide lifecycle plan inspection, pause and resume. */
+  enablePlanLifecycle: boolean;
+  /** Offer granular child runtime controls (spawn/attach/limits). */
+  enableChildOpsFine: boolean;
+  /** Run value graph explanations alongside dry-runs. */
+  enableValuesExplain: boolean;
+  /** Suggest alternative fragments leveraging the knowledge graph. */
+  enableAssist: boolean;
 }
 
 /** Tunable delays exposed so operators can adjust runtime pacing. */
@@ -71,6 +97,10 @@ export interface RuntimeTimingOptions {
   stigHalfLifeMs: number;
   /** Number of scheduler ticks tolerated without progress before stalling. */
   supervisorStallTicks: number;
+  /** Default timeout applied to operations lacking an explicit budget. */
+  defaultTimeoutMs: number;
+  /** Cooldown applied between autoscaler resize actions. */
+  autoscaleCooldownMs: number;
 }
 
 export interface OrchestratorRuntimeOptions {
@@ -168,6 +198,8 @@ const FLAG_WITH_VALUE = new Set([
   "--bt-tick-ms",
   "--stig-half-life-ms",
   "--supervisor-stall-ticks",
+  "--default-timeout-ms",
+  "--autoscale-cooldown-ms",
   "--dashboard-port",
   "--dashboard-host",
   "--dashboard-interval-ms",
@@ -250,11 +282,26 @@ const DEFAULT_STATE: ParseState = {
     enableKnowledge: false,
     enableCausalMemory: false,
     enableValueGuard: false,
+    enableMcpIntrospection: false,
+    enableResources: false,
+    enableEventsBus: false,
+    enableCancellation: false,
+    enableTx: false,
+    enableBulk: false,
+    enableIdempotency: false,
+    enableLocks: false,
+    enableDiffPatch: false,
+    enablePlanLifecycle: false,
+    enableChildOpsFine: false,
+    enableValuesExplain: false,
+    enableAssist: false,
   },
   timings: {
     btTickMs: 50,
     stigHalfLifeMs: 30_000,
     supervisorStallTicks: 6,
+    defaultTimeoutMs: 60_000,
+    autoscaleCooldownMs: 10_000,
   },
   safety: {
     maxChildren: 16,
@@ -458,6 +505,84 @@ export function parseOrchestratorRuntimeOptions(argv: string[]): OrchestratorRun
       case "--disable-value-guard":
         state.featureToggles.enableValueGuard = false;
         break;
+      case "--enable-mcp-introspection":
+        state.featureToggles.enableMcpIntrospection = true;
+        break;
+      case "--disable-mcp-introspection":
+        state.featureToggles.enableMcpIntrospection = false;
+        break;
+      case "--enable-resources":
+        state.featureToggles.enableResources = true;
+        break;
+      case "--disable-resources":
+        state.featureToggles.enableResources = false;
+        break;
+      case "--enable-events-bus":
+        state.featureToggles.enableEventsBus = true;
+        break;
+      case "--disable-events-bus":
+        state.featureToggles.enableEventsBus = false;
+        break;
+      case "--enable-cancellation":
+        state.featureToggles.enableCancellation = true;
+        break;
+      case "--disable-cancellation":
+        state.featureToggles.enableCancellation = false;
+        break;
+      case "--enable-tx":
+        state.featureToggles.enableTx = true;
+        break;
+      case "--disable-tx":
+        state.featureToggles.enableTx = false;
+        break;
+      case "--enable-bulk":
+        state.featureToggles.enableBulk = true;
+        break;
+      case "--disable-bulk":
+        state.featureToggles.enableBulk = false;
+        break;
+      case "--enable-idempotency":
+        state.featureToggles.enableIdempotency = true;
+        break;
+      case "--disable-idempotency":
+        state.featureToggles.enableIdempotency = false;
+        break;
+      case "--enable-locks":
+        state.featureToggles.enableLocks = true;
+        break;
+      case "--disable-locks":
+        state.featureToggles.enableLocks = false;
+        break;
+      case "--enable-diff-patch":
+        state.featureToggles.enableDiffPatch = true;
+        break;
+      case "--disable-diff-patch":
+        state.featureToggles.enableDiffPatch = false;
+        break;
+      case "--enable-plan-lifecycle":
+        state.featureToggles.enablePlanLifecycle = true;
+        break;
+      case "--disable-plan-lifecycle":
+        state.featureToggles.enablePlanLifecycle = false;
+        break;
+      case "--enable-child-ops-fine":
+        state.featureToggles.enableChildOpsFine = true;
+        break;
+      case "--disable-child-ops-fine":
+        state.featureToggles.enableChildOpsFine = false;
+        break;
+      case "--enable-values-explain":
+        state.featureToggles.enableValuesExplain = true;
+        break;
+      case "--disable-values-explain":
+        state.featureToggles.enableValuesExplain = false;
+        break;
+      case "--enable-assist":
+        state.featureToggles.enableAssist = true;
+        break;
+      case "--disable-assist":
+        state.featureToggles.enableAssist = false;
+        break;
       case "--bt-tick-ms":
         state.timings.btTickMs = parsePositiveInteger(value ?? "", flag);
         break;
@@ -466,6 +591,12 @@ export function parseOrchestratorRuntimeOptions(argv: string[]): OrchestratorRun
         break;
       case "--supervisor-stall-ticks":
         state.timings.supervisorStallTicks = parsePositiveInteger(value ?? "", flag);
+        break;
+      case "--default-timeout-ms":
+        state.timings.defaultTimeoutMs = parsePositiveInteger(value ?? "", flag);
+        break;
+      case "--autoscale-cooldown-ms":
+        state.timings.autoscaleCooldownMs = parsePositiveInteger(value ?? "", flag);
         break;
       default:
         // Ignore unknown flags so the orchestrator remains permissive for

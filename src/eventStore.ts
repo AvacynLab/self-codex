@@ -13,7 +13,8 @@ export type EventKind =
   | "HEARTBEAT"
   | "INFO"
   | "WARN"
-  | "ERROR";
+  | "ERROR"
+  | "BT_RUN";
 
 export type EventLevel = "info" | "warn" | "error";
 export type EventSource = "orchestrator" | "child" | "system";

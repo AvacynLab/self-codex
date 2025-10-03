@@ -34,6 +34,12 @@ export interface TickRuntime {
   wait(ms: number): Promise<void>;
   /** Shared map of variables exposed to guards and task leaves. */
   variables: Record<string, unknown>;
+  /** Optional cancellation signal propagated by the orchestrator. */
+  cancellationSignal?: AbortSignal;
+  /** Predicate exposing the cancellation state for cooperative checks. */
+  isCancelled?(): boolean;
+  /** Helper throwing when the associated operation has been cancelled. */
+  throwIfCancelled?(): void;
   /**
    * Optional recommender returning the timeout budget for a named category. The
    * decorator passes {@link TimeoutDefinition.complexity_score} when available
@@ -70,6 +76,7 @@ export type BehaviorNodeDefinition =
   | RetryDefinition
   | TimeoutDefinition
   | GuardDefinition
+  | CancellableDefinition
   | TaskDefinition;
 
 /** Definition of a sequence composite node. */
@@ -133,6 +140,13 @@ export interface GuardDefinition {
   child: BehaviorNodeDefinition;
 }
 
+/** Definition of a cancellable decorator node. */
+export interface CancellableDefinition {
+  type: "cancellable";
+  id?: string;
+  child: BehaviorNodeDefinition;
+}
+
 /** Definition of a task leaf node. */
 export interface TaskDefinition {
   type: "task";
@@ -189,6 +203,11 @@ export const BehaviorNodeDefinitionSchema: z.ZodType<BehaviorNodeDefinition> = z
       id: z.string().min(1).optional(),
       condition_key: z.string().min(1),
       expected: z.unknown().optional(),
+      child: BehaviorNodeDefinitionSchema,
+    }),
+    z.object({
+      type: z.literal("cancellable"),
+      id: z.string().min(1).optional(),
       child: BehaviorNodeDefinitionSchema,
     }),
     z.object({

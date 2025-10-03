@@ -1,64 +1,50 @@
 /**
- * Ces tests vérifient que les drapeaux de configuration exposés par
- * `serverOptions` peuvent être appliqués dynamiquement au serveur et récupérés
- * par les helpers d'export. Cela garantit qu'un opérateur peut activer les
- * modules optionnels puis ajuster les délais sans redémarrer.
+ * Vérifie que les nouveaux flags de fonctionnalités avancées sont câblés de
+ * manière déterministe et supportent les désactivations explicites.
  */
-import { describe, it, afterEach, beforeEach } from "mocha";
+import { describe, it } from "mocha";
 import { expect } from "chai";
 
-import {
-  configureRuntimeFeatures,
-  configureRuntimeTimings,
-  getRuntimeFeatures,
-  getRuntimeTimings,
-} from "../src/server.js";
-import type { FeatureToggles, RuntimeTimingOptions } from "../src/serverOptions.js";
+import { parseOrchestratorRuntimeOptions } from "../src/serverOptions.js";
 
-describe("runtime feature flags wiring", () => {
-  let originalFeatures: FeatureToggles;
-  let originalTimings: RuntimeTimingOptions;
+describe("options avancées", () => {
+  it("maintient les autres modules désactivés lorsque seul un flag est fourni", () => {
+    const result = parseOrchestratorRuntimeOptions(["--enable-resources"]);
 
-  beforeEach(() => {
-    originalFeatures = getRuntimeFeatures();
-    originalTimings = getRuntimeTimings();
+    expect(result.features).to.include({
+      enableResources: true,
+    });
+    expect(result.features).to.include({
+      enableMcpIntrospection: false,
+      enableEventsBus: false,
+      enableCancellation: false,
+      enableTx: false,
+      enableBulk: false,
+      enableIdempotency: false,
+      enableLocks: false,
+      enableDiffPatch: false,
+      enablePlanLifecycle: false,
+      enableChildOpsFine: false,
+      enableValuesExplain: false,
+      enableAssist: false,
+    });
   });
 
-  afterEach(() => {
-    configureRuntimeFeatures(originalFeatures);
-    configureRuntimeTimings(originalTimings);
-  });
+  it("honore les désactivations explicites même après un flag --enable", () => {
+    const result = parseOrchestratorRuntimeOptions([
+      "--enable-mcp-introspection",
+      "--enable-resources",
+      "--enable-events-bus",
+      "--enable-assist",
+      "--disable-resources",
+      "--disable-mcp-introspection",
+    ]);
 
-  it("applique les toggles fournis", () => {
-    const toggles: FeatureToggles = {
-      ...originalFeatures,
-      enableBT: !originalFeatures.enableBT,
-      enableReactiveScheduler: !originalFeatures.enableReactiveScheduler,
-      enableBlackboard: true,
-      enableStigmergy: true,
-      enableCNP: true,
-      enableConsensus: true,
-      enableAutoscaler: true,
-      enableSupervisor: true,
-      enableKnowledge: true,
-      enableCausalMemory: true,
-      enableValueGuard: true,
-    };
-
-    configureRuntimeFeatures(toggles);
-
-    expect(getRuntimeFeatures()).to.deep.equal(toggles);
-  });
-
-  it("met à jour les délais runtime", () => {
-    const timings: RuntimeTimingOptions = {
-      btTickMs: originalTimings.btTickMs + 10,
-      stigHalfLifeMs: originalTimings.stigHalfLifeMs + 5_000,
-      supervisorStallTicks: originalTimings.supervisorStallTicks + 2,
-    };
-
-    configureRuntimeTimings(timings);
-
-    expect(getRuntimeTimings()).to.deep.equal(timings);
+    expect(result.features).to.include({
+      enableMcpIntrospection: false,
+      enableResources: false,
+      enableEventsBus: true,
+      enableAssist: true,
+    });
   });
 });

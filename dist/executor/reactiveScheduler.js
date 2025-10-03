@@ -48,6 +48,7 @@ export class ReactiveScheduler {
     onTick;
     getPheromoneIntensity;
     causalMemory;
+    cancellation;
     queue = [];
     processing = false;
     scheduled = false;
@@ -58,6 +59,7 @@ export class ReactiveScheduler {
     settleResolvers = [];
     lastTickResultEventId = null;
     currentTickEventId = null;
+    cancellationSubscription = null;
     taskReadyHandler = (payload) => {
         this.enqueue("taskReady", payload);
     };
@@ -83,10 +85,17 @@ export class ReactiveScheduler {
         this.onTick = options.onTick;
         this.getPheromoneIntensity = options.getPheromoneIntensity;
         this.causalMemory = options.causalMemory;
+        this.cancellation = options.cancellation;
         this.events.on("taskReady", this.taskReadyHandler);
         this.events.on("taskDone", this.taskDoneHandler);
         this.events.on("blackboardChanged", this.blackboardChangedHandler);
         this.events.on("stigmergyChanged", this.stigmergyChangedHandler);
+        if (this.cancellation) {
+            this.cancellationSubscription = this.cancellation.onCancel(() => {
+                this.stop();
+                this.rejectSettlers(this.cancellation.toError());
+            });
+        }
     }
     /** Number of ticks executed since the scheduler was created. */
     get tickCount() {
@@ -106,6 +115,10 @@ export class ReactiveScheduler {
         this.events.off("taskDone", this.taskDoneHandler);
         this.events.off("blackboardChanged", this.blackboardChangedHandler);
         this.events.off("stigmergyChanged", this.stigmergyChangedHandler);
+        if (this.cancellationSubscription) {
+            this.cancellationSubscription();
+            this.cancellationSubscription = null;
+        }
     }
     /** Enqueue a new event manually. Mainly exposed for tests. */
     emit(event, payload) {
@@ -113,16 +126,24 @@ export class ReactiveScheduler {
     }
     /** Wait until the current queue drains or a terminal status is reached. */
     async runUntilSettled(initialEvent) {
+        this.ensureNotCancelled();
         if (initialEvent) {
             this.enqueue(initialEvent.type, initialEvent.payload);
         }
         if (!this.processing && !this.scheduled) {
             this.scheduleProcessing();
         }
-        return new Promise((resolve) => {
-            this.settleResolvers.push(resolve);
+        return new Promise((resolve, reject) => {
+            const entry = { resolve, reject };
+            this.settleResolvers.push(entry);
             if (!this.processing && this.queue.length === 0) {
-                this.resolveSettlers();
+                try {
+                    this.ensureNotCancelled();
+                    this.resolveSettlers();
+                }
+                catch (error) {
+                    this.rejectSettlers(error);
+                }
             }
         });
     }
@@ -163,7 +184,9 @@ export class ReactiveScheduler {
         this.scheduled = true;
         queueMicrotask(() => {
             this.scheduled = false;
-            void this.drainQueue();
+            void this.drainQueue().catch((error) => {
+                this.rejectSettlers(error);
+            });
         });
     }
     async drainQueue() {
@@ -173,6 +196,7 @@ export class ReactiveScheduler {
         this.processing = true;
         try {
             while (!this.stopped && this.queue.length > 0) {
+                this.ensureNotCancelled();
                 const now = this.now();
                 const nextIndex = this.selectNextIndex(now);
                 const [next] = this.queue.splice(nextIndex, 1);
@@ -218,6 +242,12 @@ export class ReactiveScheduler {
                 }
             }
         }
+        catch (error) {
+            this.currentTickEventId = null;
+            this.stop();
+            this.rejectSettlers(error);
+            throw error;
+        }
         finally {
             this.processing = false;
         }
@@ -234,8 +264,18 @@ export class ReactiveScheduler {
         const finalResult = result ?? this.lastResult;
         const pending = [...this.settleResolvers];
         this.settleResolvers = [];
-        for (const resolver of pending) {
-            resolver(finalResult);
+        for (const { resolve } of pending) {
+            resolve(finalResult);
+        }
+    }
+    rejectSettlers(error) {
+        if (this.settleResolvers.length === 0) {
+            return;
+        }
+        const pending = [...this.settleResolvers];
+        this.settleResolvers = [];
+        for (const { reject } of pending) {
+            reject(error);
         }
     }
     computeBasePriority(event, payload) {
@@ -395,5 +435,8 @@ export class ReactiveScheduler {
             return null;
         }
         return String(value);
+    }
+    ensureNotCancelled() {
+        this.cancellation?.throwIfCancelled();
     }
 }
