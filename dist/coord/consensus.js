@@ -1,4 +1,48 @@
+import { EventEmitter } from "node:events";
 import { z } from "zod";
+/** Internal channel storing subscribers interested in consensus decisions. */
+const consensusEmitter = new EventEmitter();
+/** Clock function injected for deterministic tests. */
+let consensusNow = () => Date.now();
+/**
+ * Override the clock used when stamping consensus events. Tests rely on this
+ * hook to produce deterministic timestamps without resorting to global fake
+ * timers.
+ */
+export function setConsensusEventClock(now) {
+    consensusNow = now;
+}
+/** Reset the consensus event clock back to {@link Date.now}. */
+export function resetConsensusEventClock() {
+    consensusNow = () => Date.now();
+}
+/**
+ * Publish a consensus decision on the shared emitter. The helper normalises
+ * nullable correlation identifiers and ensures timestamps are always
+ * populated.
+ */
+export function publishConsensusEvent(input) {
+    const event = {
+        ...input,
+        at: input.at ?? consensusNow(),
+        jobId: input.jobId ?? null,
+        runId: input.runId ?? null,
+        opId: input.opId ?? null,
+        metadata: input.metadata ?? undefined,
+    };
+    consensusEmitter.emit("event", event);
+    return event;
+}
+/**
+ * Subscribe to consensus events. Callers receive a disposer that must be used
+ * to detach listeners when shutting the orchestrator down.
+ */
+export function subscribeConsensusEvents(listener) {
+    consensusEmitter.on("event", listener);
+    return () => {
+        consensusEmitter.off("event", listener);
+    };
+}
 /**
  * Zod schema shared with the plan tools to validate consensus configuration
  * payloads exposed through MCP.

@@ -12,6 +12,7 @@ import {
   CompiledBehaviorTreeSchema,
   type BTStatus,
   type BehaviorTickResult,
+  type CompiledBehaviorTree,
   type TickRuntime,
 } from "../executor/bt/types.js";
 import { ReactiveScheduler } from "../executor/reactiveScheduler.js";
@@ -21,6 +22,7 @@ import {
   ConsensusConfigSchema,
   majority as computeConsensusMajority,
   normaliseConsensusOptions,
+  publishConsensusEvent,
   quorum as computeConsensusQuorum,
   weighted as computeConsensusWeighted,
   type ConsensusDecision,
@@ -30,11 +32,14 @@ import { StigmergyField } from "../coord/stigmergy.js";
 import { BlackboardStore, type BlackboardEvent, type BlackboardEntrySnapshot } from "../coord/blackboard.js";
 import type { CausalMemory } from "../knowledge/causalMemory.js";
 import type {
+  ValueExplanationResult,
   ValueFilterDecision,
   ValueGraph,
+  ValueGraphCorrelationHints,
   ValueImpactInput,
   ValueViolation,
 } from "../values/valueGraph.js";
+import { IdempotencyRegistry } from "../infra/idempotency.js";
 import { GraphState } from "../graphState.js";
 import { StructuredLogger } from "../logger.js";
 import { OrchestratorSupervisor } from "../agents/supervisor.js";
@@ -159,6 +164,8 @@ export interface PlanToolContext {
   loopDetector?: LoopDetector;
   /** Optional registry collecting Behaviour Tree node statuses for dashboards. */
   btStatusRegistry?: BehaviorTreeStatusRegistry;
+  /** Optional idempotency registry replaying cached Behaviour Tree results. */
+  idempotency?: IdempotencyRegistry;
 }
 
 /**
@@ -351,6 +358,19 @@ const ValueImpactSchema = z
   })
   .strict();
 
+/** Schema describing a value impact declared directly on a plan node. */
+const PlanNodeImpactSchema = z
+  .object({
+    value: z.string().min(1, "value impact must reference a value id"),
+    impact: z.enum(["support", "risk"]).default("risk"),
+    severity: z.number().min(0).max(1).optional(),
+    rationale: z.string().min(1).max(240).optional(),
+    source: z.string().min(1).optional(),
+    node_id: z.string().min(1).optional(),
+    nodeId: z.string().min(1).optional(),
+  })
+  .strict();
+
 /** Blueprint for a single child produced by the fan-out planner. */
 const ChildPlanSchema = z.object({
   name: z.string().min(1, "child name must not be empty"),
@@ -397,20 +417,38 @@ const RetryPolicySchema = z.object({
   delay_ms: z.number().int().min(0).max(60_000).default(200),
 });
 
+/**
+ * Optional correlation metadata shared across plan tooling. The identifiers
+ * mirror the hints exposed by the value guard APIs so orchestration systems
+ * can stitch dry-runs, live executions and downstream telemetry together.
+ */
+const PlanCorrelationHintsSchema = z
+  .object({
+    run_id: z.string().min(1).optional(),
+    op_id: z.string().min(1).optional(),
+    job_id: z.string().min(1).optional(),
+    graph_id: z.string().min(1).optional(),
+    node_id: z.string().min(1).optional(),
+    child_id: z.string().min(1).optional(),
+  })
+  .strict();
+
 /** Input payload accepted by the `plan_fanout` tool. */
-export const PlanFanoutInputSchema = z.object({
-  goal: z.string().optional(),
-  prompt_template: PromptTemplateSchema,
-  children_spec: ChildrenSpecSchema.optional(),
-  /** Legacy field preserved for backward compatibility with earlier tasks. */
-  children: z.array(ChildPlanSchema).optional(),
-  parallelism: z.number().int().positive().max(16).optional(),
-  retry: RetryPolicySchema.optional(),
-  run_label: z
-    .string()
-    .regex(/^[a-zA-Z0-9_.-]+$/, "run_label must remain filesystem friendly")
-    .optional(),
-});
+export const PlanFanoutInputSchema = z
+  .object({
+    goal: z.string().optional(),
+    prompt_template: PromptTemplateSchema,
+    children_spec: ChildrenSpecSchema.optional(),
+    /** Legacy field preserved for backward compatibility with earlier tasks. */
+    children: z.array(ChildPlanSchema).optional(),
+    parallelism: z.number().int().positive().max(16).optional(),
+    retry: RetryPolicySchema.optional(),
+    run_label: z
+      .string()
+      .regex(/^[a-zA-Z0-9_.-]+$/, "run_label must remain filesystem friendly")
+      .optional(),
+  })
+  .extend(PlanCorrelationHintsSchema.shape);
 
 export type PlanFanoutInput = z.infer<typeof PlanFanoutInputSchema>;
 export const PlanFanoutInputShape = PlanFanoutInputSchema.shape;
@@ -419,6 +457,14 @@ export const PlanFanoutInputShape = PlanFanoutInputSchema.shape;
 export interface PlanFanoutResult extends Record<string, unknown> {
   run_id: string;
   job_id: string;
+  /** Operation identifier registered in the cancellation registry for the fan-out. */
+  op_id: string;
+  /** Optional graph identifier correlated to the fan-out orchestration. */
+  graph_id: string | null;
+  /** Optional node identifier when the fan-out derives from a specific plan node. */
+  node_id: string | null;
+  /** Optional parent child identifier when the fan-out is triggered by another runtime. */
+  child_id: string | null;
   child_ids: string[];
   planned: Array<{
     child_id: string;
@@ -537,13 +583,15 @@ export const PlanRunBTInputSchema = z
     dry_run: z.boolean().default(false),
     timeout_ms: z.number().int().min(1).max(60_000).optional(),
   })
+  .extend(PlanCorrelationHintsSchema.shape)
+  .extend({ idempotency_key: z.string().min(1).optional() })
   .strict();
 
 export type PlanRunBTInput = z.infer<typeof PlanRunBTInputSchema>;
 export const PlanRunBTInputShape = PlanRunBTInputSchema.shape;
 
 /** Result returned by {@link handlePlanRunBT}. */
-export interface PlanRunBTResult extends Record<string, unknown> {
+export interface PlanRunBTExecutionSnapshot extends Record<string, unknown> {
   status: BTStatus;
   ticks: number;
   last_output: unknown;
@@ -557,6 +605,21 @@ export interface PlanRunBTResult extends Record<string, unknown> {
   run_id: string;
   /** Operation identifier allowing cancellation tools to target the run. */
   op_id: string;
+  /** Optional job identifier associated with the execution. */
+  job_id: string | null;
+  /** Optional graph identifier when the run targets a specific plan graph. */
+  graph_id: string | null;
+  /** Optional node identifier correlating the run to a plan node. */
+  node_id: string | null;
+  /** Optional child runtime identifier propagated from the caller. */
+  child_id: string | null;
+}
+
+export interface PlanRunBTResult extends PlanRunBTExecutionSnapshot {
+  /** Indicates whether the payload was replayed from the idempotency cache. */
+  idempotent: boolean;
+  /** Optional idempotency key echoed back to the caller. */
+  idempotency_key: string | null;
 }
 
 /**
@@ -574,13 +637,60 @@ export const PlanRunReactiveInputSchema = z
     timeout_ms: z.number().int().min(1).max(300_000).optional(),
     dry_run: z.boolean().default(false),
   })
+  .extend(PlanCorrelationHintsSchema.shape)
+  .extend({ idempotency_key: z.string().min(1).optional() })
   .strict();
 
 export type PlanRunReactiveInput = z.infer<typeof PlanRunReactiveInputSchema>;
 export const PlanRunReactiveInputShape = PlanRunReactiveInputSchema.shape;
 
+/**
+ * Schema validating the payload accepted by the `plan_dry_run` tool.
+ *
+ * The dry-run accepts either a hierarchical graph (compiled on the fly) or an
+ * explicit Behaviour Tree along with optional per-node value impacts. At least
+ * one of `graph`, `tree`, `nodes`, or `impacts` must be provided so the helper
+ * can build a meaningful preview for operators.
+ */
+const PlanDryRunBaseSchema = z
+  .object({
+    plan_id: z.string().min(1, "plan identifier must not be empty"),
+    plan_label: z.string().min(1).max(200).optional(),
+    threshold: z.number().min(0).max(1).optional(),
+    graph: HierGraphSchema.optional(),
+    tree: CompiledBehaviorTreeSchema.optional(),
+    nodes: z
+      .array(
+        z
+          .object({
+            id: z.string().min(1, "node identifier must not be empty"),
+            label: z.string().min(1).max(200).optional(),
+            value_impacts: z.array(PlanNodeImpactSchema).max(32).optional(),
+          })
+          .strict(),
+      )
+      .max(128)
+      .optional(),
+    impacts: z.array(PlanNodeImpactSchema).max(128).optional(),
+  })
+  .extend(PlanCorrelationHintsSchema.shape)
+  .strict();
+
+export const PlanDryRunInputSchema = PlanDryRunBaseSchema.superRefine((value, ctx) => {
+  if (!value.graph && !value.tree && !value.nodes && !value.impacts) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "at least one of graph, tree, nodes or impacts must be provided",
+      path: [],
+    });
+  }
+});
+
+export type PlanDryRunInput = z.infer<typeof PlanDryRunInputSchema>;
+export const PlanDryRunInputShape = PlanDryRunBaseSchema.shape;
+
 /** Result returned by {@link handlePlanRunReactive}. */
-export interface PlanRunReactiveResult extends Record<string, unknown> {
+export interface PlanRunReactiveExecutionSnapshot extends Record<string, unknown> {
   status: BTStatus;
   loop_ticks: number;
   scheduler_ticks: number;
@@ -596,6 +706,39 @@ export interface PlanRunReactiveResult extends Record<string, unknown> {
   run_id: string;
   /** Operation identifier exposing the scheduler loop as a cancellable unit. */
   op_id: string;
+  /** Optional job identifier correlated with the scheduler loop. */
+  job_id: string | null;
+  /** Optional graph identifier when the loop executes a given plan. */
+  graph_id: string | null;
+  /** Optional node identifier linking the loop to a Behaviour Tree node. */
+  node_id: string | null;
+  /** Optional child runtime identifier propagated from orchestration. */
+  child_id: string | null;
+}
+
+export interface PlanRunReactiveResult extends PlanRunReactiveExecutionSnapshot {
+  /** Indicates whether the payload was replayed from the idempotency cache. */
+  idempotent: boolean;
+  /** Optional idempotency key echoed back to the caller. */
+  idempotency_key: string | null;
+}
+
+/** Summary of the impacts declared on a single plan node during a dry-run. */
+export interface PlanDryRunNodeSummary extends Record<string, unknown> {
+  id: string;
+  label: string | null;
+  impacts: ValueImpactInput[];
+}
+
+/** Result returned by {@link handlePlanDryRun}. */
+export interface PlanDryRunResult extends Record<string, unknown> {
+  plan_id: string;
+  plan_label: string | null;
+  threshold: number | null;
+  compiled_tree: CompiledBehaviorTree | null;
+  nodes: PlanDryRunNodeSummary[];
+  impacts: ValueImpactInput[];
+  value_guard: ValueExplanationResult | null;
 }
 
 /** Default schema registry used by the Behaviour Tree interpreter. */
@@ -732,6 +875,72 @@ function renderPromptForChild(
   return { messages, summary };
 }
 
+/**
+ * Correlation context propagated to every child spawn attempt so logs, events,
+ * metadata and cancellation book-keeping all surface consistent identifiers.
+ */
+interface PlanFanoutCorrelationContext {
+  runId: string;
+  opId: string;
+  jobId: string;
+  graphId: string | null;
+  nodeId: string | null;
+  parentChildId: string | null;
+}
+
+function buildFanoutChildMetadata(
+  plan: ResolvedChildPlan,
+  variables: Record<string, string | number | boolean>,
+  guardSnapshot: ValueGuardSnapshot | null,
+  correlation: PlanFanoutCorrelationContext,
+): Record<string, unknown> {
+  const metadata: Record<string, unknown> = {
+    ...(plan.metadata ?? {}),
+    plan: "fanout",
+    job_id: correlation.jobId,
+    run_id: correlation.runId,
+    op_id: correlation.opId,
+    child_name: plan.name,
+    prompt_variables: variables,
+  };
+  if (guardSnapshot) {
+    metadata.value_guard = guardSnapshot;
+  }
+  if (correlation.graphId) {
+    metadata.graph_id = correlation.graphId;
+  }
+  if (correlation.nodeId) {
+    metadata.node_id = correlation.nodeId;
+  }
+  if (correlation.parentChildId) {
+    metadata.parent_child_id = correlation.parentChildId;
+  }
+  return metadata;
+}
+
+function buildFanoutManifestExtras(
+  plan: ResolvedChildPlan,
+  correlation: PlanFanoutCorrelationContext,
+): Record<string, unknown> {
+  const extras: Record<string, unknown> = {
+    ...(plan.manifestExtras ?? {}),
+    plan: "fanout",
+    job_id: correlation.jobId,
+    run_id: correlation.runId,
+    op_id: correlation.opId,
+  };
+  if (correlation.graphId) {
+    extras.graph_id = correlation.graphId;
+  }
+  if (correlation.nodeId) {
+    extras.node_id = correlation.nodeId;
+  }
+  if (correlation.parentChildId) {
+    extras.parent_child_id = correlation.parentChildId;
+  }
+  return extras;
+}
+
 async function spawnChildWithRetry(
   context: PlanToolContext,
   jobId: string,
@@ -740,11 +949,22 @@ async function spawnChildWithRetry(
   sharedVariables: Record<string, string | number | boolean>,
   retryPolicy: z.infer<typeof RetryPolicySchema>,
   childIndex: number,
+  correlation: PlanFanoutCorrelationContext,
+  cancellation: CancellationHandle,
 ): Promise<SpawnedChildInfo> {
   const childId = `child_${randomUUID()}`;
   const createdAt = Date.now();
   const guardDecision = plan.valueDecision ?? null;
   const guardSnapshot = serialiseValueGuardDecision(guardDecision);
+
+  const correlationLogFields = {
+    run_id: correlation.runId,
+    op_id: correlation.opId,
+    job_id: correlation.jobId,
+    graph_id: correlation.graphId ?? null,
+    node_id: correlation.nodeId ?? null,
+    parent_child_id: correlation.parentChildId ?? null,
+  };
 
   context.graphState.createChild(
     jobId,
@@ -774,12 +994,14 @@ async function spawnChildWithRetry(
 
   let attempt = 0;
   while (attempt < retryPolicy.max_attempts) {
+    cancellation.throwIfCancelled();
     attempt += 1;
     try {
       context.logger.info("plan_fanout_spawn_attempt", {
         child_id: childId,
         name: plan.name,
         attempt,
+        ...correlationLogFields,
       });
 
       const created = await context.supervisor.createChild({
@@ -787,21 +1009,12 @@ async function spawnChildWithRetry(
         command: plan.command,
         args: plan.args,
         env: plan.env,
-        metadata: {
-          ...(plan.metadata ?? {}),
-          plan: "fanout",
-          job_id: jobId,
-          child_name: plan.name,
-          prompt_variables: variables,
-          value_guard: guardSnapshot,
-        },
-        manifestExtras: {
-          ...(plan.manifestExtras ?? {}),
-          plan: "fanout",
-          job_id: jobId,
-        },
+        metadata: buildFanoutChildMetadata(plan, variables, guardSnapshot, correlation),
+        manifestExtras: buildFanoutManifestExtras(plan, correlation),
         waitForReady: true,
       });
+
+      cancellation.throwIfCancelled();
 
       const runtimeStatus = created.runtime.getStatus();
       context.graphState.syncChildIndexSnapshot(created.index);
@@ -828,6 +1041,8 @@ async function spawnChildWithRetry(
         waitingFor: "response",
       });
 
+      cancellation.throwIfCancelled();
+
       if (guardDecision && context.valueGuard) {
         context.valueGuard.registry.set(childId, guardDecision);
       }
@@ -847,11 +1062,23 @@ async function spawnChildWithRetry(
         valueGuard: guardSnapshot,
       };
     } catch (error) {
+      if (error instanceof OperationCancelledError) {
+        context.logger.warn("plan_fanout_spawn_cancelled", {
+          child_id: childId,
+          name: plan.name,
+          attempt,
+          ...correlationLogFields,
+          reason: error.details.reason ?? null,
+        });
+        context.graphState.patchChild(childId, { state: "cancelled", waitingFor: null });
+        throw error;
+      }
       context.logger.error("plan_fanout_spawn_failed", {
         child_id: childId,
         name: plan.name,
         attempt,
         message: error instanceof Error ? error.message : String(error),
+        ...correlationLogFields,
       });
 
       if (attempt >= retryPolicy.max_attempts) {
@@ -910,6 +1137,21 @@ export async function handlePlanFanout(
   const rejectedPlans: Array<{ name: string; decision: ValueFilterDecision }> = [];
 
   const plans: ResolvedChildPlan[] = [];
+  const providedCorrelation = extractPlanCorrelationHints(input) ?? null;
+  const runId = providedCorrelation?.runId ?? input.run_label ?? `run-${Date.now()}`;
+  const opId = providedCorrelation?.opId ?? `plan_fanout_op_${randomUUID()}`;
+  const jobId = providedCorrelation?.jobId ?? `job_${randomUUID()}`;
+  const graphId = providedCorrelation?.graphId ?? null;
+  const nodeId = providedCorrelation?.nodeId ?? null;
+  const parentChildId = providedCorrelation?.childId ?? null;
+  const correlationLogFields = {
+    run_id: runId,
+    op_id: opId,
+    job_id: jobId,
+    graph_id: graphId ?? null,
+    node_id: nodeId ?? null,
+    child_id: parentChildId ?? null,
+  };
   if (context.valueGuard) {
     for (const plan of resolvedPlans) {
       if (!plan.valueImpacts?.length) {
@@ -930,6 +1172,7 @@ export async function handlePlanFanout(
           score: decision.score,
           threshold: decision.threshold,
           violations: decision.violations.length,
+          ...correlationLogFields,
         });
         continue;
       }
@@ -942,6 +1185,7 @@ export async function handlePlanFanout(
       context.logger.warn("plan_fanout_value_guard_filtered", {
         rejected: rejectedPlans.length,
         allowed: plans.length,
+        ...correlationLogFields,
       });
     }
   } else {
@@ -954,27 +1198,52 @@ export async function handlePlanFanout(
     assistant: input.prompt_template.assistant,
   };
 
-  const runId = input.run_label ?? `run-${Date.now()}`;
-  const jobId = `job_${randomUUID()}`;
   const createdAt = Date.now();
 
-  context.graphState.createJob(jobId, {
-    goal: input.goal,
-    createdAt,
-    state: "running",
-  });
+  const existingJob = context.graphState.getJob(jobId);
+  if (!existingJob) {
+    context.graphState.createJob(jobId, {
+      goal: input.goal,
+      createdAt,
+      state: "running",
+    });
+  } else {
+    context.graphState.patchJob(jobId, {
+      state: "running",
+      goal: input.goal ?? existingJob.goal ?? null,
+    });
+  }
 
   context.logger.info("plan_fanout", {
     job_id: jobId,
     run_id: runId,
+    op_id: opId,
+    graph_id: graphId ?? null,
+    node_id: nodeId ?? null,
+    child_id: parentChildId ?? null,
     children: plans.length,
   });
+
+  const correlationContext: PlanFanoutCorrelationContext = {
+    runId,
+    opId,
+    jobId,
+    graphId,
+    nodeId,
+    parentChildId,
+  };
 
   context.emitEvent({
     kind: "PLAN",
     jobId,
+    childId: parentChildId ?? undefined,
     payload: {
       run_id: runId,
+      op_id: opId,
+      job_id: jobId,
+      graph_id: graphId,
+      node_id: nodeId,
+      child_id: parentChildId,
       children: plans.map((plan) => ({ name: plan.name, runtime: plan.runtime })),
       rejected: rejectedPlans.map((entry) => entry.name),
     },
@@ -983,76 +1252,127 @@ export async function handlePlanFanout(
   const sharedVariables: Record<string, string | number | boolean> = {
     job_id: jobId,
     run_id: runId,
+    op_id: opId,
   };
   if (input.goal) {
     sharedVariables.goal = input.goal;
+  }
+  if (graphId) {
+    sharedVariables.graph_id = graphId;
+  }
+  if (nodeId) {
+    sharedVariables.node_id = nodeId;
+  }
+  if (parentChildId) {
+    sharedVariables.parent_child_id = parentChildId;
   }
 
   const retryPolicy = input.retry
     ? RetryPolicySchema.parse(input.retry)
     : RetryPolicySchema.parse({});
 
-  const tasks = plans.map((plan, index) => () =>
-    spawnChildWithRetry(
-      context,
-      jobId,
-      plan,
-      promptTemplate,
-      sharedVariables,
-      retryPolicy,
-      index + 1,
-    ),
-  );
+  const cancellation = registerCancellation(opId, {
+    runId,
+    jobId,
+    graphId,
+    nodeId,
+    childId: parentChildId ?? null,
+  });
+  let cancellationSubscription: (() => void) | null = null;
 
-  const parallelism = input.parallelism ?? Math.min(3, plans.length || 1);
-  const spawned = await runWithConcurrency(parallelism, tasks);
+  try {
+    cancellationSubscription = cancellation.onCancel(({ reason }) => {
+      context.logger.warn("plan_fanout_cancel_requested", {
+        ...correlationLogFields,
+        reason,
+      });
+    });
 
-  const runDirectory = await ensureDirectory(context.childrenRoot, runId);
-  const mappingPath = resolveWithin(runDirectory, "fanout.json");
-  const serialisedRejections = rejectedPlans.map((entry) => ({
-    name: entry.name,
-    value_guard: serialiseValueGuardDecision(entry.decision),
-  }));
-  const mappingPayload = {
-    run_id: runId,
-    created_at: createdAt,
-    job_id: jobId,
-    goal: input.goal ?? null,
-    prompt_template: input.prompt_template,
-    children: spawned.map((child) => ({
-      child_id: child.childId,
-      name: child.name,
-      runtime: child.runtime,
-      prompt_variables: child.promptVariables,
-      prompt_summary: child.promptSummary,
-      manifest_path: child.manifestPath,
-      log_path: child.logPath,
-      value_guard: child.valueGuard,
-    })),
-    rejected_plans: serialisedRejections,
-  };
+    const tasks = plans.map((plan, index) => () =>
+      spawnChildWithRetry(
+        context,
+        jobId,
+        plan,
+        promptTemplate,
+        sharedVariables,
+        retryPolicy,
+        index + 1,
+        correlationContext,
+        cancellation,
+      ),
+    );
 
-  await writeFile(mappingPath, JSON.stringify(mappingPayload, null, 2), "utf8");
+    const parallelism = input.parallelism ?? Math.min(3, plans.length || 1);
+    const spawned = await runWithConcurrency(parallelism, tasks);
 
-  return {
-    run_id: runId,
-    job_id: jobId,
-    child_ids: spawned.map((child) => child.childId),
-    planned: spawned.map((child) => ({
-      child_id: child.childId,
-      name: child.name,
-      runtime: child.runtime,
-      prompt_variables: child.promptVariables,
-      prompt_summary: child.promptSummary,
-      prompt_messages: child.promptMessages,
-      manifest_path: child.manifestPath,
-      log_path: child.logPath,
-      ready_message: child.readyMessage,
-      value_guard: child.valueGuard,
-    })),
-    prompt_template: input.prompt_template,
-    rejected_plans: serialisedRejections,
-  };
+    cancellation.throwIfCancelled();
+
+    const runDirectory = await ensureDirectory(context.childrenRoot, runId);
+    const mappingPath = resolveWithin(runDirectory, "fanout.json");
+    const serialisedRejections = rejectedPlans.map((entry) => ({
+      name: entry.name,
+      value_guard: serialiseValueGuardDecision(entry.decision),
+    }));
+    const mappingPayload = {
+      run_id: runId,
+      op_id: opId,
+      created_at: createdAt,
+      job_id: jobId,
+      graph_id: graphId,
+      node_id: nodeId,
+      child_id: parentChildId,
+      goal: input.goal ?? null,
+      prompt_template: input.prompt_template,
+      children: spawned.map((child) => ({
+        child_id: child.childId,
+        name: child.name,
+        runtime: child.runtime,
+        prompt_variables: child.promptVariables,
+        prompt_summary: child.promptSummary,
+        manifest_path: child.manifestPath,
+        log_path: child.logPath,
+        value_guard: child.valueGuard,
+      })),
+      rejected_plans: serialisedRejections,
+    };
+
+    await writeFile(mappingPath, JSON.stringify(mappingPayload, null, 2), "utf8");
+
+    return {
+      run_id: runId,
+      job_id: jobId,
+      op_id: opId,
+      graph_id: graphId,
+      node_id: nodeId,
+      child_id: parentChildId,
+      child_ids: spawned.map((child) => child.childId),
+      planned: spawned.map((child) => ({
+        child_id: child.childId,
+        name: child.name,
+        runtime: child.runtime,
+        prompt_variables: child.promptVariables,
+        prompt_summary: child.promptSummary,
+        prompt_messages: child.promptMessages,
+        manifest_path: child.manifestPath,
+        log_path: child.logPath,
+        ready_message: child.readyMessage,
+        value_guard: child.valueGuard,
+      })),
+      prompt_template: input.prompt_template,
+      rejected_plans: serialisedRejections,
+    };
+  } catch (error) {
+    if (error instanceof OperationCancelledError) {
+      context.logger.warn("plan_fanout_cancelled", {
+        ...correlationLogFields,
+        reason: error.details.reason ?? null,
+      });
+    }
+    throw error;
+  } finally {
+    cancellationSubscription?.();
+    unregisterCancellation(opId);
+  }
 }
 
 interface JoinObservation {
@@ -1256,6 +1576,31 @@ export async function handlePlanJoin(
         tally: consensusDecision.tally,
       }
     : undefined;
+
+  if (consensusDecision) {
+    // Surface the computed quorum decision on the consensus event emitter so it
+    // can be bridged onto the unified MCP bus. This keeps auditors informed of
+    // every consensus evaluation performed during plan joins.
+    publishConsensusEvent({
+      kind: "decision",
+      source: "plan_join",
+      mode: consensusDecision.mode,
+      outcome: consensusDecision.outcome,
+      satisfied: consensusDecision.satisfied,
+      tie: consensusDecision.tie,
+      threshold: consensusDecision.threshold,
+      totalWeight: consensusDecision.totalWeight,
+      tally: consensusDecision.tally,
+      votes: statusVotes.length,
+      metadata: {
+        policy: input.join_policy,
+        successes: successes.length,
+        failures: failures.length,
+        winning_child_id: winningChild,
+        quorum_threshold: threshold,
+      },
+    });
+  }
 
   context.emitEvent({
     kind: "STATUS",
@@ -1601,25 +1946,38 @@ export function handlePlanCompileBT(
  * interpreter records every invocation so tests and operators can trace the
  * decision flow precisely.
  */
-export async function handlePlanRunBT(
+async function executePlanRunBT(
   context: PlanToolContext,
   input: PlanRunBTInput,
-): Promise<PlanRunBTResult> {
+): Promise<PlanRunBTExecutionSnapshot> {
   const schemaRegistry = { ...BehaviorTaskSchemas };
-  const invocations: PlanRunBTResult["invocations"] = [];
+  const invocations: PlanRunBTExecutionSnapshot["invocations"] = [];
   let lastOutput: unknown = null;
   let lastResultStatus: BTStatus = "running";
   let sawFailure = false;
   let reportedError = false;
 
   const dryRun = input.dry_run ?? false;
-  const runId = `bt_run_${randomUUID()}`;
-  const opId = `bt_op_${randomUUID()}`;
-  context.logger.info("plan_run_bt", {
-    tree_id: input.tree.id,
-    dry_run: dryRun,
+  const providedCorrelation = extractPlanCorrelationHints(input) ?? null;
+  const runId = providedCorrelation?.runId ?? `bt_run_${randomUUID()}`;
+  const opId = providedCorrelation?.opId ?? `bt_op_${randomUUID()}`;
+  const jobId = providedCorrelation?.jobId ?? null;
+  const graphId = providedCorrelation?.graphId ?? null;
+  const nodeId = providedCorrelation?.nodeId ?? null;
+  const childId = providedCorrelation?.childId ?? null;
+  const correlationLogFields = {
     run_id: runId,
     op_id: opId,
+    job_id: jobId,
+    graph_id: graphId,
+    node_id: nodeId,
+    child_id: childId,
+  };
+  const baseLogFields = { ...correlationLogFields, tree_id: input.tree.id };
+  context.logger.info("plan_run_bt", {
+    ...baseLogFields,
+    dry_run: dryRun,
+    idempotency_key: input.idempotency_key ?? null,
   });
 
   /**
@@ -1634,13 +1992,14 @@ export async function handlePlanRunBT(
     context.emitEvent({
       kind: "BT_RUN",
       level: phase === "error" ? "error" : "info",
+      jobId: jobId ?? undefined,
+      childId: childId ?? undefined,
       payload: {
         phase,
-        run_id: runId,
-        op_id: opId,
         tree_id: input.tree.id,
         dry_run: dryRun,
         mode: "bt",
+        ...correlationLogFields,
         ...payload,
       },
     });
@@ -1648,7 +2007,13 @@ export async function handlePlanRunBT(
 
   publishLifecycleEvent("start", {});
 
-  const cancellation = registerCancellation(opId, { runId });
+  const cancellation = registerCancellation(opId, {
+    runId,
+    jobId,
+    graphId,
+    nodeId,
+    childId,
+  });
   let cancellationSubscription: (() => void) | null = null;
 
   if (context.btStatusRegistry) {
@@ -1667,9 +2032,7 @@ export async function handlePlanRunBT(
   let scheduler: ReactiveScheduler | null = null;
   cancellationSubscription = cancellation.onCancel(({ reason }) => {
     context.logger.info("plan_run_bt_cancel_requested", {
-      tree_id: input.tree.id,
-      run_id: runId,
-      op_id: opId,
+      ...baseLogFields,
       reason: reason ?? null,
     });
     publishLifecycleEvent("cancel", { reason: reason ?? null });
@@ -1834,12 +2197,11 @@ export async function handlePlanRunBT(
     }
 
     context.logger.info("plan_run_bt_completed", {
-      tree_id: input.tree.id,
+      ...baseLogFields,
       status: result.status,
       invocations: invocations.length,
       ticks: schedulerRef.tickCount,
-      run_id: runId,
-      op_id: opId,
+      idempotency_key: input.idempotency_key ?? null,
     });
 
     publishLifecycleEvent("complete", {
@@ -1856,6 +2218,10 @@ export async function handlePlanRunBT(
       invocations,
       run_id: runId,
       op_id: opId,
+      job_id: jobId,
+      graph_id: graphId,
+      node_id: nodeId,
+      child_id: childId,
     };
   } catch (error) {
     if (error instanceof OperationCancelledError) {
@@ -1863,9 +2229,7 @@ export async function handlePlanRunBT(
       reportedError = true;
       lastResultStatus = "failure";
       context.logger.info("plan_run_bt_cancelled", {
-        tree_id: input.tree.id,
-        run_id: runId,
-        op_id: opId,
+        ...baseLogFields,
         reason: error.details.reason ?? null,
       });
       publishLifecycleEvent("error", { status: "cancelled", reason: error.details.reason ?? null });
@@ -1878,16 +2242,42 @@ export async function handlePlanRunBT(
     cancellationSubscription = null;
     unregisterCancellation(opId);
     context.logger.info("plan_run_bt_status", {
-      tree_id: input.tree.id,
+      ...baseLogFields,
       status: lastResultStatus,
       ticks: schedulerRef.tickCount,
-      run_id: runId,
-      op_id: opId,
+      idempotency_key: input.idempotency_key ?? null,
     });
     if (sawFailure && !reportedError) {
       publishLifecycleEvent("error", { status: lastResultStatus });
     }
   }
+}
+
+export async function handlePlanRunBT(
+  context: PlanToolContext,
+  input: PlanRunBTInput,
+): Promise<PlanRunBTResult> {
+  const key = input.idempotency_key ?? null;
+
+  if (context.idempotency && key) {
+    const hit = await context.idempotency.remember<PlanRunBTExecutionSnapshot>(
+      `plan_run_bt:${key}`,
+      () => executePlanRunBT(context, input),
+    );
+    if (hit.idempotent) {
+      const snapshot = hit.value as PlanRunBTExecutionSnapshot;
+      context.logger.info("plan_run_bt_replayed", {
+        run_id: snapshot.run_id,
+        op_id: snapshot.op_id,
+        idempotency_key: key,
+      });
+    }
+    const snapshot = hit.value as PlanRunBTExecutionSnapshot;
+    return { ...snapshot, idempotent: hit.idempotent, idempotency_key: key } as PlanRunBTResult;
+  }
+
+  const snapshot = await executePlanRunBT(context, input);
+  return { ...snapshot, idempotent: false, idempotency_key: key } as PlanRunBTResult;
 }
 
 /**
@@ -1896,24 +2286,41 @@ export async function handlePlanRunBT(
  * applied after every scheduler tick. The handler mirrors
  * {@link handlePlanRunBT} telemetry while surfacing loop-specific metrics.
  */
-export async function handlePlanRunReactive(
+async function executePlanRunReactive(
   context: PlanToolContext,
   input: PlanRunReactiveInput,
-): Promise<PlanRunReactiveResult> {
+): Promise<PlanRunReactiveExecutionSnapshot> {
   const schemaRegistry = { ...BehaviorTaskSchemas };
-  const invocations: PlanRunReactiveResult["invocations"] = [];
+  const invocations: PlanRunReactiveExecutionSnapshot["invocations"] = [];
   const dryRun = input.dry_run ?? false;
   let lastOutput: unknown = null;
   let lastResultStatus: BTStatus = "running";
 
-  const runId = `bt_reactive_run_${randomUUID()}`;
-  const opId = `bt_reactive_op_${randomUUID()}`;
-  context.logger.info("plan_run_reactive", {
-    tree_id: input.tree.id,
-    tick_ms: input.tick_ms,
-    dry_run: dryRun,
+  const providedCorrelation = extractPlanCorrelationHints(input) ?? null;
+  const runId = providedCorrelation?.runId ?? `bt_reactive_run_${randomUUID()}`;
+  const opId = providedCorrelation?.opId ?? `bt_reactive_op_${randomUUID()}`;
+  const jobId = providedCorrelation?.jobId ?? null;
+  const graphId = providedCorrelation?.graphId ?? null;
+  const nodeId = providedCorrelation?.nodeId ?? null;
+  const childId = providedCorrelation?.childId ?? null;
+  const correlationLogFields = {
     run_id: runId,
     op_id: opId,
+    job_id: jobId,
+    graph_id: graphId,
+    node_id: nodeId,
+    child_id: childId,
+  };
+  const baseLogFields = {
+    ...correlationLogFields,
+    tree_id: input.tree.id,
+    idempotency_key: input.idempotency_key ?? null,
+  };
+  context.logger.info("plan_run_reactive", {
+    ...baseLogFields,
+    tick_ms: input.tick_ms,
+    budget_ms: input.budget_ms ?? null,
+    dry_run: dryRun,
   });
 
   /**
@@ -1928,13 +2335,14 @@ export async function handlePlanRunReactive(
     context.emitEvent({
       kind: "BT_RUN",
       level: phase === "error" ? "error" : "info",
+      jobId: jobId ?? undefined,
+      childId: childId ?? undefined,
       payload: {
         phase,
-        run_id: runId,
-        op_id: opId,
         tree_id: input.tree.id,
         dry_run: dryRun,
         mode: "reactive",
+        ...correlationLogFields,
         ...payload,
       },
     });
@@ -1948,7 +2356,13 @@ export async function handlePlanRunReactive(
   let scheduler: ReactiveScheduler | null = null;
   let loop: ExecutionLoop | null = null;
   let unsubscribeBlackboard: (() => void) | null = null;
-  const cancellation = registerCancellation(opId, { runId });
+  const cancellation = registerCancellation(opId, {
+    runId,
+    jobId,
+    graphId,
+    nodeId,
+    childId,
+  });
   let cancellationSubscription: (() => void) | null = null;
 
   if (context.btStatusRegistry) {
@@ -2094,7 +2508,7 @@ export async function handlePlanRunReactive(
         const importance = deriveBlackboardImportance(event);
         scheduler.emit("blackboardChanged", { key: event.key, importance });
         context.logger.info("plan_run_reactive_blackboard_event", {
-          tree_id: input.tree.id,
+          ...baseLogFields,
           key: event.key,
           kind: event.kind,
           importance,
@@ -2195,9 +2609,7 @@ export async function handlePlanRunReactive(
 
   cancellationSubscription = cancellation.onCancel(({ reason }) => {
     context.logger.info("plan_run_reactive_cancel_requested", {
-      tree_id: input.tree.id,
-      run_id: runId,
-      op_id: opId,
+      ...baseLogFields,
       reason: reason ?? null,
     });
     publishLifecycleEvent("cancel", { reason: reason ?? null });
@@ -2212,14 +2624,12 @@ export async function handlePlanRunReactive(
     const result = await runPromise;
     const durationMs = runtime.now() - startedAt;
     context.logger.info("plan_run_reactive_completed", {
-      tree_id: input.tree.id,
+      ...baseLogFields,
       status: result.status,
       loop_ticks: executedLoopTicks,
       scheduler_ticks: scheduler.tickCount,
       duration_ms: durationMs,
       invocations: invocations.length,
-      run_id: runId,
-      op_id: opId,
     });
 
     publishLifecycleEvent("complete", {
@@ -2239,23 +2649,23 @@ export async function handlePlanRunReactive(
       invocations,
       run_id: runId,
       op_id: opId,
+      job_id: jobId,
+      graph_id: graphId,
+      node_id: nodeId,
+      child_id: childId,
     };
   } catch (error) {
     if (error instanceof OperationCancelledError) {
       lastResultStatus = "failure";
       context.logger.info("plan_run_reactive_cancelled", {
-        tree_id: input.tree.id,
-        run_id: runId,
-        op_id: opId,
+        ...baseLogFields,
         reason: error.details.reason ?? null,
       });
     } else {
       context.logger.error("plan_run_reactive_failed", {
-        tree_id: input.tree.id,
+        ...baseLogFields,
         status: lastResultStatus,
         message: error instanceof Error ? error.message : String(error),
-        run_id: runId,
-        op_id: opId,
       });
       publishLifecycleEvent("error", {
         status: lastResultStatus,
@@ -2277,12 +2687,166 @@ export async function handlePlanRunReactive(
     cancellationSubscription = null;
     unregisterCancellation(opId);
     context.logger.info("plan_run_reactive_status", {
-      tree_id: input.tree.id,
+      ...baseLogFields,
       status: lastResultStatus,
       loop_ticks: executedLoopTicks,
       scheduler_ticks: scheduler?.tickCount ?? 0,
-      run_id: runId,
-      op_id: opId,
     });
   }
+}
+
+export async function handlePlanRunReactive(
+  context: PlanToolContext,
+  input: PlanRunReactiveInput,
+): Promise<PlanRunReactiveResult> {
+  const key = input.idempotency_key ?? null;
+
+  if (context.idempotency && key) {
+    const hit = await context.idempotency.remember<PlanRunReactiveExecutionSnapshot>(
+      `plan_run_reactive:${key}`,
+      () => executePlanRunReactive(context, input),
+    );
+    if (hit.idempotent) {
+      const snapshot = hit.value as PlanRunReactiveExecutionSnapshot;
+      context.logger.info("plan_run_reactive_replayed", {
+        run_id: snapshot.run_id,
+        op_id: snapshot.op_id,
+        idempotency_key: key,
+      });
+    }
+    const snapshot = hit.value as PlanRunReactiveExecutionSnapshot;
+    return { ...snapshot, idempotent: hit.idempotent, idempotency_key: key } as PlanRunReactiveResult;
+  }
+
+  const snapshot = await executePlanRunReactive(context, input);
+  return { ...snapshot, idempotent: false, idempotency_key: key } as PlanRunReactiveResult;
+}
+
+/**
+ * Performs a dry-run of a plan without executing any side effects. The handler
+ * compiles the provided hierarchical graph (when present), aggregates declared
+ * value impacts and, if the value guard is enabled, produces an explanation by
+ * delegating to {@link ValueGraph.explain}. The response acts as a preview so
+ * operators can iterate on plans before triggering a real execution.
+ */
+export function handlePlanDryRun(
+  context: PlanToolContext,
+  input: PlanDryRunInput,
+): PlanDryRunResult {
+  const compiledTree = input.tree
+    ? (structuredClone(input.tree) as CompiledBehaviorTree)
+    : input.graph
+    ? compileHierGraphToBehaviorTree(input.graph)
+    : null;
+
+  const nodeSummaries: PlanDryRunNodeSummary[] = [];
+  const aggregatedImpacts: ValueImpactInput[] = [];
+
+  for (const node of input.nodes ?? []) {
+    const impacts = (node.value_impacts ?? []).map((impact) =>
+      normalisePlanImpact(impact, node.id),
+    );
+    aggregatedImpacts.push(...impacts);
+    nodeSummaries.push({ id: node.id, label: node.label ?? null, impacts });
+  }
+
+  for (const impact of input.impacts ?? []) {
+    aggregatedImpacts.push(normalisePlanImpact(impact, undefined));
+  }
+
+  let explanation: ValueExplanationResult | null = null;
+  const correlation = extractPlanCorrelationHints(input);
+  const guard = context.valueGuard;
+  if (guard && aggregatedImpacts.length > 0) {
+    explanation = guard.graph.explain(
+      {
+        id: input.plan_id,
+        label: input.plan_label,
+        impacts: aggregatedImpacts,
+        threshold: input.threshold,
+      },
+      { correlation },
+    );
+    context.logger.info("plan_dry_run_values", {
+      plan_id: input.plan_id,
+      impacts: aggregatedImpacts.length,
+      allowed: explanation.decision.allowed,
+      score: explanation.decision.score,
+      threshold: explanation.decision.threshold,
+      violations: explanation.violations.length,
+      run_id: correlation?.runId ?? null,
+      op_id: correlation?.opId ?? null,
+    });
+  } else if (!guard) {
+    context.logger.info("plan_dry_run_without_value_guard", {
+      plan_id: input.plan_id,
+      impacts: aggregatedImpacts.length,
+      run_id: correlation?.runId ?? null,
+      op_id: correlation?.opId ?? null,
+    });
+  }
+
+  context.logger.info("plan_dry_run", {
+    plan_id: input.plan_id,
+    nodes: nodeSummaries.length,
+    impacts: aggregatedImpacts.length,
+    has_tree: compiledTree !== null,
+    threshold: input.threshold ?? null,
+    run_id: correlation?.runId ?? null,
+    op_id: correlation?.opId ?? null,
+  });
+
+  return {
+    plan_id: input.plan_id,
+    plan_label: input.plan_label ?? null,
+    threshold: input.threshold ?? null,
+    compiled_tree: compiledTree,
+    nodes: nodeSummaries,
+    impacts: aggregatedImpacts,
+    value_guard: explanation,
+  };
+}
+
+/**
+ * Normalises an impact payload so it matches {@link ValueImpactInput} while
+ * preserving any correlation metadata declared on the plan node.
+ */
+function normalisePlanImpact(
+  impact: z.infer<typeof PlanNodeImpactSchema>,
+  fallbackNodeId: string | undefined,
+): ValueImpactInput {
+  const nodeId = impact.nodeId ?? impact.node_id ?? fallbackNodeId;
+  return {
+    value: impact.value,
+    impact: impact.impact,
+    severity: impact.severity,
+    rationale: impact.rationale,
+    source: impact.source,
+    nodeId: nodeId ?? undefined,
+  };
+}
+
+/**
+ * Extract correlation hints supplied to the dry-run tool. Returning `null`
+ * keeps downstream consumers tidy when no metadata is provided while ensuring
+ * value guard events still expose the identifiers when they exist.
+ */
+type PlanCorrelationHintsInput = z.infer<typeof PlanCorrelationHintsSchema>;
+
+/**
+ * Convert correlation hints provided by plan tooling into the camel-cased
+ * structure consumed by downstream value guard and event bus helpers.
+ */
+function extractPlanCorrelationHints(
+  input: Partial<PlanCorrelationHintsInput>,
+): ValueGraphCorrelationHints | null {
+  const hints: ValueGraphCorrelationHints = {};
+  if (input.run_id !== undefined) hints.runId = input.run_id;
+  if (input.op_id !== undefined) hints.opId = input.op_id;
+  if (input.job_id !== undefined) hints.jobId = input.job_id;
+  if (input.graph_id !== undefined) hints.graphId = input.graph_id;
+  if (input.node_id !== undefined) hints.nodeId = input.node_id;
+  if (input.child_id !== undefined) hints.childId = input.child_id;
+
+  return Object.keys(hints).length > 0 ? hints : null;
 }

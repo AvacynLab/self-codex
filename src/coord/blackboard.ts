@@ -16,6 +16,18 @@ export interface BlackboardSetOptions {
   ttlMs?: number;
 }
 
+/**
+ * Payload accepted by {@link BlackboardStore.batchSet}. Each entry mirrors the
+ * arguments of {@link BlackboardStore.set} but allows the caller to describe
+ * multiple mutations that should be applied atomically.
+ */
+export interface BlackboardBatchSetInput {
+  key: string;
+  value: unknown;
+  tags?: string[];
+  ttlMs?: number;
+}
+
 /** Filtering options consumed by {@link BlackboardStore.query}. */
 export interface BlackboardQueryOptions {
   /** Restrict the result set to the provided keys. */
@@ -116,6 +128,80 @@ export class BlackboardStore {
       previous,
     });
     return snapshot;
+  }
+
+  /**
+   * Applies multiple mutations atomically. Either every entry is committed and
+   * a matching history event is emitted, or the store is reverted to its prior
+   * state. The helper is primarily used by the MCP bulk tool so clients can
+   * refresh several keys in a single round-trip without risking partial
+   * updates.
+   */
+  batchSet(entries: ReadonlyArray<BlackboardBatchSetInput>): BlackboardEntrySnapshot[] {
+    this.evictExpired();
+    if (entries.length === 0) {
+      return [];
+    }
+
+    const originalEntries = new Map<string, BlackboardEntryInternal>();
+    for (const [key, entry] of this.entries.entries()) {
+      originalEntries.set(key, this.cloneInternal(entry));
+    }
+    const startingVersion = this.version;
+    const committedSnapshots: BlackboardEntrySnapshot[] = [];
+    const eventsToEmit: BlackboardEvent[] = [];
+    let nextVersion = startingVersion;
+
+    try {
+      for (const payload of entries) {
+        const timestamp = this.now();
+        const tags = normaliseTags(payload.tags ?? []);
+        const ttl = payload.ttlMs !== undefined ? Math.max(1, Math.floor(payload.ttlMs)) : null;
+        const expiresAt = ttl !== null ? timestamp + ttl : null;
+        const previousInternal = this.entries.get(payload.key);
+        const previousSnapshot = previousInternal ? this.cloneEntry(previousInternal) : undefined;
+
+        const createdAt = previousInternal?.createdAt ?? timestamp;
+        const entry: BlackboardEntryInternal = {
+          key: payload.key,
+          value: structuredClone(payload.value),
+          tags,
+          createdAt,
+          updatedAt: timestamp,
+          expiresAt,
+          version: 0,
+        };
+
+        nextVersion += 1;
+        entry.version = nextVersion;
+        this.entries.set(payload.key, this.cloneInternal(entry));
+
+        const snapshot = this.cloneEntry(entry);
+        committedSnapshots.push(snapshot);
+        eventsToEmit.push({
+          version: nextVersion,
+          kind: "set",
+          key: payload.key,
+          timestamp,
+          entry: snapshot,
+          previous: previousSnapshot,
+        });
+      }
+    } catch (error) {
+      this.entries.clear();
+      for (const [key, entry] of originalEntries.entries()) {
+        this.entries.set(key, entry);
+      }
+      this.version = startingVersion;
+      throw error;
+    }
+
+    this.version = nextVersion;
+    for (const event of eventsToEmit) {
+      this.recordEvent(event);
+    }
+
+    return committedSnapshots;
   }
 
   /** Retrieves an entry if it exists and has not expired yet. */
@@ -249,6 +335,18 @@ export class BlackboardStore {
       this.events.splice(0, this.events.length - this.historyLimit);
     }
     this.emitter.emit("event", this.cloneEvent(event));
+  }
+
+  private cloneInternal(entry: BlackboardEntryInternal): BlackboardEntryInternal {
+    return {
+      key: entry.key,
+      value: structuredClone(entry.value),
+      tags: [...entry.tags],
+      createdAt: entry.createdAt,
+      updatedAt: entry.updatedAt,
+      expiresAt: entry.expiresAt,
+      version: entry.version,
+    };
   }
 
   private cloneEntry(entry: BlackboardEntryInternal): BlackboardEntrySnapshot {

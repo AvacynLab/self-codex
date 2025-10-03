@@ -1,4 +1,5 @@
 import { strict as assert } from "node:assert";
+import { EventEmitter } from "node:events";
 
 /** Allowed relationship kinds between value nodes. */
 export type ValueRelationshipKind = "supports" | "conflicts";
@@ -44,6 +45,8 @@ export interface ValueImpactInput {
   severity?: number;
   rationale?: string;
   source?: string;
+  /** Optional identifier of the plan node producing this impact. */
+  nodeId?: string;
 }
 
 /** Contribution captured when computing the score for a single value node. */
@@ -53,6 +56,21 @@ interface ValueContribution {
   impact: ValueImpactInput;
   propagatedFrom?: string;
   relationKind?: ValueRelationshipKind;
+}
+
+interface ValueContributionBucket {
+  node: ValueNode;
+  support: number;
+  risk: number;
+  contributions: ValueContribution[];
+}
+
+interface ValueEvaluationResult {
+  perValue: Map<string, ValueContributionBucket>;
+  breakdown: ValueScoreBreakdown[];
+  violations: ValueViolation[];
+  score: number;
+  totalWeight: number;
 }
 
 /** Serializable breakdown entry returned for each value node. */
@@ -66,17 +84,26 @@ export interface ValueScoreBreakdown extends Record<string, unknown> {
 }
 
 /** Serializable violation surfaced when the residual risk exceeds the tolerance. */
+/**
+ * Detailed contribution entry recorded for violations. The amount captures the
+ * absolute weight added by the impact once normalised and propagated across the
+ * relationship graph.
+ */
+export interface ValueViolationContributorDetails extends Record<string, unknown> {
+  impact: ValueImpactInput;
+  amount: number;
+  type: "support" | "risk";
+  propagated: boolean;
+  via?: ValueRelationshipKind;
+  from?: string;
+}
+
 export interface ValueViolation extends Record<string, unknown> {
   value: string;
   severity: number;
   tolerance: number;
   message: string;
-  contributors: Array<{
-    impact: ValueImpactInput;
-    propagated?: boolean;
-    via?: ValueRelationshipKind;
-    from?: string;
-  }>;
+  contributors: ValueViolationContributorDetails[];
 }
 
 /** Result returned when evaluating a plan against the value graph. */
@@ -91,6 +118,24 @@ export interface ValueScoreResult extends Record<string, unknown> {
 export interface ValueFilterDecision extends ValueScoreResult {
   allowed: boolean;
   threshold: number;
+}
+
+/**
+ * Enriched violation returned by {@link ValueGraph.explain}. It preserves the
+ * original violation payload while adding correlation hints and human readable
+ * guidance that downstream tooling can surface directly to operators.
+ */
+export interface ValueViolationInsight extends ValueViolation {
+  nodeId: string | null;
+  nodeLabel: string | null;
+  hint: string;
+  primaryContributor: ValueViolationContributorDetails | null;
+}
+
+/** Result returned by {@link ValueGraph.explain}. */
+export interface ValueExplanationResult extends Record<string, unknown> {
+  decision: ValueFilterDecision;
+  violations: ValueViolationInsight[];
 }
 
 /** Input payload accepted when scoring or filtering a plan. */
@@ -119,6 +164,82 @@ export interface ValueGraphSummary extends Record<string, unknown> {
   relationships: number;
   default_threshold: number;
 }
+
+/** Options accepted when constructing a {@link ValueGraph}. */
+export interface ValueGraphOptions {
+  /** Optional deterministic clock used to timestamp emitted events. */
+  now?: () => number;
+}
+
+/**
+ * Optional correlation metadata attached to plan evaluation events so downstream
+ * observers can associate guard decisions with orchestrator runs/operations.
+ */
+export interface ValueGraphCorrelationHints {
+  runId?: string | null;
+  opId?: string | null;
+  jobId?: string | null;
+  graphId?: string | null;
+  nodeId?: string | null;
+  childId?: string | null;
+}
+
+/** Options accepted when evaluating a plan (score/filter/explain). */
+export interface ValuePlanEvaluationOptions {
+  /** Optional correlation hints propagated to emitted telemetry events. */
+  correlation?: ValueGraphCorrelationHints | null;
+}
+
+/** Base metadata emitted for every value guard event. */
+export interface ValueGraphEventBase {
+  /** Kind of event being emitted. */
+  kind: "config_updated" | "plan_scored" | "plan_filtered" | "plan_explained";
+  /** Millisecond timestamp recorded when the event was produced. */
+  at: number;
+  /** Optional correlation metadata propagated from the caller. */
+  correlation?: ValueGraphCorrelationHints | null;
+}
+
+/** Event raised whenever the graph configuration changes. */
+export interface ValueGraphConfigUpdatedEvent extends ValueGraphEventBase {
+  kind: "config_updated";
+  summary: ValueGraphSummary;
+}
+
+/** Base shape shared by plan evaluation events. */
+export interface ValueGraphPlanEventBase extends ValueGraphEventBase {
+  planId: string;
+  planLabel: string | null;
+  impacts: ValueImpactInput[];
+}
+
+/** Event raised after computing the raw score for a plan. */
+export interface ValueGraphPlanScoredEvent extends ValueGraphPlanEventBase {
+  kind: "plan_scored";
+  result: ValueScoreResult;
+}
+
+/** Event raised after deciding whether a plan passes the guard. */
+export interface ValueGraphPlanFilteredEvent extends ValueGraphPlanEventBase {
+  kind: "plan_filtered";
+  decision: ValueFilterDecision;
+}
+
+/** Event raised after generating a detailed explanation for a plan. */
+export interface ValueGraphPlanExplainedEvent extends ValueGraphPlanEventBase {
+  kind: "plan_explained";
+  result: ValueExplanationResult;
+}
+
+/** Union of events emitted by {@link ValueGraph}. */
+export type ValueGraphEvent =
+  | ValueGraphConfigUpdatedEvent
+  | ValueGraphPlanScoredEvent
+  | ValueGraphPlanFilteredEvent
+  | ValueGraphPlanExplainedEvent;
+
+/** Listener signature used when subscribing to value guard events. */
+export type ValueGraphEventListener = (event: ValueGraphEvent) => void;
 
 /** Deterministic helper capping a number within the inclusive `[min, max]` range. */
 function clamp(value: number, min: number, max: number): number {
@@ -172,6 +293,36 @@ function ensureRecord<K, V>(map: Map<K, V>, key: K, create: () => V): V {
   return next;
 }
 
+/** Internal event channel identifier used by the value graph emitter. */
+const VALUE_EVENT = "value_event";
+
+/** Create defensive copies of impacts so emitted events remain immutable. */
+function cloneImpacts(impacts: ValueImpactInput[]): ValueImpactInput[] {
+  return impacts.map((impact) => ({ ...impact }));
+}
+
+/**
+ * Produces a defensive copy of correlation hints so downstream listeners cannot
+ * mutate the metadata stored alongside emitted events.
+ */
+function cloneCorrelationHints(
+  hints: ValueGraphCorrelationHints | null | undefined,
+): ValueGraphCorrelationHints | null {
+  if (!hints) {
+    return null;
+  }
+
+  const clone: ValueGraphCorrelationHints = {};
+  if (hints.runId !== undefined) clone.runId = hints.runId ?? null;
+  if (hints.opId !== undefined) clone.opId = hints.opId ?? null;
+  if (hints.jobId !== undefined) clone.jobId = hints.jobId ?? null;
+  if (hints.graphId !== undefined) clone.graphId = hints.graphId ?? null;
+  if (hints.nodeId !== undefined) clone.nodeId = hints.nodeId ?? null;
+  if (hints.childId !== undefined) clone.childId = hints.childId ?? null;
+
+  return Object.keys(clone).length > 0 ? clone : null;
+}
+
 /**
  * Stores the value definitions declared by operators and exposes scoring
  * utilities to guard plans before launching expensive fan-outs.
@@ -188,6 +339,29 @@ export class ValueGraph {
 
   /** Directed adjacency list describing how values influence each other. */
   private readonly adjacency = new Map<string, ValueRelationship[]>();
+
+  /** Internal event emitter broadcasting value guard telemetry. */
+  private readonly emitter = new EventEmitter();
+
+  /** Clock used to timestamp emitted events. */
+  private readonly now: () => number;
+
+  constructor(options: ValueGraphOptions = {}) {
+    this.now = options.now ?? (() => Date.now());
+  }
+
+  /** Subscribe to value guard events. Returns a disposer unregistering the listener. */
+  subscribe(listener: ValueGraphEventListener): () => void {
+    this.emitter.on(VALUE_EVENT, listener);
+    return () => {
+      this.emitter.off(VALUE_EVENT, listener);
+    };
+  }
+
+  /** Dispatch an event to every registered listener. */
+  private emitEvent(event: ValueGraphEvent): void {
+    this.emitter.emit(VALUE_EVENT, event);
+  }
 
   /** Replace the entire graph configuration with the provided specification. */
   set(config: ValueGraphConfig): ValueGraphSummary {
@@ -241,12 +415,20 @@ export class ValueGraph {
     this.defaultThreshold = clamp(config.defaultThreshold ?? this.defaultThreshold, 0, 1);
     this.version += 1;
 
-    return {
+    const summary: ValueGraphSummary = {
       version: this.version,
       values: this.nodes.size,
       relationships: Array.from(this.adjacency.values()).reduce((acc, list) => acc + list.length, 0),
       default_threshold: this.defaultThreshold,
     };
+
+    this.emitEvent({
+      kind: "config_updated",
+      at: this.now(),
+      summary,
+    });
+
+    return summary;
   }
 
   /** Retrieve the current default threshold guarding plan execution. */
@@ -255,23 +437,102 @@ export class ValueGraph {
   }
 
   /** Evaluate the impacts of a plan without applying the threshold. */
-  score(input: ValueScoreInput): ValueScoreResult {
-    const perValue = new Map<string, {
-      node: ValueNode;
-      support: number;
-      risk: number;
-      contributions: ValueContribution[];
-    }>();
+  score(input: ValueScoreInput, options: ValuePlanEvaluationOptions = {}): ValueScoreResult {
+    const evaluation = this.evaluatePlan(input);
+    const result: ValueScoreResult = {
+      score: evaluation.score,
+      total: Number(evaluation.totalWeight.toFixed(6)),
+      breakdown: evaluation.breakdown,
+      violations: evaluation.violations,
+    };
+
+    this.emitEvent({
+      kind: "plan_scored",
+      at: this.now(),
+      planId: input.id,
+      planLabel: input.label ?? null,
+      impacts: cloneImpacts(input.impacts),
+      result,
+      correlation: cloneCorrelationHints(options.correlation),
+    });
+
+    return result;
+  }
+
+  /**
+   * Evaluate a plan and return whether it satisfies the configured threshold.
+   * Violations are preserved in the result so operators can review the
+   * contributing impacts when diagnosing a rejection.
+   */
+  filter(input: ValueFilterInput, options: ValuePlanEvaluationOptions = {}): ValueFilterDecision {
+    const evaluation = this.evaluatePlan(input);
+    const threshold = clamp(input.threshold ?? this.defaultThreshold, 0, 1);
+    const allowed = evaluation.score >= threshold && evaluation.violations.length === 0;
+    const decision: ValueFilterDecision = {
+      score: evaluation.score,
+      total: Number(evaluation.totalWeight.toFixed(6)),
+      breakdown: evaluation.breakdown,
+      violations: evaluation.violations,
+      allowed,
+      threshold,
+    };
+
+    this.emitEvent({
+      kind: "plan_filtered",
+      at: this.now(),
+      planId: input.id,
+      planLabel: input.label ?? null,
+      impacts: cloneImpacts(input.impacts),
+      decision,
+      correlation: cloneCorrelationHints(options.correlation),
+    });
+
+    return decision;
+  }
+
+  /**
+   * Provides a human readable explanation for each violation. The returned
+   * payload mirrors the filtering decision and adds actionable hints so
+   * operators can quickly identify the dominant risk contributors.
+   */
+  explain(input: ValueFilterInput, options: ValuePlanEvaluationOptions = {}): ValueExplanationResult {
+    const evaluation = this.evaluatePlan(input);
+    const threshold = clamp(input.threshold ?? this.defaultThreshold, 0, 1);
+    const allowed = evaluation.score >= threshold && evaluation.violations.length === 0;
+    const decision: ValueFilterDecision = {
+      score: evaluation.score,
+      total: Number(evaluation.totalWeight.toFixed(6)),
+      breakdown: evaluation.breakdown,
+      violations: evaluation.violations,
+      allowed,
+      threshold,
+    };
+    const violations = this.buildViolationInsights(decision, evaluation);
+    const result: ValueExplanationResult = { decision, violations };
+
+    this.emitEvent({
+      kind: "plan_explained",
+      at: this.now(),
+      planId: input.id,
+      planLabel: input.label ?? null,
+      impacts: cloneImpacts(input.impacts),
+      result,
+      correlation: cloneCorrelationHints(options.correlation),
+    });
+
+    return result;
+  }
+
+  /** Compute the full evaluation for a plan, including intermediate metrics. */
+  private evaluatePlan(input: ValueScoreInput): ValueEvaluationResult {
+    const perValue: Map<string, ValueContributionBucket> = new Map();
     for (const node of this.nodes.values()) {
       perValue.set(node.id, { node, support: 0, risk: 0, contributions: [] });
     }
 
     const unknownImpacts: ValueImpactInput[] = [];
 
-    const recordContribution = (
-      targetId: string,
-      contribution: ValueContribution,
-    ) => {
+    const recordContribution = (targetId: string, contribution: ValueContribution) => {
       const bucket = perValue.get(targetId);
       if (!bucket) {
         unknownImpacts.push(contribution.impact);
@@ -319,9 +580,7 @@ export class ValueGraph {
     for (const bucket of perValue.values()) {
       const { node, support, risk, contributions } = bucket;
       const mitigatedRisk = Math.max(0, risk - support);
-      const satisfaction = node.weight === 0
-        ? 1
-        : 1 - clamp(mitigatedRisk / node.weight, 0, 1);
+      const satisfaction = node.weight === 0 ? 1 : 1 - clamp(mitigatedRisk / node.weight, 0, 1);
       totalWeight += node.weight;
       weightedScoreSum += satisfaction * node.weight;
 
@@ -343,6 +602,8 @@ export class ValueGraph {
           message: `residual risk ${severityRatio.toFixed(2)} exceeds tolerance ${node.tolerance.toFixed(2)}`,
           contributors: contributions.map((entry) => ({
             impact: entry.impact,
+            amount: Number(entry.amount.toFixed(6)),
+            type: entry.type,
             propagated: entry.propagatedFrom !== undefined,
             via: entry.relationKind,
             from: entry.propagatedFrom,
@@ -360,6 +621,9 @@ export class ValueGraph {
         contributors: [
           {
             impact,
+            amount: 1,
+            type: "risk",
+            propagated: false,
           },
         ],
       });
@@ -368,23 +632,83 @@ export class ValueGraph {
     const score = totalWeight === 0 ? 1 : clamp(weightedScoreSum / totalWeight, 0, 1);
 
     return {
-      score,
-      total: Number(totalWeight.toFixed(6)),
+      perValue,
       breakdown,
       violations,
+      score,
+      totalWeight,
     };
   }
 
+  /** Builds enriched violation payloads suitable for MCP responses. */
+  private buildViolationInsights(
+    decision: ValueFilterDecision,
+    evaluation: ValueEvaluationResult,
+  ): ValueViolationInsight[] {
+    const insights: ValueViolationInsight[] = [];
+    for (const violation of decision.violations) {
+      const dominant = this.pickDominantContributor(violation.contributors);
+      const bucket = evaluation.perValue.get(violation.value);
+      const nodeLabel = bucket?.node.label ?? null;
+      const nodeId = dominant?.impact.nodeId ?? null;
+      const hint = this.composeHint(violation, dominant, nodeLabel);
+      insights.push({
+        ...violation,
+        nodeId,
+        nodeLabel,
+        hint,
+        primaryContributor: dominant ?? null,
+      });
+    }
+    return insights;
+  }
+
+  /** Selects the dominant risk contribution driving a violation. */
+  private pickDominantContributor(
+    contributors: ValueViolationContributorDetails[],
+  ): ValueViolationContributorDetails | null {
+    let candidate: ValueViolationContributorDetails | null = null;
+    for (const entry of contributors) {
+      if (entry.type !== "risk") {
+        continue;
+      }
+      if (!candidate || entry.amount > candidate.amount) {
+        candidate = entry;
+      }
+    }
+    return candidate;
+  }
+
   /**
-   * Evaluate a plan and return whether it satisfies the configured threshold.
-   * Violations are preserved in the result so operators can review the
-   * contributing impacts when diagnosing a rejection.
+   * Generates a human readable hint summarising why the violation triggered and
+   * how operators could mitigate it.
    */
-  filter(input: ValueFilterInput): ValueFilterDecision {
-    const score = this.score(input);
-    const threshold = clamp(input.threshold ?? this.defaultThreshold, 0, 1);
-    const allowed = score.score >= threshold && score.violations.length === 0;
-    return { ...score, allowed, threshold };
+  private composeHint(
+    violation: ValueViolation,
+    dominant: ValueViolationContributorDetails | null,
+    nodeLabel: string | null,
+  ): string {
+    const severityPercent = (violation.severity * 100).toFixed(1);
+    const tolerancePercent = (violation.tolerance * 100).toFixed(1);
+    const base = `Residual risk ${severityPercent}% exceeds tolerance ${tolerancePercent}% for value '${violation.value}'.`;
+
+    if (violation.message.includes("not declared")) {
+      return `${base} Declare the missing value in the graph or remove the unknown impact.`;
+    }
+
+    if (!dominant) {
+      return `${base} Review the contributing impacts to restore compliance.`;
+    }
+
+    const origin = dominant.propagated
+      ? `Risk propagated from value '${dominant.from ?? "unknown"}'` + (dominant.via ? ` via ${dominant.via}` : "")
+      : "Direct risk impact";
+    const location = dominant.impact.nodeId
+      ? `on plan node '${dominant.impact.nodeId}'`
+      : "within the evaluated plan";
+    const rationale = dominant.impact.rationale ?? dominant.impact.source ?? `impact '${dominant.impact.value}'`;
+    const labelPart = nodeLabel ? ` (value label: ${nodeLabel})` : "";
+    return `${base}${labelPart} ${origin} ${location}: ${rationale}. Mitigate or reduce this contribution to pass the guard.`;
   }
 
   /** Derive the propagated contribution type from the original impact. */

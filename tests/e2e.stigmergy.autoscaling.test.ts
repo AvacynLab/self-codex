@@ -105,6 +105,9 @@ describe("stigmergy driven autoscaling", function () {
         exitSignal: null,
         forcedTermination: false,
         stopReason: null,
+        role: null,
+        limits: null,
+        attachedAt: null,
       });
       return Promise.resolve();
     });

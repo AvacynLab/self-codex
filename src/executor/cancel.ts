@@ -15,6 +15,10 @@ interface CancellationEntry {
   readonly opId: string;
   readonly controller: AbortController;
   runId: string | null;
+  jobId: string | null;
+  graphId: string | null;
+  nodeId: string | null;
+  childId: string | null;
   createdAt: number;
   cancelledAt: number | null;
   reason: string | null;
@@ -23,6 +27,32 @@ interface CancellationEntry {
 
 /** Event emitted whenever a cancellation is requested. */
 const EVENT_CANCELLED = "cancelled";
+
+/**
+ * Structured payload describing the lifecycle of a cancellation request. The
+ * outcome differentiates between the first successful signal and idempotent
+ * retries so observers can keep deterministic timelines.
+ */
+export interface CancellationEventPayload {
+  /** Operation identifier the cancellation targets. */
+  opId: string;
+  /** Optional run identifier associated with the operation. */
+  runId: string | null;
+  /** Optional job identifier correlated with the operation. */
+  jobId: string | null;
+  /** Optional graph identifier correlated with the operation. */
+  graphId: string | null;
+  /** Optional node identifier correlated with the operation. */
+  nodeId: string | null;
+  /** Optional child identifier correlated with the operation. */
+  childId: string | null;
+  /** Human readable reason attached to the request, if any. */
+  reason: string | null;
+  /** Monotonic timestamp recorded when the request was observed. */
+  at: number;
+  /** Outcome describing whether the cancellation was newly requested or idempotent. */
+  outcome: CancellationRequestOutcome;
+}
 
 /** Shared emitter used to fan-out cancellation notifications. */
 const cancellationEmitter = new EventEmitter();
@@ -40,12 +70,32 @@ const runIndex = new Map<string, Set<string>>();
 export class OperationCancelledError extends Error {
   public readonly code = "E-CANCEL-OP";
   public readonly hint = "operation_cancelled";
-  public readonly details: { opId: string; runId: string | null; reason: string | null };
+  public readonly details: {
+    opId: string;
+    runId: string | null;
+    jobId: string | null;
+    graphId: string | null;
+    nodeId: string | null;
+    childId: string | null;
+    reason: string | null;
+  };
 
-  constructor(opId: string, runId: string | null, reason: string | null) {
-    super(reason ? `operation ${opId} cancelled: ${reason}` : `operation ${opId} cancelled`);
+  constructor(details: {
+    opId: string;
+    runId: string | null;
+    jobId: string | null;
+    graphId: string | null;
+    nodeId: string | null;
+    childId: string | null;
+    reason: string | null;
+  }) {
+    super(
+      details.reason
+        ? `operation ${details.opId} cancelled: ${details.reason}`
+        : `operation ${details.opId} cancelled`,
+    );
     this.name = "OperationCancelledError";
-    this.details = { opId, runId, reason };
+    this.details = details;
   }
 }
 
@@ -59,6 +109,14 @@ export interface CancellationHandle {
   readonly opId: string;
   /** Optional run identifier correlated to the operation. */
   readonly runId: string | null;
+  /** Optional job identifier correlated to the operation. */
+  readonly jobId: string | null;
+  /** Optional graph identifier correlated to the operation. */
+  readonly graphId: string | null;
+  /** Optional node identifier correlated to the operation. */
+  readonly nodeId: string | null;
+  /** Optional child identifier correlated to the operation. */
+  readonly childId: string | null;
   /** Monotonic creation timestamp. */
   readonly createdAt: number;
   /** Timestamp recorded when the cancellation was requested, if any. */
@@ -84,7 +142,14 @@ export interface CancellationHandle {
  */
 export function registerCancellation(
   opId: string,
-  options: { runId?: string | null; createdAt?: number } = {},
+  options: {
+    runId?: string | null;
+    jobId?: string | null;
+    graphId?: string | null;
+    nodeId?: string | null;
+    childId?: string | null;
+    createdAt?: number;
+  } = {},
 ): CancellationHandle {
   if (operations.has(opId)) {
     throw new Error(`cancellation handle already registered for ${opId}`);
@@ -92,12 +157,20 @@ export function registerCancellation(
 
   const controller = new AbortController();
   const runId = options.runId ?? null;
+  const jobId = options.jobId ?? null;
+  const graphId = options.graphId ?? null;
+  const nodeId = options.nodeId ?? null;
+  const childId = options.childId ?? null;
   const createdAt = options.createdAt ?? Date.now();
 
   const entry: CancellationEntry = {
     opId,
     controller,
     runId,
+    jobId,
+    graphId,
+    nodeId,
+    childId,
     createdAt,
     cancelledAt: null,
     reason: null,
@@ -110,6 +183,18 @@ export function registerCancellation(
     },
     get runId() {
       return entry.runId;
+    },
+    get jobId() {
+      return entry.jobId;
+    },
+    get graphId() {
+      return entry.graphId;
+    },
+    get nodeId() {
+      return entry.nodeId;
+    },
+    get childId() {
+      return entry.childId;
     },
     get createdAt() {
       return entry.createdAt;
@@ -143,7 +228,15 @@ export function registerCancellation(
       };
     },
     toError(): OperationCancelledError {
-      return new OperationCancelledError(entry.opId, entry.runId, entry.reason);
+      return new OperationCancelledError({
+        opId: entry.opId,
+        runId: entry.runId,
+        jobId: entry.jobId,
+        graphId: entry.graphId,
+        nodeId: entry.nodeId,
+        childId: entry.childId,
+        reason: entry.reason,
+      });
     },
   };
 
@@ -204,18 +297,48 @@ export function requestCancellation(
     entry.reason = options.reason ?? entry.reason;
     entry.cancelledAt = options.at ?? Date.now();
     entry.controller.abort();
+    const at = entry.cancelledAt ?? Date.now();
     cancellationEmitter.emit(EVENT_CANCELLED, {
       opId: entry.opId,
+      runId: entry.runId,
+      jobId: entry.jobId,
+      graphId: entry.graphId,
+      nodeId: entry.nodeId,
+      childId: entry.childId,
       reason: entry.reason,
-      at: entry.cancelledAt ?? Date.now(),
-    });
+      at,
+      outcome: "requested",
+    } satisfies CancellationEventPayload);
     return "requested";
   }
 
   if (options.reason && !entry.reason) {
     entry.reason = options.reason;
   }
+  const at = options.at ?? Date.now();
+  cancellationEmitter.emit(EVENT_CANCELLED, {
+    opId: entry.opId,
+    runId: entry.runId,
+    jobId: entry.jobId,
+    graphId: entry.graphId,
+    nodeId: entry.nodeId,
+    childId: entry.childId,
+    reason: entry.reason,
+    at,
+    outcome: "already_cancelled",
+  } satisfies CancellationEventPayload);
   return "already_cancelled";
+}
+
+/** Structured result describing the cancellation status of an operation. */
+export interface CancellationRunResult {
+  opId: string;
+  outcome: CancellationRequestOutcome;
+  runId: string | null;
+  jobId: string | null;
+  graphId: string | null;
+  nodeId: string | null;
+  childId: string | null;
 }
 
 /**
@@ -226,15 +349,24 @@ export function requestCancellation(
 export function cancelRun(
   runId: string,
   options: { reason?: string | null; at?: number } = {},
-): Array<{ opId: string; outcome: CancellationRequestOutcome }> {
+): CancellationRunResult[] {
   const bucket = runIndex.get(runId);
   if (!bucket || bucket.size === 0) {
     return [];
   }
-  const results: Array<{ opId: string; outcome: CancellationRequestOutcome }> = [];
+  const results: CancellationRunResult[] = [];
   for (const opId of bucket) {
     const outcome = requestCancellation(opId, options);
-    results.push({ opId, outcome });
+    const entry = operations.get(opId);
+    results.push({
+      opId,
+      outcome,
+      runId: entry?.runId ?? null,
+      jobId: entry?.jobId ?? null,
+      graphId: entry?.graphId ?? null,
+      nodeId: entry?.nodeId ?? null,
+      childId: entry?.childId ?? null,
+    });
   }
   return results;
 }
@@ -246,4 +378,17 @@ export function cancelRun(
 export function resetCancellationRegistry(): void {
   operations.clear();
   runIndex.clear();
+}
+
+/**
+ * Subscribe to cancellation lifecycle events. The returned disposer must be
+ * invoked to avoid leaking listeners when the orchestrator shuts down.
+ */
+export function subscribeCancellationEvents(
+  listener: (event: CancellationEventPayload) => void,
+): () => void {
+  cancellationEmitter.on(EVENT_CANCELLED, listener);
+  return () => {
+    cancellationEmitter.off(EVENT_CANCELLED, listener);
+  };
 }

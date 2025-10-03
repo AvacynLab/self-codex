@@ -1,4 +1,5 @@
 import { MessageRecord } from "./types.js";
+import type { ChildRuntimeLimits } from "./childRuntime.js";
 import { ChildRecordSnapshot } from "./state/childrenIndex.js";
 type AttributeValue = string | number | boolean;
 
@@ -81,6 +82,12 @@ export interface ChildSnapshot {
   forcedTermination: boolean;
   /** Human-readable reason provided by the supervisor upon termination. */
   stopReason: string | null;
+  /** High-level orchestrator role advertised for the child, or null when unset. */
+  role: string | null;
+  /** Declarative runtime limits attached to the child, if any were configured. */
+  limits: ChildRuntimeLimits | null;
+  /** Timestamp capturing the last explicit attachment request acknowledged by the supervisor. */
+  attachedAt: number | null;
 }
 
 export interface JobSnapshot {
@@ -165,6 +172,41 @@ function toNullableNumber(value: AttributeValue | undefined): number | null {
   if (value === undefined) return null;
   const n = Number(value);
   return Number.isFinite(n) && n !== 0 ? n : null;
+}
+
+/**
+ * Normalises the supervisor-provided runtime limits so they can be persisted in
+ * the graph node attributes without losing ordering determinism.
+ */
+function serialiseChildLimits(limits: ChildRuntimeLimits | null | undefined): string | undefined {
+  if (!limits) {
+    return undefined;
+  }
+  const entries = Object.entries(limits).filter(([, value]) => value !== undefined);
+  if (entries.length === 0) {
+    return undefined;
+  }
+  const normalised = Object.fromEntries(entries.sort(([a], [b]) => a.localeCompare(b)));
+  return JSON.stringify(normalised);
+}
+
+/** Rehydrates runtime limits persisted on a graph node back into a typed shape. */
+function parseChildLimits(value: AttributeValue | undefined): ChildRuntimeLimits | null {
+  if (value === undefined) {
+    return null;
+  }
+  if (typeof value !== "string" || value.trim() === "") {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(value);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return null;
+    }
+    return { ...parsed } as ChildRuntimeLimits;
+  } catch {
+    return null;
+  }
 }
 
 function normalizeString(value: string | null | undefined): string {
@@ -339,6 +381,9 @@ export class GraphState {
       exitSignal: string | null;
       forcedTermination: boolean | null;
       stopReason: string | null;
+      role: string | null;
+      limits: ChildRuntimeLimits | null;
+      attachedAt: number | null;
     }>
   ): void {
     const nodeId = this.childNodeId(childId);
@@ -422,6 +467,24 @@ export class GraphState {
     if (updates.stopReason !== undefined) {
       attributes.stop_reason = normalizeString(updates.stopReason);
     }
+    if (updates.role !== undefined) {
+      if (updates.role === null) {
+        delete attributes.role;
+      } else {
+        attributes.role = normalizeString(updates.role);
+      }
+    }
+    if (updates.limits !== undefined) {
+      const serialised = serialiseChildLimits(updates.limits);
+      if (serialised === undefined) {
+        delete attributes.limits_json;
+      } else {
+        attributes.limits_json = serialised;
+      }
+    }
+    if (updates.attachedAt !== undefined) {
+      attributes.attached_at = updates.attachedAt ?? 0;
+    }
     this.nodes.set(nodeId, { id: nodeId, attributes });
   }
 
@@ -450,6 +513,9 @@ export class GraphState {
       exitSignal: snapshot.exitSignal,
       forcedTermination: snapshot.forcedTermination,
       stopReason: snapshot.stopReason,
+      role: snapshot.role,
+      limits: snapshot.limits,
+      attachedAt: snapshot.attachedAt,
     });
   }
 
@@ -1169,6 +1235,9 @@ export class GraphState {
     const exitSignal = toNullableString(node.attributes.exit_signal);
     const forcedTermination = node.attributes.forced_termination === true;
     const stopReason = toNullableString(node.attributes.stop_reason);
+    const role = toNullableString(node.attributes.role);
+    const limits = parseChildLimits(node.attributes.limits_json);
+    const attachedAt = toNullableNumber(node.attributes.attached_at);
     return {
       id,
       jobId,
@@ -1193,6 +1262,9 @@ export class GraphState {
       exitSignal,
       forcedTermination,
       stopReason,
+      role,
+      limits,
+      attachedAt,
     };
   }
 }

@@ -15,10 +15,12 @@ export class OperationCancelledError extends Error {
     code = "E-CANCEL-OP";
     hint = "operation_cancelled";
     details;
-    constructor(opId, runId, reason) {
-        super(reason ? `operation ${opId} cancelled: ${reason}` : `operation ${opId} cancelled`);
+    constructor(details) {
+        super(details.reason
+            ? `operation ${details.opId} cancelled: ${details.reason}`
+            : `operation ${details.opId} cancelled`);
         this.name = "OperationCancelledError";
-        this.details = { opId, runId, reason };
+        this.details = details;
     }
 }
 /**
@@ -32,11 +34,19 @@ export function registerCancellation(opId, options = {}) {
     }
     const controller = new AbortController();
     const runId = options.runId ?? null;
+    const jobId = options.jobId ?? null;
+    const graphId = options.graphId ?? null;
+    const nodeId = options.nodeId ?? null;
+    const childId = options.childId ?? null;
     const createdAt = options.createdAt ?? Date.now();
     const entry = {
         opId,
         controller,
         runId,
+        jobId,
+        graphId,
+        nodeId,
+        childId,
         createdAt,
         cancelledAt: null,
         reason: null,
@@ -48,6 +58,18 @@ export function registerCancellation(opId, options = {}) {
         },
         get runId() {
             return entry.runId;
+        },
+        get jobId() {
+            return entry.jobId;
+        },
+        get graphId() {
+            return entry.graphId;
+        },
+        get nodeId() {
+            return entry.nodeId;
+        },
+        get childId() {
+            return entry.childId;
         },
         get createdAt() {
             return entry.createdAt;
@@ -81,7 +103,15 @@ export function registerCancellation(opId, options = {}) {
             };
         },
         toError() {
-            return new OperationCancelledError(entry.opId, entry.runId, entry.reason);
+            return new OperationCancelledError({
+                opId: entry.opId,
+                runId: entry.runId,
+                jobId: entry.jobId,
+                graphId: entry.graphId,
+                nodeId: entry.nodeId,
+                childId: entry.childId,
+                reason: entry.reason,
+            });
         },
     };
     entry.handle = handle;
@@ -132,16 +162,35 @@ export function requestCancellation(opId, options = {}) {
         entry.reason = options.reason ?? entry.reason;
         entry.cancelledAt = options.at ?? Date.now();
         entry.controller.abort();
+        const at = entry.cancelledAt ?? Date.now();
         cancellationEmitter.emit(EVENT_CANCELLED, {
             opId: entry.opId,
+            runId: entry.runId,
+            jobId: entry.jobId,
+            graphId: entry.graphId,
+            nodeId: entry.nodeId,
+            childId: entry.childId,
             reason: entry.reason,
-            at: entry.cancelledAt ?? Date.now(),
+            at,
+            outcome: "requested",
         });
         return "requested";
     }
     if (options.reason && !entry.reason) {
         entry.reason = options.reason;
     }
+    const at = options.at ?? Date.now();
+    cancellationEmitter.emit(EVENT_CANCELLED, {
+        opId: entry.opId,
+        runId: entry.runId,
+        jobId: entry.jobId,
+        graphId: entry.graphId,
+        nodeId: entry.nodeId,
+        childId: entry.childId,
+        reason: entry.reason,
+        at,
+        outcome: "already_cancelled",
+    });
     return "already_cancelled";
 }
 /**
@@ -157,7 +206,16 @@ export function cancelRun(runId, options = {}) {
     const results = [];
     for (const opId of bucket) {
         const outcome = requestCancellation(opId, options);
-        results.push({ opId, outcome });
+        const entry = operations.get(opId);
+        results.push({
+            opId,
+            outcome,
+            runId: entry?.runId ?? null,
+            jobId: entry?.jobId ?? null,
+            graphId: entry?.graphId ?? null,
+            nodeId: entry?.nodeId ?? null,
+            childId: entry?.childId ?? null,
+        });
     }
     return results;
 }
@@ -168,4 +226,14 @@ export function cancelRun(runId, options = {}) {
 export function resetCancellationRegistry() {
     operations.clear();
     runIndex.clear();
+}
+/**
+ * Subscribe to cancellation lifecycle events. The returned disposer must be
+ * invoked to avoid leaking listeners when the orchestrator shuts down.
+ */
+export function subscribeCancellationEvents(listener) {
+    cancellationEmitter.on(EVENT_CANCELLED, listener);
+    return () => {
+        cancellationEmitter.off(EVENT_CANCELLED, listener);
+    };
 }

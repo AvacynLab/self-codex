@@ -110,6 +110,8 @@ describe("plan_run_reactive tool", () => {
     const result = await execution;
 
     expect(result.status).to.equal("success");
+    expect(result.idempotent).to.equal(false);
+    expect(result.idempotency_key).to.equal(null);
     expect(result.loop_ticks).to.equal(1);
     expect(result.scheduler_ticks).to.be.greaterThanOrEqual(1);
     expect(result.invocations).to.have.length(1);
@@ -147,6 +149,8 @@ describe("plan_run_reactive tool", () => {
     const result = await execution;
 
     expect(result.status).to.equal("success");
+    expect(result.idempotent).to.equal(false);
+    expect(result.idempotency_key).to.equal(null);
     expect(result.invocations).to.have.length(1);
     expect(result.invocations[0]).to.include({ executed: false, output: null });
     expect(result.last_output).to.equal(null);

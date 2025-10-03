@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { ChildSupervisor } from "../src/childSupervisor.js";
+import { ChildSupervisor, type ChildLogEventSnapshot } from "../src/childSupervisor.js";
 import { writeArtifact } from "../src/artifacts.js";
 
 const mockRunnerPath = fileURLToPath(new URL("./fixtures/mock-runner.js", import.meta.url));
@@ -123,6 +123,56 @@ describe("child supervisor", () => {
       const snapshot = supervisor.childrenIndex.getChild(created.childId);
       expect(snapshot?.lastHeartbeatAt).to.be.a("number");
       expect(snapshot?.state).to.equal("idle");
+    } finally {
+      await supervisor.disposeAll();
+      await rm(childrenRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("forwards child logs with correlation metadata to the configured recorder", async () => {
+    const childrenRoot = await mkdtemp(path.join(tmpdir(), "supervisor-logs-"));
+    const recorded: Array<{ childId: string; snapshot: ChildLogEventSnapshot }> = [];
+    const supervisor = new ChildSupervisor({
+      childrenRoot,
+      defaultCommand: process.execPath,
+      defaultArgs: [mockRunnerPath, "--role", "friendly"],
+      recordChildLogEntry: (childId, entry) => {
+        recorded.push({ childId, snapshot: { ...entry } });
+      },
+      resolveChildCorrelation: (context) => {
+        if (context.kind === "message" && context.message.parsed && typeof context.message.parsed === "object") {
+          const parsed = context.message.parsed as Record<string, unknown>;
+          if (parsed.type === "echo") {
+            return { jobId: "job-logs", runId: "run-logs", opId: "op-echo" };
+          }
+        }
+        return {};
+      },
+    });
+
+    try {
+      const created = await supervisor.createChild();
+      expect(created.readyMessage).to.not.equal(null);
+
+      await supervisor.send(created.childId, { type: "correlated", note: "please echo" });
+
+      const echoed = await supervisor.waitForMessage(
+        created.childId,
+        (message) => Boolean(message.parsed && (message.parsed as any).type === "echo"),
+        500,
+      );
+      expect(echoed.parsed).to.be.an("object");
+
+      // Allow the async recorder to process the event loop tick.
+      await new Promise((resolve) => setTimeout(resolve, 20));
+
+      const echoLog = recorded.find((entry) => entry.childId === created.childId && (entry.snapshot.parsed as any)?.type === "echo");
+      expect(echoLog).to.not.equal(undefined);
+      expect(echoLog?.snapshot.runId).to.equal("run-logs");
+      expect(echoLog?.snapshot.opId).to.equal("op-echo");
+      expect(echoLog?.snapshot.jobId).to.equal("job-logs");
+      expect(echoLog?.snapshot.childId).to.equal(created.childId);
+      expect(echoLog?.snapshot.message).to.include("\"type\":\"echo\"");
     } finally {
       await supervisor.disposeAll();
       await rm(childrenRoot, { recursive: true, force: true });

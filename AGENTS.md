@@ -80,8 +80,14 @@ Contexte : TypeScript/Node ESM, local-first, une instance Codex par enfant, pas 
 * [x] **Créer** `src/events/bus.ts`
 
   * [x] Type `Event {ts, cat, level, runId?, opId?, graphId?, nodeId?, childId?, msg, data?, seq}`
-  * [ ] Wrapper sur émetteurs existants (BT, scheduler, bb, stig, cnp, consensus, values, children)
+  * [x] Wrapper sur émetteurs existants (BT, scheduler, bb, stig, cnp, consensus, values, children)
     * [x] BT + scheduler : `plan_run_bt` / `plan_run_reactive` publient `BT_RUN` corrélé (`run_id`, `op_id`, `mode`)
+    * [x] Value guard : instrumentation `ValueGraph` + bridge MCP (corrélations run/op à compléter côté outils)
+  * [x] Blackboard + stigmergy : ponts vers `EventBus` (mutations + évaporation)
+  * [x] Annulation : registre `cancel` → `EventBus` (run/op/outcome, sévérité idempotente)
+  * [x] Children : runtime lifecycle & flux stdout/stderr relayés avec corrélation run/op/child
+  * [x] Contract-Net : annonces, enchères et attributions relayées sur le bus avec corrélation run/op
+  * [x] Consensus : décisions agrégées → `EventBus` (run/op/job + métadonnées)
 * [ ] **Modifier** `src/executor/*`, `src/coord/*`, `src/agents/*`
 
   * [ ] Publier évènements standardisés avec `opId/runId`
@@ -89,6 +95,8 @@ Contexte : TypeScript/Node ESM, local-first, une instance Codex par enfant, pas 
 
   * [x] tool `events_subscribe({cats?, runId?})` (stream SSE/jsonlines)
 * [x] **Tests** : `tests/events.subscribe.progress.test.ts`
+
+  * [x] `tests/events.bridges.test.ts`
 
   * [x] Filtrage par catégorie ; ordre ; corrélation idempotente
 
@@ -115,40 +123,40 @@ Contexte : TypeScript/Node ESM, local-first, une instance Codex par enfant, pas 
 
 ### 2.1 Transactions exposées
 
-* [ ] **Modifier** `src/graph/tx.ts` (compléter métadonnées, horodatage, owner)
-* [ ] **Modifier** `src/server.ts`
+* [x] **Modifier** `src/graph/tx.ts` (compléter métadonnées, horodatage, owner)
+* [x] **Modifier** `src/server.ts`
 
-  * [ ] tools `tx_begin({graphId})`, `tx_apply({txId, ops:GraphOp[]})`, `tx_commit({txId})`, `tx_rollback({txId})`
-  * [ ] Validation Zod des `GraphOp` (add/remove node/edge, metadata patch, rewrite nommée)
-* [ ] **Tests** : `tests/tx.begin-apply-commit.test.ts`
+  * [x] tools `tx_begin({graphId})`, `tx_apply({txId, ops:GraphOp[]})`, `tx_commit({txId})`, `tx_rollback({txId})`
+  * [x] Validation Zod des `GraphOp` (add/remove node/edge, metadata patch, rewrite nommée)
+* [x] **Tests** : `tests/tx.begin-apply-commit.test.ts`
 
-  * [ ] Conflit de version ; rollback idempotent ; aperçu version `previewVersion`
+  * [x] Conflit de version ; rollback idempotent ; aperçu version `previewVersion`
 
 ### 2.2 Diff/Patch & invariants
 
-* [ ] **Créer** `src/graph/diff.ts` (JSON Patch RFC 6902)
-* [ ] **Créer** `src/graph/patch.ts` (appliquer patch avec vérification)
-* [ ] **Créer** `src/graph/invariants.ts`
+* [x] **Créer** `src/graph/diff.ts` (JSON Patch RFC 6902)
+* [x] **Créer** `src/graph/patch.ts` (appliquer patch avec vérification)
+* [x] **Créer** `src/graph/invariants.ts`
 
-  * [ ] Acyclicité (si DAG), ports/labels requis, contraintes edge cardinality
-* [ ] **Modifier** `src/server.ts`
+  * [x] Acyclicité (si DAG), ports/labels requis, contraintes edge cardinality
+* [x] **Modifier** `src/server.ts`
 
-  * [ ] tools `graph_diff({graphId, from, to})`, `graph_patch({graphId, patch})`
-* [ ] **Tests** :
+  * [x] tools `graph_diff({graphId, from, to})`, `graph_patch({graphId, patch})`
+* [x] **Tests** :
 
-  * [ ] `tests/graph.diff-patch.test.ts` (roundtrip)
-  * [ ] `tests/graph.invariants.enforced.test.ts` (rejet patch invalide)
+  * [x] `tests/graph.diff-patch.test.ts` (roundtrip)
+  * [x] `tests/graph.invariants.enforced.test.ts` (rejet patch invalide)
 
 ### 2.3 Locks de graphe
 
-* [ ] **Créer** `src/graph/locks.ts`
+* [x] **Créer** `src/graph/locks.ts`
 
-  * [ ] `graph_lock({graphId, holder, ttlMs}) -> {lockId}` ; `graph_unlock({lockId})`
-  * [ ] Rafraîchissement ; expiration ; re-entrance par holder
-* [ ] **Modifier** mutations/tx pour **refuser** si lock détenu par autre holder
-* [ ] **Tests** : `tests/graph.locks.concurrent.test.ts`
+  * [x] `graph_lock({graphId, holder, ttlMs}) -> {lockId}` ; `graph_unlock({lockId})`
+  * [x] Rafraîchissement ; expiration ; re-entrance par holder
+* [x] **Modifier** mutations/tx pour **refuser** si lock détenu par autre holder
+* [x] **Tests** : `tests/graph.locks.concurrent.test.ts`
 
-  * [ ] Pas de deadlock ; re-entrance ; expiration propre
+  * [x] Pas de deadlock ; re-entrance ; expiration propre
 
 ### 2.4 Idempotency keys
 
@@ -162,13 +170,13 @@ Contexte : TypeScript/Node ESM, local-first, une instance Codex par enfant, pas 
 
 * [ ] **Modifier** `src/server.ts`
 
-  * [ ] tools `bb_batch_set([{ns,key,value,ttlMs?}])`
-  * [ ] `graph_batch_mutate({graphId, ops:GraphOp[]})`
-  * [ ] `child_batch_create([{idempotencyKey?, role?, prompt, limits?}])`
-  * [ ] `stig_batch([{nodeId,type,intensity}])`
-* [ ] **Tests** : `tests/bulk.bb-graph-child-stig.test.ts`
+  * [x] tools `bb_batch_set([{ns,key,value,ttlMs?}])`
+  * [x] `graph_batch_mutate({graphId, ops:GraphOp[]})`
+  * [x] `child_batch_create([{idempotencyKey?, role?, prompt, limits?}])`
+  * [x] `stig_batch([{nodeId,type,intensity}])`
+* [x] **Tests** : `tests/bulk.bb-graph-child-stig.test.ts` (couverture `bb_batch_set` ajoutée, graph/child/stig restant)
 
-  * [ ] Atomicité : rollback si erreur partielle
+  * [x] Atomicité : rollback si erreur partielle
 
 ---
 
@@ -187,14 +195,14 @@ Contexte : TypeScript/Node ESM, local-first, une instance Codex par enfant, pas 
 
 ### 3.2 Child operations
 
-* [ ] **Modifier** `src/childRuntime.ts`, `src/state/childrenIndex.ts`
+* [x] **Modifier** `src/childRuntime.ts`, `src/state/childrenIndex.ts`
 
-  * [ ] Exposer `setRole`, `setLimits`, `attach` si déjà en vie
-* [ ] **Modifier** `src/server.ts`
+  * [x] Exposer `setRole`, `setLimits`, `attach` si déjà en vie
+* [x] **Modifier** `src/server.ts`
 
-  * [ ] tools `child_spawn_codex({role?, prompt, modelHint?, limits?, idempotencyKey?})`
-  * [ ] `child_attach({childId})`, `child_set_role({childId, role})`, `child_set_limits(...)`
-* [ ] **Tests** : `tests/child.spawn-attach-limits.test.ts`
+  * [x] tools `child_spawn_codex({role?, prompt, modelHint?, limits?, idempotencyKey?})`
+  * [x] `child_attach({childId})`, `child_set_role({childId, role})`, `child_set_limits(...)`
+* [x] **Tests** : `tests/child.spawn-attach-limits.test.ts`
 
 ---
 
@@ -290,11 +298,12 @@ Contexte : TypeScript/Node ESM, local-first, une instance Codex par enfant, pas 
 
 * [ ] **Modifier** `src/values/valueGraph.ts`
 
-  * [ ] `values_explain({plan}) -> {violations:[{nodeId, value, severity, hint}]}`
+* [x] `values_explain({plan}) -> {violations:[{nodeId, value, severity, hint}]}`
 * [ ] **Modifier** `src/server.ts`
 
-  * [ ] tool `values_explain` et intégration dans `plan_dry_run`
-* [ ] **Tests** : `tests/values.explain.integration.test.ts`
+  * [x] tool `values_explain`
+  * [x] Intégration dans `plan_dry_run`
+* [x] **Tests** : `tests/values.explain.integration.test.ts`
 
 ---
 
@@ -416,7 +425,7 @@ Contexte : TypeScript/Node ESM, local-first, une instance Codex par enfant, pas 
 5. **Agrégation** : terminer avec `plan_reduce` (`reducer: "vote"`) pour sortir la recommandation majoritaire. Consigner le vote dans
    la mémoire partagée pour audit (`bb_set`).
 
-> En attente : instrumentation bus d'événements (`events_subscribe`) pour tracer `runId/opId` lors des offres CNP.
+> Mise à jour : instrumentation bus d'événements (`events_subscribe`) disponible via `bridgeContractNetEvents` (corrélation runId/opId incluse pour les annonces/bids/awards CNP).
 
 ### Dry-run explicable (values_explain + KG/causal + rewrite)
 
@@ -498,3 +507,140 @@ Si tu veux, je peux te générer à la demande les **squelettes TypeScript** exa
 - ✅ Adapté `handlePlanRunReactive` pour enregistrer le handle, propager `throwIfCancelled` (runtime/loop), publier les événements `cancel` et rejeter avec `OperationCancelledError`.
 - ✅ Ajouté un scénario déterministe dans `tests/plan.run-reactive.test.ts` couvrant l’annulation via `cancelRun` (fake timers) + exécuté `npm run lint`, `npm test` (post `npm ci`).
 - ⚠️ À poursuivre : étendre la cascade d’annulation aux runtimes enfants et enrichir le bus MCP avec des événements dédiés au cancel.
+
+### 2025-10-04 – Agent `gpt-5-codex` (iteration 87)
+- ✅ Ponté le blackboard et la stigmergie vers le bus MCP via `bridgeBlackboardEvents` / `bridgeStigmergyEvents` et raccord dans `server.ts`.
+- ✅ Ajouté `tests/events.bridges.test.ts` (horloge déterministe) + exécuté `npm run lint`, `npm test`.
+- 🔜 Étendre la passerelle aux modules CNP / consensus / values / children et propager les identifiants run/op.
+
+### 2025-10-04 – Agent `gpt-5-codex` (iteration 88)
+- ✅ Étendu `src/executor/cancel.ts` pour exposer `subscribeCancellationEvents` (run/op/outcome) et alimenter le bus MCP via `bridgeCancellationEvents` + sorties `dist/`.
+- ✅ Relié `src/server.ts` / `dist/server.js` à cette passerelle et complété `tests/events.bridges.test.ts` (annulation idempotente) après `npm run lint` & `npm test`.
+- 🔜 Propager la corrélation cancellation → job/children et couvrir consensus/children/events additionnels.
+
+### 2025-10-04 – Agent `gpt-5-codex` (iteration 89)
+- ✅ Étendu `ChildRuntime` pour émettre des événements `lifecycle` structurés (spawn/error/exit) et ajouté la documentation associée.
+- ✅ Ajouté `bridgeChildRuntimeEvents` + heuristiques run/op/job + branché le superviseur pour publier automatiquement les flux IO/enfants sur le bus MCP.
+- ✅ Couvert `tests/events.bridges.test.ts` avec un scénario child complet + exécuté `npm run lint` puis `npm test` (succès intégral, 325 tests).
+
+### 2025-10-04 – Agent `gpt-5-codex` (iteration 90)
+- ✅ Équipé `ContractNetCoordinator` d'un émetteur d'événements (`observe`) pour suivre en temps réel inscriptions agents, annonces, bids, attributions et complétions avec horodatage déterministe.
+- ✅ Ajouté `bridgeContractNetEvents` dans `src/events/bridges.ts` + raccord dans `src/server.ts` afin de publier les flux Contract-Net sur le bus MCP (catégorie `contract_net`, corrélations run/op).
+- ✅ Étendu `tests/events.bridges.test.ts` avec un scénario Contract-Net couvrant auto-bids, overrides manuels, award/complete et désinscription ; exécuté `npm run lint` puis `npm test` (326 tests OK) pour rafraîchir `dist/`.
+
+### 2025-10-04 – Agent `gpt-5-codex` (iteration 91)
+- ✅ Ajouté `publishConsensusEvent` et horloge injectable dans `src/coord/consensus.ts`, instrumenté `plan_join` et `consensus_vote` pour publier des décisions structurées.
+- ✅ Créé `bridgeConsensusEvents`, branché le serveur et couvert un scénario dédié dans `tests/events.bridges.test.ts` (horloge déterministe, corrélations run/op/job).
+- ✅ Exécuté `npm run lint` puis `npm test` (327 tests OK) afin de régénérer `dist/` et valider la passerelle consensus.
+
+### 2025-10-04 – Agent `gpt-5-codex` (iteration 92)
+- ✅ Implémenté `ValueGraph.explain` avec agrégation des contributions, hints narratifs et corrélation `nodeId`/`primaryContributor`.
+- ✅ Ajouté le tool MCP `values_explain` dans `src/server.ts` + gestion du logger, avec schéma Zod dédié et tests `tests/values.explain.integration.test.ts`.
+- ⚠️ À faire ensuite : brancher `plan_dry_run` sur `values_explain` et propager les `nodeId` issus des plans compilés.
+
+### 2025-10-04 – Agent `gpt-5-codex` (iteration 93)
+- ✅ Branché `plan_dry_run` sur le value guard : normalisation des impacts (avec `nodeId`), compilation optionnelle des graphes et journalisation détaillée.
+- ✅ Ajouté l'outil MCP `plan_dry_run` côté serveur + schéma Zod dédié et deux scénarios déterministes `tests/plan.dry-run.test.ts`.
+- ✅ Installé les dépendances (`npm ci`) puis exécuté `npm run lint` & `npm test` (331 tests) pour rafraîchir `dist/`.
+
+### 2025-10-04 – Agent `gpt-5-codex` (iteration 94)
+- ✅ Instrumenté `ValueGraph` avec un émetteur d'événements (config/score/filter/explain) + horloge injectable et snapshots d'impacts.
+- ✅ Ajouté `bridgeValueEvents` pour refléter les décisions du value guard sur le bus MCP et branché le serveur.
+- ✅ Étendu `tests/events.bridges.test.ts` avec un scénario value guard déterministe et exécuté `npm run lint`, `npm test` (332 tests OK).
+- ✅ Propager `runId`/`opId` depuis les outils value guard afin d'alimenter le resolver de corrélation côté bridge (couvert itération 95).
+
+### 2025-10-04 – Agent `gpt-5-codex` (iteration 95)
+- ✅ Étendu les schémas `values_score`/`values_filter`/`values_explain` avec les champs facultatifs `run_id`/`op_id`/`job_id`/`graph_id`/`node_id` et propagé ces métadonnées jusque dans `ValueGraph`.
+- ✅ Ajouté la prise en charge des hints de corrélation dans `ValueGraph` (options d'évaluation) et `bridgeValueEvents` afin que le bus MCP publie directement `runId`/`opId` sans resolver externe.
+- ✅ Mis à jour `tests/events.bridges.test.ts` pour couvrir la corrélation native du value guard et enrichi les logs tools avec les identifiants.
+- ✅ Propagé les hints de corrélation value guard côté `plan_dry_run` et fan-out initial pour relier les aperçus aux mêmes `runId`/`opId`.
+
+### 2025-10-04 – Agent `gpt-5-codex` (iteration 96)
+- ✅ Étendu le schéma `plan_dry_run` avec les hints de corrélation (`run_id`/`op_id`/`job_id`/`graph_id`/`node_id`/`child_id`) et extrait ces métadonnées pour alimenter le value guard.
+- ✅ Propagé les hints vers `ValueGraph.explain` afin que les événements `plan_explained` exposent directement les identifiants ; journalisation `plan_dry_run` mise à jour pour inclure `run_id`/`op_id`.
+- ✅ Ajouté un scénario déterministe dans `tests/plan.dry-run.test.ts` vérifiant la présence des hints dans la télémétrie du value guard.
+- 🔜 Étendre la fan-out corrélée côté planification réelle (ex. `plan_run_bt`/`plan_run_reactive`) afin d'associer les dry-runs aux exécutions et cascader les identifiants jusqu'aux runtimes enfants.
+
+### 2025-10-04 – Agent `gpt-5-codex` (iteration 97)
+- ✅ Étendu `plan_run_bt` et `plan_run_reactive` pour accepter/propager les hints `run_id`/`op_id`/`job_id`/`graph_id`/`node_id`/`child_id`, réutiliser les identifiants fournis et enrichir logs + bus MCP avec ces métadonnées.
+- ✅ Mis à jour `PlanRun*Result` pour renvoyer la corrélation, injecté les hints dans les événements `BT_RUN` et aligné `tests/plan.bt.events.test.ts` avec de nouveaux scénarios corrélés.
+- ✅ Propager ces hints vers `plan_fanout`, les outils enfants et `server.ts` pour cascader la corrélation jusqu'aux runtimes et à la cancellation (couvert itération 98).
+
+### 2025-10-04 – Agent `gpt-5-codex` (iteration 98)
+- ✅ Étendu `PlanFanoutInputSchema`/`PlanFanoutResult` avec les hints `run_id`/`op_id`/`job_id`/`graph_id`/`node_id`/`child_id`, mis à jour le mapping JSON et normalisé les métadonnées injectées dans les manifestes enfants.
+- ✅ Enregistré `plan_fanout` auprès du registre d’annulation, enrichi les logs/événements (PLAN, spawn, cancel) et propagé les hints vers le `ChildSupervisor` pour corréler IO et manifests.
+- ✅ Ajouté un scénario déterministe `plan.fanout-join.test.ts` couvrant les hints fournis, actualisé les attentes existantes et vérifié la persistance côté manifest/mapping.
+- 🔜 Finaliser la cascade des hints côté outils enfants (plan_cancel/op_cancel) et vérifier la remontée des corrélations dans les ressources MCP (runs/enfants) pour aligner cancellation et observabilité.
+
+### 2025-10-04 – Agent `gpt-5-codex` (iteration 99)
+- ✅ Étendu le registre d’annulation pour mémoriser `jobId`/`graphId`/`nodeId`/`childId`, enrichi `OperationCancelledError` et les événements émis afin que le bus MCP relaie directement ces corrélations.
+- ✅ Mis à jour `op_cancel`/`plan_cancel` pour renvoyer des résultats snake_case incluant les métadonnées et consigner des logs détaillés, puis couvert ces comportements dans `tests/cancel.plan.run.test.ts`.
+- ✅ Ajusté `bridgeCancellationEvents` et les tests d’événements pour vérifier la présence des hints (job/graph/node/child) sans resolver auxiliaire ; exécuté `npm run build`, `npm run lint`, `npm test`.
+
+### 2025-10-04 – Agent `gpt-5-codex` (iteration 100)
+- ✅ Enrichi `ResourceRegistry` pour stocker les identifiants `runId`/`opId`/`graphId`/`nodeId` sur chaque événement de run et ajouté la documentation correspondante.
+- ✅ Propagé ces métadonnées depuis `pushEvent` dans `src/server.ts` afin que le registre MCP capture les corrélations natives du bus.
+- ✅ Étendu `tests/resources.list-read-watch.test.ts` avec des scénarios validant la persistance des hints et la pagination corrélée.
+
+### 2025-10-04 – Agent `gpt-5-codex` (iteration 101)
+- ✅ Propagé les flux stdout/stderr des enfants vers `ResourceRegistry` avec les hints `jobId`/`runId`/`opId`/`graphId`/`nodeId` en étendant `ChildSupervisor` et le callback `recordChildLogEntry` du serveur.
+- ✅ Aligné les schémas de logs enfants (`ResourceChildLogEntry`) pour conserver `raw`/`parsed` et ajouté une couverture déterministe (`tests/child.supervisor.test.ts`, `tests/resources.list-read-watch.test.ts`).
+- 🔜 Vérifier que les outils MCP (`resources_watch`) exposent correctement les nouveaux champs côté clients et propager la même corrélation vers un éventuel `logs_tail` une fois implémenté.
+
+### 2025-10-04 – Agent `gpt-5-codex` (iteration 102)
+- ✅ Étendu `ChildRuntime` avec `setRole`/`setLimits`/`attach`, persisté le rôle dans le manifeste et mémorisé les limites pour les mises à jour à chaud.
+- ✅ Enrichi `ChildrenIndex` avec `role`/`limits`/`attachedAt` + API dédiées, ajouté les outils MCP `child_spawn_codex`/`child_attach`/`child_set_role`/`child_set_limits` et synchronisé le serveur.
+- ✅ Couverture dédiée `tests/child.spawn-attach-limits.test.ts` validant rôle/limites/attach + restauration sérialisée du nouvel état, MAJ AGENTS checklist.
+- ✅ Propager le champ `role` côté `GraphState`/dashboard et exposer les nouvelles opérations dans la documentation MCP (couvert itération 103 pour la partie GraphState/dashboard ; la documentation reste à compléter).
+
+### 2025-10-04 – Agent `gpt-5-codex` (iteration 103)
+- ✅ Propagé `role`/`limits`/`attachedAt` depuis `ChildrenIndex` vers `GraphState`, incluant sérialisation déterministe des limites et normalisation des snapshots enfants.
+- ✅ Mis à jour le dashboard SSE pour exposer les nouveaux attributs (rôle, limites, attachements) et documenté les champs ajoutés.
+- ✅ Étendu `tests/graphState.test.ts` et les doubles de supervision/autoscaler afin de couvrir les nouvelles métadonnées.
+- ✅ Documenté les nouveaux outils enfants (`child_*`), reflété le champ `role` côté documentation/CLI et vérifié que `resources_watch` expose les métadonnées enrichies.
+
+### 2025-10-04 – Agent `gpt-5-codex` (iteration 104)
+- ✅ Actualisé `README.md` pour détailler `child_spawn_codex`, `child_attach`, `child_set_role`, `child_set_limits` et noter la propagation des hints de corrélation.
+- ✅ Complété `docs/mcp-api.md` avec les structures `ResourceRunEvent`/`ResourceChildLogEntry` enrichies et la section dédiée aux contrôles fins du runtime enfant.
+- ✅ Vérifié que la checklist reflète l'avancement (entrée déplacée en ✅) et noté le contexte pour le prochain agent.
+
+### 2025-10-04 – Agent `gpt-5-codex` (iteration 105)
+- ✅ Implémenté `GraphTransactionManager` avec gestion TTL/owner/note, snapshot committedAt et détection des commits no-op (`src/graph/tx.ts`).
+- ✅ Exposé les outils MCP `tx_begin`/`tx_apply`/`tx_commit`/`tx_rollback` avec logs corrélés, validation Zod des opérations et enregistrement des snapshots/versions (`src/server.ts`, `src/tools/txTools.ts`).
+- ✅ Étendu le registry ressources pour stocker snapshots/versions et écrit `tests/tx.begin-apply-commit.test.ts` couvrant conflit, rollback, aperçu `preview_version`; exécuté `npm run build`, `npm run lint`, `npm test`.
+- 🔜 Enchaîner sur diff/patch + invariants (section 2.2), puis verrous/idempotency afin de fiabiliser les transactions concurrentes avant d'ouvrir les opérations bulk.
+
+### 2025-10-04 – Agent `gpt-5-codex` (iteration 106)
+- ✅ Ajouté la paire diff/patch (`src/graph/diff.ts`, `src/graph/patch.ts`) et le module d'invariants (`src/graph/invariants.ts`) pour couvrir DAG, labels, ports et cardinalités.
+- ✅ Enregistré les outils MCP `graph_diff`/`graph_patch` dans `src/server.ts`, avec schémas dédiés (`src/tools/graphDiffTools.ts`) et intégration au registre `sc://`.
+- ✅ Rédigé des tests déterministes (`tests/graph.diff-patch.test.ts`, `tests/graph.invariants.enforced.test.ts`) et mis à jour la documentation (`README.md`, `docs/mcp-api.md`).
+- 🔜 Préparer les verrous/idempotency (sections 2.3/2.4) puis couvrir le bulk pour sécuriser les mutations concurrentes.
+
+### 2025-10-04 – Agent `gpt-5-codex` (iteration 107)
+- ✅ Implémenté `GraphLockManager` (`src/graph/locks.ts`) avec TTL rafraîchissable, ré-entrance par holder et erreurs structurées (`E-GRAPH-LOCK-HELD`, `E-GRAPH-MUTATION-LOCKED`).
+- ✅ Ajouté les outils MCP `graph_lock`/`graph_unlock` (`src/tools/graphLockTools.ts`, `src/server.ts`), branché `graph_patch`, `graph_mutate` et `tx_*` sur le gestionnaire de verrous, et documenté l'usage (`README.md`, `docs/mcp-api.md`).
+- ✅ Couverture déterministe `tests/graph.locks.concurrent.test.ts` + enrichissement des suites existantes (`tests/graph.diff-patch.test.ts`, `tests/tx.begin-apply-commit.test.ts`) pour vérifier le rejet concurrent.
+- 🔜 Enchaîner sur les clés d'idempotence (section 2.4) avant d'aborder les opérations bulk atomiques.
+
+### 2025-10-04 – Agent `gpt-5-codex` (iteration 108)
+- ✅ Créé un registre `IdempotencyRegistry` avec TTL injectables et intégration serveur (`src/infra/idempotency.ts`, `src/server.ts`).
+- ✅ Ajouté la prise en charge de `idempotency_key` + `idempotent` pour `child_create`, `child_spawn_codex`, `plan_run_bt`, `cnp_announce` et `tx_begin` avec journalisation dédiée.
+- ✅ Documenté le comportement dans `README.md`/`docs/mcp-api.md` et ajouté `tests/idempotency.replay.test.ts` couvrant les replays, plus adaptations des suites existantes.
+- 🔜 Étendre l'idempotence aux futures opérations bulk (`graph_batch_mutate`, batch enfants/stigmergie) et aligner les clients sur les nouveaux champs.
+
+### 2025-10-04 – Agent `gpt-5-codex` (iteration 109)
+- ✅ Ajouté l'idempotence à `plan_run_reactive` (schéma, cache et journalisation `plan_run_reactive_replayed`) en factorisant `executePlanRunReactive`.
+- ✅ Étendu la documentation (`README.md`, `docs/mcp-api.md`) et les suites (`tests/idempotency.replay.test.ts`, `tests/plan.run-reactive.test.ts`, `tests/plan.bt.events.test.ts`) pour refléter les drapeaux `idempotent`/`idempotency_key`.
+- ✅ Nettoyé `node_modules/` après exécution de `npm run build`, `npm run lint`, `npm test` et suppression des artefacts `children/` temporaires.
+- 🔜 Couvrir les opérations bulk (`graph_batch_mutate`, fan-out multi-enfants) avec le cache idempotent et vérifier la compatibilité côté clients MCP.
+
+### 2025-10-04 – Agent `gpt-5-codex` (iteration 110)
+- ✅ Introduit `BlackboardStore.batchSet` pour appliquer plusieurs mutations atomiquement et restaurer l'état en cas d'échec.
+- ✅ Exposé le tool MCP `bb_batch_set` (`src/tools/coordTools.ts`, `src/server.ts`) et documenté son usage (`README.md`, `docs/mcp-api.md`).
+- ✅ Créé `tests/bulk.bb-graph-child-stig.test.ts` avec une couverture dédiée `bb_batch_set` (succès + rollback). Les opérations bulk graph/enfant/stig restent à implémenter.
+
+### 2025-10-04 – Agent `gpt-5-codex` (iteration 111)
+- ✅ Finalisé les tools bulk `graph_batch_mutate`, `child_batch_create` et `stig_batch` côté serveur avec journalisation et support idempotent.
+- ✅ Mis à jour `README.md` et `docs/mcp-api.md` pour détailler les nouveaux schémas (`StigBatchInput`, `GraphBatchMutateInput`, `ChildBatchCreateInput`) et clarifier les champs `created`/`changed`.
+- ✅ Étendu `tests/bulk.bb-graph-child-stig.test.ts` avec les scénarios de version attendue, no-op, comptage `created` et rollback enfants ; exécuté la suite complète (`npm run build`, `npm run lint`, `npm test`).
+- 🔜 Couvrir l'émission des événements bus/corrélations pour les outils bulk côté serveur et ajouter un test d'intégration MCP end-to-end.

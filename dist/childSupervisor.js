@@ -1,5 +1,6 @@
 import { randomUUID } from "crypto";
 import { startChildRuntime, } from "./childRuntime.js";
+import { bridgeChildRuntimeEvents, } from "./events/bridges.js";
 import { ChildrenIndex } from "./state/childrenIndex.js";
 /** Error raised when the caller attempts to exceed the configured child cap. */
 export class ChildLimitExceededError extends Error {
@@ -49,6 +50,11 @@ export class ChildSupervisor {
     messageCounters = new Map();
     exitEvents = new Map();
     watchdogs = new Map();
+    eventBus;
+    resolveChildCorrelation;
+    recordChildLogEntry;
+    childEventBridges = new Map();
+    childLogRecorders = new Map();
     idleTimeoutMs;
     idleCheckIntervalMs;
     maxChildren = null;
@@ -61,6 +67,9 @@ export class ChildSupervisor {
         this.defaultArgs = options.defaultArgs ? [...options.defaultArgs] : [];
         this.defaultEnv = { ...(options.defaultEnv ?? {}) };
         this.index = options.index ?? new ChildrenIndex();
+        this.eventBus = options.eventBus;
+        this.resolveChildCorrelation = options.resolveChildCorrelation;
+        this.recordChildLogEntry = options.recordChildLogEntry;
         const configuredIdle = options.idleTimeoutMs ?? 120_000;
         this.idleTimeoutMs = configuredIdle > 0 ? configuredIdle : 0;
         const defaultInterval = Math.max(250, Math.min(5_000, this.idleTimeoutMs || 5_000));
@@ -148,10 +157,74 @@ export class ChildSupervisor {
             }
         });
         this.scheduleIdleWatchdog(childId);
+        const inferCorrelation = (context) => {
+            const hints = { childId };
+            if (context.kind === "message") {
+                // When the child surfaces structured payloads we opportunistically
+                // reuse the embedded identifiers to correlate stdout/stderr events
+                // with their originating run/operation.
+                const payload = context.message.parsed;
+                if (payload && typeof payload === "object") {
+                    const runId = payload.runId;
+                    const opId = payload.opId;
+                    const jobId = payload.jobId;
+                    const graphId = payload.graphId;
+                    const nodeId = payload.nodeId;
+                    if (typeof runId === "string" && runId.length > 0) {
+                        hints.runId = runId;
+                    }
+                    if (typeof opId === "string" && opId.length > 0) {
+                        hints.opId = opId;
+                    }
+                    if (typeof jobId === "string" && jobId.length > 0) {
+                        hints.jobId = jobId;
+                    }
+                    if (typeof graphId === "string" && graphId.length > 0) {
+                        hints.graphId = graphId;
+                    }
+                    if (typeof nodeId === "string" && nodeId.length > 0) {
+                        hints.nodeId = nodeId;
+                    }
+                }
+            }
+            const extra = this.resolveChildCorrelation?.(context);
+            return extra ? { ...hints, ...extra } : hints;
+        };
+        if (this.eventBus) {
+            const disposeBridge = bridgeChildRuntimeEvents({
+                runtime,
+                bus: this.eventBus,
+                resolveCorrelation: inferCorrelation,
+            });
+            this.childEventBridges.set(childId, disposeBridge);
+        }
+        if (this.recordChildLogEntry) {
+            const recorder = (message) => {
+                const correlation = inferCorrelation({ kind: "message", runtime, message });
+                const snapshot = {
+                    ts: message.receivedAt,
+                    stream: message.stream,
+                    message: message.raw,
+                    childId,
+                    jobId: correlation.jobId ?? null,
+                    runId: correlation.runId ?? null,
+                    opId: correlation.opId ?? null,
+                    graphId: correlation.graphId ?? null,
+                    nodeId: correlation.nodeId ?? null,
+                    raw: message.raw,
+                    parsed: message.parsed,
+                };
+                this.recordChildLogEntry?.(childId, snapshot);
+            };
+            runtime.on("message", recorder);
+            this.childLogRecorders.set(childId, recorder);
+        }
         runtime
             .waitForExit()
             .then((event) => {
             this.clearIdleWatchdog(childId);
+            this.detachEventBridge(childId);
+            this.detachChildLogRecorder(childId);
             const result = {
                 code: event.code,
                 signal: event.signal,
@@ -171,6 +244,8 @@ export class ChildSupervisor {
             // The exit promise should never reject, but we keep a defensive path
             // to ensure the index is not left in an inconsistent state.
             this.clearIdleWatchdog(childId);
+            this.detachEventBridge(childId);
+            this.detachChildLogRecorder(childId);
             const fallback = {
                 code: null,
                 signal: null,
@@ -205,15 +280,24 @@ export class ChildSupervisor {
         const args = options.args ? [...options.args] : [...this.defaultArgs];
         const env = { ...this.defaultEnv, ...(options.env ?? {}) };
         const resolvedLimits = this.resolveChildLimits(options.limits ?? null);
+        const resolvedRole = options.role ?? (typeof options.metadata?.role === "string" ? String(options.metadata.role) : null);
+        const metadata = { ...(options.metadata ?? {}) };
+        if (resolvedRole !== null) {
+            metadata.role = resolvedRole;
+        }
+        if (resolvedLimits) {
+            metadata.limits = structuredClone(resolvedLimits);
+        }
         const runtime = await startChildRuntime({
             childId,
             childrenRoot: this.childrenRoot,
             command,
             args,
             env,
-            metadata: options.metadata,
+            metadata,
             manifestExtras: options.manifestExtras,
             limits: resolvedLimits,
+            role: resolvedRole,
             toolsAllow: options.toolsAllow ?? null,
             spawnRetry: options.spawnRetry,
         });
@@ -221,8 +305,11 @@ export class ChildSupervisor {
             childId,
             pid: runtime.pid,
             workdir: runtime.workdir,
-            metadata: options.metadata,
+            metadata,
             state: "starting",
+            limits: resolvedLimits,
+            role: resolvedRole,
+            attachedAt: Date.now(),
         });
         this.runtimes.set(childId, runtime);
         this.attachRuntime(childId, runtime);
@@ -263,6 +350,37 @@ export class ChildSupervisor {
     async collect(childId) {
         const runtime = this.requireRuntime(childId);
         return runtime.collectOutputs();
+    }
+    /**
+     * Updates the advertised role for a running child and rewrites its manifest so
+     * observers can react to the change without restarting the process.
+     */
+    async setChildRole(childId, role, options = {}) {
+        const runtime = this.requireRuntime(childId);
+        await runtime.setRole(role, options.manifestExtras ?? {});
+        const index = this.index.setRole(childId, role);
+        return { runtime: runtime.getStatus(), index };
+    }
+    /**
+     * Applies new declarative limits to the runtime after enforcing supervisor
+     * guardrails. The manifest is rewritten to surface the new ceilings.
+     */
+    async setChildLimits(childId, limits, options = {}) {
+        const resolved = this.resolveChildLimits(limits ?? null);
+        const runtime = this.requireRuntime(childId);
+        await runtime.setLimits(resolved, options.manifestExtras ?? {});
+        const index = this.index.setLimits(childId, resolved);
+        return { runtime: runtime.getStatus(), index, limits: resolved };
+    }
+    /**
+     * Refreshes the manifest of an already running child and records the
+     * attachment timestamp for observability.
+     */
+    async attachChild(childId, options = {}) {
+        const runtime = this.requireRuntime(childId);
+        await runtime.attach(options.manifestExtras ?? {});
+        const index = this.index.markAttached(childId);
+        return { runtime: runtime.getStatus(), index };
     }
     /**
      * Provides paginated access to the buffered messages emitted by the child.
@@ -334,6 +452,8 @@ export class ChildSupervisor {
         this.messageCounters.delete(childId);
         this.exitEvents.delete(childId);
         this.clearIdleWatchdog(childId);
+        this.detachEventBridge(childId);
+        this.detachChildLogRecorder(childId);
     }
     /**
      * Stops all running children. Used as a best-effort cleanup helper in tests.
@@ -347,9 +467,23 @@ export class ChildSupervisor {
                 .catch(() => runtime.shutdown({ signal: "SIGKILL", timeoutMs: 500 })));
         }
         await Promise.allSettled(shutdowns);
+        for (const [childId, listener] of this.childLogRecorders.entries()) {
+            const runtime = this.runtimes.get(childId);
+            runtime?.off("message", listener);
+        }
+        this.childLogRecorders.clear();
         this.runtimes.clear();
         this.messageCounters.clear();
         this.exitEvents.clear();
+        for (const dispose of this.childEventBridges.values()) {
+            try {
+                dispose();
+            }
+            catch {
+                // Ignore bridge teardown errors during shutdown.
+            }
+        }
+        this.childEventBridges.clear();
         for (const timer of this.watchdogs.values()) {
             clearInterval(timer);
         }
@@ -458,6 +592,32 @@ export class ChildSupervisor {
         if (timer) {
             clearInterval(timer);
             this.watchdogs.delete(childId);
+        }
+    }
+    /** Detaches the event bridge associated with the child, if any. */
+    detachEventBridge(childId) {
+        const dispose = this.childEventBridges.get(childId);
+        if (!dispose) {
+            return;
+        }
+        try {
+            dispose();
+        }
+        finally {
+            this.childEventBridges.delete(childId);
+        }
+    }
+    /** Detaches the log recorder associated with the child, if any. */
+    detachChildLogRecorder(childId) {
+        const listener = this.childLogRecorders.get(childId);
+        if (!listener) {
+            return;
+        }
+        try {
+            this.runtimes.get(childId)?.off("message", listener);
+        }
+        finally {
+            this.childLogRecorders.delete(childId);
         }
     }
 }

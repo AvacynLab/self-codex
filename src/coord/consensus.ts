@@ -1,3 +1,4 @@
+import { EventEmitter } from "node:events";
 import { z } from "zod";
 
 /**
@@ -22,6 +23,102 @@ export interface ConsensusDecision {
   threshold: number | null;
   totalWeight: number;
   tally: Record<string, number>;
+}
+
+/**
+ * Structured event emitted whenever a consensus computation completes. These
+ * events are bridged onto the unified MCP bus so downstream observers can
+ * correlate quorum checks with plan lifecycle operations.
+ */
+export interface ConsensusEvent {
+  kind: "decision";
+  /** Millisecond timestamp recorded when the decision was published. */
+  at: number;
+  /**
+   * High level source describing which subsystem produced the event. Typical
+   * values include "plan_join" or "consensus_vote" so tooling can group
+   * related activity.
+   */
+  source: string;
+  /** Consensus mode that produced the decision. */
+  mode: ConsensusDecision["mode"];
+  /** Winning outcome (if any). */
+  outcome: string | null;
+  /** Indicates whether the decision satisfied the configured threshold. */
+  satisfied: boolean;
+  /** Signals a tie preventing a deterministic outcome. */
+  tie: boolean;
+  /** Threshold applied during the decision (quorum, weighted, ...). */
+  threshold: number | null;
+  /** Total weight of all ballots considered. */
+  totalWeight: number;
+  /** Per-option tally used while computing the outcome. */
+  tally: Record<string, number>;
+  /** Total number of ballots processed. */
+  votes: number;
+  /** Optional job identifier propagated when available. */
+  jobId?: string | null;
+  /** Optional run identifier propagated when available. */
+  runId?: string | null;
+  /** Optional operation identifier propagated when available. */
+  opId?: string | null;
+  /** Additional metadata providing contextual hints (policy, winner, ...). */
+  metadata?: Record<string, unknown>;
+}
+
+/** Payload accepted when publishing consensus events. */
+export type ConsensusEventInput = Omit<ConsensusEvent, "at"> & { at?: number };
+
+/** Listener invoked whenever a consensus event is emitted. */
+export type ConsensusEventListener = (event: ConsensusEvent) => void;
+
+/** Internal channel storing subscribers interested in consensus decisions. */
+const consensusEmitter = new EventEmitter();
+
+/** Clock function injected for deterministic tests. */
+let consensusNow: () => number = () => Date.now();
+
+/**
+ * Override the clock used when stamping consensus events. Tests rely on this
+ * hook to produce deterministic timestamps without resorting to global fake
+ * timers.
+ */
+export function setConsensusEventClock(now: () => number): void {
+  consensusNow = now;
+}
+
+/** Reset the consensus event clock back to {@link Date.now}. */
+export function resetConsensusEventClock(): void {
+  consensusNow = () => Date.now();
+}
+
+/**
+ * Publish a consensus decision on the shared emitter. The helper normalises
+ * nullable correlation identifiers and ensures timestamps are always
+ * populated.
+ */
+export function publishConsensusEvent(input: ConsensusEventInput): ConsensusEvent {
+  const event: ConsensusEvent = {
+    ...input,
+    at: input.at ?? consensusNow(),
+    jobId: input.jobId ?? null,
+    runId: input.runId ?? null,
+    opId: input.opId ?? null,
+    metadata: input.metadata ?? undefined,
+  };
+  consensusEmitter.emit("event", event);
+  return event;
+}
+
+/**
+ * Subscribe to consensus events. Callers receive a disposer that must be used
+ * to detach listeners when shutting the orchestrator down.
+ */
+export function subscribeConsensusEvents(listener: ConsensusEventListener): () => void {
+  consensusEmitter.on("event", listener);
+  return () => {
+    consensusEmitter.off("event", listener);
+  };
 }
 
 /**

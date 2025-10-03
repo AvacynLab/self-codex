@@ -84,6 +84,11 @@ describe("plan tools", () => {
 
       const result = await handlePlanFanout(context, input);
       expect(result.child_ids).to.have.length(3);
+      expect(result.op_id).to.be.a("string");
+      expect(result.op_id).to.match(/^plan_fanout_op_/);
+      expect(result.graph_id).to.equal(null);
+      expect(result.node_id).to.equal(null);
+      expect(result.child_id).to.equal(null);
       expect(events.some((event) => event.kind === "PLAN")).to.equal(true);
 
       for (const planned of result.planned) {
@@ -105,6 +110,14 @@ describe("plan tools", () => {
         expect((await stat(logFile)).isFile()).to.equal(true);
         expect((await stat(outboxDir)).isDirectory()).to.equal(true);
 
+        const manifestRaw = await readFile(manifestFile, "utf8");
+        const manifest = JSON.parse(manifestRaw) as {
+          metadata?: { run_id?: string; op_id?: string; parent_child_id?: string | null };
+        };
+        expect(manifest.metadata?.run_id).to.equal(result.run_id);
+        expect(manifest.metadata?.op_id).to.equal(result.op_id);
+        expect(manifest.metadata?.parent_child_id ?? null).to.equal(null);
+
         await writeArtifact({
           childrenRoot,
           childId,
@@ -118,6 +131,10 @@ describe("plan tools", () => {
       const mappingRaw = await readFile(mappingPath, "utf8");
       const mapping = JSON.parse(mappingRaw);
       expect(mapping.job_id).to.equal(result.job_id);
+      expect(mapping.op_id).to.equal(result.op_id);
+      expect(mapping.graph_id).to.equal(null);
+      expect(mapping.node_id).to.equal(null);
+      expect(mapping.child_id).to.equal(null);
       expect(mapping.children).to.have.length(3);
       expect(mapping.children[0].prompt_summary).to.be.a("string");
 
@@ -131,6 +148,84 @@ describe("plan tools", () => {
       const messages = entries.map((entry) => entry.message);
       expect(messages).to.include("plan_fanout");
       expect(messages.some((message) => message.startsWith("plan_fanout_"))).to.equal(true);
+    } finally {
+      await logger.flush();
+      await supervisor.disposeAll();
+      await rm(childrenRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("propagates provided correlation hints across outputs", async function () {
+    this.timeout(10000);
+    const childrenRoot = await mkdtemp(path.join(tmpdir(), "plan-tools-fanout-hints-"));
+    const supervisor = new ChildSupervisor({
+      childrenRoot,
+      defaultCommand: process.execPath,
+      defaultArgs: [mockRunnerPath],
+    });
+    const graphState = new GraphState();
+    const orchestratorLog = path.join(childrenRoot, "tmp", "orchestrator.log");
+    const logger = new StructuredLogger({ logFile: orchestratorLog });
+    const events: Array<{ kind: string; payload?: unknown }> = [];
+    const context = createPlanContext({ childrenRoot, supervisor, graphState, logger, events });
+
+    try {
+      const hints = {
+        run_id: "run-hints-001",
+        op_id: "plan-fanout-op-hints",
+        job_id: "job-hints-777",
+        graph_id: "graph-hints-alpha",
+        node_id: "node-hints-omega",
+        child_id: "parent-child-hints",
+      } as const;
+
+      const input = PlanFanoutInputSchema.parse({
+        goal: "Coordonner un unique clone",
+        prompt_template: {
+          system: "Clone {{child_name}} specialise sur {{goal}}",
+          user: "Execution corrélée {{run_id}}",
+        },
+        children_spec: {
+          list: [{ name: "unique", prompt_variables: { focus: "hints" } }],
+        },
+        ...hints,
+      });
+
+      const result = await handlePlanFanout(context, input);
+      expect(result.run_id).to.equal(hints.run_id);
+      expect(result.op_id).to.equal(hints.op_id);
+      expect(result.job_id).to.equal(hints.job_id);
+      expect(result.graph_id).to.equal(hints.graph_id);
+      expect(result.node_id).to.equal(hints.node_id);
+      expect(result.child_id).to.equal(hints.child_id);
+
+      const planEvent = events.find((event) => event.kind === "PLAN");
+      expect(planEvent?.payload).to.deep.include({
+        run_id: hints.run_id,
+        op_id: hints.op_id,
+        job_id: hints.job_id,
+        graph_id: hints.graph_id,
+        node_id: hints.node_id,
+        child_id: hints.child_id,
+      });
+
+      const mappingPath = path.join(childrenRoot, result.run_id, "fanout.json");
+      const mapping = JSON.parse(await readFile(mappingPath, "utf8"));
+      expect(mapping.op_id).to.equal(hints.op_id);
+      expect(mapping.graph_id).to.equal(hints.graph_id);
+      expect(mapping.node_id).to.equal(hints.node_id);
+      expect(mapping.child_id).to.equal(hints.child_id);
+
+      const manifestPath = childWorkspacePath(childrenRoot, result.child_ids[0]!, "manifest.json");
+      const manifestRaw = await readFile(manifestPath, "utf8");
+      const manifest = JSON.parse(manifestRaw) as {
+        metadata?: { run_id?: string; op_id?: string; parent_child_id?: string | null };
+      };
+      expect(manifest.metadata?.run_id).to.equal(hints.run_id);
+      expect(manifest.metadata?.op_id).to.equal(hints.op_id);
+      expect(manifest.metadata?.parent_child_id).to.equal(hints.child_id);
+
+      await logger.flush();
     } finally {
       await logger.flush();
       await supervisor.disposeAll();

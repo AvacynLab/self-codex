@@ -1,12 +1,14 @@
 import { z } from "zod";
 
 import type {
+  ValueExplanationResult,
   ValueFilterDecision,
   ValueFilterInput,
   ValueGraph,
   ValueGraphConfig,
   ValueGraphSummary,
   ValueImpactInput,
+  ValueGraphCorrelationHints,
 } from "../values/valueGraph.js";
 import { StructuredLogger } from "../logger.js";
 
@@ -47,6 +49,18 @@ export const ValueImpactSchema = z
     severity: z.number().min(0).max(1).optional(),
     rationale: z.string().min(1).max(240).optional(),
     source: z.string().min(1).optional(),
+    nodeId: z.string().min(1).optional(),
+  })
+  .strict();
+
+/** Optional correlation metadata accepted by plan evaluation tools. */
+const ValuePlanCorrelationSchema = z
+  .object({
+    run_id: z.string().min(1).optional(),
+    op_id: z.string().min(1).optional(),
+    job_id: z.string().min(1).optional(),
+    graph_id: z.string().min(1).optional(),
+    node_id: z.string().min(1).optional(),
   })
   .strict();
 
@@ -67,6 +81,7 @@ export const ValuesScoreInputSchema = z
     label: z.string().min(1).max(200).optional(),
     impacts: z.array(ValueImpactSchema).min(1).max(64),
   })
+  .extend(ValuePlanCorrelationSchema.shape)
   .strict();
 export const ValuesScoreInputShape = ValuesScoreInputSchema.shape;
 
@@ -75,6 +90,31 @@ export const ValuesFilterInputSchema = ValuesScoreInputSchema.extend({
   threshold: z.number().min(0).max(1).optional(),
 }).strict();
 export const ValuesFilterInputShape = ValuesFilterInputSchema.shape;
+
+/** Schema validating the payload accepted by the `values_explain` tool. */
+export const ValuesExplainInputSchema = z
+  .object({
+    plan: ValuesFilterInputSchema,
+  })
+  .strict();
+export const ValuesExplainInputShape = ValuesExplainInputSchema.shape;
+
+type ValuePlanCorrelationInput = z.infer<typeof ValuePlanCorrelationSchema>;
+
+/**
+ * Normalises optional correlation metadata supplied alongside value guard
+ * inputs. Returning `null` keeps downstream logging and event emission tidy.
+ */
+function extractCorrelationHints(input: ValuePlanCorrelationInput): ValueGraphCorrelationHints | null {
+  const hints: ValueGraphCorrelationHints = {};
+  if (input.run_id !== undefined) hints.runId = input.run_id;
+  if (input.op_id !== undefined) hints.opId = input.op_id;
+  if (input.job_id !== undefined) hints.jobId = input.job_id;
+  if (input.graph_id !== undefined) hints.graphId = input.graph_id;
+  if (input.node_id !== undefined) hints.nodeId = input.node_id;
+
+  return Object.keys(hints).length > 0 ? hints : null;
+}
 
 /** Result returned after configuring the value graph. */
 export interface ValuesSetResult extends Record<string, unknown> {
@@ -88,6 +128,9 @@ export interface ValuesScoreResult extends Record<string, unknown> {
 
 /** Result returned when filtering a plan against the guard. */
 export type ValuesFilterResult = ValueFilterDecision;
+
+/** Result returned when explaining a plan decision. */
+export type ValuesExplainResult = ValueExplanationResult;
 
 /**
  * Replace the value graph configuration with the provided specification.
@@ -135,11 +178,12 @@ export function handleValuesScore(
   context: ValueToolContext,
   input: z.infer<typeof ValuesScoreInputSchema>,
 ): ValuesScoreResult {
+  const correlation = extractCorrelationHints(input);
   const score = context.valueGraph.score({
     id: input.id,
     label: input.label,
     impacts: normaliseImpacts(input.impacts),
-  });
+  }, { correlation });
   const threshold = context.valueGraph.getDefaultThreshold();
   const allowed = score.score >= threshold && score.violations.length === 0;
   context.logger.info("values_score", {
@@ -147,6 +191,8 @@ export function handleValuesScore(
     impacts: input.impacts.length,
     score: score.score,
     total: score.total,
+    run_id: correlation?.runId ?? null,
+    op_id: correlation?.opId ?? null,
   });
   return { decision: { ...score, allowed, threshold } };
 }
@@ -159,12 +205,13 @@ export function handleValuesFilter(
   context: ValueToolContext,
   input: z.infer<typeof ValuesFilterInputSchema>,
 ): ValuesFilterResult {
+  const correlation = extractCorrelationHints(input);
   const decision = context.valueGraph.filter({
     id: input.id,
     label: input.label,
     impacts: normaliseImpacts(input.impacts),
     threshold: input.threshold,
-  } as ValueFilterInput);
+  } as ValueFilterInput, { correlation });
   context.logger.info("values_filter", {
     plan_id: input.id,
     impacts: input.impacts.length,
@@ -172,8 +219,40 @@ export function handleValuesFilter(
     threshold: decision.threshold,
     allowed: decision.allowed,
     violations: decision.violations.length,
+    run_id: correlation?.runId ?? null,
+    op_id: correlation?.opId ?? null,
   });
   return decision;
+}
+
+/**
+ * Explains the guard decision by enriching violations with hints and
+ * correlation metadata. The response mirrors {@link ValueGraph.explain} so
+ * downstream MCP clients can surface the narrative directly to operators.
+ */
+export function handleValuesExplain(
+  context: ValueToolContext,
+  input: z.infer<typeof ValuesExplainInputSchema>,
+): ValuesExplainResult {
+  const plan = input.plan;
+  const correlation = extractCorrelationHints(plan);
+  const explanation = context.valueGraph.explain({
+    id: plan.id,
+    label: plan.label,
+    impacts: normaliseImpacts(plan.impacts),
+    threshold: plan.threshold,
+  } as ValueFilterInput, { correlation });
+  context.logger.info("values_explain", {
+    plan_id: plan.id,
+    impacts: plan.impacts.length,
+    score: explanation.decision.score,
+    threshold: explanation.decision.threshold,
+    allowed: explanation.decision.allowed,
+    violations: explanation.violations.length,
+    run_id: correlation?.runId ?? null,
+    op_id: correlation?.opId ?? null,
+  });
+  return explanation;
 }
 
 /** Normalises impacts to match the {@link ValueImpactInput} contract. */
@@ -184,5 +263,6 @@ function normaliseImpacts(impacts: Array<z.infer<typeof ValueImpactSchema>>): Va
     severity: impact.severity,
     rationale: impact.rationale,
     source: impact.source,
+    nodeId: impact.nodeId,
   }));
 }

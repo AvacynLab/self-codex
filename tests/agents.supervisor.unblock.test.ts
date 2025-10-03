@@ -42,6 +42,9 @@ function childSnapshot(childId: string): ChildRecordSnapshot {
     exitSignal: null,
     forcedTermination: false,
     stopReason: null,
+    role: null,
+    limits: null,
+    attachedAt: null,
   };
 }
 

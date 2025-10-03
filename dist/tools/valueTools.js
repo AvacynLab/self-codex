@@ -26,6 +26,17 @@ export const ValueImpactSchema = z
     severity: z.number().min(0).max(1).optional(),
     rationale: z.string().min(1).max(240).optional(),
     source: z.string().min(1).optional(),
+    nodeId: z.string().min(1).optional(),
+})
+    .strict();
+/** Optional correlation metadata accepted by plan evaluation tools. */
+const ValuePlanCorrelationSchema = z
+    .object({
+    run_id: z.string().min(1).optional(),
+    op_id: z.string().min(1).optional(),
+    job_id: z.string().min(1).optional(),
+    graph_id: z.string().min(1).optional(),
+    node_id: z.string().min(1).optional(),
 })
     .strict();
 /** Schema validating the payload accepted by the `values_set` tool. */
@@ -44,6 +55,7 @@ export const ValuesScoreInputSchema = z
     label: z.string().min(1).max(200).optional(),
     impacts: z.array(ValueImpactSchema).min(1).max(64),
 })
+    .extend(ValuePlanCorrelationSchema.shape)
     .strict();
 export const ValuesScoreInputShape = ValuesScoreInputSchema.shape;
 /** Schema validating the payload accepted by the `values_filter` tool. */
@@ -51,6 +63,31 @@ export const ValuesFilterInputSchema = ValuesScoreInputSchema.extend({
     threshold: z.number().min(0).max(1).optional(),
 }).strict();
 export const ValuesFilterInputShape = ValuesFilterInputSchema.shape;
+/** Schema validating the payload accepted by the `values_explain` tool. */
+export const ValuesExplainInputSchema = z
+    .object({
+    plan: ValuesFilterInputSchema,
+})
+    .strict();
+export const ValuesExplainInputShape = ValuesExplainInputSchema.shape;
+/**
+ * Normalises optional correlation metadata supplied alongside value guard
+ * inputs. Returning `null` keeps downstream logging and event emission tidy.
+ */
+function extractCorrelationHints(input) {
+    const hints = {};
+    if (input.run_id !== undefined)
+        hints.runId = input.run_id;
+    if (input.op_id !== undefined)
+        hints.opId = input.op_id;
+    if (input.job_id !== undefined)
+        hints.jobId = input.job_id;
+    if (input.graph_id !== undefined)
+        hints.graphId = input.graph_id;
+    if (input.node_id !== undefined)
+        hints.nodeId = input.node_id;
+    return Object.keys(hints).length > 0 ? hints : null;
+}
 /**
  * Replace the value graph configuration with the provided specification.
  *
@@ -90,11 +127,12 @@ export function handleValuesSet(context, input) {
  * plan results.
  */
 export function handleValuesScore(context, input) {
+    const correlation = extractCorrelationHints(input);
     const score = context.valueGraph.score({
         id: input.id,
         label: input.label,
         impacts: normaliseImpacts(input.impacts),
-    });
+    }, { correlation });
     const threshold = context.valueGraph.getDefaultThreshold();
     const allowed = score.score >= threshold && score.violations.length === 0;
     context.logger.info("values_score", {
@@ -102,6 +140,8 @@ export function handleValuesScore(context, input) {
         impacts: input.impacts.length,
         score: score.score,
         total: score.total,
+        run_id: correlation?.runId ?? null,
+        op_id: correlation?.opId ?? null,
     });
     return { decision: { ...score, allowed, threshold } };
 }
@@ -110,12 +150,13 @@ export function handleValuesScore(context, input) {
  * detailed decision is returned so the caller can surface it to operators.
  */
 export function handleValuesFilter(context, input) {
+    const correlation = extractCorrelationHints(input);
     const decision = context.valueGraph.filter({
         id: input.id,
         label: input.label,
         impacts: normaliseImpacts(input.impacts),
         threshold: input.threshold,
-    });
+    }, { correlation });
     context.logger.info("values_filter", {
         plan_id: input.id,
         impacts: input.impacts.length,
@@ -123,8 +164,36 @@ export function handleValuesFilter(context, input) {
         threshold: decision.threshold,
         allowed: decision.allowed,
         violations: decision.violations.length,
+        run_id: correlation?.runId ?? null,
+        op_id: correlation?.opId ?? null,
     });
     return decision;
+}
+/**
+ * Explains the guard decision by enriching violations with hints and
+ * correlation metadata. The response mirrors {@link ValueGraph.explain} so
+ * downstream MCP clients can surface the narrative directly to operators.
+ */
+export function handleValuesExplain(context, input) {
+    const plan = input.plan;
+    const correlation = extractCorrelationHints(plan);
+    const explanation = context.valueGraph.explain({
+        id: plan.id,
+        label: plan.label,
+        impacts: normaliseImpacts(plan.impacts),
+        threshold: plan.threshold,
+    }, { correlation });
+    context.logger.info("values_explain", {
+        plan_id: plan.id,
+        impacts: plan.impacts.length,
+        score: explanation.decision.score,
+        threshold: explanation.decision.threshold,
+        allowed: explanation.decision.allowed,
+        violations: explanation.violations.length,
+        run_id: correlation?.runId ?? null,
+        op_id: correlation?.opId ?? null,
+    });
+    return explanation;
 }
 /** Normalises impacts to match the {@link ValueImpactInput} contract. */
 function normaliseImpacts(impacts) {
@@ -134,5 +203,6 @@ function normaliseImpacts(impacts) {
         severity: impact.severity,
         rationale: impact.rationale,
         source: impact.source,
+        nodeId: impact.nodeId,
     }));
 }

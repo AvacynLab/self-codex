@@ -290,6 +290,9 @@ function buildSnapshot(graphState, eventStore, stigmergy, btStatusRegistry, supe
             lastHeartbeatAt: child.lastHeartbeatAt,
             lastActivityAt,
             waitingFor: child.waitingFor,
+            role: child.role,
+            attachedAt: child.attachedAt,
+            limits: child.limits,
         };
     });
     return {

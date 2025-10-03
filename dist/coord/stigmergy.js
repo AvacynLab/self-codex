@@ -58,6 +58,71 @@ export class StigmergyField {
         return snapshot;
     }
     /**
+     * Applies multiple markings atomically. Either every entry is committed or
+     * the field is restored to its previous state. Events are only emitted once
+     * the batch succeeds so downstream observers never observe partial updates.
+     */
+    batchMark(entries) {
+        if (entries.length === 0) {
+            return [];
+        }
+        const originalEntries = new Map();
+        for (const [key, entry] of this.entries.entries()) {
+            originalEntries.set(key, { ...entry });
+        }
+        const originalTotals = new Map();
+        for (const [nodeId, total] of this.totals.entries()) {
+            originalTotals.set(nodeId, { ...total });
+        }
+        const results = [];
+        const events = [];
+        try {
+            for (const payload of entries) {
+                if (!Number.isFinite(payload.intensity) || payload.intensity <= 0) {
+                    throw new Error("intensity must be a positive finite number");
+                }
+                const normalisedType = normaliseType(payload.type);
+                const timestamp = this.now();
+                const key = this.makeKey(payload.nodeId, normalisedType);
+                const existing = this.entries.get(key);
+                const previousIntensity = existing?.intensity ?? 0;
+                const nextIntensity = previousIntensity + payload.intensity;
+                const entry = {
+                    nodeId: payload.nodeId,
+                    type: normalisedType,
+                    intensity: nextIntensity,
+                    updatedAt: timestamp,
+                };
+                this.entries.set(key, entry);
+                const total = this.adjustTotal(payload.nodeId, nextIntensity - previousIntensity, timestamp);
+                const snapshot = this.cloneEntry(entry);
+                results.push({ point: snapshot, nodeTotal: { nodeId: payload.nodeId, intensity: total.intensity, updatedAt: total.updatedAt } });
+                events.push({
+                    nodeId: payload.nodeId,
+                    type: normalisedType,
+                    intensity: snapshot.intensity,
+                    totalIntensity: total.intensity,
+                    updatedAt: snapshot.updatedAt,
+                });
+            }
+        }
+        catch (error) {
+            this.entries.clear();
+            for (const [key, entry] of originalEntries.entries()) {
+                this.entries.set(key, entry);
+            }
+            this.totals.clear();
+            for (const [nodeId, total] of originalTotals.entries()) {
+                this.totals.set(nodeId, total);
+            }
+            throw error;
+        }
+        for (const event of events) {
+            this.emitChange(event);
+        }
+        return results;
+    }
+    /**
      * Applies exponential decay to all pheromones using the provided half-life.
      * Entries whose intensity drops below {@link EPSILON} are evicted from the
      * field. The method returns the list of points that changed so callers can

@@ -50,6 +50,9 @@ function createChild(overrides: Partial<ChildRecordSnapshot>): ChildRecordSnapsh
     exitSignal: overrides.exitSignal ?? null,
     forcedTermination: overrides.forcedTermination ?? false,
     stopReason: overrides.stopReason ?? null,
+    role: overrides.role ?? null,
+    limits: overrides.limits ?? null,
+    attachedAt: overrides.attachedAt ?? null,
   };
 }
 

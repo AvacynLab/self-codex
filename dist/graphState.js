@@ -10,6 +10,40 @@ function toNullableNumber(value) {
     const n = Number(value);
     return Number.isFinite(n) && n !== 0 ? n : null;
 }
+/**
+ * Normalises the supervisor-provided runtime limits so they can be persisted in
+ * the graph node attributes without losing ordering determinism.
+ */
+function serialiseChildLimits(limits) {
+    if (!limits) {
+        return undefined;
+    }
+    const entries = Object.entries(limits).filter(([, value]) => value !== undefined);
+    if (entries.length === 0) {
+        return undefined;
+    }
+    const normalised = Object.fromEntries(entries.sort(([a], [b]) => a.localeCompare(b)));
+    return JSON.stringify(normalised);
+}
+/** Rehydrates runtime limits persisted on a graph node back into a typed shape. */
+function parseChildLimits(value) {
+    if (value === undefined) {
+        return null;
+    }
+    if (typeof value !== "string" || value.trim() === "") {
+        return null;
+    }
+    try {
+        const parsed = JSON.parse(value);
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+            return null;
+        }
+        return { ...parsed };
+    }
+    catch {
+        return null;
+    }
+}
 function normalizeString(value) {
     if (value === undefined || value === null) {
         return "";
@@ -232,6 +266,26 @@ export class GraphState {
         if (updates.stopReason !== undefined) {
             attributes.stop_reason = normalizeString(updates.stopReason);
         }
+        if (updates.role !== undefined) {
+            if (updates.role === null) {
+                delete attributes.role;
+            }
+            else {
+                attributes.role = normalizeString(updates.role);
+            }
+        }
+        if (updates.limits !== undefined) {
+            const serialised = serialiseChildLimits(updates.limits);
+            if (serialised === undefined) {
+                delete attributes.limits_json;
+            }
+            else {
+                attributes.limits_json = serialised;
+            }
+        }
+        if (updates.attachedAt !== undefined) {
+            attributes.attached_at = updates.attachedAt ?? 0;
+        }
         this.nodes.set(nodeId, { id: nodeId, attributes });
     }
     /**
@@ -258,6 +312,9 @@ export class GraphState {
             exitSignal: snapshot.exitSignal,
             forcedTermination: snapshot.forcedTermination,
             stopReason: snapshot.stopReason,
+            role: snapshot.role,
+            limits: snapshot.limits,
+            attachedAt: snapshot.attachedAt,
         });
     }
     /**
@@ -936,6 +993,9 @@ export class GraphState {
         const exitSignal = toNullableString(node.attributes.exit_signal);
         const forcedTermination = node.attributes.forced_termination === true;
         const stopReason = toNullableString(node.attributes.stop_reason);
+        const role = toNullableString(node.attributes.role);
+        const limits = parseChildLimits(node.attributes.limits_json);
+        const attachedAt = toNullableNumber(node.attributes.attached_at);
         return {
             id,
             jobId,
@@ -960,6 +1020,9 @@ export class GraphState {
             exitSignal,
             forcedTermination,
             stopReason,
+            role,
+            limits,
+            attachedAt,
         };
     }
 }
