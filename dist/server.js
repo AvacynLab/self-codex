@@ -11,15 +11,18 @@ import { GraphLockManager } from "./graph/locks.js";
 import { StructuredLogger } from "./logger.js";
 import { EventStore } from "./eventStore.js";
 import { EventBus } from "./events/bus.js";
+import { buildChildCorrelationHints, buildJobCorrelationHints, mergeCorrelationHints, } from "./events/correlation.js";
+import { buildChildCognitiveEvents } from "./events/cognitive.js";
 import { bridgeBlackboardEvents, bridgeCancellationEvents, bridgeConsensusEvents, bridgeContractNetEvents, bridgeValueEvents, bridgeStigmergyEvents, } from "./events/bridges.js";
 import { startHttpServer } from "./httpServer.js";
 import { startDashboardServer } from "./monitor/dashboard.js";
+import { LogJournal } from "./monitor/log.js";
 import { BehaviorTreeStatusRegistry } from "./monitor/btStatusRegistry.js";
 import { parseOrchestratorRuntimeOptions, } from "./serverOptions.js";
 import { ChildSupervisor } from "./childSupervisor.js";
 import { UnknownChildError } from "./state/childrenIndex.js";
 import { Autoscaler } from "./agents/autoscaler.js";
-import { OrchestratorSupervisor } from "./agents/supervisor.js";
+import { OrchestratorSupervisor, inferSupervisorIncidentCorrelation } from "./agents/supervisor.js";
 import { MetaCritic } from "./agents/metaCritic.js";
 import { reflect } from "./agents/selfReflect.js";
 import { scoreCode, scorePlan, scoreText } from "./quality/scoring.js";
@@ -34,8 +37,9 @@ import { CausalMemory } from "./knowledge/causalMemory.js";
 import { ValueGraph } from "./values/valueGraph.js";
 import { ResourceRegistry, ResourceRegistryError } from "./resources/registry.js";
 import { IdempotencyRegistry } from "./infra/idempotency.js";
+import { PlanLifecycleRegistry } from "./executor/planLifecycle.js";
 import { ChildCancelInputShape, ChildCancelInputSchema, ChildCollectInputShape, ChildCollectInputSchema, ChildCreateInputShape, ChildCreateInputSchema, ChildGcInputShape, ChildGcInputSchema, ChildKillInputShape, ChildKillInputSchema, ChildSendInputShape, ChildSendInputSchema, ChildStreamInputShape, ChildStreamInputSchema, ChildStatusInputShape, ChildStatusInputSchema, ChildSpawnCodexInputShape, ChildSpawnCodexInputSchema, ChildBatchCreateInputShape, ChildBatchCreateInputSchema, ChildAttachInputShape, ChildAttachInputSchema, ChildSetRoleInputShape, ChildSetRoleInputSchema, ChildSetLimitsInputShape, ChildSetLimitsInputSchema, handleChildCancel, handleChildCollect, handleChildCreate, handleChildSpawnCodex, handleChildBatchCreate, handleChildAttach, handleChildSetRole, handleChildSetLimits, handleChildGc, handleChildKill, handleChildSend, handleChildStream, handleChildStatus, } from "./tools/childTools.js";
-import { PlanFanoutInputSchema, PlanFanoutInputShape, PlanJoinInputSchema, PlanJoinInputShape, PlanCompileBTInputSchema, PlanCompileBTInputShape, PlanRunBTInputSchema, PlanRunBTInputShape, PlanRunReactiveInputSchema, PlanRunReactiveInputShape, PlanReduceInputSchema, PlanReduceInputShape, PlanDryRunInputSchema, PlanDryRunInputShape, handlePlanFanout, handlePlanJoin, handlePlanCompileBT, handlePlanRunBT, handlePlanRunReactive, handlePlanReduce, handlePlanDryRun, ValueGuardRejectionError, } from "./tools/planTools.js";
+import { PlanFanoutInputSchema, PlanFanoutInputShape, PlanJoinInputSchema, PlanJoinInputShape, PlanCompileBTInputSchema, PlanCompileBTInputShape, PlanRunBTInputSchema, PlanRunBTInputShape, PlanRunReactiveInputSchema, PlanRunReactiveInputShape, PlanReduceInputSchema, PlanReduceInputShape, PlanDryRunInputSchema, PlanDryRunInputShape, PlanStatusInputSchema, PlanStatusInputShape, PlanPauseInputSchema, PlanPauseInputShape, PlanResumeInputSchema, PlanResumeInputShape, handlePlanFanout, handlePlanJoin, handlePlanCompileBT, handlePlanRunBT, handlePlanRunReactive, handlePlanReduce, handlePlanDryRun, handlePlanStatus, handlePlanPause, handlePlanResume, ValueGuardRejectionError, } from "./tools/planTools.js";
 import { BbGetInputSchema, BbGetInputShape, BbQueryInputSchema, BbQueryInputShape, BbSetInputSchema, BbSetInputShape, BbBatchSetInputSchema, BbBatchSetInputShape, BbWatchInputSchema, BbWatchInputShape, CnpAnnounceInputSchema, CnpAnnounceInputShape, handleBbGet, handleBbBatchSet, handleBbQuery, handleBbSet, handleBbWatch, StigDecayInputSchema, StigDecayInputShape, StigMarkInputSchema, StigMarkInputShape, StigBatchInputSchema, StigBatchInputShape, StigSnapshotInputSchema, StigSnapshotInputShape, handleStigDecay, handleStigMark, handleStigBatch, handleStigSnapshot, handleCnpAnnounce, ConsensusVoteInputSchema, ConsensusVoteInputShape, handleConsensusVote, } from "./tools/coordTools.js";
 import { requestCancellation, cancelRun, getCancellation } from "./executor/cancel.js";
 import { AgentAutoscaleSetInputSchema, AgentAutoscaleSetInputShape, handleAgentAutoscaleSet, } from "./tools/agentTools.js";
@@ -85,6 +89,17 @@ const valueGraph = new ValueGraph();
 const valueGuardRegistry = new Map();
 /** Registry exposing live Behaviour Tree node statuses to dashboards. */
 const btStatusRegistry = new BehaviorTreeStatusRegistry();
+/** Registry tracking plan lifecycle state for pause/resume tooling. */
+const planLifecycle = new PlanLifecycleRegistry();
+/** Directory storing JSONL artefacts for correlated log tails. */
+const LOG_JOURNAL_ROOT = resolvePath(process.cwd(), "runs", "logs");
+/** Shared journal preserving orchestrator, run and child logs for MCP tools. */
+const logJournal = new LogJournal({
+    rootDir: LOG_JOURNAL_ROOT,
+    maxEntriesPerBucket: 1000,
+    maxFileSizeBytes: 4 * 1024 * 1024,
+    maxFileCount: 5,
+});
 /** Default feature toggles used before CLI/flags are parsed. */
 const DEFAULT_FEATURE_TOGGLES = {
     enableBT: false,
@@ -256,8 +271,49 @@ const baseLoggerOptions = {
     maxFileCount: parseCountEnv(process.env.MCP_LOG_ROTATE_KEEP),
     redactSecrets: parseRedactEnv(process.env.MCP_LOG_REDACT),
 };
+function recordServerLogEntry(entry) {
+    let timestamp = Date.parse(entry.timestamp);
+    if (!Number.isFinite(timestamp)) {
+        timestamp = Date.now();
+    }
+    const payload = entry.payload ?? null;
+    const runId = extractRunId(payload);
+    const opId = extractOpId(payload);
+    const graphId = extractGraphId(payload);
+    const nodeId = extractNodeId(payload);
+    const childId = extractChildId(payload);
+    const jobId = extractJobId(payload);
+    try {
+        logJournal.record({
+            stream: "server",
+            bucketId: "orchestrator",
+            ts: timestamp,
+            level: entry.level,
+            message: entry.message,
+            data: payload ?? null,
+            jobId,
+            runId,
+            opId,
+            graphId,
+            nodeId,
+            childId,
+        });
+    }
+    catch (error) {
+        try {
+            const detail = error instanceof Error ? error.message : String(error);
+            process.stderr.write(`${JSON.stringify({ ts: new Date().toISOString(), level: "error", message: "log_journal_record_failed", detail })}\n`);
+        }
+        catch {
+            // Ignore secondary failures: logging should never crash orchestrator hot paths.
+        }
+    }
+}
+function instantiateLogger(options) {
+    return new StructuredLogger({ ...options, onEntry: recordServerLogEntry });
+}
 let activeLoggerOptions = { ...baseLoggerOptions };
-let logger = new StructuredLogger(activeLoggerOptions);
+let logger = instantiateLogger(activeLoggerOptions);
 const eventStore = new EventStore({ maxHistory: 5000, logger });
 const eventBus = new EventBus({ historyLimit: 5000 });
 // Bridge coordination primitives to the unified event bus so downstream MCP
@@ -340,9 +396,45 @@ const childSupervisor = new ChildSupervisor({
             raw: entry.raw ?? null,
             parsed: entry.parsed ?? null,
         });
+        try {
+            logJournal.record({
+                stream: "child",
+                bucketId: entry.childId ?? childId,
+                ts: entry.ts,
+                level: resolveChildLogLevel(entry.stream),
+                message: entry.message,
+                data: {
+                    raw: entry.raw ?? null,
+                    parsed: entry.parsed ?? null,
+                    stream: entry.stream,
+                },
+                jobId: entry.jobId ?? null,
+                runId: entry.runId ?? null,
+                opId: entry.opId ?? null,
+                graphId: entry.graphId ?? null,
+                nodeId: entry.nodeId ?? null,
+                childId: entry.childId ?? childId,
+            });
+        }
+        catch (error) {
+            const detail = error instanceof Error ? error.message : String(error);
+            process.stderr.write(`${JSON.stringify({ ts: new Date().toISOString(), level: "error", message: "child_log_journal_failed", detail })}\n`);
+        }
     },
 });
-const autoscaler = new Autoscaler({ supervisor: childSupervisor, logger });
+const autoscaler = new Autoscaler({
+    supervisor: childSupervisor,
+    logger,
+    emitEvent: (event) => {
+        pushEvent({
+            kind: "AUTOSCALER",
+            level: event.level,
+            childId: event.childId,
+            payload: event.payload,
+            correlation: event.correlation ?? undefined,
+        });
+    },
+});
 const orchestratorSupervisor = new OrchestratorSupervisor({
     childManager: childSupervisor,
     logger,
@@ -350,6 +442,7 @@ const orchestratorSupervisor = new OrchestratorSupervisor({
         emitAlert: async (incident) => {
             const level = incident.severity === "critical" ? "error" : "warn";
             const eventKind = level === "error" ? "ERROR" : "WARN";
+            const correlation = inferSupervisorIncidentCorrelation(incident);
             if (level === "error") {
                 logger.error("supervisor_incident", {
                     type: incident.type,
@@ -364,15 +457,30 @@ const orchestratorSupervisor = new OrchestratorSupervisor({
                     context: incident.context,
                 });
             }
-            pushEvent({ kind: eventKind, level, payload: { type: "supervisor_incident", incident } });
+            pushEvent({
+                kind: eventKind,
+                level,
+                payload: { type: "supervisor_incident", incident },
+                correlation,
+            });
         },
         requestRewrite: async (incident) => {
             logger.warn("supervisor_request_rewrite", incident.context);
-            pushEvent({ kind: "INFO", level: "warn", payload: { type: "supervisor_request_rewrite", incident } });
+            pushEvent({
+                kind: "INFO",
+                level: "warn",
+                payload: { type: "supervisor_request_rewrite", incident },
+                correlation: inferSupervisorIncidentCorrelation(incident),
+            });
         },
         requestRedispatch: async (incident) => {
             logger.warn("supervisor_request_redispatch", incident.context);
-            pushEvent({ kind: "INFO", level: "warn", payload: { type: "supervisor_request_redispatch", incident } });
+            pushEvent({
+                kind: "INFO",
+                level: "warn",
+                payload: { type: "supervisor_request_redispatch", incident },
+                correlation: inferSupervisorIncidentCorrelation(incident),
+            });
         },
     },
 });
@@ -747,6 +855,7 @@ function getPlanToolContext() {
                 jobId: event.jobId,
                 childId: event.childId,
                 payload: event.payload,
+                correlation: event.correlation ?? undefined,
             });
         },
         stigmergy,
@@ -759,6 +868,7 @@ function getPlanToolContext() {
         loopDetector,
         autoscaler: runtimeFeatures.enableAutoscaler ? autoscaler : undefined,
         btStatusRegistry,
+        planLifecycle: runtimeFeatures.enablePlanLifecycle ? planLifecycle : undefined,
         idempotency: runtimeFeatures.enableIdempotency ? idempotencyRegistry : undefined,
     };
 }
@@ -1115,6 +1225,53 @@ function ensureTransactionsEnabled(toolName) {
 // ---------------------------
 const now = () => Date.now();
 const j = (o) => JSON.stringify(o, null, 2);
+function extractStringProperty(payload, key) {
+    if (!payload || typeof payload !== "object") {
+        return null;
+    }
+    const candidate = payload;
+    const raw = candidate[key];
+    if (typeof raw !== "string") {
+        return null;
+    }
+    const trimmed = raw.trim();
+    return trimmed.length > 0 ? trimmed : null;
+}
+function extractRunId(payload) {
+    return extractStringProperty(payload, "run_id");
+}
+function extractOpId(payload) {
+    return extractStringProperty(payload, "op_id") ?? extractStringProperty(payload, "operation_id");
+}
+function extractGraphId(payload) {
+    return extractStringProperty(payload, "graph_id") ?? null;
+}
+function extractNodeId(payload) {
+    return extractStringProperty(payload, "node_id") ?? null;
+}
+function extractChildId(payload) {
+    return extractStringProperty(payload, "child_id") ?? null;
+}
+function extractJobId(payload) {
+    return extractStringProperty(payload, "job_id") ?? null;
+}
+function deriveEventMessage(kind, payload) {
+    const msg = extractStringProperty(payload, "msg");
+    if (msg) {
+        return msg;
+    }
+    return kind.toLowerCase();
+}
+function resolveChildLogLevel(stream) {
+    switch (stream) {
+        case "stderr":
+            return "error";
+        case "meta":
+            return "debug";
+        default:
+            return "info";
+    }
+}
 const OpCancelInputSchema = z
     .object({
     op_id: z.string().min(1),
@@ -1175,6 +1332,15 @@ const EventSubscribeInputSchema = z
 })
     .strict();
 const EventSubscribeInputShape = EventSubscribeInputSchema.shape;
+const LogsTailInputSchema = z
+    .object({
+    stream: z.enum(["server", "run", "child"]).default("server"),
+    id: z.string().trim().min(1).optional(),
+    from_seq: z.number().int().min(0).optional(),
+    limit: z.number().int().positive().max(500).optional(),
+})
+    .strict();
+const LogsTailInputShape = LogsTailInputSchema.shape;
 /**
  * Input schema guarding the `graph_subgraph_extract` tool. The strict contract
  * rejects stray properties so export destinations remain predictable.
@@ -1188,37 +1354,6 @@ const GraphSubgraphExtractInputSchema = z
 })
     .strict();
 const GraphSubgraphExtractInputShape = GraphSubgraphExtractInputSchema.shape;
-function extractStringProperty(payload, key) {
-    if (!payload || typeof payload !== "object") {
-        return null;
-    }
-    const candidate = payload;
-    const raw = candidate[key];
-    if (typeof raw !== "string") {
-        return null;
-    }
-    const trimmed = raw.trim();
-    return trimmed.length > 0 ? trimmed : null;
-}
-function extractRunId(payload) {
-    return extractStringProperty(payload, "run_id");
-}
-function extractOpId(payload) {
-    return extractStringProperty(payload, "op_id") ?? extractStringProperty(payload, "operation_id");
-}
-function extractGraphId(payload) {
-    return extractStringProperty(payload, "graph_id") ?? null;
-}
-function extractNodeId(payload) {
-    return extractStringProperty(payload, "node_id") ?? null;
-}
-function deriveEventMessage(kind, payload) {
-    const msg = extractStringProperty(payload, "msg");
-    if (msg) {
-        return msg;
-    }
-    return kind.toLowerCase();
-}
 function pushEvent(event) {
     const emitted = eventStore.emit({
         kind: event.kind,
@@ -1236,20 +1371,48 @@ function pushEvent(event) {
         jobId: emitted.jobId,
         childId: emitted.childId
     });
-    const runId = extractRunId(event.payload);
-    const opId = extractOpId(event.payload);
-    const graphId = extractGraphId(event.payload);
-    const nodeId = extractNodeId(event.payload);
+    const hints = {};
+    mergeCorrelationHints(hints, event.correlation ?? undefined);
+    if (event.jobId !== undefined) {
+        mergeCorrelationHints(hints, { jobId: event.jobId ?? null });
+    }
+    if (event.childId !== undefined) {
+        mergeCorrelationHints(hints, { childId: event.childId ?? null });
+    }
+    const payloadHints = {};
+    const payloadRunId = extractRunId(event.payload);
+    if (typeof payloadRunId === "string") {
+        payloadHints.runId = payloadRunId;
+    }
+    const payloadOpId = extractOpId(event.payload);
+    if (typeof payloadOpId === "string") {
+        payloadHints.opId = payloadOpId;
+    }
+    const payloadGraphId = extractGraphId(event.payload);
+    if (typeof payloadGraphId === "string") {
+        payloadHints.graphId = payloadGraphId;
+    }
+    const payloadNodeId = extractNodeId(event.payload);
+    if (typeof payloadNodeId === "string") {
+        payloadHints.nodeId = payloadNodeId;
+    }
+    mergeCorrelationHints(hints, payloadHints);
+    const runId = hints.runId ?? null;
+    const opId = hints.opId ?? null;
+    const graphId = hints.graphId ?? null;
+    const nodeId = hints.nodeId ?? null;
+    const jobId = hints.jobId ?? null;
+    const childId = hints.childId ?? null;
     const message = deriveEventMessage(event.kind, event.payload);
     eventBus.publish({
         cat: event.kind,
         level: (event.level ?? emitted.level),
-        jobId: event.jobId ?? null,
+        jobId,
         runId,
         opId,
         graphId,
         nodeId,
-        childId: event.childId ?? null,
+        childId,
         msg: message,
         data: event.payload,
     });
@@ -1259,14 +1422,35 @@ function pushEvent(event) {
             ts: emitted.ts,
             kind: emitted.kind,
             level: emitted.level,
-            jobId: emitted.jobId,
+            jobId,
             runId,
             opId,
             graphId,
             nodeId,
-            childId: emitted.childId,
+            childId,
             payload: emitted.payload,
         });
+        try {
+            logJournal.record({
+                stream: "run",
+                bucketId: runId,
+                seq: emitted.seq,
+                ts: emitted.ts,
+                level: event.level ?? emitted.level,
+                message,
+                data: event.payload ?? null,
+                jobId,
+                runId,
+                opId,
+                graphId,
+                nodeId,
+                childId,
+            });
+        }
+        catch (error) {
+            const detail = error instanceof Error ? error.message : String(error);
+            process.stderr.write(`${JSON.stringify({ ts: new Date().toISOString(), level: "error", message: "run_log_journal_failed", detail })}\n`);
+        }
     }
     return emitted;
 }
@@ -1304,14 +1488,40 @@ function buildLiveEvents(input) {
 }
 // Heartbeat
 let HEARTBEAT_TIMER = null;
+/**
+ * Publish a heartbeat event for every job currently marked as running. The helper keeps the
+ * correlation logic reusable so deterministic tests can trigger heartbeats without waiting for
+ * the scheduler interval to elapse.
+ */
+function emitHeartbeatTick() {
+    for (const job of graphState.listJobsByState("running")) {
+        const correlation = resolveJobEventCorrelation(job.id, { job });
+        pushEvent({
+            kind: "HEARTBEAT",
+            jobId: correlation.jobId ?? job.id,
+            payload: { msg: "alive" },
+            correlation,
+        });
+    }
+}
+/**
+ * Start the periodic heartbeat publisher when the orchestrator schedules background jobs. The
+ * interval delegates to {@link emitHeartbeatTick} so the logic remains testable.
+ */
 function startHeartbeat() {
     if (HEARTBEAT_TIMER)
         return;
     HEARTBEAT_TIMER = setInterval(() => {
-        for (const job of graphState.listJobsByState("running")) {
-            pushEvent({ kind: "HEARTBEAT", jobId: job.id, payload: { msg: "alive" } });
-        }
+        emitHeartbeatTick();
     }, 2000);
+}
+/** Stop the heartbeat interval to avoid leaking timers when shutting down tests or transports. */
+function stopHeartbeat() {
+    if (!HEARTBEAT_TIMER) {
+        return;
+    }
+    clearInterval(HEARTBEAT_TIMER);
+    HEARTBEAT_TIMER = null;
 }
 // ---------------------------
 // Orchestrateur (jobs/enfants)
@@ -1332,14 +1542,75 @@ function createChild(jobId, spec, ttl_s) {
 function findJobIdByChild(childId) {
     return graphState.findJobIdByChild(childId);
 }
+/**
+ * Synthesises correlation hints for child-centric events by combining the
+ * orchestrator state (graph snapshot + supervisor metadata) with optional
+ * additional sources.
+ */
+function resolveChildEventCorrelation(childId, options = {}) {
+    const childSnapshot = options.child ?? graphState.getChild(childId) ?? null;
+    const jobCandidate = childSnapshot?.jobId ?? findJobIdByChild(childId) ?? null;
+    const metadata = childSupervisor.childrenIndex.getChild(childId)?.metadata;
+    const sources = [];
+    if (metadata) {
+        sources.push(metadata);
+    }
+    if (options.extraSources) {
+        sources.push(...options.extraSources);
+    }
+    return buildChildCorrelationHints({
+        childId,
+        jobId: jobCandidate,
+        sources,
+    });
+}
+/**
+ * Synthesises correlation hints for job-centric events by combining the
+ * orchestrator state with supervisor metadata. The helper inspects the job
+ * snapshot, associated children and any additional sources so job-scoped
+ * events can inherit `runId`/`opId` hints derived from their participants.
+ */
+function resolveJobEventCorrelation(jobId, options = {}) {
+    const jobSnapshot = options.job ?? graphState.getJob(jobId) ?? null;
+    const sources = [];
+    if (jobSnapshot) {
+        sources.push({
+            job_id: jobSnapshot.id,
+            state: jobSnapshot.state,
+            child_ids: jobSnapshot.childIds,
+        });
+        for (const childId of jobSnapshot.childIds) {
+            const child = graphState.getChild(childId);
+            if (child) {
+                sources.push(child);
+            }
+            const indexSnapshot = childSupervisor.childrenIndex.getChild(childId);
+            if (indexSnapshot) {
+                sources.push(indexSnapshot.metadata);
+            }
+        }
+    }
+    if (options.extraSources) {
+        sources.push(...options.extraSources);
+    }
+    return buildJobCorrelationHints({ jobId, sources });
+}
 function pruneExpired() {
     const t = now();
     for (const child of graphState.listChildSnapshots()) {
         if (child.ttlAt && t > child.ttlAt && child.state !== "killed") {
             graphState.clearPendingForChild(child.id);
             graphState.patchChild(child.id, { state: "killed", waitingFor: null, pendingId: null, ttlAt: null });
-            const jobId = child.jobId ?? findJobIdByChild(child.id);
-            pushEvent({ kind: "KILL", jobId, childId: child.id, level: "warn", payload: { reason: "ttl" } });
+            const correlation = resolveChildEventCorrelation(child.id, { child });
+            const jobId = correlation.jobId ?? undefined;
+            pushEvent({
+                kind: "KILL",
+                jobId,
+                childId: correlation.childId ?? child.id,
+                level: "warn",
+                payload: { reason: "ttl" },
+                correlation,
+            });
         }
     }
     const expiredEntries = blackboard.evictExpired();
@@ -1807,6 +2078,77 @@ server.registerTool("events_subscribe", {
                 {
                     type: "text",
                     text: j({ error: "E-EVT-INVALID", message, hint: "invalid_filters" }),
+                },
+            ],
+        };
+    }
+});
+server.registerTool("logs_tail", {
+    title: "Logs tail",
+    description: "Diffuse un extrait corrélé des journaux orchestrateur, runs et enfants.",
+    inputSchema: LogsTailInputShape,
+}, async (input) => {
+    try {
+        const parsed = LogsTailInputSchema.parse(input ?? {});
+        const stream = (parsed.stream ?? "server");
+        const bucketId = parsed.id?.trim();
+        if ((stream === "run" || stream === "child") && (!bucketId || bucketId.length === 0)) {
+            return {
+                isError: true,
+                content: [
+                    {
+                        type: "text",
+                        text: j({
+                            error: "E-LOGS-MISSING_ID",
+                            message: "id is required when tailing run or child streams",
+                            stream,
+                        }),
+                    },
+                ],
+            };
+        }
+        const targetBucket = bucketId ?? "orchestrator";
+        const result = logJournal.tail({
+            stream,
+            bucketId: targetBucket,
+            fromSeq: parsed.from_seq,
+            limit: parsed.limit,
+        });
+        const entries = result.entries.map((entry) => ({
+            seq: entry.seq,
+            ts: entry.ts,
+            stream: entry.stream,
+            bucket_id: entry.bucketId,
+            level: entry.level,
+            message: entry.message,
+            data: entry.data ?? null,
+            job_id: entry.jobId ?? null,
+            run_id: entry.runId ?? null,
+            op_id: entry.opId ?? null,
+            graph_id: entry.graphId ?? null,
+            node_id: entry.nodeId ?? null,
+            child_id: entry.childId ?? null,
+        }));
+        const structured = {
+            stream,
+            bucket_id: targetBucket,
+            entries,
+            next_seq: result.nextSeq,
+        };
+        return {
+            content: [{ type: "text", text: j({ tool: "logs_tail", result: structured }) }],
+            structuredContent: structured,
+        };
+    }
+    catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        logger.warn("logs_tail_failed", { message });
+        return {
+            isError: true,
+            content: [
+                {
+                    type: "text",
+                    text: j({ error: "E-LOGS-INVALID", message }),
                 },
             ],
         };
@@ -3715,6 +4057,67 @@ server.registerTool("plan_dry_run", {
         return planToolError("plan_dry_run", error, {}, "E-PLAN-DRY-RUN");
     }
 });
+server.registerTool("plan_status", {
+    title: "Plan status",
+    description: "Expose l'état courant d'un run de plan (running/paused/done/failed).",
+    inputSchema: PlanStatusInputShape,
+}, async (input) => {
+    try {
+        const parsed = PlanStatusInputSchema.parse(input);
+        logger.info("plan_status_requested", { run_id: parsed.run_id });
+        const result = handlePlanStatus(getPlanToolContext(), parsed);
+        logger.info("plan_status_resolved", {
+            run_id: result.run_id,
+            state: result.state,
+            progress: result.progress,
+        });
+        return {
+            content: [{ type: "text", text: j({ tool: "plan_status", result }) }],
+            structuredContent: result,
+        };
+    }
+    catch (error) {
+        return planToolError("plan_status", error, {}, "E-PLAN-STATUS");
+    }
+});
+server.registerTool("plan_pause", {
+    title: "Plan pause",
+    description: "Met en pause un run de plan actif via le lifecycle registry.",
+    inputSchema: PlanPauseInputShape,
+}, async (input) => {
+    try {
+        const parsed = PlanPauseInputSchema.parse(input);
+        logger.info("plan_pause_requested", { run_id: parsed.run_id });
+        const result = await handlePlanPause(getPlanToolContext(), parsed);
+        logger.info("plan_pause_applied", { run_id: result.run_id, state: result.state });
+        return {
+            content: [{ type: "text", text: j({ tool: "plan_pause", result }) }],
+            structuredContent: result,
+        };
+    }
+    catch (error) {
+        return planToolError("plan_pause", error, {}, "E-PLAN-PAUSE");
+    }
+});
+server.registerTool("plan_resume", {
+    title: "Plan resume",
+    description: "Reprend un run de plan précédemment mis en pause.",
+    inputSchema: PlanResumeInputShape,
+}, async (input) => {
+    try {
+        const parsed = PlanResumeInputSchema.parse(input);
+        logger.info("plan_resume_requested", { run_id: parsed.run_id });
+        const result = await handlePlanResume(getPlanToolContext(), parsed);
+        logger.info("plan_resume_applied", { run_id: result.run_id, state: result.state });
+        return {
+            content: [{ type: "text", text: j({ tool: "plan_resume", result }) }],
+            structuredContent: result,
+        };
+    }
+    catch (error) {
+        return planToolError("plan_resume", error, {}, "E-PLAN-RESUME");
+    }
+});
 server.registerTool("op_cancel", {
     title: "Operation cancel",
     description: "Demande l'annulation d'une opération identifiée par son op_id.",
@@ -4042,7 +4445,14 @@ server.registerTool("start", { title: "Start job", description: "Met les enfants
         if (child.state === "idle") {
             graphState.patchChild(child.id, { state: "waiting", waitingFor: "reply", pendingId: null });
             started++;
-            pushEvent({ kind: "START", jobId: job_id, childId: child.id, payload: { name: child.name } });
+            const correlation = resolveChildEventCorrelation(child.id, { child });
+            pushEvent({
+                kind: "START",
+                jobId: correlation.jobId ?? undefined,
+                childId: correlation.childId ?? child.id,
+                payload: { name: child.name },
+                correlation,
+            });
         }
     }
     return { content: [{ type: "text", text: j({ started, job_id }) }] };
@@ -4306,8 +4716,10 @@ server.registerTool("child_collect", {
         if (qualityComputation) {
             const needsRevision = qualityGateEnabled && qualityComputation.score < qualityGateThreshold;
             qualityAssessment = {
-                ...qualityComputation,
                 kind: summary.kind,
+                score: qualityComputation.score,
+                rubric: { ...qualityComputation.rubric },
+                metrics: { ...qualityComputation.metrics },
                 gate: {
                     enabled: qualityGateEnabled,
                     threshold: qualityGateThreshold,
@@ -4318,16 +4730,17 @@ server.registerTool("child_collect", {
                 actor: "quality-scorer",
                 phase: "score",
                 childId: parsed.child_id,
-                score: qualityComputation.score / 100,
+                score: qualityAssessment.score / 100,
                 content: `quality-${summary.kind}`,
                 metadata: {
                     threshold: qualityGateThreshold,
                     needs_revision: needsRevision,
-                    rubric: qualityComputation.rubric,
+                    rubric: qualityAssessment.rubric,
                 },
             });
         }
         const childSnapshot = childSupervisor.childrenIndex.getChild(parsed.child_id);
+        const jobId = findJobIdByChild(parsed.child_id) ?? null;
         const metadataTags = extractMetadataTags(childSnapshot?.metadata);
         const tags = new Set([...summary.tags, ...metadataTags, parsed.child_id]);
         const goals = extractMetadataGoals(childSnapshot?.metadata);
@@ -4346,6 +4759,35 @@ server.registerTool("child_collect", {
                 rubric: qualityAssessment.rubric,
                 gate: qualityAssessment.gate,
             };
+        }
+        const cognitiveEvents = buildChildCognitiveEvents({
+            childId: parsed.child_id,
+            jobId,
+            summary,
+            review,
+            reflection: reflectionSummary,
+            quality: qualityAssessment,
+            artifactCount: result.outputs.artifacts.length,
+            messageCount: result.outputs.messages.length,
+            correlationSources: [childSnapshot?.metadata, result.outputs, result],
+        });
+        pushEvent({
+            kind: cognitiveEvents.review.kind,
+            level: cognitiveEvents.review.level,
+            jobId: cognitiveEvents.review.jobId ?? undefined,
+            childId: cognitiveEvents.review.childId,
+            payload: cognitiveEvents.review.payload,
+            correlation: cognitiveEvents.review.correlation,
+        });
+        if (cognitiveEvents.reflection) {
+            pushEvent({
+                kind: cognitiveEvents.reflection.kind,
+                level: cognitiveEvents.reflection.level,
+                jobId: cognitiveEvents.reflection.jobId ?? undefined,
+                childId: cognitiveEvents.reflection.childId,
+                payload: cognitiveEvents.reflection.payload,
+                correlation: cognitiveEvents.reflection.correlation,
+            });
         }
         const episode = memoryStore.recordEpisode({
             goal: goals.length > 0 ? goals.join(" | ") : `Collecte ${parsed.child_id}`,
@@ -4478,9 +4920,23 @@ server.registerTool("child_prompt", { title: "Child prompt", description: "Ajout
     graphState.patchChild(child_id, { state: "running", waitingFor: "reply" });
     const pendingId = `pending_${randomUUID()}`;
     graphState.setPending(child_id, pendingId, now());
-    const jobId = child.jobId ?? findJobIdByChild(child_id);
-    pushEvent({ kind: "PROMPT", jobId, childId: child_id, source: "orchestrator", payload: { appended: messages.length } });
-    pushEvent({ kind: "PENDING", jobId, childId: child_id, payload: { pendingId } });
+    const correlation = resolveChildEventCorrelation(child_id, { child });
+    const jobId = correlation.jobId ?? undefined;
+    pushEvent({
+        kind: "PROMPT",
+        jobId,
+        childId: correlation.childId ?? child_id,
+        source: "orchestrator",
+        payload: { appended: messages.length },
+        correlation,
+    });
+    pushEvent({
+        kind: "PENDING",
+        jobId,
+        childId: correlation.childId ?? child_id,
+        payload: { pendingId },
+        correlation,
+    });
     return { content: [{ type: "text", text: j({ pending_id: pendingId, child_id }) }] };
 });
 // child_push_partial
@@ -4497,12 +4953,27 @@ server.registerTool("child_push_partial", { title: "Child push partial", descrip
     if (text.length) {
         graphState.appendMessage(child.id, { role: "assistant", content: text, ts: now(), actor: "child" });
     }
-    const jobId = child.jobId ?? findJobIdByChild(child.id);
-    pushEvent({ kind: "REPLY_PART", jobId, childId: child.id, source: "child", payload: { len: text.length } });
+    const correlation = resolveChildEventCorrelation(child.id, { child });
+    const jobId = correlation.jobId ?? undefined;
+    pushEvent({
+        kind: "REPLY_PART",
+        jobId,
+        childId: correlation.childId ?? child.id,
+        source: "child",
+        payload: { len: text.length },
+        correlation,
+    });
     if (done) {
         graphState.clearPending(pending_id);
         graphState.patchChild(child.id, { state: "waiting", waitingFor: null, pendingId: null });
-        pushEvent({ kind: "REPLY", jobId, childId: child.id, source: "child", payload: { final: true } });
+        pushEvent({
+            kind: "REPLY",
+            jobId,
+            childId: correlation.childId ?? child.id,
+            source: "child",
+            payload: { final: true },
+            correlation,
+        });
     }
     return { content: [{ type: "text", text: j({ ok: true }) }] };
 });
@@ -4519,8 +4990,16 @@ server.registerTool("child_push_reply", { title: "Child push reply", description
     graphState.appendMessage(child.id, { role: "assistant", content, ts: now(), actor: "child" });
     graphState.clearPending(pending_id);
     graphState.patchChild(child.id, { state: "waiting", waitingFor: null, pendingId: null });
-    const jobId = child.jobId ?? findJobIdByChild(child.id);
-    pushEvent({ kind: "REPLY", jobId, childId: child.id, source: "child", payload: { length: content.length, final: true } });
+    const correlation = resolveChildEventCorrelation(child.id, { child });
+    const jobId = correlation.jobId ?? undefined;
+    pushEvent({
+        kind: "REPLY",
+        jobId,
+        childId: correlation.childId ?? child.id,
+        source: "child",
+        payload: { length: content.length, final: true },
+        correlation,
+    });
     return { content: [{ type: "text", text: j({ ok: true, child_id: child.id }) }] };
 });
 // child_chat
@@ -4536,9 +5015,23 @@ server.registerTool("child_chat", { title: "Child chat", description: "Envoie un
     graphState.patchChild(child_id, { state: "running", waitingFor: "reply" });
     const pendingId = `pending_${randomUUID()}`;
     graphState.setPending(child_id, pendingId, now());
-    const jobId = child.jobId ?? findJobIdByChild(child_id);
-    pushEvent({ kind: "PROMPT", jobId, childId: child_id, source: "orchestrator", payload: { oneShot: true } });
-    pushEvent({ kind: "PENDING", jobId, childId: child_id, payload: { pendingId } });
+    const correlation = resolveChildEventCorrelation(child_id, { child });
+    const jobId = correlation.jobId ?? undefined;
+    pushEvent({
+        kind: "PROMPT",
+        jobId,
+        childId: correlation.childId ?? child_id,
+        source: "orchestrator",
+        payload: { oneShot: true },
+        correlation,
+    });
+    pushEvent({
+        kind: "PENDING",
+        jobId,
+        childId: correlation.childId ?? child_id,
+        payload: { pendingId },
+        correlation,
+    });
     return { content: [{ type: "text", text: j({ pending_id: pendingId, child_id }) }] };
 });
 // child_info
@@ -4580,7 +5073,14 @@ server.registerTool("child_rename", { title: "Child rename", description: "Renom
         return { isError: true, content: [{ type: "text", text: j({ error: "NOT_FOUND", message: "child_id inconnu" }) }] };
     const oldName = child.name;
     graphState.patchChild(child.id, { name: input.name });
-    pushEvent({ kind: "INFO", childId: child.id, jobId: child.jobId ?? findJobIdByChild(child.id), payload: { rename: { from: oldName, to: input.name } } });
+    const correlation = resolveChildEventCorrelation(child.id, { child });
+    pushEvent({
+        kind: "INFO",
+        childId: correlation.childId ?? child.id,
+        jobId: correlation.jobId ?? undefined,
+        payload: { rename: { from: oldName, to: input.name } },
+        correlation,
+    });
     return { content: [{ type: "text", text: j({ ok: true, child_id: child.id, name: input.name }) }] };
 });
 // child_reset
@@ -4589,7 +5089,14 @@ server.registerTool("child_reset", { title: "Child reset", description: "Reiniti
     if (!child)
         return { isError: true, content: [{ type: "text", text: j({ error: "NOT_FOUND", message: "child_id inconnu" }) }] };
     graphState.resetChild(child.id, { keepSystem: !!input.keep_system, timestamp: now() });
-    pushEvent({ kind: "INFO", childId: child.id, jobId: child.jobId ?? findJobIdByChild(child.id), payload: { reset: { keep_system: !!input.keep_system } } });
+    const correlation = resolveChildEventCorrelation(child.id, { child });
+    pushEvent({
+        kind: "INFO",
+        childId: correlation.childId ?? child.id,
+        jobId: correlation.jobId ?? undefined,
+        payload: { reset: { keep_system: !!input.keep_system } },
+        correlation,
+    });
     return { content: [{ type: "text", text: j({ ok: true, child_id: child.id }) }] };
 });
 // status
@@ -4611,7 +5118,13 @@ server.registerTool("status", { title: "Status", description: "Snapshot d un job
             transcript_size: child.transcriptSize
         }));
         const payload = { job_id, state: job.state, children };
-        pushEvent({ kind: "STATUS", jobId: job.id, payload });
+        const correlation = resolveJobEventCorrelation(job.id, { job, extraSources: [payload] });
+        pushEvent({
+            kind: "STATUS",
+            jobId: correlation.jobId ?? job.id,
+            payload,
+            correlation,
+        });
         return { content: [{ type: "text", text: j(payload) }] };
     }
     const jobs = graphState.listJobs().map((job) => ({ id: job.id, state: job.state, child_count: job.childIds.length }));
@@ -4725,7 +5238,13 @@ server.registerTool("aggregate", { title: "Aggregate", description: "Agrege les 
     }
     const res = aggregate(job_id, strategy, { includeSystem: input.include_system, includeGoals: input.include_goals });
     graphState.patchJob(job_id, { state: "done" });
-    pushEvent({ kind: "AGGREGATE", jobId: job.id, payload: { strategy: strategy ?? "concat", requested: strategyRaw ?? null } });
+    const correlation = resolveJobEventCorrelation(job.id, { job });
+    pushEvent({
+        kind: "AGGREGATE",
+        jobId: correlation.jobId ?? job.id,
+        payload: { strategy: strategy ?? "concat", requested: strategyRaw ?? null },
+        correlation,
+    });
     return { content: [{ type: "text", text: j(res) }] };
 });
 // kill
@@ -4738,8 +5257,15 @@ server.registerTool("kill", { title: "Kill", description: "Termine un child_id o
             return { isError: true, content: [{ type: "text", text: j({ error: "NOT_FOUND", message: "child_id inconnu" }) }] };
         graphState.clearPendingForChild(child_id);
         graphState.patchChild(child_id, { state: "killed", waitingFor: null, pendingId: null });
-        const jobId = child.jobId ?? findJobIdByChild(child_id);
-        pushEvent({ kind: "KILL", jobId, childId: child_id, level: "warn", payload: { scope: "child" } });
+        const correlation = resolveChildEventCorrelation(child_id, { child });
+        pushEvent({
+            kind: "KILL",
+            jobId: correlation.jobId ?? undefined,
+            childId: correlation.childId ?? child_id,
+            level: "warn",
+            payload: { scope: "child" },
+            correlation,
+        });
         return { content: [{ type: "text", text: j({ ok: true, child_id }) }] };
     }
     if (job_id) {
@@ -4751,7 +5277,14 @@ server.registerTool("kill", { title: "Kill", description: "Termine un child_id o
             graphState.patchChild(child.id, { state: "killed", waitingFor: null, pendingId: null });
         }
         graphState.patchJob(job_id, { state: "killed" });
-        pushEvent({ kind: "KILL", jobId: job_id, level: "warn", payload: { scope: "job" } });
+        const correlation = resolveJobEventCorrelation(job_id, { job });
+        pushEvent({
+            kind: "KILL",
+            jobId: correlation.jobId ?? job_id,
+            level: "warn",
+            payload: { scope: "job" },
+            correlation,
+        });
         return { content: [{ type: "text", text: j({ ok: true, job_id }) }] };
     }
     return { isError: true, content: [{ type: "text", text: j({ error: "BAD_REQUEST", message: "Fournis child_id ou job_id" }) }] };
@@ -4776,7 +5309,7 @@ if (isMain) {
     qualityGateThreshold = options.qualityThreshold;
     if (options.logFile) {
         activeLoggerOptions = { ...activeLoggerOptions, logFile: options.logFile };
-        logger = new StructuredLogger(activeLoggerOptions);
+        logger = instantiateLogger(activeLoggerOptions);
         eventStore.setLogger(logger);
         logger.info("logger_configured", {
             log_file: options.logFile,
@@ -4870,4 +5403,4 @@ if (isMain) {
         process.exit(0);
     });
 }
-export { server, graphState, DEFAULT_CHILD_RUNTIME, buildLiveEvents, setDefaultChildRuntime, GraphSubgraphExtractInputSchema, GraphSubgraphExtractInputShape, };
+export { server, graphState, childSupervisor, logJournal, DEFAULT_CHILD_RUNTIME, buildLiveEvents, setDefaultChildRuntime, GraphSubgraphExtractInputSchema, GraphSubgraphExtractInputShape, emitHeartbeatTick, stopHeartbeat, };

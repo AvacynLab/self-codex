@@ -11,6 +11,7 @@ import {
   ContractNetBidSnapshot,
   ContractNetCallSnapshot,
   ContractNetCoordinator,
+  type ContractNetCorrelationContext,
 } from "../coord/contractNet.js";
 import {
   StigmergyField,
@@ -213,6 +214,12 @@ export const CnpAnnounceInputSchema = z
       .max(128)
       .optional(),
     idempotency_key: z.string().min(1).optional(),
+    run_id: z.string().trim().min(1).optional(),
+    op_id: z.string().trim().min(1).optional(),
+    job_id: z.string().trim().min(1).optional(),
+    graph_id: z.string().trim().min(1).optional(),
+    node_id: z.string().trim().min(1).optional(),
+    child_id: z.string().trim().min(1).optional(),
   })
   .strict();
 export const CnpAnnounceInputShape = CnpAnnounceInputSchema.shape;
@@ -345,6 +352,7 @@ export interface CnpAnnounceResult extends Record<string, unknown> {
   awarded_effective_cost: number;
   bids: SerializedContractNetBid[];
   heuristics: SerializedContractNetHeuristics;
+  correlation: ContractNetCorrelationContext | null;
   idempotent: boolean;
   idempotency_key: string | null;
 }
@@ -590,6 +598,16 @@ export function handleCnpAnnounce(
   input: z.infer<typeof CnpAnnounceInputSchema>,
 ): CnpAnnounceResult {
   const execute = (): Omit<CnpAnnounceResult, "idempotent" | "idempotency_key"> => {
+    // Propagate orchestration identifiers so downstream event streams carry
+    // run/op hints without relying on out-of-band resolvers.
+    const correlation = {
+      runId: input.run_id ?? null,
+      opId: input.op_id ?? null,
+      jobId: input.job_id ?? null,
+      graphId: input.graph_id ?? null,
+      nodeId: input.node_id ?? null,
+      childId: input.child_id ?? null,
+    };
     const announcement = context.contractNet.announce({
       taskId: input.task_id,
       payload: input.payload,
@@ -603,6 +621,7 @@ export function handleCnpAnnounce(
         busyPenalty: input.heuristics?.busy_penalty,
         preferenceBonus: input.heuristics?.preference_bonus,
       },
+      correlation,
     });
 
     if (input.manual_bids) {
@@ -745,6 +764,7 @@ function serialiseContractNetResult(
     awarded_effective_cost: decision.effectiveCost,
     bids: snapshot.bids.map(serialiseContractNetBid),
     heuristics: serialiseContractNetHeuristics(snapshot),
+    correlation: snapshot.correlation,
   };
 }
 

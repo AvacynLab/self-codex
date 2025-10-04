@@ -13,11 +13,8 @@ import {
   startChildRuntime,
 } from "./childRuntime.js";
 import type { EventBus } from "./events/bus.js";
-import {
-  bridgeChildRuntimeEvents,
-  type ChildRuntimeBridgeContext,
-  type EventCorrelationHints,
-} from "./events/bridges.js";
+import { bridgeChildRuntimeEvents, type ChildRuntimeBridgeContext } from "./events/bridges.js";
+import { extractCorrelationHints, mergeCorrelationHints, type EventCorrelationHints } from "./events/correlation.js";
 import { ChildrenIndex, ChildRecordSnapshot } from "./state/childrenIndex.js";
 
 /**
@@ -364,6 +361,12 @@ export class ChildSupervisor {
     const inferCorrelation = (context: ChildRuntimeBridgeContext): EventCorrelationHints => {
       const hints: EventCorrelationHints = { childId };
 
+      mergeCorrelationHints(hints, extractCorrelationHints(runtime.metadata));
+      const indexSnapshot = this.index.getChild(childId);
+      if (indexSnapshot) {
+        mergeCorrelationHints(hints, extractCorrelationHints(indexSnapshot.metadata));
+      }
+
       if (context.kind === "message") {
         // When the child surfaces structured payloads we opportunistically
         // reuse the embedded identifiers to correlate stdout/stderr events
@@ -394,7 +397,13 @@ export class ChildSupervisor {
       }
 
       const extra = this.resolveChildCorrelation?.(context);
-      return extra ? { ...hints, ...extra } : hints;
+      // Merge external correlation hints without letting sparse resolvers wipe
+      // the identifiers inferred from the child payload (undefined should
+      // never override concrete hints such as the childId).
+      if (extra) {
+        mergeCorrelationHints(hints, extra);
+      }
+      return hints;
     };
 
     if (this.eventBus) {

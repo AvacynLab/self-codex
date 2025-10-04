@@ -115,12 +115,23 @@ describe("contract-net to consensus end-to-end flow", function () {
         { agent_id: "childB", cost: 48 },
         { agent_id: "childC", cost: 55 },
       ],
+      run_id: "run-triage",
+      op_id: "op-triage-auction",
+      job_id: "job-triage",
     });
 
     const announcement = handleCnpAnnounce(coordinationContext, announceInput);
     expect(announcement.awarded_agent_id).to.equal("childB");
     expect(announcement.bids).to.have.length(3);
     expect(announcement.tags).to.deep.equal([]);
+    expect(announcement.correlation).to.deep.equal({
+      runId: "run-triage",
+      opId: "op-triage-auction",
+      jobId: "job-triage",
+      graphId: null,
+      nodeId: null,
+      childId: null,
+    });
 
     // Prepare deterministic child outputs where the awarded child responds
     // first with a success while a different child returns an error.

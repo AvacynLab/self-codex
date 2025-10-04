@@ -144,6 +144,12 @@ export const CnpAnnounceInputSchema = z
         .max(128)
         .optional(),
     idempotency_key: z.string().min(1).optional(),
+    run_id: z.string().trim().min(1).optional(),
+    op_id: z.string().trim().min(1).optional(),
+    job_id: z.string().trim().min(1).optional(),
+    graph_id: z.string().trim().min(1).optional(),
+    node_id: z.string().trim().min(1).optional(),
+    child_id: z.string().trim().min(1).optional(),
 })
     .strict();
 export const CnpAnnounceInputShape = CnpAnnounceInputSchema.shape;
@@ -342,6 +348,16 @@ function serialiseFieldSnapshot(snapshot) {
 /** Announces a task to the Contract-Net and immediately awards the best bid. */
 export function handleCnpAnnounce(context, input) {
     const execute = () => {
+        // Propagate orchestration identifiers so downstream event streams carry
+        // run/op hints without relying on out-of-band resolvers.
+        const correlation = {
+            runId: input.run_id ?? null,
+            opId: input.op_id ?? null,
+            jobId: input.job_id ?? null,
+            graphId: input.graph_id ?? null,
+            nodeId: input.node_id ?? null,
+            childId: input.child_id ?? null,
+        };
         const announcement = context.contractNet.announce({
             taskId: input.task_id,
             payload: input.payload,
@@ -355,6 +371,7 @@ export function handleCnpAnnounce(context, input) {
                 busyPenalty: input.heuristics?.busy_penalty,
                 preferenceBonus: input.heuristics?.preference_bonus,
             },
+            correlation,
         });
         if (input.manual_bids) {
             for (const bid of input.manual_bids) {
@@ -478,6 +495,7 @@ function serialiseContractNetResult(snapshot, decision) {
         awarded_effective_cost: decision.effectiveCost,
         bids: snapshot.bids.map(serialiseContractNetBid),
         heuristics: serialiseContractNetHeuristics(snapshot),
+        correlation: snapshot.correlation,
     };
 }
 function serialiseContractNetBid(bid) {

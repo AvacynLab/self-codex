@@ -1,3 +1,4 @@
+import { extractCorrelationHints } from "../events/correlation.js";
 /**
  * Supervisor observing scheduler progress, loop alerts and child inactivity to
  * initiate mitigating actions. The component implements {@link LoopReconciler}
@@ -218,4 +219,13 @@ export class OrchestratorSupervisor {
             }
         }
     }
+}
+/**
+ * Extracts correlation hints from a supervisor incident so downstream
+ * orchestrator events can expose run/op identifiers when they are included in
+ * the incident context. The helper accepts both camelCase and snake_case
+ * fields and tolerates arrays when a single identifier is available.
+ */
+export function inferSupervisorIncidentCorrelation(incident) {
+    return extractCorrelationHints(incident.context);
 }

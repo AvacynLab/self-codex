@@ -1,3 +1,34 @@
+import { extractCorrelationHints, mergeCorrelationHints, } from "../events/correlation.js";
+/**
+ * Builds correlation hints from a child snapshot already registered in the index.
+ * The helper keeps explicit `null` overrides while defaulting to the known
+ * `childId` when metadata does not surface one.
+ */
+function inferChildRecordCorrelation(child) {
+    if (!child) {
+        return {};
+    }
+    const hints = extractCorrelationHints(child.metadata);
+    if (hints.childId == null) {
+        hints.childId = child.childId;
+    }
+    return hints;
+}
+/** Derives correlation hints from a spawn template used before the child exists. */
+function inferCreateChildCorrelation(template) {
+    if (!template) {
+        return {};
+    }
+    const hints = extractCorrelationHints(template);
+    mergeCorrelationHints(hints, extractCorrelationHints(template.metadata));
+    mergeCorrelationHints(hints, extractCorrelationHints(template.manifestExtras));
+    if (hints.childId === undefined &&
+        typeof template.childId === "string" &&
+        template.childId.trim().length > 0) {
+        hints.childId = template.childId.trim();
+    }
+    return hints;
+}
 const DEFAULT_CONFIG = {
     minChildren: 0,
     maxChildren: 4,
@@ -25,6 +56,7 @@ export class Autoscaler {
     thresholds;
     spawnTemplate;
     retireGracefulTimeoutMs;
+    emitEvent;
     config;
     backlog = 0;
     samples = [];
@@ -38,6 +70,7 @@ export class Autoscaler {
         this.thresholds = { ...DEFAULT_THRESHOLDS, ...(options.thresholds ?? {}) };
         this.spawnTemplate = options.spawnTemplate;
         this.retireGracefulTimeoutMs = Math.max(100, options.retireGracefulTimeoutMs ?? 500);
+        this.emitEvent = options.emitEvent;
         this.config = { ...DEFAULT_CONFIG, ...(options.config ?? {}) };
         this.config = this.normaliseConfig(this.config);
     }
@@ -100,6 +133,30 @@ export class Autoscaler {
             averageLatencyMs,
             failureRate,
         };
+    }
+    /** Publishes a structured autoscaler event when an action occurs. */
+    publishEvent(event) {
+        if (!this.emitEvent) {
+            return;
+        }
+        const correlation = {};
+        if (event.childId) {
+            correlation.childId = event.childId;
+        }
+        mergeCorrelationHints(correlation, event.correlation);
+        if (event.childId && correlation.childId == null) {
+            correlation.childId = event.childId;
+        }
+        const payload = { ...event.payload };
+        if (event.childId && payload.child_id === undefined) {
+            payload.child_id = event.childId;
+        }
+        this.emitEvent({
+            level: event.level,
+            childId: event.childId,
+            payload,
+            correlation,
+        });
     }
     /** Implements the {@link LoopReconciler} contract. */
     async reconcile(context) {
@@ -174,6 +231,11 @@ export class Autoscaler {
     }
     async scaleUp(reason) {
         this.scalingInFlight = true;
+        const templateCorrelation = inferCreateChildCorrelation(this.spawnTemplate ?? null);
+        const templateChildId = typeof templateCorrelation.childId === "string" && templateCorrelation.childId.length > 0
+            ? templateCorrelation.childId
+            : undefined;
+        const knownChildren = new Set(this.supervisor.childrenIndex.list().map((child) => child.childId));
         try {
             await this.supervisor.createChild(this.spawnTemplate);
             this.lastScaleAt = this.now();
@@ -182,11 +244,43 @@ export class Autoscaler {
                 backlog: this.backlog,
                 samples: this.samples.length,
             });
+            const newChild = this.supervisor.childrenIndex
+                .list()
+                .find((snapshot) => !knownChildren.has(snapshot.childId));
+            const correlation = newChild
+                ? inferChildRecordCorrelation(newChild)
+                : {};
+            mergeCorrelationHints(correlation, templateCorrelation);
+            const childId = newChild?.childId ?? templateChildId;
+            this.publishEvent({
+                level: "info",
+                childId,
+                payload: {
+                    msg: "scale_up",
+                    reason,
+                    backlog: this.backlog,
+                    samples: this.samples.length,
+                },
+                correlation,
+            });
         }
         catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
             this.logger?.error("autoscaler_scale_up_failed", {
                 reason,
-                message: error instanceof Error ? error.message : String(error),
+                message,
+            });
+            this.publishEvent({
+                level: "error",
+                childId: templateChildId,
+                payload: {
+                    msg: "scale_up_failed",
+                    reason,
+                    backlog: this.backlog,
+                    samples: this.samples.length,
+                    message,
+                },
+                correlation: templateCorrelation,
             });
         }
         finally {
@@ -198,27 +292,73 @@ export class Autoscaler {
         if (!candidate) {
             return;
         }
+        const correlation = inferChildRecordCorrelation(candidate);
+        const basePayload = {
+            reason: "relaxation",
+            backlog: this.backlog,
+            samples: this.samples.length,
+        };
         this.scalingInFlight = true;
         try {
             await this.supervisor.cancel(candidate.childId, { timeoutMs: this.retireGracefulTimeoutMs });
             this.lastScaleAt = this.now();
             this.logger?.info("autoscaler_scale_down", { child_id: candidate.childId });
+            this.publishEvent({
+                level: "info",
+                childId: candidate.childId,
+                payload: {
+                    ...basePayload,
+                    msg: "scale_down",
+                },
+                correlation,
+            });
         }
         catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
             this.logger?.warn?.("autoscaler_scale_down_cancel_failed", {
                 child_id: candidate.childId,
-                message: error instanceof Error ? error.message : String(error),
+                message,
+            });
+            this.publishEvent({
+                level: "warn",
+                childId: candidate.childId,
+                payload: {
+                    ...basePayload,
+                    msg: "scale_down_cancel_failed",
+                    message,
+                },
+                correlation,
             });
             if (this.supervisor.kill) {
                 try {
                     await this.supervisor.kill(candidate.childId, { timeoutMs: 200 });
                     this.lastScaleAt = this.now();
                     this.logger?.info("autoscaler_scale_down_forced", { child_id: candidate.childId });
+                    this.publishEvent({
+                        level: "warn",
+                        childId: candidate.childId,
+                        payload: {
+                            ...basePayload,
+                            msg: "scale_down_forced",
+                        },
+                        correlation,
+                    });
                 }
                 catch (killError) {
+                    const killMessage = killError instanceof Error ? killError.message : String(killError);
                     this.logger?.error("autoscaler_scale_down_failed", {
                         child_id: candidate.childId,
-                        message: killError instanceof Error ? killError.message : String(killError),
+                        message: killMessage,
+                    });
+                    this.publishEvent({
+                        level: "error",
+                        childId: candidate.childId,
+                        payload: {
+                            ...basePayload,
+                            msg: "scale_down_failed",
+                            message: killMessage,
+                        },
+                        correlation,
                     });
                 }
             }

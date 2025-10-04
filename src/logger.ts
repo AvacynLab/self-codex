@@ -35,6 +35,8 @@ export interface LoggerOptions {
    * sensitive prompts stay confidential in persisted artefacts.
    */
   readonly redactSecrets?: Array<string | RegExp>;
+  /** Optional listener invoked every time an entry is emitted. */
+  readonly onEntry?: (entry: LogEntry) => void;
 }
 
 /** Phases covered by the cognitive logging helpers. */
@@ -77,12 +79,15 @@ export class StructuredLogger {
    * `./tmp/orchestrator.log` work even when the `tmp/` folder is missing.
    */
   private logDirectoryReady = false;
+  /** Optional listener invoked with the structured entry. */
+  private readonly entryListener?: (entry: LogEntry) => void;
 
   constructor(options: LoggerOptions = {}) {
     this.logFile = options.logFile ?? undefined;
     this.maxFileSizeBytes = options.maxFileSizeBytes ?? DEFAULT_MAX_FILE_SIZE;
     this.maxFileCount = Math.max(1, options.maxFileCount ?? DEFAULT_MAX_FILE_COUNT);
     this.redactSecrets = options.redactSecrets ? [...options.redactSecrets] : [];
+    this.entryListener = options.onEntry;
   }
 
   info(message: string, payload?: unknown): void {
@@ -153,6 +158,9 @@ export class StructuredLogger {
     };
     const line = `${JSON.stringify(entry)}\n`;
     process.stdout.write(line);
+    if (this.entryListener) {
+      this.entryListener(structuredClone(entry));
+    }
     if (!this.logFile) {
       return;
     }
