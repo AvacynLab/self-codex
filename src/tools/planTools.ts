@@ -9,6 +9,7 @@ import { compileHierGraphToBehaviorTree } from "../executor/bt/compiler.js";
 import { BehaviorTreeInterpreter, buildBehaviorTree } from "../executor/bt/interpreter.js";
 import {
   BehaviorNodeDefinitionSchema,
+  type BehaviorNodeDefinition,
   CompiledBehaviorTreeSchema,
   type BTStatus,
   type BehaviorTickResult,
@@ -17,6 +18,14 @@ import {
 } from "../executor/bt/types.js";
 import { ReactiveScheduler } from "../executor/reactiveScheduler.js";
 import { ExecutionLoop } from "../executor/loop.js";
+import {
+  PlanLifecycleFeatureDisabledError,
+  PlanLifecycleRegistry,
+  type PlanLifecycleControls,
+  type PlanLifecycleMode,
+  type PlanLifecyclePhase,
+  type PlanLifecycleSnapshot,
+} from "../executor/planLifecycle.js";
 import { BbSetInputSchema } from "./coordTools.js";
 import {
   ConsensusConfigSchema,
@@ -52,7 +61,11 @@ import {
   PromptVariablesSchema,
   renderPromptTemplate,
 } from "../prompts.js";
+import { applyAll, createInlineSubgraphRule, createRerouteAvoidRule, createSplitParallelRule, type RewriteHistoryEntry } from "../graph/rewrite.js";
+import { flatten } from "../graph/hierarchy.js";
+import type { NormalisedGraph } from "../graph/types.js";
 import { EventKind, EventLevel } from "../eventStore.js";
+import type { EventCorrelationHints } from "../events/correlation.js";
 import type { LoopDetector } from "../guard/loopDetector.js";
 import { BehaviorTreeStatusRegistry } from "../monitor/btStatusRegistry.js";
 import {
@@ -61,6 +74,7 @@ import {
   type CancellationHandle,
   OperationCancelledError,
 } from "../executor/cancel.js";
+import { GraphDescriptorSchema, normaliseGraphDescriptor } from "./graphTools.js";
 
 /**
  * Type used when emitting orchestration events. The server injects a concrete
@@ -73,6 +87,8 @@ export type PlanEventEmitter = (event: {
   jobId?: string;
   childId?: string;
   payload?: unknown;
+  /** Optional correlation metadata forwarded to the unified event bus. */
+  correlation?: EventCorrelationHints | null;
 }) => void;
 
 /** Shared runtime injected when the value guard feature is enabled. */
@@ -164,6 +180,8 @@ export interface PlanToolContext {
   loopDetector?: LoopDetector;
   /** Optional registry collecting Behaviour Tree node statuses for dashboards. */
   btStatusRegistry?: BehaviorTreeStatusRegistry;
+  /** Optional lifecycle registry exposing pause/resume and status queries. */
+  planLifecycle?: PlanLifecycleRegistry;
   /** Optional idempotency registry replaying cached Behaviour Tree results. */
   idempotency?: IdempotencyRegistry;
 }
@@ -346,6 +364,25 @@ const HierGraphSchema = z.object({
     .min(1),
   edges: z.array(HierEdgeSchema).default([]),
 });
+
+/** Schema validating plan rewrite options accepted by the dry-run tool. */
+const PlanDryRunRewriteOptionsSchema = z
+  .object({
+    avoid_node_ids: z.array(z.string().min(1)).max(64).optional(),
+    avoid_labels: z.array(z.string().min(1)).max(64).optional(),
+  })
+  .strict();
+
+/** Schema allowing callers to explicitly declare reroute avoid lists. */
+const PlanDryRunRerouteAvoidSchema = z
+  .object({
+    node_ids: z.array(z.string().min(1)).max(64).optional(),
+    labels: z.array(z.string().min(1)).max(64).optional(),
+  })
+  .strict();
+
+/** Schema allowing callers to provide either hierarchical or normalised graphs. */
+const PlanDryRunGraphSchema = z.union([HierGraphSchema, GraphDescriptorSchema]);
 
 /** Declarative impact payload plugged into the value guard. */
 const ValueImpactSchema = z
@@ -657,7 +694,7 @@ const PlanDryRunBaseSchema = z
     plan_id: z.string().min(1, "plan identifier must not be empty"),
     plan_label: z.string().min(1).max(200).optional(),
     threshold: z.number().min(0).max(1).optional(),
-    graph: HierGraphSchema.optional(),
+    graph: PlanDryRunGraphSchema.optional(),
     tree: CompiledBehaviorTreeSchema.optional(),
     nodes: z
       .array(
@@ -672,6 +709,8 @@ const PlanDryRunBaseSchema = z
       .max(128)
       .optional(),
     impacts: z.array(PlanNodeImpactSchema).max(128).optional(),
+    rewrite: PlanDryRunRewriteOptionsSchema.optional(),
+    reroute_avoid: PlanDryRunRerouteAvoidSchema.optional(),
   })
   .extend(PlanCorrelationHintsSchema.shape)
   .strict();
@@ -730,6 +769,24 @@ export interface PlanDryRunNodeSummary extends Record<string, unknown> {
   impacts: ValueImpactInput[];
 }
 
+/** Optional rewrite hints that callers can provide to steer the preview. */
+export interface PlanDryRunRewriteOptions extends Record<string, unknown> {
+  /** Explicit node identifiers that should be avoided by reroute heuristics. */
+  avoid_node_ids?: string[];
+  /** Optional labels that should be avoided by reroute heuristics. */
+  avoid_labels?: string[];
+}
+
+/**
+ * Optional reroute hints that callers can provide without touching rewrite rules.
+ */
+export interface PlanDryRunRerouteAvoid extends Record<string, unknown> {
+  /** Explicit node identifiers that the dry-run should bypass. */
+  node_ids?: string[];
+  /** Optional labels that should be skipped by reroute heuristics. */
+  labels?: string[];
+}
+
 /** Result returned by {@link handlePlanDryRun}. */
 export interface PlanDryRunResult extends Record<string, unknown> {
   plan_id: string;
@@ -739,13 +796,143 @@ export interface PlanDryRunResult extends Record<string, unknown> {
   nodes: PlanDryRunNodeSummary[];
   impacts: ValueImpactInput[];
   value_guard: ValueExplanationResult | null;
+  rewrite_preview: {
+    graph: NormalisedGraph;
+    history: RewriteHistoryEntry[];
+    applied: number;
+  } | null;
+  reroute_avoid: {
+    node_ids: string[];
+    labels: string[];
+  } | null;
 }
+
+/**
+ * Schema validating plan lifecycle tool inputs that reference a specific run.
+ */
+const PlanLifecycleRunSchema = z
+  .object({
+    run_id: z.string().min(1, "run_id must not be empty"),
+  })
+  .strict();
+
+export const PlanStatusInputSchema = PlanLifecycleRunSchema;
+export type PlanStatusInput = z.infer<typeof PlanStatusInputSchema>;
+export const PlanStatusInputShape = PlanStatusInputSchema.shape;
+
+export const PlanPauseInputSchema = PlanLifecycleRunSchema;
+export type PlanPauseInput = z.infer<typeof PlanPauseInputSchema>;
+export const PlanPauseInputShape = PlanPauseInputSchema.shape;
+
+export const PlanResumeInputSchema = PlanLifecycleRunSchema;
+export type PlanResumeInput = z.infer<typeof PlanResumeInputSchema>;
+export const PlanResumeInputShape = PlanResumeInputSchema.shape;
 
 /** Default schema registry used by the Behaviour Tree interpreter. */
 const BehaviorTaskSchemas: Record<string, z.ZodTypeAny> = {
   noop: z.any(),
   bb_set: BbSetInputSchema,
 };
+
+/** Estimate the amount of work a Behaviour Tree represents for progress heuristics. */
+function estimateBehaviorTreeWorkload(definition: BehaviorNodeDefinition): number {
+  switch (definition.type) {
+    case "sequence":
+    case "selector":
+    case "parallel": {
+      return (
+        1 +
+        definition.children.reduce(
+          (sum, child) => sum + estimateBehaviorTreeWorkload(child),
+          0,
+        )
+      );
+    }
+    case "retry":
+    case "timeout":
+    case "guard":
+    case "cancellable": {
+      return 1 + estimateBehaviorTreeWorkload(definition.child);
+    }
+    case "task": {
+      return 1;
+    }
+    default: {
+      return 1;
+    }
+  }
+}
+
+function registerPlanLifecycleRun(
+  context: PlanToolContext,
+  options: {
+    runId: string;
+    opId: string;
+    mode: PlanLifecycleMode;
+    dryRun: boolean;
+    correlation: EventCorrelationHints | null | undefined;
+    estimatedWork: number | null;
+  },
+): void {
+  if (!context.planLifecycle) {
+    return;
+  }
+  try {
+    context.planLifecycle.registerRun({
+      runId: options.runId,
+      opId: options.opId,
+      mode: options.mode,
+      dryRun: options.dryRun,
+      correlation: options.correlation ?? null,
+      estimatedWork: options.estimatedWork ?? null,
+    });
+  } catch (error) {
+    context.logger.warn("plan_lifecycle_register_failed", {
+      run_id: options.runId,
+      op_id: options.opId,
+      mode: options.mode,
+      message: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
+function recordPlanLifecycleEvent(
+  context: PlanToolContext,
+  runId: string,
+  phase: PlanLifecyclePhase,
+  payload: Record<string, unknown>,
+): void {
+  if (!context.planLifecycle) {
+    return;
+  }
+  try {
+    context.planLifecycle.recordEvent(runId, { phase, payload });
+  } catch (error) {
+    context.logger.warn("plan_lifecycle_event_failed", {
+      run_id: runId,
+      phase,
+      message: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
+function attachPlanLifecycleControls(
+  context: PlanToolContext,
+  runId: string,
+  controls: PlanLifecycleControls,
+): void {
+  if (!context.planLifecycle) {
+    return;
+  }
+  try {
+    context.planLifecycle.attachControls(runId, controls);
+  } catch (error) {
+    context.logger.warn("plan_lifecycle_attach_failed", {
+      run_id: runId,
+      message: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
 
 /** Tool handlers executed by the Behaviour Tree interpreter. */
 type BehaviorToolHandler = (context: PlanToolContext, input: unknown) => Promise<unknown>;
@@ -1246,6 +1433,14 @@ export async function handlePlanFanout(
       child_id: parentChildId,
       children: plans.map((plan) => ({ name: plan.name, runtime: plan.runtime })),
       rejected: rejectedPlans.map((entry) => entry.name),
+    },
+    correlation: {
+      runId,
+      opId,
+      jobId,
+      graphId,
+      nodeId,
+      childId: parentChildId ?? null,
     },
   });
 
@@ -1974,6 +2169,16 @@ async function executePlanRunBT(
     child_id: childId,
   };
   const baseLogFields = { ...correlationLogFields, tree_id: input.tree.id };
+  const estimatedWork = estimateBehaviorTreeWorkload(input.tree.root);
+
+  registerPlanLifecycleRun(context, {
+    runId,
+    opId,
+    mode: "bt",
+    dryRun,
+    correlation: providedCorrelation,
+    estimatedWork,
+  });
   context.logger.info("plan_run_bt", {
     ...baseLogFields,
     dry_run: dryRun,
@@ -1985,22 +2190,29 @@ async function executePlanRunBT(
    * Keeping the payload shape centralised guarantees that every event carries
    * the correlation identifiers expected by the unified MCP bus.
    */
-  const publishLifecycleEvent = (
-    phase: "start" | "node" | "tick" | "complete" | "error" | "cancel",
-    payload: Record<string, unknown>,
-  ) => {
+  const publishLifecycleEvent = (phase: PlanLifecyclePhase, payload: Record<string, unknown>) => {
+    const eventPayload = {
+      phase,
+      tree_id: input.tree.id,
+      dry_run: dryRun,
+      mode: "bt",
+      ...correlationLogFields,
+      ...payload,
+    } satisfies Record<string, unknown>;
+    recordPlanLifecycleEvent(context, runId, phase, eventPayload);
     context.emitEvent({
       kind: "BT_RUN",
       level: phase === "error" ? "error" : "info",
       jobId: jobId ?? undefined,
       childId: childId ?? undefined,
-      payload: {
-        phase,
-        tree_id: input.tree.id,
-        dry_run: dryRun,
-        mode: "bt",
-        ...correlationLogFields,
-        ...payload,
+      payload: eventPayload,
+      correlation: {
+        runId,
+        opId,
+        jobId,
+        graphId,
+        nodeId,
+        childId,
       },
     });
   };
@@ -2316,6 +2528,16 @@ async function executePlanRunReactive(
     tree_id: input.tree.id,
     idempotency_key: input.idempotency_key ?? null,
   };
+  const estimatedWork = estimateBehaviorTreeWorkload(input.tree.root);
+
+  registerPlanLifecycleRun(context, {
+    runId,
+    opId,
+    mode: "reactive",
+    dryRun,
+    correlation: providedCorrelation,
+    estimatedWork,
+  });
   context.logger.info("plan_run_reactive", {
     ...baseLogFields,
     tick_ms: input.tick_ms,
@@ -2328,22 +2550,29 @@ async function executePlanRunReactive(
    * loop can be observed alongside Behaviour Tree progress in dashboards and
    * tests.
    */
-  const publishLifecycleEvent = (
-    phase: "start" | "node" | "tick" | "loop" | "complete" | "error" | "cancel",
-    payload: Record<string, unknown>,
-  ) => {
+  const publishLifecycleEvent = (phase: PlanLifecyclePhase, payload: Record<string, unknown>) => {
+    const eventPayload = {
+      phase,
+      tree_id: input.tree.id,
+      dry_run: dryRun,
+      mode: "reactive",
+      ...correlationLogFields,
+      ...payload,
+    } satisfies Record<string, unknown>;
+    recordPlanLifecycleEvent(context, runId, phase, eventPayload);
     context.emitEvent({
       kind: "BT_RUN",
       level: phase === "error" ? "error" : "info",
       jobId: jobId ?? undefined,
       childId: childId ?? undefined,
-      payload: {
-        phase,
-        tree_id: input.tree.id,
-        dry_run: dryRun,
-        mode: "reactive",
-        ...correlationLogFields,
-        ...payload,
+      payload: eventPayload,
+      correlation: {
+        runId,
+        opId,
+        jobId,
+        graphId,
+        nodeId,
+        childId,
       },
     });
   };
@@ -2600,6 +2829,11 @@ async function executePlanRunReactive(
     },
   });
 
+  attachPlanLifecycleControls(context, runId, {
+    pause: () => loop?.pause() ?? false,
+    resume: () => loop?.resume() ?? false,
+  });
+
   let timeoutHandle: NodeJS.Timeout | null = null;
   if (input.timeout_ms !== undefined) {
     timeoutHandle = setTimeout(() => {
@@ -2686,6 +2920,7 @@ async function executePlanRunReactive(
     cancellationSubscription?.();
     cancellationSubscription = null;
     unregisterCancellation(opId);
+    context.planLifecycle?.releaseControls(runId);
     context.logger.info("plan_run_reactive_status", {
       ...baseLogFields,
       status: lastResultStatus,
@@ -2729,15 +2964,206 @@ export async function handlePlanRunReactive(
  * delegating to {@link ValueGraph.explain}. The response acts as a preview so
  * operators can iterate on plans before triggering a real execution.
  */
+type PlanDryRunGraphInput = z.infer<typeof PlanDryRunGraphSchema>;
+
+/** Determine whether the caller supplied a hierarchical graph payload. */
+function isHierarchicalDryRunGraph(graph: PlanDryRunGraphInput): graph is z.infer<typeof HierGraphSchema> {
+  const nodes = (graph as { nodes?: unknown }).nodes;
+  const edges = (graph as { edges?: unknown }).edges;
+  if (!Array.isArray(nodes) || nodes.length === 0 || !Array.isArray(edges)) {
+    return false;
+  }
+  const hierarchicalNodes = nodes.every((node) => {
+    if (!node || typeof node !== "object") {
+      return false;
+    }
+    const kind = (node as { kind?: unknown }).kind;
+    return kind === "task" || kind === "subgraph";
+  });
+  if (!hierarchicalNodes) {
+    return false;
+  }
+  return edges.every((edge) => {
+    if (!edge || typeof edge !== "object") {
+      return false;
+    }
+    const from = (edge as { from?: unknown }).from;
+    const to = (edge as { to?: unknown }).to;
+    return (
+      !!from &&
+      typeof from === "object" &&
+      typeof (from as { nodeId?: unknown }).nodeId === "string" &&
+      !!to &&
+      typeof to === "object" &&
+      typeof (to as { nodeId?: unknown }).nodeId === "string"
+    );
+  });
+}
+
+/**
+ * Normalise the graph provided to the dry-run handler. Callers may supply either a
+ * hierarchical payload or a graph descriptor already flattened by the graph tools.
+ */
+function normalisePlanDryRunGraph(
+  graph: PlanDryRunInput["graph"] | null | undefined,
+): NormalisedGraph | null {
+  if (!graph) {
+    return null;
+  }
+  const candidate = graph as PlanDryRunGraphInput;
+  if (isHierarchicalDryRunGraph(candidate)) {
+    return flatten(candidate);
+  }
+  const parsed = GraphDescriptorSchema.safeParse(candidate);
+  if (!parsed.success) {
+    throw new Error("invalid graph payload supplied to plan dry-run");
+  }
+  return normaliseGraphDescriptor(parsed.data);
+}
+
+/**
+ * Build reroute hints by combining explicit rewrite options with heuristic signals
+ * found in the graph. Nodes flagged with `avoid`, `unsafe`, or `reroute` metadata
+ * are automatically added to the avoid lists so previews surface realistic bypasses.
+ */
+function deriveRerouteAvoidHints(
+  graph: NormalisedGraph,
+  rewrite?: PlanDryRunRewriteOptions | null,
+  rerouteAvoid?: PlanDryRunRerouteAvoid | null,
+): { avoidNodeIds?: Set<string>; avoidLabels?: Set<string> } {
+  const avoidNodeIds = new Set<string>();
+  const avoidLabels = new Set<string>();
+
+  const registerNodeId = (value: unknown) => {
+    if (typeof value !== "string") {
+      return;
+    }
+    const trimmed = value.trim();
+    if (trimmed.length > 0) {
+      avoidNodeIds.add(trimmed);
+    }
+  };
+
+  const registerLabel = (value: unknown) => {
+    if (typeof value !== "string") {
+      return;
+    }
+    const trimmed = value.trim();
+    if (trimmed.length > 0) {
+      avoidLabels.add(trimmed);
+    }
+  };
+
+  const registerRerouteNode = (value: unknown) => {
+    if (Array.isArray(value)) {
+      for (const entry of value) {
+        registerNodeId(entry);
+      }
+      return;
+    }
+    registerNodeId(value);
+  };
+
+  const registerRerouteLabel = (value: unknown) => {
+    if (Array.isArray(value)) {
+      for (const entry of value) {
+        registerLabel(entry);
+      }
+      return;
+    }
+    registerLabel(value);
+  };
+
+  for (const id of rewrite?.avoid_node_ids ?? []) {
+    registerNodeId(id);
+  }
+  for (const label of rewrite?.avoid_labels ?? []) {
+    registerLabel(label);
+  }
+
+  registerRerouteNode(rerouteAvoid?.node_ids);
+  registerRerouteLabel(rerouteAvoid?.labels);
+
+  for (const node of graph.nodes) {
+    const attributes = (node.attributes ?? {}) as Record<string, unknown>;
+    const tagList = Array.isArray(attributes.tags) ? (attributes.tags as unknown[]) : [];
+    const loweredTags = new Set(
+      tagList
+        .filter((tag): tag is string => typeof tag === "string")
+        .map((tag) => tag.toLowerCase()),
+    );
+    const flagged =
+      attributes.avoid === true ||
+      attributes.unsafe === true ||
+      attributes.reroute === true ||
+      attributes.risk === "avoid" ||
+      attributes.safety === "avoid" ||
+      loweredTags.has("avoid") ||
+      loweredTags.has("unsafe") ||
+      loweredTags.has("reroute");
+    if (flagged) {
+      registerNodeId(node.id);
+      registerLabel(node.label);
+    }
+  }
+
+  return {
+    avoidNodeIds: avoidNodeIds.size > 0 ? avoidNodeIds : undefined,
+    avoidLabels: avoidLabels.size > 0 ? avoidLabels : undefined,
+  };
+}
+
 export function handlePlanDryRun(
   context: PlanToolContext,
   input: PlanDryRunInput,
 ): PlanDryRunResult {
+  const hierarchicalGraph =
+    input.graph && isHierarchicalDryRunGraph(input.graph as PlanDryRunGraphInput)
+      ? (input.graph as z.infer<typeof HierGraphSchema>)
+      : null;
+
   const compiledTree = input.tree
     ? (structuredClone(input.tree) as CompiledBehaviorTree)
-    : input.graph
-    ? compileHierGraphToBehaviorTree(input.graph)
+    : hierarchicalGraph
+    ? compileHierGraphToBehaviorTree(hierarchicalGraph)
     : null;
+
+  let rewritePreview: PlanDryRunResult["rewrite_preview"] = null;
+  let rerouteAvoid: PlanDryRunResult["reroute_avoid"] = null;
+  const normalisedGraph = normalisePlanDryRunGraph(input.graph);
+  if (normalisedGraph) {
+    const rerouteHints = deriveRerouteAvoidHints(
+      normalisedGraph,
+      input.rewrite ?? null,
+      input.reroute_avoid ?? null,
+    );
+    rerouteAvoid =
+      rerouteHints.avoidNodeIds || rerouteHints.avoidLabels
+        ? {
+            node_ids: Array.from(rerouteHints.avoidNodeIds ?? []).sort(),
+            labels: Array.from(rerouteHints.avoidLabels ?? []).sort(),
+          }
+        : null;
+    const rules = [
+      createSplitParallelRule(),
+      createInlineSubgraphRule(),
+      createRerouteAvoidRule(rerouteHints),
+    ];
+    const { graph: rewrittenGraph, history } = applyAll(normalisedGraph, rules);
+    const applied = history.reduce((sum, entry) => sum + entry.applied, 0);
+    rewritePreview = {
+      graph: rewrittenGraph,
+      history,
+      applied,
+    };
+    context.logger.info("plan_dry_run_rewrite_preview", {
+      plan_id: input.plan_id,
+      applied_rules: history.filter((entry) => entry.applied > 0).length,
+      total_applied: applied,
+      reroute_avoid_nodes: rerouteHints.avoidNodeIds?.size ?? 0,
+      reroute_avoid_labels: rerouteHints.avoidLabels?.size ?? 0,
+    });
+  }
 
   const nodeSummaries: PlanDryRunNodeSummary[] = [];
   const aggregatedImpacts: ValueImpactInput[] = [];
@@ -2804,7 +3230,39 @@ export function handlePlanDryRun(
     nodes: nodeSummaries,
     impacts: aggregatedImpacts,
     value_guard: explanation,
-  };
+    rewrite_preview: rewritePreview,
+    reroute_avoid: rerouteAvoid,
+  } satisfies PlanDryRunResult;
+}
+
+/** Retrieve the lifecycle snapshot associated with a Behaviour Tree execution. */
+export function handlePlanStatus(context: PlanToolContext, input: PlanStatusInput): PlanLifecycleSnapshot {
+  if (!context.planLifecycle) {
+    throw new PlanLifecycleFeatureDisabledError();
+  }
+  return context.planLifecycle.getSnapshot(input.run_id);
+}
+
+/** Pause a running Behaviour Tree execution when lifecycle tooling is enabled. */
+export async function handlePlanPause(
+  context: PlanToolContext,
+  input: PlanPauseInput,
+): Promise<PlanLifecycleSnapshot> {
+  if (!context.planLifecycle) {
+    throw new PlanLifecycleFeatureDisabledError();
+  }
+  return context.planLifecycle.pause(input.run_id);
+}
+
+/** Resume a paused Behaviour Tree execution when lifecycle tooling is enabled. */
+export async function handlePlanResume(
+  context: PlanToolContext,
+  input: PlanResumeInput,
+): Promise<PlanLifecycleSnapshot> {
+  if (!context.planLifecycle) {
+    throw new PlanLifecycleFeatureDisabledError();
+  }
+  return context.planLifecycle.resume(input.run_id);
 }
 
 /**

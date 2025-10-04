@@ -99,6 +99,7 @@ export class ContractNetCoordinator {
         }
         const callId = `${announcement.taskId}:${randomUUID()}`;
         const heuristics = normaliseHeuristics(announcement.heuristics, this.defaultBusyPenalty);
+        const correlation = normaliseCorrelation(announcement.correlation);
         const call = {
             callId,
             taskId: announcement.taskId,
@@ -112,6 +113,7 @@ export class ContractNetCoordinator {
             awardedBid: null,
             awardedAt: null,
             bids: new Map(),
+            correlation,
         };
         this.calls.set(callId, call);
         if (announcement.autoBid !== false) {
@@ -126,6 +128,7 @@ export class ContractNetCoordinator {
             kind: "call_announced",
             at: call.announcedAt,
             call: snapshot,
+            correlation,
         });
         return snapshot;
     }
@@ -180,6 +183,7 @@ export class ContractNetCoordinator {
             at: call.awardedAt,
             call: this.snapshotCall(call),
             decision,
+            correlation: call.correlation,
         });
         return decision;
     }
@@ -199,6 +203,7 @@ export class ContractNetCoordinator {
             kind: "call_completed",
             at: this.now(),
             call: snapshot,
+            correlation: call.correlation,
         });
         return snapshot;
     }
@@ -242,6 +247,7 @@ export class ContractNetCoordinator {
                 metadata: structuredClone(bid.metadata),
                 kind: bid.kind,
             })),
+            correlation: cloneCorrelation(call.correlation),
         };
     }
     /** Serialises an internal bid representation for observers. */
@@ -278,6 +284,7 @@ export class ContractNetCoordinator {
             agentId,
             bid: this.snapshotBid(bid),
             previousKind: previous?.kind ?? null,
+            correlation: call.correlation,
         });
     }
     selectBestBid(call) {
@@ -370,6 +377,48 @@ function normalizeReliability(reliability) {
 }
 function normaliseTags(tags) {
     return Array.from(new Set(tags.map((tag) => tag.trim().toLowerCase()).filter((tag) => tag.length > 0))).sort();
+}
+function normaliseOptionalId(value) {
+    if (typeof value !== "string") {
+        return null;
+    }
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : null;
+}
+function normaliseCorrelation(context) {
+    if (!context) {
+        return null;
+    }
+    const resolved = {
+        runId: normaliseOptionalId(context.runId ?? null),
+        opId: normaliseOptionalId(context.opId ?? null),
+        jobId: normaliseOptionalId(context.jobId ?? null),
+        graphId: normaliseOptionalId(context.graphId ?? null),
+        nodeId: normaliseOptionalId(context.nodeId ?? null),
+        childId: normaliseOptionalId(context.childId ?? null),
+    };
+    if (resolved.runId === null &&
+        resolved.opId === null &&
+        resolved.jobId === null &&
+        resolved.graphId === null &&
+        resolved.nodeId === null &&
+        resolved.childId === null) {
+        return null;
+    }
+    return resolved;
+}
+function cloneCorrelation(correlation) {
+    if (!correlation) {
+        return null;
+    }
+    return {
+        runId: correlation.runId ?? null,
+        opId: correlation.opId ?? null,
+        jobId: correlation.jobId ?? null,
+        graphId: correlation.graphId ?? null,
+        nodeId: correlation.nodeId ?? null,
+        childId: correlation.childId ?? null,
+    };
 }
 function normalizeDeadline(deadline) {
     if (deadline === null) {

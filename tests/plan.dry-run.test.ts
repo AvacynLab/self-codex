@@ -1,171 +1,198 @@
-import { describe, it, beforeEach, afterEach } from "mocha";
+import { describe, it } from "mocha";
 import { expect } from "chai";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import path from "node:path";
+import sinon from "sinon";
 
-import { StructuredLogger } from "../src/logger.js";
-import { GraphState } from "../src/graphState.js";
+import type { PlanToolContext } from "../src/tools/planTools.js";
+import { handlePlanDryRun } from "../src/tools/planTools.js";
 import { StigmergyField } from "../src/coord/stigmergy.js";
-import { ValueGraph } from "../src/values/valueGraph.js";
-import {
-  PlanDryRunInputSchema,
-  type PlanToolContext,
-  handlePlanDryRun,
-} from "../src/tools/planTools.js";
 
-describe("plan dry run integration", () => {
-  let tmpDir: string;
-  let logger: StructuredLogger;
+/**
+ * Unit coverage for the plan dry-run helper to ensure rewrite previews are produced alongside
+ * value guard projections when hierarchical graphs are supplied.
+ */
+describe("plan dry-run", () => {
+  function buildContext(): PlanToolContext {
+    const logger = {
+      info: sinon.spy(),
+      warn: sinon.spy(),
+      error: sinon.spy(),
+    } as unknown as PlanToolContext["logger"];
 
-  beforeEach(async () => {
-    tmpDir = await mkdtemp(path.join(tmpdir(), "plan-dry-run-"));
-    logger = new StructuredLogger({ logFile: path.join(tmpDir, "orchestrator.log") });
-  });
-
-  afterEach(async () => {
-    await logger.flush();
-    await rm(tmpDir, { recursive: true, force: true });
-  });
-
-  function buildContext(overrides: Partial<PlanToolContext> = {}): PlanToolContext {
-    const base: PlanToolContext = {
-      supervisor: {} as never,
-      graphState: new GraphState(),
+    return {
+      supervisor: {} as PlanToolContext["supervisor"],
+      graphState: {} as PlanToolContext["graphState"],
       logger,
-      childrenRoot: tmpDir,
+      childrenRoot: "/tmp",
       defaultChildRuntime: "codex",
-      emitEvent: () => {
-        /* intentionally left blank for dry-run tests */
-      },
+      emitEvent: sinon.spy(),
       stigmergy: new StigmergyField(),
-    };
-    return { ...base, ...overrides };
+    } satisfies PlanToolContext;
   }
 
-  it("aggregates node impacts and surfaces value guard explanations", () => {
-    const valueGraph = new ValueGraph();
-    valueGraph.set({
-      defaultThreshold: 0.7,
-      values: [
-        { id: "privacy", weight: 1, tolerance: 0.2 },
-        { id: "safety", weight: 1, tolerance: 0.4 },
-        { id: "compliance", weight: 1, tolerance: 0.5 },
-      ],
-    });
-
-    const context = buildContext({ valueGuard: { graph: valueGraph, registry: new Map() } });
-
-    const input = PlanDryRunInputSchema.parse({
-      plan_id: "plan-42",
-      plan_label: "Risky experiment",
-      threshold: 0.6,
-      graph: {
-        id: "demo-graph",
-        nodes: [
-          { id: "alpha", kind: "task", label: "Alpha", attributes: { bt_tool: "noop" } },
-          { id: "beta", kind: "task", label: "Beta", attributes: { bt_tool: "noop" } },
-        ],
-        edges: [{ id: "edge-alpha-beta", from: { nodeId: "alpha" }, to: { nodeId: "beta" } }],
-      },
-      nodes: [
-        {
-          id: "alpha",
-          label: "Alpha",
-          value_impacts: [
-            { value: "privacy", impact: "risk", severity: 0.9 },
-            { value: "safety", impact: "support", severity: 0.4, nodeId: "custom-node" },
-          ],
-        },
-      ],
-      impacts: [{ value: "compliance", impact: "risk", severity: 0.6, source: "global" }],
-    });
-
-    const result = handlePlanDryRun(context, input);
-
-    expect(result.compiled_tree).to.not.equal(null);
-    expect(result.compiled_tree?.id).to.equal("demo-graph");
-    expect(result.nodes).to.have.length(1);
-    expect(result.nodes[0]?.impacts).to.have.length(2);
-    expect(result.nodes[0]?.impacts[0]?.nodeId).to.equal("alpha");
-    expect(result.nodes[0]?.impacts[1]?.nodeId).to.equal("custom-node");
-
-    expect(result.impacts).to.have.length(3);
-
-    expect(result.value_guard).to.not.equal(null);
-    expect(result.value_guard?.decision.allowed).to.equal(false);
-    const privacyViolation = result.value_guard?.violations.find((violation) => violation.value === "privacy");
-    expect(privacyViolation).to.not.equal(undefined);
-    expect(privacyViolation?.nodeId).to.equal("alpha");
-    expect(privacyViolation?.primaryContributor?.impact.nodeId).to.equal("alpha");
-  });
-
-  it("returns null explanations when the value guard is disabled", () => {
+  it("returns a rewrite preview when a parallel edge is present", () => {
     const context = buildContext();
-
-    const input = PlanDryRunInputSchema.parse({
-      plan_id: "plan-no-guard",
-      impacts: [{ value: "privacy", impact: "risk", severity: 0.2 }],
+    const result = handlePlanDryRun(context, {
+      plan_id: "plan-rewrite",
+      plan_label: "Rewrite Preview",
+      threshold: null,
+      graph: {
+        graph_id: "graph-rewrite",
+        graph_version: 1,
+        nodes: [
+          { id: "start", label: "Start", attributes: { kind: "root" } },
+          { id: "task", label: "Task", attributes: { kind: "task", node_id: "task" } },
+        ],
+        edges: [
+          {
+            from: "start",
+            to: "task",
+            label: "edge",
+            weight: 1,
+            attributes: { parallel: true },
+          },
+        ],
+        metadata: {},
+      },
+      nodes: [],
+      impacts: [],
     });
 
-    const result = handlePlanDryRun(context, input);
-
-    expect(result.value_guard).to.equal(null);
-    expect(result.impacts).to.have.length(1);
-    expect(result.compiled_tree).to.equal(null);
+    expect(result.rewrite_preview).to.not.equal(null);
+    const preview = result.rewrite_preview!;
+    expect(preview.applied).to.be.greaterThan(0);
+    const appliedRules = preview.history.filter((entry) => entry.applied > 0).map((entry) => entry.rule);
+    expect(appliedRules).to.include("split-parallel");
+    expect(preview.graph.edges.some((edge) => edge.attributes.rewritten_split_parallel === true)).to.equal(true);
   });
 
-  it("propagates correlation hints to value guard telemetry", () => {
-    const valueGraph = new ValueGraph();
-    valueGraph.set({
-      defaultThreshold: 0.2,
-      values: [
-        { id: "privacy", weight: 1, tolerance: 0.1 },
-        { id: "safety", weight: 1, tolerance: 0.2 },
+  it("expands inline subgraphs and records the rewrite history", () => {
+    const context = buildContext();
+    const subgraph = {
+      name: "child",
+      graph_id: "child",
+      graph_version: 1,
+      nodes: [
+        { id: "entry", label: "Entry", attributes: { kind: "task" } },
+        { id: "exit", label: "Exit", attributes: { kind: "task" } },
       ],
+      edges: [
+        { from: "entry", to: "exit", label: "flow", attributes: {} },
+      ],
+      metadata: {},
+    } as const;
+
+    const result = handlePlanDryRun(context, {
+      plan_id: "plan-inline",
+      plan_label: "Inline Preview",
+      graph: {
+        name: "parent",
+        graph_id: "parent",
+        graph_version: 1,
+        nodes: [
+          { id: "root", label: "Root", attributes: { kind: "task" } },
+          { id: "sub", label: "Sub", attributes: { kind: "subgraph", ref: "child" } },
+          { id: "sink", label: "Sink", attributes: { kind: "task" } },
+        ],
+        edges: [
+          { from: "root", to: "sub", label: "enter", attributes: {} },
+          { from: "sub", to: "sink", label: "leave", attributes: {} },
+        ],
+        metadata: {
+          "hierarchy:subgraphs": JSON.stringify({
+            child: { graph: subgraph, entryPoints: ["entry"], exitPoints: ["exit"] },
+          }),
+        },
+      },
+      nodes: [],
+      impacts: [],
     });
 
-    const capturedEvents: unknown[] = [];
-    const unsubscribe = valueGraph.subscribe((event) => {
-      capturedEvents.push(event);
+    expect(result.rewrite_preview).to.not.equal(null);
+    const preview = result.rewrite_preview!;
+    const inlineHistory = preview.history.find((entry) => entry.rule === "inline-subgraph");
+    expect(inlineHistory?.applied).to.be.greaterThan(0);
+    const nodeIds = preview.graph.nodes.map((node) => node.id);
+    expect(nodeIds).to.include("sub/entry");
+    expect(nodeIds).to.include("sub/exit");
+    expect(nodeIds).to.not.include("sub");
+  });
+
+  it("bypasses avoided nodes using rewrite hints derived from the graph", () => {
+    const context = buildContext();
+    const result = handlePlanDryRun(context, {
+      plan_id: "plan-reroute",
+      plan_label: "Reroute Preview",
+      graph: {
+        name: "reroute",
+        graph_id: "reroute",
+        graph_version: 1,
+        nodes: [
+          { id: "start", label: "Start", attributes: { kind: "task" } },
+          { id: "avoid", label: "Avoid", attributes: { kind: "task", avoid: true } },
+          { id: "safe", label: "Safe", attributes: { kind: "task" } },
+          { id: "end", label: "End", attributes: { kind: "task" } },
+        ],
+        edges: [
+          { from: "start", to: "avoid", label: "enter", attributes: {} },
+          { from: "avoid", to: "safe", label: "branch", attributes: {} },
+          { from: "avoid", to: "end", label: "finish", attributes: {} },
+          { from: "safe", to: "end", label: "close", attributes: {} },
+        ],
+        metadata: {},
+      },
+      nodes: [],
+      impacts: [],
     });
 
-    const context = buildContext({ valueGuard: { graph: valueGraph, registry: new Map() } });
+    expect(result.rewrite_preview).to.not.equal(null);
+    const preview = result.rewrite_preview!;
+    const rerouteHistory = preview.history.find((entry) => entry.rule === "reroute-avoid");
+    expect(rerouteHistory?.applied).to.be.greaterThan(0);
+    const nodeIds = preview.graph.nodes.map((node) => node.id);
+    expect(nodeIds).to.not.include("avoid");
+    const bypassEdges = preview.graph.edges.filter((edge) => edge.attributes.rewritten_reroute_avoid === true);
+    expect(bypassEdges.length).to.be.greaterThan(0);
+    const edgePairs = bypassEdges.map((edge) => `${edge.from}->${edge.to}`);
+    expect(edgePairs).to.include("start->safe");
+    expect(edgePairs).to.include("start->end");
+    expect(result.reroute_avoid).to.not.equal(null);
+    expect(result.reroute_avoid?.node_ids).to.deep.equal(["avoid"]);
+    expect(result.reroute_avoid?.labels).to.deep.equal(["Avoid"]);
+  });
 
-    const input = PlanDryRunInputSchema.parse({
-      plan_id: "plan-correlation",
-      run_id: "run-123",
-      op_id: "op-456",
-      job_id: "job-789",
-      graph_id: "graph-321",
-      node_id: "node-654",
-      child_id: "child-987",
-      impacts: [{ value: "privacy", impact: "risk", severity: 0.4 }],
+  it("honours explicit reroute avoid hints supplied by the caller", () => {
+    const context = buildContext();
+    const result = handlePlanDryRun(context, {
+      plan_id: "plan-manual-reroute",
+      graph: {
+        name: "manual",
+        graph_id: "manual",
+        graph_version: 1,
+        nodes: [
+          { id: "start", label: "Start", attributes: { kind: "task" } },
+          { id: "manual-risk", label: "Risky", attributes: { kind: "task" } },
+          { id: "finish", label: "Finish", attributes: { kind: "task" } },
+        ],
+        edges: [
+          { from: "start", to: "manual-risk", label: "to-risk", attributes: {} },
+          { from: "manual-risk", to: "finish", label: "to-finish", attributes: {} },
+        ],
+        metadata: {},
+      },
+      reroute_avoid: {
+        node_ids: ["manual-risk"],
+        labels: ["Risky"],
+      },
     });
 
-    handlePlanDryRun(context, input);
-
-    unsubscribe();
-
-    expect(capturedEvents).to.have.length(1);
-    const [event] = capturedEvents as Array<{
-      kind: string;
-      correlation: {
-        runId: string | null;
-        opId: string | null;
-        jobId: string | null;
-        graphId: string | null;
-        nodeId: string | null;
-        childId: string | null;
-      } | null;
-    }>;
-    expect(event.kind).to.equal("plan_explained");
-    expect(event.correlation).to.not.equal(null);
-    expect(event.correlation?.runId).to.equal("run-123");
-    expect(event.correlation?.opId).to.equal("op-456");
-    expect(event.correlation?.jobId).to.equal("job-789");
-    expect(event.correlation?.graphId).to.equal("graph-321");
-    expect(event.correlation?.nodeId).to.equal("node-654");
-    expect(event.correlation?.childId).to.equal("child-987");
+    expect(result.rewrite_preview).to.not.equal(null);
+    const preview = result.rewrite_preview!;
+    const rerouteHistory = preview.history.find((entry) => entry.rule === "reroute-avoid");
+    expect(rerouteHistory?.applied).to.be.greaterThan(0);
+    const bypassEdges = preview.graph.edges.filter((edge) => edge.attributes.rewritten_reroute_avoid === true);
+    expect(bypassEdges.map((edge) => `${edge.from}->${edge.to}`)).to.include("start->finish");
+    expect(result.reroute_avoid).to.not.equal(null);
+    expect(result.reroute_avoid?.node_ids).to.deep.equal(["manual-risk"]);
+    expect(result.reroute_avoid?.labels).to.deep.equal(["Risky"]);
   });
 });

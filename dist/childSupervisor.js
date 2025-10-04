@@ -1,6 +1,7 @@
 import { randomUUID } from "crypto";
 import { startChildRuntime, } from "./childRuntime.js";
-import { bridgeChildRuntimeEvents, } from "./events/bridges.js";
+import { bridgeChildRuntimeEvents } from "./events/bridges.js";
+import { extractCorrelationHints, mergeCorrelationHints } from "./events/correlation.js";
 import { ChildrenIndex } from "./state/childrenIndex.js";
 /** Error raised when the caller attempts to exceed the configured child cap. */
 export class ChildLimitExceededError extends Error {
@@ -159,6 +160,11 @@ export class ChildSupervisor {
         this.scheduleIdleWatchdog(childId);
         const inferCorrelation = (context) => {
             const hints = { childId };
+            mergeCorrelationHints(hints, extractCorrelationHints(runtime.metadata));
+            const indexSnapshot = this.index.getChild(childId);
+            if (indexSnapshot) {
+                mergeCorrelationHints(hints, extractCorrelationHints(indexSnapshot.metadata));
+            }
             if (context.kind === "message") {
                 // When the child surfaces structured payloads we opportunistically
                 // reuse the embedded identifiers to correlate stdout/stderr events
@@ -188,7 +194,13 @@ export class ChildSupervisor {
                 }
             }
             const extra = this.resolveChildCorrelation?.(context);
-            return extra ? { ...hints, ...extra } : hints;
+            // Merge external correlation hints without letting sparse resolvers wipe
+            // the identifiers inferred from the child payload (undefined should
+            // never override concrete hints such as the childId).
+            if (extra) {
+                mergeCorrelationHints(hints, extra);
+            }
+            return hints;
         };
         if (this.eventBus) {
             const disposeBridge = bridgeChildRuntimeEvents({

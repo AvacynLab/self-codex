@@ -10,12 +10,14 @@ import {
   type PlanToolContext,
 } from "../src/tools/planTools.js";
 import { StigmergyField } from "../src/coord/stigmergy.js";
+import type { EventCorrelationHints } from "../src/events/correlation.js";
 
 interface RecordedEvent {
   kind: string;
   payload?: unknown;
   jobId?: string | null;
   childId?: string | null;
+  correlation: EventCorrelationHints | null;
 }
 
 describe("plan behaviour tree events", () => {
@@ -49,6 +51,7 @@ describe("plan behaviour tree events", () => {
           payload: event.payload,
           jobId: event.jobId ?? null,
           childId: event.childId ?? null,
+          correlation: event.correlation ?? null,
         });
       },
       stigmergy: new StigmergyField(),
@@ -87,6 +90,9 @@ describe("plan behaviour tree events", () => {
     expect(startEvent, "start event present").to.exist;
     expect((startEvent!.payload as { mode?: string }).mode).to.equal("bt");
     expect((startEvent!.payload as { run_id?: string }).run_id).to.equal(result.run_id);
+    expect(startEvent!.correlation?.runId).to.equal(result.run_id);
+    expect(startEvent!.correlation?.opId).to.equal(result.op_id);
+    expect(startEvent!.correlation?.jobId ?? null).to.equal(null);
 
     const nodeEvents = events.filter((evt) => (evt.payload as { phase?: string })?.phase === "node");
     expect(nodeEvents.length).to.be.greaterThan(0);
@@ -94,6 +100,8 @@ describe("plan behaviour tree events", () => {
       const payload = evt.payload as { run_id?: string; op_id?: string };
       expect(payload.run_id).to.equal(result.run_id);
       expect(payload.op_id).to.equal(result.op_id);
+      expect(evt.correlation?.runId).to.equal(result.run_id);
+      expect(evt.correlation?.opId).to.equal(result.op_id);
     }
 
     const completeEvent = events.find((evt) => (evt.payload as { phase?: string })?.phase === "complete");
@@ -151,6 +159,14 @@ describe("plan behaviour tree events", () => {
     expect(startPayload.graph_id).to.equal("graph-42");
     expect(startPayload.node_id).to.equal("plan-node-1");
     expect(startPayload.child_id).to.equal("child-17");
+    expect(startEvent!.correlation).to.deep.equal({
+      runId: "bt-run-123",
+      opId: "bt-op-456",
+      jobId: "job-789",
+      graphId: "graph-42",
+      nodeId: "plan-node-1",
+      childId: "child-17",
+    });
   });
 
   it("tracks reactive scheduler phases with consistent identifiers", async () => {
@@ -195,6 +211,7 @@ describe("plan behaviour tree events", () => {
     );
     expect(distinctRunIds.size).to.equal(1);
     expect([...distinctRunIds][0]).to.equal(result.run_id);
+    expect(events.every((evt) => evt.correlation?.runId === result.run_id)).to.equal(true);
   });
 
   it("propagates provided correlation hints for plan_run_reactive telemetry", async () => {

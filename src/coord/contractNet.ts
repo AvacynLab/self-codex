@@ -51,6 +51,21 @@ export interface ContractNetAgentSnapshot {
   registeredAt: number;
 }
 
+/**
+ * Correlation identifiers propagated with Contract-Net lifecycle events. The
+ * coordinator keeps the properties nullable so callers can provide only the
+ * identifiers they actually track (run, op, graph, …) without having to
+ * fabricate placeholder values.
+ */
+export interface ContractNetCorrelationContext {
+  runId?: string | null;
+  opId?: string | null;
+  jobId?: string | null;
+  graphId?: string | null;
+  nodeId?: string | null;
+  childId?: string | null;
+}
+
 /** Heuristic hints influencing the bid evaluation order. */
 export interface ContractNetHeuristics {
   /** Agents that should receive a negative bias during selection. */
@@ -73,6 +88,8 @@ export interface ContractNetTaskAnnouncement {
   heuristics?: ContractNetHeuristics;
   /** Auto-generate heuristic bids for registered agents when true (default). */
   autoBid?: boolean;
+  /** Optional correlation identifiers attached to the resulting lifecycle events. */
+  correlation?: ContractNetCorrelationContext | null;
 }
 
 /** Additional metadata attached to a bid. */
@@ -108,6 +125,7 @@ export interface ContractNetCallSnapshot {
   awardedAgentId: string | null;
   awardedAt: number | null;
   bids: ContractNetBidSnapshot[];
+  correlation: ContractNetCorrelationContext | null;
 }
 
 /** Result returned by {@link ContractNetCoordinator.award}. */
@@ -147,6 +165,7 @@ export type ContractNetEvent =
       kind: "call_announced";
       at: number;
       call: ContractNetCallSnapshot;
+      correlation?: ContractNetCorrelationContext | null;
     }
   | {
       kind: "bid_recorded";
@@ -156,17 +175,20 @@ export type ContractNetEvent =
       bid: ContractNetBidSnapshot;
       /** Previous bid kind, when a manual bid overrides an heuristic one. */
       previousKind: ContractNetBidKind | null;
+      correlation?: ContractNetCorrelationContext | null;
     }
   | {
       kind: "call_awarded";
       at: number;
       call: ContractNetCallSnapshot;
       decision: ContractNetAwardDecision;
+      correlation?: ContractNetCorrelationContext | null;
     }
   | {
       kind: "call_completed";
       at: number;
       call: ContractNetCallSnapshot;
+      correlation?: ContractNetCorrelationContext | null;
     };
 
 /** Callback invoked when the coordinator emits lifecycle events. */
@@ -212,6 +234,7 @@ interface CallInternal {
   awardedBid: BidInternal | null;
   awardedAt: number | null;
   bids: Map<string, BidInternal>;
+  correlation: ContractNetCorrelationContext | null;
 }
 
 /**
@@ -304,6 +327,7 @@ export class ContractNetCoordinator {
     }
     const callId = `${announcement.taskId}:${randomUUID()}`;
     const heuristics = normaliseHeuristics(announcement.heuristics, this.defaultBusyPenalty);
+    const correlation = normaliseCorrelation(announcement.correlation);
     const call: CallInternal = {
       callId,
       taskId: announcement.taskId,
@@ -317,6 +341,7 @@ export class ContractNetCoordinator {
       awardedBid: null,
       awardedAt: null,
       bids: new Map(),
+      correlation,
     };
     this.calls.set(callId, call);
 
@@ -333,6 +358,7 @@ export class ContractNetCoordinator {
       kind: "call_announced",
       at: call.announcedAt,
       call: snapshot,
+      correlation,
     });
     return snapshot;
   }
@@ -393,6 +419,7 @@ export class ContractNetCoordinator {
       at: call.awardedAt!,
       call: this.snapshotCall(call),
       decision,
+      correlation: call.correlation,
     });
     return decision;
   }
@@ -413,6 +440,7 @@ export class ContractNetCoordinator {
       kind: "call_completed",
       at: this.now(),
       call: snapshot,
+      correlation: call.correlation,
     });
     return snapshot;
   }
@@ -458,6 +486,7 @@ export class ContractNetCoordinator {
           metadata: structuredClone(bid.metadata),
           kind: bid.kind,
         })),
+      correlation: cloneCorrelation(call.correlation),
     };
   }
 
@@ -503,6 +532,7 @@ export class ContractNetCoordinator {
       agentId,
       bid: this.snapshotBid(bid),
       previousKind: previous?.kind ?? null,
+      correlation: call.correlation,
     });
   }
 
@@ -605,6 +635,55 @@ function normalizeReliability(reliability: number): number {
 
 function normaliseTags(tags: string[]): string[] {
   return Array.from(new Set(tags.map((tag) => tag.trim().toLowerCase()).filter((tag) => tag.length > 0))).sort();
+}
+
+function normaliseOptionalId(value: unknown): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function normaliseCorrelation(
+  context: ContractNetCorrelationContext | null | undefined,
+): ContractNetCorrelationContext | null {
+  if (!context) {
+    return null;
+  }
+  const resolved: ContractNetCorrelationContext = {
+    runId: normaliseOptionalId(context.runId ?? null),
+    opId: normaliseOptionalId(context.opId ?? null),
+    jobId: normaliseOptionalId(context.jobId ?? null),
+    graphId: normaliseOptionalId(context.graphId ?? null),
+    nodeId: normaliseOptionalId(context.nodeId ?? null),
+    childId: normaliseOptionalId(context.childId ?? null),
+  };
+  if (
+    resolved.runId === null &&
+    resolved.opId === null &&
+    resolved.jobId === null &&
+    resolved.graphId === null &&
+    resolved.nodeId === null &&
+    resolved.childId === null
+  ) {
+    return null;
+  }
+  return resolved;
+}
+
+function cloneCorrelation(correlation: ContractNetCorrelationContext | null): ContractNetCorrelationContext | null {
+  if (!correlation) {
+    return null;
+  }
+  return {
+    runId: correlation.runId ?? null,
+    opId: correlation.opId ?? null,
+    jobId: correlation.jobId ?? null,
+    graphId: correlation.graphId ?? null,
+    nodeId: correlation.nodeId ?? null,
+    childId: correlation.childId ?? null,
+  };
 }
 
 function normalizeDeadline(deadline: number | null): number | null {

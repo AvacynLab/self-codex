@@ -1274,6 +1274,7 @@ function normaliseDescriptor(graph) {
     ensureGraphIdentity(descriptor, { preferId: graph.graph_id ?? null, preferVersion: graph.graph_version ?? null });
     return descriptor;
 }
+export { normaliseDescriptor as normaliseGraphDescriptor };
 function serialiseDescriptor(descriptor) {
     return {
         name: descriptor.name,

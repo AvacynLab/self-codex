@@ -2,6 +2,7 @@ import { StructuredLogger } from "../logger.js";
 import type { ChildRecordSnapshot } from "../state/childrenIndex.js";
 import type { LoopReconciler, LoopTickContext } from "../executor/loop.js";
 import type { LoopAlert } from "../guard/loopDetector.js";
+import { extractCorrelationHints, mergeCorrelationHints, type EventCorrelationHints } from "../events/correlation.js";
 
 /**
  * Minimal subset of the {@link ChildSupervisor} consumed by the supervisor.
@@ -309,4 +310,14 @@ export class OrchestratorSupervisor implements LoopReconciler {
       }
     }
   }
+}
+
+/**
+ * Extracts correlation hints from a supervisor incident so downstream
+ * orchestrator events can expose run/op identifiers when they are included in
+ * the incident context. The helper accepts both camelCase and snake_case
+ * fields and tolerates arrays when a single identifier is available.
+ */
+export function inferSupervisorIncidentCorrelation(incident: SupervisorIncident): EventCorrelationHints {
+  return extractCorrelationHints(incident.context);
 }

@@ -6,6 +6,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { ChildSupervisor, type ChildLogEventSnapshot } from "../src/childSupervisor.js";
+import { EventBus } from "../src/events/bus.js";
 import { writeArtifact } from "../src/artifacts.js";
 
 const mockRunnerPath = fileURLToPath(new URL("./fixtures/mock-runner.js", import.meta.url));
@@ -173,6 +174,101 @@ describe("child supervisor", () => {
       expect(echoLog?.snapshot.jobId).to.equal("job-logs");
       expect(echoLog?.snapshot.childId).to.equal(created.childId);
       expect(echoLog?.snapshot.message).to.include("\"type\":\"echo\"");
+    } finally {
+      await supervisor.disposeAll();
+      await rm(childrenRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves inferred correlation hints when the resolver omits identifiers", async () => {
+    const childrenRoot = await mkdtemp(path.join(tmpdir(), "supervisor-correlation-"));
+    const recorded: Array<{ childId: string; snapshot: ChildLogEventSnapshot }> = [];
+    const supervisor = new ChildSupervisor({
+      childrenRoot,
+      defaultCommand: process.execPath,
+      defaultArgs: [mockRunnerPath, "--role", "friendly"],
+      // Resolver intentionally returns sparse hints with undefined fields to
+      // mirror real-world resolvers that only override specific identifiers.
+      resolveChildCorrelation: () => ({ childId: undefined, runId: undefined, opId: undefined }),
+      recordChildLogEntry: (childId, snapshot) => {
+        recorded.push({ childId, snapshot: { ...snapshot } });
+      },
+    });
+
+    try {
+      const created = await supervisor.createChild();
+      expect(created.readyMessage).to.not.equal(null);
+
+      await supervisor.send(created.childId, { type: "diagnostic", note: "correlation" });
+
+      await supervisor.waitForMessage(
+        created.childId,
+        (message) => Boolean(message.parsed && (message.parsed as any).type === "echo"),
+        500,
+      );
+
+      // Allow the async recorder to flush the captured snapshot before assertions.
+      await new Promise((resolve) => setTimeout(resolve, 20));
+
+      const echoed = recorded.find(
+        (entry) => entry.childId === created.childId && (entry.snapshot.parsed as any)?.payload?.note === "correlation",
+      );
+      expect(echoed).to.not.equal(undefined);
+      expect(echoed?.snapshot.childId).to.equal(created.childId);
+      expect(echoed?.snapshot.runId).to.equal(null);
+      expect(echoed?.snapshot.opId).to.equal(null);
+    } finally {
+      await supervisor.disposeAll();
+      await rm(childrenRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("derives event correlation hints directly from child metadata", async () => {
+    const childrenRoot = await mkdtemp(path.join(tmpdir(), "supervisor-metadata-"));
+    const bus = new EventBus({ historyLimit: 20 });
+    const supervisor = new ChildSupervisor({
+      childrenRoot,
+      defaultCommand: process.execPath,
+      defaultArgs: [mockRunnerPath, "--role", "friendly"],
+      eventBus: bus,
+    });
+
+    try {
+      const created = await supervisor.createChild({
+        metadata: {
+          run_id: "run-meta",
+          op_id: "op-meta",
+          job_id: "job-meta",
+          graph_id: "graph-meta",
+          node_id: "node-meta",
+        },
+      });
+
+      expect(created.readyMessage).to.not.equal(null);
+
+      await supervisor.send(created.childId, { type: "prompt", content: "derive" });
+      await supervisor.waitForMessage(
+        created.childId,
+        (message) => Boolean(message.parsed && (message.parsed as any).type === "response"),
+        1_000,
+      );
+
+      const events = bus.list({ cats: ["child"] });
+      const responseEvent = events.find((event) => {
+        if (event.msg !== "child_stdout" || !event.data || typeof event.data !== "object") {
+          return false;
+        }
+        const payload = event.data as { stream?: string; parsed?: { type?: string } | null };
+        return payload.stream === "stdout" && payload.parsed?.type === "response";
+      });
+
+      expect(responseEvent).to.not.equal(undefined);
+      expect(responseEvent?.runId).to.equal("run-meta");
+      expect(responseEvent?.opId).to.equal("op-meta");
+      expect(responseEvent?.jobId).to.equal("job-meta");
+      expect(responseEvent?.graphId).to.equal("graph-meta");
+      expect(responseEvent?.nodeId).to.equal("node-meta");
+      expect(responseEvent?.childId).to.equal(created.childId);
     } finally {
       await supervisor.disposeAll();
       await rm(childrenRoot, { recursive: true, force: true });

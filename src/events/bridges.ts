@@ -5,6 +5,7 @@
  * events without pulling in the bus implementation directly.
  */
 import type { EventBus, EventInput } from "./bus.js";
+import { mergeCorrelationHints, type EventCorrelationHints } from "./correlation.js";
 import type { BlackboardEvent, BlackboardStore } from "../coord/blackboard.js";
 import type { StigmergyChangeEvent, StigmergyField } from "../coord/stigmergy.js";
 import type {
@@ -29,20 +30,6 @@ import type {
   ValueGraphEvent,
   ValueGraphEventListener,
 } from "../values/valueGraph.js";
-
-/**
- * Hints returned by correlation resolvers so callers can enrich emitted events
- * with contextual identifiers (run, op, graph, ...). All properties are
- * optional because some emitters do not expose any correlation data yet.
- */
-export interface EventCorrelationHints {
-  jobId?: string | null;
-  runId?: string | null;
-  opId?: string | null;
-  graphId?: string | null;
-  nodeId?: string | null;
-  childId?: string | null;
-}
 
 /**
  * Union describing the event currently being bridged. The context is forwarded
@@ -224,19 +211,32 @@ export function bridgeCancellationEvents(options: CancellationBridgeOptions): ()
   const { bus, subscribe = subscribeCancellationEvents, resolveCorrelation } = options;
 
   const unsubscribe = subscribe((event) => {
-    const correlation = resolveCorrelation?.(event) ?? {};
+    // Seed the hints with the identifiers recorded by the cancellation registry
+    // and merge resolver outputs afterwards so sparse resolvers cannot wipe the
+    // native metadata (while still allowing deliberate overrides with `null`).
+    const hints: EventCorrelationHints = {
+      opId: event.opId,
+      runId: event.runId,
+      jobId: event.jobId,
+      graphId: event.graphId,
+      nodeId: event.nodeId,
+      childId: event.childId,
+    };
+    const resolved = resolveCorrelation?.(event);
+    mergeCorrelationHints(hints, resolved ?? undefined);
+
     const level: EventInput["level"] = event.outcome === "requested" ? "info" : "warn";
     const message = event.outcome === "requested" ? "cancel_requested" : "cancel_repeat";
 
     bus.publish({
       cat: "cancel",
       level,
-      jobId: correlation.jobId ?? event.jobId ?? null,
-      runId: correlation.runId ?? event.runId ?? null,
-      opId: correlation.opId ?? event.opId,
-      graphId: correlation.graphId ?? event.graphId ?? null,
-      nodeId: correlation.nodeId ?? event.nodeId ?? null,
-      childId: correlation.childId ?? event.childId ?? null,
+      jobId: hints.jobId ?? null,
+      runId: hints.runId ?? null,
+      opId: hints.opId ?? event.opId,
+      graphId: hints.graphId ?? null,
+      nodeId: hints.nodeId ?? null,
+      childId: hints.childId ?? null,
       msg: message,
       data: {
         opId: event.opId,
@@ -266,32 +266,51 @@ export function bridgeChildRuntimeEvents(options: ChildRuntimeBridgeOptions): ()
   const { runtime, bus, resolveCorrelation } = options;
 
   const handleCorrelation = (context: ChildRuntimeBridgeContext): EventCorrelationHints => {
-    return resolveCorrelation?.(context) ?? {};
+    // Always start with the runtime identifier so lifecycle publications stay
+    // correlated even when resolvers stay silent.
+    const hints: EventCorrelationHints = { childId: runtime.childId };
+
+    if (context.kind === "message") {
+      // Children frequently embed correlation hints directly in their payloads;
+      // merge them first so resolvers can still override specific fields.
+      const payload = context.message.parsed as Record<string, unknown> | null;
+      if (payload && typeof payload === "object") {
+        const embedded: EventCorrelationHints = {};
+        const runId = payload.runId;
+        const opId = payload.opId;
+        const jobId = payload.jobId;
+        const graphId = payload.graphId;
+        const nodeId = payload.nodeId;
+        const childId = payload.childId;
+        if (typeof runId === "string" && runId.length > 0) embedded.runId = runId;
+        if (typeof opId === "string" && opId.length > 0) embedded.opId = opId;
+        if (typeof jobId === "string" && jobId.length > 0) embedded.jobId = jobId;
+        if (typeof graphId === "string" && graphId.length > 0) embedded.graphId = graphId;
+        if (typeof nodeId === "string" && nodeId.length > 0) embedded.nodeId = nodeId;
+        if (typeof childId === "string" && childId.length > 0) embedded.childId = childId;
+        mergeCorrelationHints(hints, embedded);
+      }
+    }
+
+    const resolved = resolveCorrelation?.(context);
+    mergeCorrelationHints(hints, resolved ?? undefined);
+    if (hints.childId === undefined) {
+      hints.childId = runtime.childId;
+    }
+    return hints;
   };
 
   const messageListener = (message: ChildRuntimeMessage) => {
     const correlation = handleCorrelation({ kind: "message", runtime, message });
     const level: EventInput["level"] = message.stream === "stderr" ? "warn" : "info";
-    // Promote correlation identifiers surfaced directly by the child payload
-    // so tooling receives run/op hints even when the resolver stays silent.
-    const parsed = message.parsed as Record<string, unknown> | null;
-    const jobId =
-      correlation.jobId ?? (parsed && typeof parsed.jobId === "string" ? (parsed.jobId as string) : null);
-    const runId =
-      correlation.runId ?? (parsed && typeof parsed.runId === "string" ? (parsed.runId as string) : null);
-    const opId =
-      correlation.opId ?? (parsed && typeof parsed.opId === "string" ? (parsed.opId as string) : null);
-    const childId =
-      correlation.childId ??
-      (parsed && typeof parsed.childId === "string" ? (parsed.childId as string) : runtime.childId);
 
     bus.publish({
       cat: "child",
       level,
-      childId,
-      jobId,
-      runId,
-      opId,
+      childId: correlation.childId ?? null,
+      jobId: correlation.jobId ?? null,
+      runId: correlation.runId ?? null,
+      opId: correlation.opId ?? null,
       graphId: correlation.graphId ?? null,
       nodeId: correlation.nodeId ?? null,
       msg: message.stream === "stderr" ? "child_stderr" : "child_stdout",
@@ -337,7 +356,7 @@ export function bridgeChildRuntimeEvents(options: ChildRuntimeBridgeOptions): ()
     bus.publish({
       cat: "child",
       level,
-      childId: correlation.childId ?? runtime.childId,
+      childId: correlation.childId ?? null,
       jobId: correlation.jobId ?? null,
       runId: correlation.runId ?? null,
       opId: correlation.opId ?? null,
@@ -366,7 +385,16 @@ export function bridgeContractNetEvents(options: ContractNetBridgeOptions): () =
   const { coordinator, bus, subscribe = (listener) => coordinator.observe(listener), resolveCorrelation } = options;
 
   const listener: ContractNetEventListener = (event) => {
-    const correlation = resolveCorrelation?.(event) ?? {};
+    const correlation: EventCorrelationHints = {};
+    if ("correlation" in event && event.correlation) {
+      mergeCorrelationHints(correlation, event.correlation);
+    } else if ("call" in event && event.call && "correlation" in event.call && event.call.correlation) {
+      mergeCorrelationHints(correlation, event.call.correlation);
+    }
+    const resolved = resolveCorrelation?.(event);
+    if (resolved) {
+      mergeCorrelationHints(correlation, resolved);
+    }
     let level: EventInput["level"] = "info";
     let msg = "cnp_event";
     let data: Record<string, unknown> = {};
@@ -434,7 +462,13 @@ export function bridgeConsensusEvents(options: ConsensusBridgeOptions): () => vo
   const { bus, subscribe = subscribeConsensusEvents, resolveCorrelation } = options;
 
   const dispose = subscribe((event) => {
-    const correlation = resolveCorrelation?.(event) ?? {};
+    const correlation: EventCorrelationHints = {
+      jobId: event.jobId ?? null,
+      runId: event.runId ?? null,
+      opId: event.opId ?? null,
+    };
+    const resolved = resolveCorrelation?.(event);
+    mergeCorrelationHints(correlation, resolved ?? undefined);
 
     let level: EventInput["level"] = event.satisfied ? "info" : "warn";
     let msg = "consensus_decision";
@@ -448,9 +482,9 @@ export function bridgeConsensusEvents(options: ConsensusBridgeOptions): () => vo
     bus.publish({
       cat: "consensus",
       level,
-      jobId: correlation.jobId ?? event.jobId ?? null,
-      runId: correlation.runId ?? event.runId ?? null,
-      opId: correlation.opId ?? event.opId ?? null,
+      jobId: correlation.jobId ?? null,
+      runId: correlation.runId ?? null,
+      opId: correlation.opId ?? null,
       graphId: correlation.graphId ?? null,
       nodeId: correlation.nodeId ?? null,
       childId: correlation.childId ?? null,
@@ -490,25 +524,12 @@ export function bridgeValueEvents(options: ValueGuardBridgeOptions): () => void 
   } = options;
 
   const listener: ValueGraphEventListener = (event) => {
+    // Combine the hints emitted by the value graph with optional resolver
+    // outputs so tests can inject overrides without losing the original ids.
     const hints: EventCorrelationHints = {};
-    if (event.correlation) {
-      const { runId, opId, jobId, graphId, nodeId, childId } = event.correlation;
-      if (runId !== undefined) hints.runId = runId ?? null;
-      if (opId !== undefined) hints.opId = opId ?? null;
-      if (jobId !== undefined) hints.jobId = jobId ?? null;
-      if (graphId !== undefined) hints.graphId = graphId ?? null;
-      if (nodeId !== undefined) hints.nodeId = nodeId ?? null;
-      if (childId !== undefined) hints.childId = childId ?? null;
-    }
-
+    mergeCorrelationHints(hints, event.correlation);
     const resolved = resolveCorrelation?.(event);
-    if (resolved) {
-      for (const [key, value] of Object.entries(resolved)) {
-        if (value !== undefined) {
-          (hints as Record<string, unknown>)[key] = value;
-        }
-      }
-    }
+    mergeCorrelationHints(hints, resolved ?? undefined);
     let level: EventInput["level"] = "info";
     let msg = "values_event";
     let data: Record<string, unknown> = {};

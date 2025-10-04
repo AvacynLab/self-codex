@@ -7,11 +7,15 @@ import { BehaviorTreeInterpreter, buildBehaviorTree } from "../executor/bt/inter
 import { CompiledBehaviorTreeSchema, } from "../executor/bt/types.js";
 import { ReactiveScheduler } from "../executor/reactiveScheduler.js";
 import { ExecutionLoop } from "../executor/loop.js";
+import { PlanLifecycleFeatureDisabledError, } from "../executor/planLifecycle.js";
 import { BbSetInputSchema } from "./coordTools.js";
 import { ConsensusConfigSchema, majority as computeConsensusMajority, normaliseConsensusOptions, publishConsensusEvent, quorum as computeConsensusQuorum, weighted as computeConsensusWeighted, } from "../coord/consensus.js";
 import { ensureDirectory, resolveWithin } from "../paths.js";
 import { PromptTemplateSchema, PromptVariablesSchema, renderPromptTemplate, } from "../prompts.js";
+import { applyAll, createInlineSubgraphRule, createRerouteAvoidRule, createSplitParallelRule } from "../graph/rewrite.js";
+import { flatten } from "../graph/hierarchy.js";
 import { registerCancellation, unregisterCancellation, OperationCancelledError, } from "../executor/cancel.js";
+import { GraphDescriptorSchema, normaliseGraphDescriptor } from "./graphTools.js";
 /** Error raised when Behaviour Tree tasks require a disabled blackboard module. */
 class BlackboardFeatureDisabledError extends Error {
     code = "E-BB-DISABLED";
@@ -203,6 +207,22 @@ const HierGraphSchema = z.object({
         .min(1),
     edges: z.array(HierEdgeSchema).default([]),
 });
+/** Schema validating plan rewrite options accepted by the dry-run tool. */
+const PlanDryRunRewriteOptionsSchema = z
+    .object({
+    avoid_node_ids: z.array(z.string().min(1)).max(64).optional(),
+    avoid_labels: z.array(z.string().min(1)).max(64).optional(),
+})
+    .strict();
+/** Schema allowing callers to explicitly declare reroute avoid lists. */
+const PlanDryRunRerouteAvoidSchema = z
+    .object({
+    node_ids: z.array(z.string().min(1)).max(64).optional(),
+    labels: z.array(z.string().min(1)).max(64).optional(),
+})
+    .strict();
+/** Schema allowing callers to provide either hierarchical or normalised graphs. */
+const PlanDryRunGraphSchema = z.union([HierGraphSchema, GraphDescriptorSchema]);
 /** Declarative impact payload plugged into the value guard. */
 const ValueImpactSchema = z
     .object({
@@ -378,7 +398,7 @@ const PlanDryRunBaseSchema = z
     plan_id: z.string().min(1, "plan identifier must not be empty"),
     plan_label: z.string().min(1).max(200).optional(),
     threshold: z.number().min(0).max(1).optional(),
-    graph: HierGraphSchema.optional(),
+    graph: PlanDryRunGraphSchema.optional(),
     tree: CompiledBehaviorTreeSchema.optional(),
     nodes: z
         .array(z
@@ -391,6 +411,8 @@ const PlanDryRunBaseSchema = z
         .max(128)
         .optional(),
     impacts: z.array(PlanNodeImpactSchema).max(128).optional(),
+    rewrite: PlanDryRunRewriteOptionsSchema.optional(),
+    reroute_avoid: PlanDryRunRerouteAvoidSchema.optional(),
 })
     .extend(PlanCorrelationHintsSchema.shape)
     .strict();
@@ -404,11 +426,100 @@ export const PlanDryRunInputSchema = PlanDryRunBaseSchema.superRefine((value, ct
     }
 });
 export const PlanDryRunInputShape = PlanDryRunBaseSchema.shape;
+/**
+ * Schema validating plan lifecycle tool inputs that reference a specific run.
+ */
+const PlanLifecycleRunSchema = z
+    .object({
+    run_id: z.string().min(1, "run_id must not be empty"),
+})
+    .strict();
+export const PlanStatusInputSchema = PlanLifecycleRunSchema;
+export const PlanStatusInputShape = PlanStatusInputSchema.shape;
+export const PlanPauseInputSchema = PlanLifecycleRunSchema;
+export const PlanPauseInputShape = PlanPauseInputSchema.shape;
+export const PlanResumeInputSchema = PlanLifecycleRunSchema;
+export const PlanResumeInputShape = PlanResumeInputSchema.shape;
 /** Default schema registry used by the Behaviour Tree interpreter. */
 const BehaviorTaskSchemas = {
     noop: z.any(),
     bb_set: BbSetInputSchema,
 };
+/** Estimate the amount of work a Behaviour Tree represents for progress heuristics. */
+function estimateBehaviorTreeWorkload(definition) {
+    switch (definition.type) {
+        case "sequence":
+        case "selector":
+        case "parallel": {
+            return (1 +
+                definition.children.reduce((sum, child) => sum + estimateBehaviorTreeWorkload(child), 0));
+        }
+        case "retry":
+        case "timeout":
+        case "guard":
+        case "cancellable": {
+            return 1 + estimateBehaviorTreeWorkload(definition.child);
+        }
+        case "task": {
+            return 1;
+        }
+        default: {
+            return 1;
+        }
+    }
+}
+function registerPlanLifecycleRun(context, options) {
+    if (!context.planLifecycle) {
+        return;
+    }
+    try {
+        context.planLifecycle.registerRun({
+            runId: options.runId,
+            opId: options.opId,
+            mode: options.mode,
+            dryRun: options.dryRun,
+            correlation: options.correlation ?? null,
+            estimatedWork: options.estimatedWork ?? null,
+        });
+    }
+    catch (error) {
+        context.logger.warn("plan_lifecycle_register_failed", {
+            run_id: options.runId,
+            op_id: options.opId,
+            mode: options.mode,
+            message: error instanceof Error ? error.message : String(error),
+        });
+    }
+}
+function recordPlanLifecycleEvent(context, runId, phase, payload) {
+    if (!context.planLifecycle) {
+        return;
+    }
+    try {
+        context.planLifecycle.recordEvent(runId, { phase, payload });
+    }
+    catch (error) {
+        context.logger.warn("plan_lifecycle_event_failed", {
+            run_id: runId,
+            phase,
+            message: error instanceof Error ? error.message : String(error),
+        });
+    }
+}
+function attachPlanLifecycleControls(context, runId, controls) {
+    if (!context.planLifecycle) {
+        return;
+    }
+    try {
+        context.planLifecycle.attachControls(runId, controls);
+    }
+    catch (error) {
+        context.logger.warn("plan_lifecycle_attach_failed", {
+            run_id: runId,
+            message: error instanceof Error ? error.message : String(error),
+        });
+    }
+}
 const BehaviorToolHandlers = {
     noop: async (_context, input) => input ?? null,
     bb_set: async (context, input) => {
@@ -788,6 +899,14 @@ export async function handlePlanFanout(context, input) {
             child_id: parentChildId,
             children: plans.map((plan) => ({ name: plan.name, runtime: plan.runtime })),
             rejected: rejectedPlans.map((entry) => entry.name),
+        },
+        correlation: {
+            runId,
+            opId,
+            jobId,
+            graphId,
+            nodeId,
+            childId: parentChildId ?? null,
         },
     });
     const sharedVariables = {
@@ -1428,6 +1547,15 @@ async function executePlanRunBT(context, input) {
         child_id: childId,
     };
     const baseLogFields = { ...correlationLogFields, tree_id: input.tree.id };
+    const estimatedWork = estimateBehaviorTreeWorkload(input.tree.root);
+    registerPlanLifecycleRun(context, {
+        runId,
+        opId,
+        mode: "bt",
+        dryRun,
+        correlation: providedCorrelation,
+        estimatedWork,
+    });
     context.logger.info("plan_run_bt", {
         ...baseLogFields,
         dry_run: dryRun,
@@ -1439,18 +1567,28 @@ async function executePlanRunBT(context, input) {
      * the correlation identifiers expected by the unified MCP bus.
      */
     const publishLifecycleEvent = (phase, payload) => {
+        const eventPayload = {
+            phase,
+            tree_id: input.tree.id,
+            dry_run: dryRun,
+            mode: "bt",
+            ...correlationLogFields,
+            ...payload,
+        };
+        recordPlanLifecycleEvent(context, runId, phase, eventPayload);
         context.emitEvent({
             kind: "BT_RUN",
             level: phase === "error" ? "error" : "info",
             jobId: jobId ?? undefined,
             childId: childId ?? undefined,
-            payload: {
-                phase,
-                tree_id: input.tree.id,
-                dry_run: dryRun,
-                mode: "bt",
-                ...correlationLogFields,
-                ...payload,
+            payload: eventPayload,
+            correlation: {
+                runId,
+                opId,
+                jobId,
+                graphId,
+                nodeId,
+                childId,
             },
         });
     };
@@ -1730,6 +1868,15 @@ async function executePlanRunReactive(context, input) {
         tree_id: input.tree.id,
         idempotency_key: input.idempotency_key ?? null,
     };
+    const estimatedWork = estimateBehaviorTreeWorkload(input.tree.root);
+    registerPlanLifecycleRun(context, {
+        runId,
+        opId,
+        mode: "reactive",
+        dryRun,
+        correlation: providedCorrelation,
+        estimatedWork,
+    });
     context.logger.info("plan_run_reactive", {
         ...baseLogFields,
         tick_ms: input.tick_ms,
@@ -1742,18 +1889,28 @@ async function executePlanRunReactive(context, input) {
      * tests.
      */
     const publishLifecycleEvent = (phase, payload) => {
+        const eventPayload = {
+            phase,
+            tree_id: input.tree.id,
+            dry_run: dryRun,
+            mode: "reactive",
+            ...correlationLogFields,
+            ...payload,
+        };
+        recordPlanLifecycleEvent(context, runId, phase, eventPayload);
         context.emitEvent({
             kind: "BT_RUN",
             level: phase === "error" ? "error" : "info",
             jobId: jobId ?? undefined,
             childId: childId ?? undefined,
-            payload: {
-                phase,
-                tree_id: input.tree.id,
-                dry_run: dryRun,
-                mode: "reactive",
-                ...correlationLogFields,
-                ...payload,
+            payload: eventPayload,
+            correlation: {
+                runId,
+                opId,
+                jobId,
+                graphId,
+                nodeId,
+                childId,
             },
         });
     };
@@ -1985,6 +2142,10 @@ async function executePlanRunReactive(context, input) {
             }
         },
     });
+    attachPlanLifecycleControls(context, runId, {
+        pause: () => loop?.pause() ?? false,
+        resume: () => loop?.resume() ?? false,
+    });
     let timeoutHandle = null;
     if (input.timeout_ms !== undefined) {
         timeoutHandle = setTimeout(() => {
@@ -2069,6 +2230,7 @@ async function executePlanRunReactive(context, input) {
         cancellationSubscription?.();
         cancellationSubscription = null;
         unregisterCancellation(opId);
+        context.planLifecycle?.releaseControls(runId);
         context.logger.info("plan_run_reactive_status", {
             ...baseLogFields,
             status: lastResultStatus,
@@ -2095,19 +2257,172 @@ export async function handlePlanRunReactive(context, input) {
     const snapshot = await executePlanRunReactive(context, input);
     return { ...snapshot, idempotent: false, idempotency_key: key };
 }
+/** Determine whether the caller supplied a hierarchical graph payload. */
+function isHierarchicalDryRunGraph(graph) {
+    const nodes = graph.nodes;
+    const edges = graph.edges;
+    if (!Array.isArray(nodes) || nodes.length === 0 || !Array.isArray(edges)) {
+        return false;
+    }
+    const hierarchicalNodes = nodes.every((node) => {
+        if (!node || typeof node !== "object") {
+            return false;
+        }
+        const kind = node.kind;
+        return kind === "task" || kind === "subgraph";
+    });
+    if (!hierarchicalNodes) {
+        return false;
+    }
+    return edges.every((edge) => {
+        if (!edge || typeof edge !== "object") {
+            return false;
+        }
+        const from = edge.from;
+        const to = edge.to;
+        return (!!from &&
+            typeof from === "object" &&
+            typeof from.nodeId === "string" &&
+            !!to &&
+            typeof to === "object" &&
+            typeof to.nodeId === "string");
+    });
+}
 /**
- * Performs a dry-run of a plan without executing any side effects. The handler
- * compiles the provided hierarchical graph (when present), aggregates declared
- * value impacts and, if the value guard is enabled, produces an explanation by
- * delegating to {@link ValueGraph.explain}. The response acts as a preview so
- * operators can iterate on plans before triggering a real execution.
+ * Normalise the graph provided to the dry-run handler. Callers may supply either a
+ * hierarchical payload or a graph descriptor already flattened by the graph tools.
  */
+function normalisePlanDryRunGraph(graph) {
+    if (!graph) {
+        return null;
+    }
+    const candidate = graph;
+    if (isHierarchicalDryRunGraph(candidate)) {
+        return flatten(candidate);
+    }
+    const parsed = GraphDescriptorSchema.safeParse(candidate);
+    if (!parsed.success) {
+        throw new Error("invalid graph payload supplied to plan dry-run");
+    }
+    return normaliseGraphDescriptor(parsed.data);
+}
+/**
+ * Build reroute hints by combining explicit rewrite options with heuristic signals
+ * found in the graph. Nodes flagged with `avoid`, `unsafe`, or `reroute` metadata
+ * are automatically added to the avoid lists so previews surface realistic bypasses.
+ */
+function deriveRerouteAvoidHints(graph, rewrite, rerouteAvoid) {
+    const avoidNodeIds = new Set();
+    const avoidLabels = new Set();
+    const registerNodeId = (value) => {
+        if (typeof value !== "string") {
+            return;
+        }
+        const trimmed = value.trim();
+        if (trimmed.length > 0) {
+            avoidNodeIds.add(trimmed);
+        }
+    };
+    const registerLabel = (value) => {
+        if (typeof value !== "string") {
+            return;
+        }
+        const trimmed = value.trim();
+        if (trimmed.length > 0) {
+            avoidLabels.add(trimmed);
+        }
+    };
+    const registerRerouteNode = (value) => {
+        if (Array.isArray(value)) {
+            for (const entry of value) {
+                registerNodeId(entry);
+            }
+            return;
+        }
+        registerNodeId(value);
+    };
+    const registerRerouteLabel = (value) => {
+        if (Array.isArray(value)) {
+            for (const entry of value) {
+                registerLabel(entry);
+            }
+            return;
+        }
+        registerLabel(value);
+    };
+    for (const id of rewrite?.avoid_node_ids ?? []) {
+        registerNodeId(id);
+    }
+    for (const label of rewrite?.avoid_labels ?? []) {
+        registerLabel(label);
+    }
+    registerRerouteNode(rerouteAvoid?.node_ids);
+    registerRerouteLabel(rerouteAvoid?.labels);
+    for (const node of graph.nodes) {
+        const attributes = (node.attributes ?? {});
+        const tagList = Array.isArray(attributes.tags) ? attributes.tags : [];
+        const loweredTags = new Set(tagList
+            .filter((tag) => typeof tag === "string")
+            .map((tag) => tag.toLowerCase()));
+        const flagged = attributes.avoid === true ||
+            attributes.unsafe === true ||
+            attributes.reroute === true ||
+            attributes.risk === "avoid" ||
+            attributes.safety === "avoid" ||
+            loweredTags.has("avoid") ||
+            loweredTags.has("unsafe") ||
+            loweredTags.has("reroute");
+        if (flagged) {
+            registerNodeId(node.id);
+            registerLabel(node.label);
+        }
+    }
+    return {
+        avoidNodeIds: avoidNodeIds.size > 0 ? avoidNodeIds : undefined,
+        avoidLabels: avoidLabels.size > 0 ? avoidLabels : undefined,
+    };
+}
 export function handlePlanDryRun(context, input) {
+    const hierarchicalGraph = input.graph && isHierarchicalDryRunGraph(input.graph)
+        ? input.graph
+        : null;
     const compiledTree = input.tree
         ? structuredClone(input.tree)
-        : input.graph
-            ? compileHierGraphToBehaviorTree(input.graph)
+        : hierarchicalGraph
+            ? compileHierGraphToBehaviorTree(hierarchicalGraph)
             : null;
+    let rewritePreview = null;
+    let rerouteAvoid = null;
+    const normalisedGraph = normalisePlanDryRunGraph(input.graph);
+    if (normalisedGraph) {
+        const rerouteHints = deriveRerouteAvoidHints(normalisedGraph, input.rewrite ?? null, input.reroute_avoid ?? null);
+        rerouteAvoid =
+            rerouteHints.avoidNodeIds || rerouteHints.avoidLabels
+                ? {
+                    node_ids: Array.from(rerouteHints.avoidNodeIds ?? []).sort(),
+                    labels: Array.from(rerouteHints.avoidLabels ?? []).sort(),
+                }
+                : null;
+        const rules = [
+            createSplitParallelRule(),
+            createInlineSubgraphRule(),
+            createRerouteAvoidRule(rerouteHints),
+        ];
+        const { graph: rewrittenGraph, history } = applyAll(normalisedGraph, rules);
+        const applied = history.reduce((sum, entry) => sum + entry.applied, 0);
+        rewritePreview = {
+            graph: rewrittenGraph,
+            history,
+            applied,
+        };
+        context.logger.info("plan_dry_run_rewrite_preview", {
+            plan_id: input.plan_id,
+            applied_rules: history.filter((entry) => entry.applied > 0).length,
+            total_applied: applied,
+            reroute_avoid_nodes: rerouteHints.avoidNodeIds?.size ?? 0,
+            reroute_avoid_labels: rerouteHints.avoidLabels?.size ?? 0,
+        });
+    }
     const nodeSummaries = [];
     const aggregatedImpacts = [];
     for (const node of input.nodes ?? []) {
@@ -2164,7 +2479,30 @@ export function handlePlanDryRun(context, input) {
         nodes: nodeSummaries,
         impacts: aggregatedImpacts,
         value_guard: explanation,
+        rewrite_preview: rewritePreview,
+        reroute_avoid: rerouteAvoid,
     };
+}
+/** Retrieve the lifecycle snapshot associated with a Behaviour Tree execution. */
+export function handlePlanStatus(context, input) {
+    if (!context.planLifecycle) {
+        throw new PlanLifecycleFeatureDisabledError();
+    }
+    return context.planLifecycle.getSnapshot(input.run_id);
+}
+/** Pause a running Behaviour Tree execution when lifecycle tooling is enabled. */
+export async function handlePlanPause(context, input) {
+    if (!context.planLifecycle) {
+        throw new PlanLifecycleFeatureDisabledError();
+    }
+    return context.planLifecycle.pause(input.run_id);
+}
+/** Resume a paused Behaviour Tree execution when lifecycle tooling is enabled. */
+export async function handlePlanResume(context, input) {
+    if (!context.planLifecycle) {
+        throw new PlanLifecycleFeatureDisabledError();
+    }
+    return context.planLifecycle.resume(input.run_id);
 }
 /**
  * Normalises an impact payload so it matches {@link ValueImpactInput} while

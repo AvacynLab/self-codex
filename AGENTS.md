@@ -90,7 +90,14 @@ Contexte : TypeScript/Node ESM, local-first, une instance Codex par enfant, pas 
   * [x] Consensus : décisions agrégées → `EventBus` (run/op/job + métadonnées)
 * [ ] **Modifier** `src/executor/*`, `src/coord/*`, `src/agents/*`
 
-  * [ ] Publier évènements standardisés avec `opId/runId`
+  * [ ] Publier évènements standardisés avec `opId/runId` *(Contract-Net : corrélations propagées dans `contractNet` + `bridgeContractNetEvents`, reste à aligner exécuteur/agents)*
+    * [x] Autoscaler publie `AUTOSCALER` avec corrélations child/run/op/job (itération 119)
+    * [x] Autoscaler et passerelle child runtime réutilisent `extractCorrelationHints` et préservent les null explicites tout en gardant les identifiants natifs (itération 121)
+    * [x] `child_collect` publie des événements `COGNITIVE` corrélés (metaCritic + selfReflect) via `buildChildCognitiveEvents` (itération 122)
+    * [x] `child_prompt`/`child_chat`/`child_reply`/`child_kill` et outils associés publient désormais des événements `PROMPT`/`PENDING`/`REPLY`/`INFO`/`KILL` corrélés en fusionnant les métadonnées `ChildrenIndex` avec les hints extraits (itération 123)
+  * [x] Extraire les corrélations des incidents du superviseur afin que les événements `supervisor_*` exposent `runId/opId/childId` quand disponibles
+  * [x] Acheminer les corrélations fournies par les outils plan via `PlanEventEmitter` et `pushEvent` (itération 117)
+  * [x] Empêcher les resolvers Contract-Net d'effacer les corrélations natives lorsqu'ils retournent des `undefined` (itération 113)
 * [x] **Modifier** `src/server.ts`
 
   * [x] tool `events_subscribe({cats?, runId?})` (stream SSE/jsonlines)
@@ -184,14 +191,14 @@ Contexte : TypeScript/Node ESM, local-first, une instance Codex par enfant, pas 
 
 ### 3.1 Lifecycle uniforme
 
-* [ ] **Créer** `src/executor/planLifecycle.ts`
+* [x] **Créer** `src/executor/planLifecycle.ts`
 
-  * [ ] États : `running|paused|done|failed`, progression %, last event seq
-* [ ] **Modifier** `src/server.ts`
+  * [x] États : `running|paused|done|failed`, progression %, last event seq
+* [x] **Modifier** `src/server.ts`
 
-  * [ ] tools `plan_status({runId})`, `plan_pause({runId})`, `plan_resume({runId})`
-  * [ ] `plan_dry_run({graphId|btJson})` → compile, applique `values_explain`, `rewrite` **en preview**
-* [ ] **Tests** : `tests/plan.lifecycle.test.ts`, `tests/plan.dry-run.test.ts`
+  * [x] tools `plan_status({runId})`, `plan_pause({runId})`, `plan_resume({runId})`
+  * [x] `plan_dry_run({graphId|btJson})` → compile, applique `values_explain`, `rewrite` **en preview**
+  * [x] **Tests** : `tests/plan.lifecycle.test.ts`, `tests/plan.dry-run.test.ts`
 
 ### 3.2 Child operations
 
@@ -311,13 +318,13 @@ Contexte : TypeScript/Node ESM, local-first, une instance Codex par enfant, pas 
 
 ### 6.1 Logs corrélés & tail
 
-* [ ] **Créer** `src/monitor/log.ts`
+* [x] **Créer** `src/monitor/log.ts`
 
-  * [ ] Log JSONL avec `runId|opId|graphId|childId|seq` ; rotation
-* [ ] **Modifier** `src/server.ts`
+  * [x] Log JSONL avec `runId|opId|graphId|childId|seq` ; rotation
+* [x] **Modifier** `src/server.ts`
 
-  * [ ] tool `logs_tail({stream:"server"|"run"|"child", id?, limit?, fromSeq?})`
-* [ ] **Tests** : `tests/logs.tail.filters.test.ts` (filtres, fromSeq)
+  * [x] tool `logs_tail({stream:"server"|"run"|"child", id?, limit?, fromSeq?})`
+* [x] **Tests** : `tests/logs.tail.filters.test.ts` (filtres, fromSeq)
 
 ### 6.2 Dashboard overlays
 
@@ -644,3 +651,119 @@ Si tu veux, je peux te générer à la demande les **squelettes TypeScript** exa
 - ✅ Mis à jour `README.md` et `docs/mcp-api.md` pour détailler les nouveaux schémas (`StigBatchInput`, `GraphBatchMutateInput`, `ChildBatchCreateInput`) et clarifier les champs `created`/`changed`.
 - ✅ Étendu `tests/bulk.bb-graph-child-stig.test.ts` avec les scénarios de version attendue, no-op, comptage `created` et rollback enfants ; exécuté la suite complète (`npm run build`, `npm run lint`, `npm test`).
 - 🔜 Couvrir l'émission des événements bus/corrélations pour les outils bulk côté serveur et ajouter un test d'intégration MCP end-to-end.
+
+### 2025-10-04 – Agent `gpt-5-codex` (iteration 112)
+- ✅ Propagé les identifiants de corrélation (run/op/job) dans le Contract-Net (`contractNet.announce`, snapshots, évènements bus) et dans l'outillage `cnp_announce`.
+- ✅ Mis à jour `bridgeContractNetEvents` pour fusionner automatiquement les corrélations natives avec les résolveurs optionnels.
+- ✅ Étendu la couverture (`tests/events.bridges.test.ts`, `tests/e2e.contract-net.consensus.test.ts`) pour vérifier la présence des métadonnées et la sérialisation côté tool ; exécuté `npm ci`, `npm test`.
+
+### 2025-10-04 – Agent `gpt-5-codex` (iteration 113)
+- ✅ Durci `bridgeContractNetEvents` afin que les résolveurs ne puissent plus écraser les corrélations natives avec des valeurs `undefined`, en factorisant `mergeCorrelationHints` côté source et dist (`src/events/bridges.ts`, `dist/events/bridges.js`).
+- ✅ Ajouté un test de régression vérifiant que les auto-bids conservent `runId/opId` même lorsque le resolver renvoie `undefined` (`tests/events.bridges.test.ts`).
+- ✅ Exécuté la suite complète (`npm ci`, `npm test`), puis nettoyé les artefacts temporaires (`children/`, `node_modules/`).
+
+### 2025-10-04 – Agent `gpt-5-codex` (iteration 114)
+- ✅ Extrait les utilitaires de corrélation dans `src/events/correlation.ts` et synchronisé la version dist pour réutiliser `mergeCorrelationHints` sans duplication.
+- ✅ Aligné `bridgeContractNetEvents`, le superviseur enfant et la suite de tests sur le nouveau module partagé, en ajoutant une couverture unitaire dédiée (`tests/events.correlation.test.ts`).
+- 🔜 Étendre l'utilisation du module de corrélation aux autres passerelles (executor/agents) afin de finaliser la checklist "Event bus unifié & corrélation".
+
+### 2025-10-04 – Agent `gpt-5-codex` (iteration 115)
+- ✅ Préservé les indices de corrélation natifs du `ChildSupervisor` en fusionnant les résolveurs via `mergeCorrelationHints` pour éviter qu'un `undefined` efface `childId/runId/opId`.
+- ✅ Ajouté un scénario `tests/child.supervisor.test.ts` garantissant que les journaux enfants conservent les identifiants quand le résolveur est clairsemé.
+- ✅ Propager la fusion sûre des corrélations vers les autres passerelles (`executor/*`, `agents/*`) afin de clôturer la tâche "Event bus unifié & corrélation".
+
+### 2025-10-04 – Agent `gpt-5-codex` (iteration 116)
+- ✅ Harmonisé les passerelles d'événements annulés/enfants/consensus/values avec `mergeCorrelationHints` pour empêcher les résolveurs clairsemés de purger `runId/opId/jobId`.
+- ✅ Ajouté des régressions ciblées (`tests/events.bridges.test.ts`) couvrant les résolveurs qui retournent `undefined` ou `null` et vérifié que les identifiants natifs subsistent.
+- ✅ Exécuté `npm run lint`, `npm run build`, `npm test`.
+- 🔜 Auditer les autres émetteurs d'événements (plan/executor/agents restants) pour confirmer l'absence de fuites `undefined` et préparer l'exposition côté tools MCP (`events_subscribe`, cancel/bulk).
+
+### 2025-10-04 – Agent `gpt-5-codex` (iteration 117)
+- ✅ Propagé les corrélations fournies par les outils plan vers le bus unifié via `PlanEventEmitter` et `pushEvent`, en fusionnant les hints externes avec ceux extraits des payloads.
+- ✅ Étendu `tests/plan.bt.events.test.ts` pour vérifier que les événements Behaviour Tree et réactifs exposent systématiquement les identifiants de corrélation.
+- ✅ Exécuté `npm run lint`, `npm run build`, `npm test` (après `npm ci`) et nettoyé `node_modules/` et `children/` avant commit.
+- 🔜 Finaliser l'alignement des autres émetteurs (`src/executor/*`, `src/agents/*`) afin que chaque événement plan/superviseur publie `runId/opId` sans dépendre exclusivement du payload.
+
+### 2025-10-04 – Agent `gpt-5-codex` (iteration 118)
+- ✅ Ajouté `inferSupervisorIncidentCorrelation` pour dériver run/op/job/child depuis le contexte des incidents et alimenter `pushEvent` côté serveur.
+- ✅ Créé `tests/agents.supervisor.correlation.test.ts` couvrant la normalisation camelCase/snake_case, les tableaux unitaires et la fusion non destructive des corrélations embarquées.
+- ✅ Exécuté `npm test` (lint/build à planifier avec les prochaines itérations pour l'alignement complet des émetteurs restants).
+- 🔜 Étendre la propagation des corrélations au reste des actions superviseur/autoscaler et boucler l'item "Modifier src/executor/*, src/agents/*".
+
+### 2025-10-04 – Agent `gpt-5-codex` (iteration 119)
+- ✅ Instrumenté l'autoscaler pour publier des événements `AUTOSCALER` via `pushEvent`, en fusionnant les corrélations issues des métadonnées enfants et des gabarits de spawn.
+- ✅ Ajouté `tests/agents.autoscaler.correlation.test.ts` pour couvrir la retraite nominale, l'escalade forcée et l'échec du kill tout en vérifiant la préservation des hints run/op/job/graph/node.
+- ✅ Étendu `EventStore` afin d'accepter la catégorie `AUTOSCALER` et branché le serveur sur le nouvel émetteur ; exécuté `npm run lint`, `npm run build`, `npm test`.
+- 🔜 Poursuivre l'alignement des autres agents/exécuteurs (scheduler, metaCritic, etc.) afin de finaliser la case "Publier évènements standardisés avec opId/runId".
+
+### 2025-10-04 – Agent `gpt-5-codex` (iteration 120)
+- ✅ Étendu `events/correlation` avec `extractCorrelationHints` puis refactorisé `inferSupervisorIncidentCorrelation` et `ChildSupervisor` pour dériver automatiquement run/op/job/graph/node/child depuis les métadonnées runtime et index, supprimant la dépendance aux résolveurs ad-hoc.
+- ✅ Ajouté des tests ciblés (`tests/events.correlation.test.ts`, `tests/child.supervisor.test.ts`) validant l'extraction (snake/camel case, blocs imbriqués, métadonnées enfants) et la propagation des hints sur le bus `child`.
+- ✅ Regénéré les artefacts dist (`npm run build`), linté (`npm run lint`) et exécuté la suite complète (`npm test`) pour garantir l'absence de régressions.
+- 🔜 Finaliser la case "Publier événements standardisés avec opId/runId" côté scheduler/agents restants (metaCritic/selfReflect, boucle réactive) en capitalisant sur `extractCorrelationHints` lorsque les métadonnées sont disponibles.
+
+### 2025-10-04 – Agent `gpt-5-codex` (iteration 121)
+- ✅ Étendu `extractCorrelationHints` pour préserver les overrides explicites à `null` tout en normalisant les tableaux ambigus et fusionné l'autoscaler sur cette implémentation commune.
+- ✅ Aligné `src/agents/autoscaler.ts` et `bridgeChildRuntimeEvents` sur le nouveau helper, garantissant que les métadonnées runtime/index et les templates de spawn conservent les identifiants sans effacer volontairement les `null`.
+- ✅ Renforcé la couverture (`tests/events.correlation.test.ts`, `tests/agents.autoscaler.correlation.test.ts`, `tests/events.bridges.test.ts`) afin de couvrir les scénarios `null`/manifest extras/scale up ; exécuté `npm run lint`, `npm run build`, `npm test`.
+- 🔜 Poursuivre l'audit des émetteurs restants (`src/executor/*`, autres agents) pour éliminer les duplications d'inférence et préparer la clôture de la checklist "Publier événements standardisés avec opId/runId".
+
+### 2025-10-04 – Agent `gpt-5-codex` (iteration 122)
+- ✅ Introduit `buildChildCognitiveEvents` et la catégorie `COGNITIVE` pour formaliser les revues metaCritic/selfReflect avec corrélations normalisées.
+- ✅ Instrumenté `child_collect` afin d'émettre les événements de revue/réflexion corrélés via `pushEvent`, en s'appuyant sur les métadonnées `ChildrenIndex` et les nouveaux helpers.
+- ✅ Ajouté les régressions `tests/events.cognitive.test.ts` pour valider la structure des payloads et la propagation des hints `runId/opId/graphId/nodeId`.
+- 🔜 Aligner le reste des agents/exécuteurs (scheduler, metaCritic follow-ups, boucle réactive) pour clôturer la tâche "Publier événements standardisés avec opId/runId" et vérifier l'impact sur le streaming `events_subscribe`.
+
+### 2025-10-04 – Agent `gpt-5-codex` (iteration 123)
+- ✅ Ajouté `buildChildCorrelationHints` et sa couverture dédiée afin de normaliser l'agrégation des métadonnées enfants (job/run/op/graph/node) sans écraser les overrides explicites.
+- ✅ Instrumenté `pushEvent` côté serveur (`child_prompt`, `child_chat`, `child_push_reply/partial`, `child_rename/reset`, TTL et `kill`) pour fusionner les hints `ChildrenIndex`/graph avant publication des événements `PROMPT`/`PENDING`/`REPLY`/`INFO`/`KILL`.
+- ✅ Exécuté `npm run lint`, `npm run build`, `npm test` pour valider l'ensemble de la suite après durcissement des corrélations enfants.
+- 🔜 Étendre l'alignement aux autres émetteurs serveur/agents (agrégations plan/status, superviseur metaCritic) afin de terminer la checklist "Publier événements standardisés avec opId/runId".
+
+### 2025-10-05 – Agent `gpt-5-codex` (iteration 124)
+- ✅ Introduit `buildJobCorrelationHints` pour agréger les métadonnées job/enfants et exposer `runId/opId/graphId/nodeId` sans répéter la logique d'extraction.
+- ✅ Aligné les événements serveur `HEARTBEAT`/`STATUS`/`AGGREGATE`/`KILL` sur le nouveau résolveur de corrélation afin que les publications job-scopées propagent les identifiants `runId/opId` dérivés des enfants.
+- ✅ Étendu `tests/events.correlation.test.ts` pour couvrir la construction des hints job et s'assurer que les overrides explicites à `null` restent respectés ; exécuté `npm run lint`, `npm run build`, `npm test`.
+- 🔜 Harmoniser les autres émetteurs job/plan (agrégations supplémentaires, metaCritic/superviseur) pour clôturer l'item "Publier événements standardisés avec opId/runId" et vérifier l'impact côté streaming `events_subscribe`.
+
+### 2025-10-05 – Agent `gpt-5-codex` (iteration 125)
+- ✅ Durci `buildJobCorrelationHints` en ignorant les identifiants job contradictoires, en gelant les overrides explicites à `null` pour les champs run/op/graph/node et en gardant l'autorité aux hints fournis par l'appelant serveur.
+- ✅ Étendu `tests/events.correlation.test.ts` avec des scénarios `sources` vides, conflits non nuls et overrides mixtes pour prouver la nouvelle sémantique, puis régénéré `dist/events/correlation.js` et `dist/server.js` via `npm run build`.
+- ✅ Nettoyé l'arbre de travail (`rm -rf node_modules children` avant install), réinstallé avec `npm ci`, exécuté `npm run lint`, `npm run build`, `npm test` et restauré un état propre sans artefacts non suivis.
+- 🔜 Vérifier le reste des émetteurs job-plan (metaCritic, streams bulk/status additionnels) et ajouter une couverture `events_subscribe` pour `status`/`aggregate`/`heartbeat`; mesurer l'impact perf du resolver heartbeat sur de longues séries.
+
+### 2025-10-05 – Agent `gpt-5-codex` (iteration 126)
+- ✅ Factorisé `emitHeartbeatTick` et ajouté `stopHeartbeat` pour déclencher/arrêter les battements manuellement tout en exportant `childSupervisor` afin de préparer des scénarios de tests déterministes.
+- ✅ Ajouté le test d'intégration `tests/events.subscribe.job-correlation.test.ts` qui vérifie que `events_subscribe` renvoie bien les événements `HEARTBEAT`/`STATUS`/`AGGREGATE` corrélés (`runId/opId/graphId/nodeId`) après des invocations réelles des outils.
+- 🔜 Étendre la couverture aux flux d'événements child/job restants (ex. `logs_tail`, `plan_run_reactive`) et auditer les timers heartbeat pour supporter des cadences configurables côté orchestrateur.
+
+### 2025-10-05 – Agent `gpt-5-codex` (iteration 127)
+- ✅ Ajouté le scénario d'intégration `tests/events.subscribe.child-correlation.test.ts` pour vérifier que les outils `child_prompt` et `child_push_partial` publient des événements `PROMPT`/`PENDING`/`REPLY_PART`/`REPLY` corrélés (`runId/opId/graphId/nodeId/childId`).
+- ✅ Confirmé que le streaming `events_subscribe` filtré par `child_id` restitue la corrélation complète après configuration du bus MCP.
+- 🔜 Couvrir `logs_tail` et les flux plan (`plan_run_reactive`, fan-out) côté `events_subscribe`, puis poursuivre l'audit des émetteurs `src/executor/*` pour clôturer la case "Publier événements standardisés avec opId/runId".
+### 2025-10-05 – Agent `gpt-5-codex` (iteration 128)
+- ✅ Ajouté le test d'intégration `tests/events.subscribe.plan-correlation.test.ts` pour confirmer que `plan_run_bt` et `plan_run_reactive` publient des événements `BT_RUN` corrélés via `events_subscribe`.
+- ✅ Couvert `plan_fanout` sur le bus MCP en vérifiant les événements `PLAN` corrélés et en nettoyant les clones factices après exécution.
+- 🔜 Implémenter l'outil `logs_tail` puis ajouter la couverture `events_subscribe` associée afin de finaliser l'observabilité des logs.
+
+### 2025-10-05 – Agent `gpt-5-codex` (iteration 129)
+- ✅ Créé `src/monitor/log.ts` pour journaliser en JSONL les flux serveur/run/enfant avec corrélation `runId/opId/graphId/childId` et rotation.
+- ✅ Instrumenté `src/server.ts` afin d'enregistrer les événements dans le journal corrélé, exposé le tool MCP `logs_tail` et propagé les erreurs sans bloquer l'orchestrateur.
+- ✅ Ajouté `tests/logs.tail.filters.test.ts` pour couvrir les filtres `from_seq`, la validation d'identifiants et les entrées serveur par défaut.
+- 🔜 Étendre la couverture aux flux `events_subscribe` restants (logs tail + dashboards) et observer l'impact perf de la persistance JSONL sur des séries longues.
+
+### 2025-10-05 – Agent `gpt-5-codex` (iteration 130)
+- ✅ Normalisé `plan_dry_run` pour accepter des graphes hiérarchiques ou normalisés, générer des hints `reroute-avoid` automatiques et consigner les métriques appliquées (règles invoquées, nœuds/labels évités).
+- ✅ Ajouté des tests unitaires couvrant les prévisualisations de réécriture (split parallèle, inline subgraph, reroute) et enrichi `tests/plan.lifecycle.test.ts` avec la reprise après complétion et les erreurs `pause` sans contrôles.
+- ✅ Étendu la couverture intégration `plan_status/pause/resume` pour vérifier l'erreur `E-PLAN-COMPLETED` et documenté le comportement dans le journal MCP.
+- ✅ Permis aux appels `plan_dry_run` de fournir explicitement des listes `reroute_avoid` et noté le besoin de compléter la couverture autour des relances `plan_pause`/`resume` sur exécutions BT multi-nœuds.
+
+### 2025-10-05 – Agent `gpt-5-codex` (iteration 131)
+- ✅ Accepté un bloc `reroute_avoid` explicite dans `plan_dry_run`, fusionné avec les heuristiques et restitué les listes dans la réponse.
+- ✅ Étendu `tests/plan.dry-run.test.ts` avec un scénario pour les hints manuels et vérifié que les métriques reflètent les listes combinées.
+- 🔜 Ajouter une couverture `plan_pause`/`resume` multi-nœuds et étendre les tests `events_subscribe` pour les plans relancés.
+
+### 2025-10-05 – Agent `gpt-5-codex` (iteration 132)
+- ✅ Ajouté un scénario multi-nœuds dans `tests/plan.lifecycle.test.ts` pour couvrir `plan_pause`/`plan_resume` avec un arbre en séquence et vérifier l'exécution complète après reprise.
+- ✅ Étendu `tests/events.subscribe.plan-correlation.test.ts` afin de valider le streaming des événements `BT_RUN` (start/node/complete) après une pause puis reprise d'un plan réactif corrélé.
+- 🔜 Prolonger la couverture `events_subscribe` aux flux `PLAN`/`BT_RUN` lors de reprises multiples (pause/résume répétés) et auditer les snapshots `plan_status` pour les plans annulés afin de préparer les scénarios E2E restants.

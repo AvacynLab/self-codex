@@ -1774,6 +1774,8 @@ function normaliseDescriptor(graph: z.infer<typeof GraphDescriptorSchema>): Norm
   return descriptor;
 }
 
+export { normaliseDescriptor as normaliseGraphDescriptor };
+
 function serialiseDescriptor(descriptor: NormalisedGraph): GraphDescriptorPayload {
   return {
     name: descriptor.name,

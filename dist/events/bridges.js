@@ -1,3 +1,4 @@
+import { mergeCorrelationHints } from "./correlation.js";
 import { subscribeConsensusEvents, } from "../coord/consensus.js";
 import { subscribeCancellationEvents } from "../executor/cancel.js";
 /**
@@ -78,18 +79,30 @@ export function bridgeStigmergyEvents(options) {
 export function bridgeCancellationEvents(options) {
     const { bus, subscribe = subscribeCancellationEvents, resolveCorrelation } = options;
     const unsubscribe = subscribe((event) => {
-        const correlation = resolveCorrelation?.(event) ?? {};
+        // Seed the hints with the identifiers recorded by the cancellation registry
+        // and merge resolver outputs afterwards so sparse resolvers cannot wipe the
+        // native metadata (while still allowing deliberate overrides with `null`).
+        const hints = {
+            opId: event.opId,
+            runId: event.runId,
+            jobId: event.jobId,
+            graphId: event.graphId,
+            nodeId: event.nodeId,
+            childId: event.childId,
+        };
+        const resolved = resolveCorrelation?.(event);
+        mergeCorrelationHints(hints, resolved ?? undefined);
         const level = event.outcome === "requested" ? "info" : "warn";
         const message = event.outcome === "requested" ? "cancel_requested" : "cancel_repeat";
         bus.publish({
             cat: "cancel",
             level,
-            jobId: correlation.jobId ?? event.jobId ?? null,
-            runId: correlation.runId ?? event.runId ?? null,
-            opId: correlation.opId ?? event.opId,
-            graphId: correlation.graphId ?? event.graphId ?? null,
-            nodeId: correlation.nodeId ?? event.nodeId ?? null,
-            childId: correlation.childId ?? event.childId ?? null,
+            jobId: hints.jobId ?? null,
+            runId: hints.runId ?? null,
+            opId: hints.opId ?? event.opId,
+            graphId: hints.graphId ?? null,
+            nodeId: hints.nodeId ?? null,
+            childId: hints.childId ?? null,
             msg: message,
             data: {
                 opId: event.opId,
@@ -116,26 +129,53 @@ export function bridgeCancellationEvents(options) {
 export function bridgeChildRuntimeEvents(options) {
     const { runtime, bus, resolveCorrelation } = options;
     const handleCorrelation = (context) => {
-        return resolveCorrelation?.(context) ?? {};
+        // Always start with the runtime identifier so lifecycle publications stay
+        // correlated even when resolvers stay silent.
+        const hints = { childId: runtime.childId };
+        if (context.kind === "message") {
+            // Children frequently embed correlation hints directly in their payloads;
+            // merge them first so resolvers can still override specific fields.
+            const payload = context.message.parsed;
+            if (payload && typeof payload === "object") {
+                const embedded = {};
+                const runId = payload.runId;
+                const opId = payload.opId;
+                const jobId = payload.jobId;
+                const graphId = payload.graphId;
+                const nodeId = payload.nodeId;
+                const childId = payload.childId;
+                if (typeof runId === "string" && runId.length > 0)
+                    embedded.runId = runId;
+                if (typeof opId === "string" && opId.length > 0)
+                    embedded.opId = opId;
+                if (typeof jobId === "string" && jobId.length > 0)
+                    embedded.jobId = jobId;
+                if (typeof graphId === "string" && graphId.length > 0)
+                    embedded.graphId = graphId;
+                if (typeof nodeId === "string" && nodeId.length > 0)
+                    embedded.nodeId = nodeId;
+                if (typeof childId === "string" && childId.length > 0)
+                    embedded.childId = childId;
+                mergeCorrelationHints(hints, embedded);
+            }
+        }
+        const resolved = resolveCorrelation?.(context);
+        mergeCorrelationHints(hints, resolved ?? undefined);
+        if (hints.childId === undefined) {
+            hints.childId = runtime.childId;
+        }
+        return hints;
     };
     const messageListener = (message) => {
         const correlation = handleCorrelation({ kind: "message", runtime, message });
         const level = message.stream === "stderr" ? "warn" : "info";
-        // Promote correlation identifiers surfaced directly by the child payload
-        // so tooling receives run/op hints even when the resolver stays silent.
-        const parsed = message.parsed;
-        const jobId = correlation.jobId ?? (parsed && typeof parsed.jobId === "string" ? parsed.jobId : null);
-        const runId = correlation.runId ?? (parsed && typeof parsed.runId === "string" ? parsed.runId : null);
-        const opId = correlation.opId ?? (parsed && typeof parsed.opId === "string" ? parsed.opId : null);
-        const childId = correlation.childId ??
-            (parsed && typeof parsed.childId === "string" ? parsed.childId : runtime.childId);
         bus.publish({
             cat: "child",
             level,
-            childId,
-            jobId,
-            runId,
-            opId,
+            childId: correlation.childId ?? null,
+            jobId: correlation.jobId ?? null,
+            runId: correlation.runId ?? null,
+            opId: correlation.opId ?? null,
             graphId: correlation.graphId ?? null,
             nodeId: correlation.nodeId ?? null,
             msg: message.stream === "stderr" ? "child_stderr" : "child_stdout",
@@ -179,7 +219,7 @@ export function bridgeChildRuntimeEvents(options) {
         bus.publish({
             cat: "child",
             level,
-            childId: correlation.childId ?? runtime.childId,
+            childId: correlation.childId ?? null,
             jobId: correlation.jobId ?? null,
             runId: correlation.runId ?? null,
             opId: correlation.opId ?? null,
@@ -204,7 +244,17 @@ export function bridgeChildRuntimeEvents(options) {
 export function bridgeContractNetEvents(options) {
     const { coordinator, bus, subscribe = (listener) => coordinator.observe(listener), resolveCorrelation } = options;
     const listener = (event) => {
-        const correlation = resolveCorrelation?.(event) ?? {};
+        const correlation = {};
+        if ("correlation" in event && event.correlation) {
+            mergeCorrelationHints(correlation, event.correlation);
+        }
+        else if ("call" in event && event.call && "correlation" in event.call && event.call.correlation) {
+            mergeCorrelationHints(correlation, event.call.correlation);
+        }
+        const resolved = resolveCorrelation?.(event);
+        if (resolved) {
+            mergeCorrelationHints(correlation, resolved);
+        }
         let level = "info";
         let msg = "cnp_event";
         let data = {};
@@ -267,7 +317,13 @@ export function bridgeContractNetEvents(options) {
 export function bridgeConsensusEvents(options) {
     const { bus, subscribe = subscribeConsensusEvents, resolveCorrelation } = options;
     const dispose = subscribe((event) => {
-        const correlation = resolveCorrelation?.(event) ?? {};
+        const correlation = {
+            jobId: event.jobId ?? null,
+            runId: event.runId ?? null,
+            opId: event.opId ?? null,
+        };
+        const resolved = resolveCorrelation?.(event);
+        mergeCorrelationHints(correlation, resolved ?? undefined);
         let level = event.satisfied ? "info" : "warn";
         let msg = "consensus_decision";
         if (event.tie && !event.outcome) {
@@ -280,9 +336,9 @@ export function bridgeConsensusEvents(options) {
         bus.publish({
             cat: "consensus",
             level,
-            jobId: correlation.jobId ?? event.jobId ?? null,
-            runId: correlation.runId ?? event.runId ?? null,
-            opId: correlation.opId ?? event.opId ?? null,
+            jobId: correlation.jobId ?? null,
+            runId: correlation.runId ?? null,
+            opId: correlation.opId ?? null,
             graphId: correlation.graphId ?? null,
             nodeId: correlation.nodeId ?? null,
             childId: correlation.childId ?? null,
@@ -314,30 +370,12 @@ export function bridgeConsensusEvents(options) {
 export function bridgeValueEvents(options) {
     const { graph, bus, subscribe = (listener) => graph.subscribe(listener), resolveCorrelation, } = options;
     const listener = (event) => {
+        // Combine the hints emitted by the value graph with optional resolver
+        // outputs so tests can inject overrides without losing the original ids.
         const hints = {};
-        if (event.correlation) {
-            const { runId, opId, jobId, graphId, nodeId, childId } = event.correlation;
-            if (runId !== undefined)
-                hints.runId = runId ?? null;
-            if (opId !== undefined)
-                hints.opId = opId ?? null;
-            if (jobId !== undefined)
-                hints.jobId = jobId ?? null;
-            if (graphId !== undefined)
-                hints.graphId = graphId ?? null;
-            if (nodeId !== undefined)
-                hints.nodeId = nodeId ?? null;
-            if (childId !== undefined)
-                hints.childId = childId ?? null;
-        }
+        mergeCorrelationHints(hints, event.correlation);
         const resolved = resolveCorrelation?.(event);
-        if (resolved) {
-            for (const [key, value] of Object.entries(resolved)) {
-                if (value !== undefined) {
-                    hints[key] = value;
-                }
-            }
-        }
+        mergeCorrelationHints(hints, resolved ?? undefined);
         let level = "info";
         let msg = "values_event";
         let data = {};

@@ -14,7 +14,9 @@ export type EventKind =
   | "INFO"
   | "WARN"
   | "ERROR"
-  | "BT_RUN";
+  | "BT_RUN"
+  | "AUTOSCALER"
+  | "COGNITIVE";
 
 export type EventLevel = "info" | "warn" | "error";
 export type EventSource = "orchestrator" | "child" | "system";
