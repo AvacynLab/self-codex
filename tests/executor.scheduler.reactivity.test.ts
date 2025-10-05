@@ -1,7 +1,12 @@
 import { describe, it } from "mocha";
 import { expect } from "chai";
 
-import type { BehaviorNode, BehaviorTickResult, TickRuntime } from "../src/executor/bt/types.js";
+import type {
+  BehaviorNode,
+  BehaviorNodeSnapshot,
+  BehaviorTickResult,
+  TickRuntime,
+} from "../src/executor/bt/types.js";
 import { BehaviorTreeInterpreter } from "../src/executor/bt/interpreter.js";
 import { ReactiveScheduler } from "../src/executor/reactiveScheduler.js";
 
@@ -51,14 +56,42 @@ class ManualClock {
 class CountingNode implements BehaviorNode {
   public readonly id = "counter";
   public readonly ticks: number[] = [];
+  private status: BehaviorNodeSnapshot["status"] = "idle";
 
   async tick(runtime: TickRuntime): Promise<BehaviorTickResult> {
     this.ticks.push(runtime.now());
+    this.status = "running";
     return { status: "running" };
   }
 
   reset(): void {
-    // No internal state to reset.
+    // No internal state to reset beyond progress bookkeeping.
+    this.status = "idle";
+  }
+
+  snapshot(): BehaviorNodeSnapshot {
+    return {
+      id: this.id,
+      type: "counting-node",
+      status: this.status,
+      progress: this.getProgress() * 100,
+      state: { tickCount: this.ticks.length },
+    } satisfies BehaviorNodeSnapshot;
+  }
+
+  restore(snapshot: BehaviorNodeSnapshot): void {
+    if (snapshot.type !== "counting-node") {
+      throw new Error(`expected counting-node snapshot for ${this.id}, received ${snapshot.type}`);
+    }
+    this.status = snapshot.status;
+    // Restore the recorded tick count so getProgress remains consistent with the snapshot.
+    const state = snapshot.state as { tickCount?: number } | undefined;
+    const restoredCount = typeof state?.tickCount === "number" ? state.tickCount : 0;
+    this.ticks.length = restoredCount;
+  }
+
+  getProgress(): number {
+    return this.status === "running" ? 0.5 : this.status === "idle" ? 0 : 1;
   }
 }
 

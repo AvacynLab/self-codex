@@ -11,13 +11,27 @@ import {
   ContractNetBidSnapshot,
   ContractNetCallSnapshot,
   ContractNetCoordinator,
+  ContractNetPheromoneBounds,
   type ContractNetCorrelationContext,
 } from "../coord/contractNet.js";
+import type {
+  ContractNetWatcherTelemetryRecorder,
+  ContractNetWatcherTelemetrySnapshot,
+  ContractNetWatcherTelemetryState,
+} from "../coord/contractNetWatchers.js";
 import {
   StigmergyField,
   StigmergyFieldSnapshot,
+  StigmergyHeatmapCell,
+  StigmergyHeatmapPoint,
+  StigmergyHeatmapSnapshot,
   StigmergyPointSnapshot,
   StigmergyTotalSnapshot,
+  buildStigmergySummary,
+  formatPheromoneBoundsTooltip,
+  normalisePheromoneBoundsForTelemetry,
+  type NormalisedPheromoneBounds,
+  type StigmergySummary,
 } from "../coord/stigmergy.js";
 import { StructuredLogger } from "../logger.js";
 import {
@@ -62,6 +76,11 @@ export interface CoordinationToolContext {
   logger: StructuredLogger;
   /** Optional idempotency registry replaying cached coordination results. */
   idempotency?: IdempotencyRegistry;
+  /**
+   * Optional telemetry recorder capturing Contract-Net watcher counters. When
+   * present, `cnp_watcher_telemetry` exposes the latest snapshot to MCP clients.
+   */
+  contractNetWatcherTelemetry?: ContractNetWatcherTelemetryRecorder;
 }
 
 /** Schema validating the payload accepted by the `bb_set` tool. */
@@ -224,6 +243,25 @@ export const CnpAnnounceInputSchema = z
   .strict();
 export const CnpAnnounceInputShape = CnpAnnounceInputSchema.shape;
 
+/** Schema validating the payload accepted by the `cnp_refresh_bounds` tool. */
+const CnpPheromoneBoundsSchema = z
+  .object({
+    min_intensity: z.number(),
+    max_intensity: z.number().nullable(),
+    normalisation_ceiling: z.number(),
+  })
+  .strict();
+
+export const CnpRefreshBoundsInputSchema = z
+  .object({
+    call_id: z.string().min(1, "call_id must not be empty"),
+    bounds: CnpPheromoneBoundsSchema.optional(),
+    refresh_auto_bids: z.boolean().optional(),
+    include_new_agents: z.boolean().optional(),
+  })
+  .strict();
+export const CnpRefreshBoundsInputShape = CnpRefreshBoundsInputSchema.shape;
+
 /** Result returned by {@link handleBbSet}. */
 export interface BbSetResult extends SerializedBlackboardEntry {}
 
@@ -247,6 +285,39 @@ export interface BbQueryResult extends Record<string, unknown> {
 export interface BbWatchResult extends Record<string, unknown> {
   events: SerializedBlackboardEvent[];
   next_version: number;
+}
+
+/** Result returned by {@link handleCnpRefreshBounds}. */
+export interface CnpRefreshBoundsResult extends Record<string, unknown> {
+  call_id: string;
+  auto_bid_refreshed: boolean;
+  refreshed_agents: string[];
+  pheromone_bounds: ContractNetPheromoneBounds | null;
+  refresh: {
+    requested: boolean;
+    include_new_agents: boolean;
+  };
+}
+
+/** Schema validating the payload accepted by the `cnp_watcher_telemetry` tool. */
+export const CnpWatcherTelemetryInputSchema = z.object({}).strict();
+export const CnpWatcherTelemetryInputShape = CnpWatcherTelemetryInputSchema.shape;
+
+/** Result returned by {@link handleCnpWatcherTelemetry}. */
+export interface CnpWatcherTelemetryResult extends Record<string, unknown> {
+  telemetry_enabled: boolean;
+  emissions: number;
+  last_emitted_at_ms: number | null;
+  last_emitted_at_iso: string | null;
+  last_snapshot: null | {
+    reason: ContractNetWatcherTelemetrySnapshot["reason"];
+    received_updates: number;
+    coalesced_updates: number;
+    skipped_refreshes: number;
+    applied_refreshes: number;
+    flushes: number;
+    last_bounds: ContractNetPheromoneBounds | null;
+  };
 }
 
 interface SerializedBlackboardEntry extends Record<string, unknown> {
@@ -308,6 +379,44 @@ export interface StigSnapshotResult extends Record<string, unknown> {
   generated_at: number;
   points: SerializedStigmergyPoint[];
   totals: SerializedStigmergyTotal[];
+  heatmap: SerializedStigmergyHeatmap;
+  pheromone_bounds: NormalisedPheromoneBounds | null;
+  summary: SerializedStigmergySummary;
+}
+
+interface SerializedStigmergyHeatmapPoint extends Record<string, unknown> {
+  type: string;
+  intensity: number;
+  normalised: number;
+  updated_at: number;
+}
+
+interface SerializedStigmergyHeatmapCell extends Record<string, unknown> {
+  node_id: string;
+  total_intensity: number;
+  normalised: number;
+  updated_at: number;
+  points: SerializedStigmergyHeatmapPoint[];
+}
+
+interface SerializedStigmergyHeatmap extends Record<string, unknown> {
+  min_intensity: number;
+  max_intensity: number;
+  cells: SerializedStigmergyHeatmapCell[];
+  bounds: NormalisedPheromoneBounds | null;
+  bounds_tooltip: string | null;
+}
+
+interface SerializedStigmergySummaryRow extends Record<string, unknown> {
+  label: string;
+  value: string;
+  tooltip: string | null;
+}
+
+interface SerializedStigmergySummary extends Record<string, unknown> {
+  bounds: NormalisedPheromoneBounds | null;
+  rows: SerializedStigmergySummaryRow[];
+  tooltip: string | null;
 }
 
 /** Result returned by {@link handleConsensusVote}. */
@@ -352,6 +461,8 @@ export interface CnpAnnounceResult extends Record<string, unknown> {
   awarded_effective_cost: number;
   bids: SerializedContractNetBid[];
   heuristics: SerializedContractNetHeuristics;
+  pheromone_bounds: ContractNetPheromoneBounds | null;
+  auto_bid_enabled: boolean;
   correlation: ContractNetCorrelationContext | null;
   idempotent: boolean;
   idempotency_key: string | null;
@@ -560,11 +671,16 @@ export function handleStigSnapshot(
   _input: z.infer<typeof StigSnapshotInputSchema>,
 ): StigSnapshotResult {
   const snapshot = context.stigmergy.fieldSnapshot();
+  const heatmap = context.stigmergy.heatmapSnapshot();
+  const bounds = normalisePheromoneBoundsForTelemetry(context.stigmergy.getIntensityBounds());
+  const summary = buildStigmergySummary(bounds);
+  const boundsTooltip = formatPheromoneBoundsTooltip(bounds);
   context.logger.info("stig_snapshot", {
     points: snapshot.points.length,
     totals: snapshot.totals.length,
+    heatmap_cells: heatmap.cells.length,
   });
-  return serialiseFieldSnapshot(snapshot);
+  return serialiseFieldSnapshot(snapshot, heatmap, summary, boundsTooltip);
 }
 
 function serialisePoint(snapshot: StigmergyPointSnapshot): SerializedStigmergyPoint {
@@ -584,11 +700,64 @@ function serialiseTotal(total: StigmergyTotalSnapshot): SerializedStigmergyTotal
   };
 }
 
-function serialiseFieldSnapshot(snapshot: StigmergyFieldSnapshot): StigSnapshotResult {
+function serialiseFieldSnapshot(
+  snapshot: StigmergyFieldSnapshot,
+  heatmap: StigmergyHeatmapSnapshot,
+  summary: StigmergySummary,
+  boundsTooltip: string | null,
+): StigSnapshotResult {
   return {
     generated_at: snapshot.generatedAt,
     points: snapshot.points.map(serialisePoint),
     totals: snapshot.totals.map(serialiseTotal),
+    heatmap: serialiseHeatmap(heatmap, summary.bounds, boundsTooltip),
+    pheromone_bounds: summary.bounds,
+    summary: serialiseSummary(summary, boundsTooltip),
+  };
+}
+
+function serialiseHeatmap(
+  heatmap: StigmergyHeatmapSnapshot,
+  bounds: NormalisedPheromoneBounds | null,
+  tooltip: string | null,
+): SerializedStigmergyHeatmap {
+  return {
+    min_intensity: Number(heatmap.minIntensity.toFixed(6)),
+    max_intensity: Number(heatmap.maxIntensity.toFixed(6)),
+    cells: heatmap.cells.map(serialiseHeatmapCell),
+    bounds,
+    bounds_tooltip: tooltip,
+  };
+}
+
+function serialiseSummary(summary: StigmergySummary, tooltip: string | null): SerializedStigmergySummary {
+  return {
+    bounds: summary.bounds,
+    rows: summary.rows.map((row) => ({
+      label: row.label,
+      value: row.value,
+      tooltip: row.tooltip ?? null,
+    })),
+    tooltip,
+  };
+}
+
+function serialiseHeatmapCell(cell: StigmergyHeatmapCell): SerializedStigmergyHeatmapCell {
+  return {
+    node_id: cell.nodeId,
+    total_intensity: Number(cell.totalIntensity.toFixed(6)),
+    normalised: Number(cell.normalised.toFixed(6)),
+    updated_at: cell.updatedAt,
+    points: cell.points.map(serialiseHeatmapPoint),
+  };
+}
+
+function serialiseHeatmapPoint(point: StigmergyHeatmapPoint): SerializedStigmergyHeatmapPoint {
+  return {
+    type: point.type,
+    intensity: Number(point.intensity.toFixed(6)),
+    normalised: Number(point.normalised.toFixed(6)),
+    updated_at: point.updatedAt,
   };
 }
 
@@ -598,6 +767,15 @@ export function handleCnpAnnounce(
   input: z.infer<typeof CnpAnnounceInputSchema>,
 ): CnpAnnounceResult {
   const execute = (): Omit<CnpAnnounceResult, "idempotent" | "idempotency_key"> => {
+    // Capture the current pheromone bounds before announcing the task so the
+    // resulting snapshot and events mirror the scheduler telemetry. Consumers
+    // (autoscaler UI, Contract-Net heuristics) rely on the ceiling to scale
+    // their decisions consistently even when the stigmergic field evolves
+    // between retries.
+    const pheromoneBounds = normalisePheromoneBoundsForTelemetry(
+      context.stigmergy.getIntensityBounds(),
+    ) as ContractNetPheromoneBounds | null;
+
     // Propagate orchestration identifiers so downstream event streams carry
     // run/op hints without relying on out-of-band resolvers.
     const correlation = {
@@ -622,6 +800,7 @@ export function handleCnpAnnounce(
         preferenceBonus: input.heuristics?.preference_bonus,
       },
       correlation,
+      pheromoneBounds,
     });
 
     if (input.manual_bids) {
@@ -665,6 +844,110 @@ export function handleCnpAnnounce(
 
   const snapshot = execute();
   return { ...snapshot, idempotent: false, idempotency_key: key } as CnpAnnounceResult;
+}
+
+/**
+ * Refreshes the pheromone bounds captured for an existing Contract-Net call.
+ * When callers omit explicit bounds, the helper samples the current
+ * stigmergic field so the coordinator stays aligned with the latest ceiling
+ * before reissuing heuristic bids.
+ */
+export function handleCnpRefreshBounds(
+  context: CoordinationToolContext,
+  input: z.infer<typeof CnpRefreshBoundsInputSchema>,
+): CnpRefreshBoundsResult {
+  const parsed = CnpRefreshBoundsInputSchema.parse(input);
+
+  const requestedBounds = parsed.bounds
+    ? {
+        min_intensity: parsed.bounds.min_intensity,
+        max_intensity: parsed.bounds.max_intensity ?? null,
+        normalisation_ceiling: parsed.bounds.normalisation_ceiling,
+      }
+    : (normalisePheromoneBoundsForTelemetry(context.stigmergy.getIntensityBounds()) as
+        | ContractNetPheromoneBounds
+        | null);
+
+  const options = {
+    refreshAutoBids: parsed.refresh_auto_bids,
+    includeNewAgents: parsed.include_new_agents,
+  };
+
+  const snapshot = context.contractNet.updateCallPheromoneBounds(
+    parsed.call_id,
+    requestedBounds ?? null,
+    options,
+  );
+
+  const refreshRequested = parsed.refresh_auto_bids !== false;
+  const includeNewAgents = parsed.include_new_agents ?? true;
+
+  const result: CnpRefreshBoundsResult = {
+    call_id: snapshot.callId,
+    auto_bid_refreshed: snapshot.autoBidRefreshed,
+    refreshed_agents: [...snapshot.refreshedAgents],
+    pheromone_bounds: snapshot.pheromoneBounds,
+    refresh: {
+      requested: refreshRequested,
+      include_new_agents: includeNewAgents,
+    },
+  };
+
+  context.logger.info("cnp_refresh_bounds", {
+    call_id: result.call_id,
+    auto_bid_refreshed: result.auto_bid_refreshed,
+    refreshed_agents: result.refreshed_agents.length,
+    refresh_requested: result.refresh.requested,
+    include_new_agents: result.refresh.include_new_agents,
+  });
+
+  return result;
+}
+
+/**
+ * Exposes the latest telemetry collected by the Contract-Net bounds watcher so
+ * MCP clients can observe coalescing efficiency and refresh cadence.
+ */
+export function handleCnpWatcherTelemetry(
+  context: CoordinationToolContext,
+  input: z.infer<typeof CnpWatcherTelemetryInputSchema>,
+): CnpWatcherTelemetryResult {
+  CnpWatcherTelemetryInputSchema.parse(input);
+  const recorder = context.contractNetWatcherTelemetry;
+  if (!recorder) {
+    return {
+      telemetry_enabled: false,
+      emissions: 0,
+      last_emitted_at_ms: null,
+      last_emitted_at_iso: null,
+      last_snapshot: null,
+    };
+  }
+
+  const state: ContractNetWatcherTelemetryState = recorder.snapshot();
+  const lastSnapshot = state.lastSnapshot
+    ? {
+        reason: state.lastSnapshot.reason,
+        received_updates: state.lastSnapshot.receivedUpdates,
+        coalesced_updates: state.lastSnapshot.coalescedUpdates,
+        skipped_refreshes: state.lastSnapshot.skippedRefreshes,
+        applied_refreshes: state.lastSnapshot.appliedRefreshes,
+        flushes: state.lastSnapshot.flushes,
+        last_bounds: state.lastSnapshot.lastBounds
+          ? { ...state.lastSnapshot.lastBounds }
+          : null,
+      }
+    : null;
+
+  const lastEmittedAtIso = state.lastEmittedAtMs === null ? null : new Date(state.lastEmittedAtMs).toISOString();
+
+  return {
+    telemetry_enabled: true,
+    emissions: state.emissions,
+    last_emitted_at_ms: state.lastEmittedAtMs,
+    last_emitted_at_iso: lastEmittedAtIso,
+    last_snapshot: lastSnapshot,
+  };
 }
 
 /**
@@ -764,6 +1047,8 @@ function serialiseContractNetResult(
     awarded_effective_cost: decision.effectiveCost,
     bids: snapshot.bids.map(serialiseContractNetBid),
     heuristics: serialiseContractNetHeuristics(snapshot),
+    pheromone_bounds: snapshot.pheromoneBounds,
+    auto_bid_enabled: snapshot.autoBidEnabled,
     correlation: snapshot.correlation,
   };
 }

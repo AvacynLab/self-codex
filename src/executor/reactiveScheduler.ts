@@ -10,11 +10,22 @@ import type {
   ToolInvoker,
 } from "./bt/types.js";
 
+/** Structured bounds describing pheromone intensity limits. */
+export interface PheromoneBounds {
+  /** Lower clamp applied to pheromone intensities. */
+  minIntensity: number;
+  /** Upper clamp applied to pheromone intensities (Infinity when unbounded). */
+  maxIntensity: number;
+  /** Effective normalisation ceiling observed in the field. */
+  normalisationCeiling: number;
+}
+
 /** Payload emitted when a task node becomes ready to execute. */
 export interface TaskReadyEvent {
   nodeId: string;
   criticality?: number;
   pheromone?: number;
+  pheromoneBounds?: PheromoneBounds;
 }
 
 /** Payload emitted once a task finished running. */
@@ -35,6 +46,7 @@ export interface StigmergyChangedEvent {
   nodeId: string;
   intensity: number;
   type?: string;
+  bounds?: PheromoneBounds;
 }
 
 /** Mapping of every event name handled by the reactive scheduler. */
@@ -102,6 +114,12 @@ export interface SchedulerTickTrace<E extends SchedulerEventName = SchedulerEven
   finishedAt: number;
   result: BehaviorTickResult;
   pendingAfter: number;
+  /** Monotonic batch identifier incremented every time the scheduler yields. */
+  batchIndex: number;
+  /** Number of ticks processed in the current batch so far (1-indexed). */
+  ticksInBatch: number;
+  /** Wall-clock duration spent in the current batch before this tick finished. */
+  batchElapsedMs: number;
 }
 
 /** Options accepted by the {@link ReactiveScheduler} constructor. */
@@ -111,12 +129,19 @@ export interface ReactiveSchedulerOptions {
   eventBus?: ReactiveEventBus;
   now?: () => number;
   ageWeight?: number;
+  agingHalfLifeMs?: number;
+  agingFairnessBoost?: number;
   basePriorities?: Partial<Record<SchedulerEventName, number>>;
   onTick?: (trace: SchedulerTickTrace) => void;
   getPheromoneIntensity?: (nodeId: string) => number;
+  getPheromoneBounds?: () => PheromoneBounds | null | undefined;
   causalMemory?: CausalMemory;
   /** Optional cancellation handle propagated from the orchestrator. */
   cancellation?: CancellationHandle;
+  /** Maximum wall-clock duration processed synchronously before yielding. */
+  batchQuantumMs?: number;
+  /** Hard limit on the number of ticks processed per batch before yielding. */
+  maxBatchTicks?: number;
 }
 
 /** Default base priority assigned to each event type. */
@@ -126,6 +151,11 @@ const DEFAULT_BASE_PRIORITIES: Record<SchedulerEventName, number> = {
   blackboardChanged: 55,
   stigmergyChanged: 45,
 };
+
+const DEFAULT_AGING_HALF_LIFE_MS = 3000;
+const DEFAULT_AGING_FAIRNESS_BOOST = 35;
+const DEFAULT_BATCH_QUANTUM_MS = 24;
+const DEFAULT_MAX_BATCH_TICKS = 12;
 
 /**
  * Reactive scheduler driving the Behaviour Tree interpreter whenever external
@@ -140,11 +170,16 @@ export class ReactiveScheduler {
   private readonly runtime: Partial<TickRuntime> & { invokeTool: ToolInvoker };
   private readonly now: () => number;
   private readonly ageWeight: number;
+  private readonly agingHalfLifeMs: number;
+  private readonly agingFairnessBoost: number;
   private readonly basePriorities: Record<SchedulerEventName, number>;
   private readonly onTick?: (trace: SchedulerTickTrace) => void;
   private readonly getPheromoneIntensity?: (nodeId: string) => number;
+  private readonly getPheromoneBounds?: () => PheromoneBounds | null | undefined;
   private readonly causalMemory?: CausalMemory;
   private readonly cancellation?: CancellationHandle;
+  private readonly batchQuantumMs: number;
+  private readonly maxBatchTicks: number;
 
   private readonly queue: ScheduledTick[] = [];
   private processing = false;
@@ -153,6 +188,7 @@ export class ReactiveScheduler {
   private sequence = 0;
   private tickCountInternal = 0;
   private lastResult: BehaviorTickResult = { status: "running" };
+  private batchSequence = 0;
   private settleResolvers: Array<{
     resolve: (result: BehaviorTickResult) => void;
     reject: (error: unknown) => void;
@@ -160,6 +196,7 @@ export class ReactiveScheduler {
   private lastTickResultEventId: string | null = null;
   private currentTickEventId: string | null = null;
   private cancellationSubscription: (() => void) | null = null;
+  private currentPheromoneBounds: PheromoneBounds | null = null;
 
   private readonly taskReadyHandler = (payload: TaskReadyEvent) => {
     this.enqueue("taskReady", payload);
@@ -180,14 +217,19 @@ export class ReactiveScheduler {
     this.events = options.eventBus ?? new ReactiveEventBus();
     this.now = options.now ?? (() => Date.now());
     this.ageWeight = options.ageWeight ?? 0.01;
+    this.agingHalfLifeMs = Math.max(1, options.agingHalfLifeMs ?? DEFAULT_AGING_HALF_LIFE_MS);
+    this.agingFairnessBoost = Math.max(0, options.agingFairnessBoost ?? DEFAULT_AGING_FAIRNESS_BOOST);
     this.basePriorities = {
       ...DEFAULT_BASE_PRIORITIES,
       ...(options.basePriorities ?? {}),
     };
     this.onTick = options.onTick;
     this.getPheromoneIntensity = options.getPheromoneIntensity;
+    this.getPheromoneBounds = options.getPheromoneBounds;
     this.causalMemory = options.causalMemory;
     this.cancellation = options.cancellation;
+    this.batchQuantumMs = Math.max(0, options.batchQuantumMs ?? DEFAULT_BATCH_QUANTUM_MS);
+    this.maxBatchTicks = Math.max(1, options.maxBatchTicks ?? DEFAULT_MAX_BATCH_TICKS);
 
     this.events.on("taskReady", this.taskReadyHandler);
     this.events.on("taskDone", this.taskDoneHandler);
@@ -270,12 +312,28 @@ export class ReactiveScheduler {
       if (ready.pheromone === undefined && this.getPheromoneIntensity) {
         ready.pheromone = this.getPheromoneIntensity(ready.nodeId);
       }
+      if (ready.pheromoneBounds) {
+        this.currentPheromoneBounds = { ...ready.pheromoneBounds };
+      } else {
+        const bounds = this.capturePheromoneBounds();
+        if (bounds) {
+          ready.pheromoneBounds = bounds;
+        }
+      }
     }
     if (event === "stigmergyChanged") {
       const change = payload as StigmergyChangedEvent;
       const total = this.getPheromoneIntensity?.(change.nodeId);
       if (total !== undefined) {
         change.intensity = total;
+      }
+      if (change.bounds) {
+        this.currentPheromoneBounds = { ...change.bounds };
+      } else {
+        const bounds = this.capturePheromoneBounds();
+        if (bounds) {
+          change.bounds = bounds;
+        }
       }
       this.rebalancePheromone(change.nodeId, change.intensity ?? 0);
     }
@@ -314,6 +372,12 @@ export class ReactiveScheduler {
       return;
     }
     this.processing = true;
+    const batchIndex = this.batchSequence;
+    const batchStart = this.now();
+    let ticksInBatch = 0;
+    let batchElapsed = 0;
+    let shouldYield = false;
+
     try {
       while (!this.stopped && this.queue.length > 0) {
         this.ensureNotCancelled();
@@ -339,6 +403,8 @@ export class ReactiveScheduler {
 
         const priority = this.computeEffectivePriority(next, startedAt);
         const pendingAfter = this.queue.length;
+        ticksInBatch += 1;
+        batchElapsed = finishedAt - batchStart;
         this.onTick?.({
           event: next.event,
           payload: next.payload,
@@ -348,6 +414,9 @@ export class ReactiveScheduler {
           finishedAt,
           result,
           pendingAfter,
+          batchIndex,
+          ticksInBatch,
+          batchElapsedMs: batchElapsed,
         });
 
         const tickResultId = this.recordCausalEvent(
@@ -367,18 +436,32 @@ export class ReactiveScheduler {
         this.currentTickEventId = null;
 
         if (result.status !== "running") {
+          this.batchSequence = batchIndex + 1;
           this.stop();
           this.resolveSettlers(result);
           return;
+        }
+
+        if (this.shouldYieldBatch(batchElapsed, ticksInBatch) && this.queue.length > 0) {
+          shouldYield = true;
+          break;
         }
       }
     } catch (error) {
       this.currentTickEventId = null;
       this.stop();
       this.rejectSettlers(error);
+      this.batchSequence = batchIndex + 1;
       throw error;
     } finally {
       this.processing = false;
+    }
+
+    this.batchSequence = batchIndex + 1;
+
+    if (shouldYield && !this.stopped) {
+      this.scheduleProcessing();
+      return;
     }
 
     if (this.queue.length > 0) {
@@ -420,6 +503,14 @@ export class ReactiveScheduler {
         if (readyPayload.pheromone === undefined && this.getPheromoneIntensity) {
           readyPayload.pheromone = this.getPheromoneIntensity(readyPayload.nodeId);
         }
+        if (readyPayload.pheromoneBounds) {
+          this.currentPheromoneBounds = { ...readyPayload.pheromoneBounds };
+        } else {
+          const bounds = this.capturePheromoneBounds();
+          if (bounds) {
+            readyPayload.pheromoneBounds = bounds;
+          }
+        }
         const { criticality = 0 } = readyPayload;
         const pheromone = readyPayload.pheromone ?? 0;
         return base + criticality * 10 + pheromone;
@@ -445,6 +536,7 @@ export class ReactiveScheduler {
   }
 
   private rebalancePheromone(nodeId: string, intensity: number): void {
+    const boundsSnapshot = this.capturePheromoneBounds();
     for (const entry of this.queue) {
       if (entry.event !== "taskReady") {
         continue;
@@ -454,8 +546,43 @@ export class ReactiveScheduler {
         continue;
       }
       ready.pheromone = intensity;
+      if (boundsSnapshot) {
+        ready.pheromoneBounds = { ...boundsSnapshot };
+      } else {
+        delete ready.pheromoneBounds;
+      }
       entry.basePriority = this.computeBasePriority("taskReady", ready);
     }
+  }
+
+  private capturePheromoneBounds(): PheromoneBounds | null {
+    if (!this.getPheromoneBounds) {
+      return this.currentPheromoneBounds ? { ...this.currentPheromoneBounds } : null;
+    }
+    try {
+      const snapshot = this.getPheromoneBounds();
+      if (!snapshot) {
+        this.currentPheromoneBounds = null;
+        return null;
+      }
+      this.currentPheromoneBounds = { ...snapshot };
+    } catch {
+      // Preserve the last known bounds when the provider fails.
+    }
+    return this.currentPheromoneBounds ? { ...this.currentPheromoneBounds } : null;
+  }
+
+  private serialisePheromoneBounds(
+    bounds: PheromoneBounds | null | undefined,
+  ): { min_intensity: number; max_intensity: number | null; normalisation_ceiling: number } | null {
+    if (!bounds) {
+      return null;
+    }
+    return {
+      min_intensity: bounds.minIntensity,
+      max_intensity: Number.isFinite(bounds.maxIntensity) ? bounds.maxIntensity : null,
+      normalisation_ceiling: bounds.normalisationCeiling,
+    };
   }
 
   private selectNextIndex(now: number): number {
@@ -478,7 +605,22 @@ export class ReactiveScheduler {
 
   private computeEffectivePriority(entry: ScheduledTick, now: number): number {
     const age = Math.max(0, now - entry.enqueuedAt);
-    return entry.basePriority + age * this.ageWeight;
+    if (age === 0) {
+      return entry.basePriority;
+    }
+    const linearBoost = age * this.ageWeight;
+    const fairnessBoost = this.agingFairnessBoost * Math.log1p(age / this.agingHalfLifeMs);
+    return entry.basePriority + linearBoost + fairnessBoost;
+  }
+
+  private shouldYieldBatch(batchElapsed: number, ticksInBatch: number): boolean {
+    if (this.batchQuantumMs === 0 && this.maxBatchTicks === Number.POSITIVE_INFINITY) {
+      return false;
+    }
+    if (this.batchQuantumMs > 0 && batchElapsed >= this.batchQuantumMs) {
+      return true;
+    }
+    return ticksInBatch >= this.maxBatchTicks;
   }
 
   private recordCausalEvent(type: string, data: Record<string, unknown>, causes: string[]): string | null {
@@ -510,10 +652,12 @@ export class ReactiveScheduler {
     switch (event) {
       case "taskReady": {
         const ready = payload as TaskReadyEvent;
+        const bounds = ready.pheromoneBounds ?? this.capturePheromoneBounds();
         return {
           node_id: ready.nodeId,
           criticality: ready.criticality ?? null,
           pheromone: ready.pheromone ?? null,
+          pheromone_bounds: this.serialisePheromoneBounds(bounds),
         };
       }
       case "taskDone": {
@@ -537,6 +681,7 @@ export class ReactiveScheduler {
           node_id: change.nodeId,
           intensity: change.intensity ?? null,
           type: change.type ?? null,
+          bounds: this.serialisePheromoneBounds(change.bounds ?? this.capturePheromoneBounds()),
         };
       }
       default:

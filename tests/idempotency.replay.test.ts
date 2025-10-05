@@ -23,6 +23,12 @@ import { GraphTransactionManager } from "../src/graph/tx.js";
 import { ResourceRegistry } from "../src/resources/registry.js";
 import { GraphLockManager } from "../src/graph/locks.js";
 import type { StructuredLogger } from "../src/logger.js";
+import {
+  GraphBatchMutateInputSchema,
+  handleGraphBatchMutate,
+  type GraphBatchToolContext,
+} from "../src/tools/graphBatchTools.js";
+import { normaliseGraphPayload, type GraphDescriptorPayload } from "../src/tools/graphTools.js";
 
 function createLoggerSpy(): StructuredLogger {
   return {
@@ -214,9 +220,78 @@ describe("idempotency cache integrations", () => {
     expect(first.idempotent).to.equal(false);
     expect(second.idempotent).to.equal(true);
     expect(second.call_id).to.equal(first.call_id);
+    expect(first.pheromone_bounds).to.deep.equal(second.pheromone_bounds);
     expect(announceSpy.calledOnce).to.equal(true);
     expect(bidSpy.calledOnce).to.equal(true);
     expect(logger.info.calledWithMatch("cnp_announce_replayed", { idempotency_key: "auction-1" })).to.equal(true);
+  });
+
+  it("replays graph_batch_mutate updates when the idempotency key matches", async () => {
+    const registry = new IdempotencyRegistry({ defaultTtlMs: 1_500, clock: () => clock.now });
+    const transactions = new GraphTransactionManager();
+    const locks = new GraphLockManager(() => clock.now);
+    const resources = new ResourceRegistry({ blackboard: new BlackboardStore({ now: () => clock.now }) });
+
+    // Seed the transaction manager with a committed descriptor so batch mutations
+    // operate on a realistic baseline before exercising the idempotency logic.
+    const baseDescriptor: GraphDescriptorPayload = {
+      name: "graph-batch-idempotent",
+      graph_id: "graph-batch-idempotent",
+      graph_version: 1,
+      nodes: [
+        { id: "alpha", label: "Alpha", attributes: {} },
+        { id: "beta", label: "Beta", attributes: {} },
+      ],
+      edges: [
+        { from: "alpha", to: "beta", label: "edge", attributes: {} },
+      ],
+      metadata: {},
+    };
+    const baseline = normaliseGraphPayload(baseDescriptor);
+    const seedTx = transactions.begin(baseline);
+    transactions.commit(seedTx.txId, baseline);
+    resources.recordGraphVersion({
+      graphId: baseline.graphId,
+      version: baseline.graphVersion,
+      committedAt: clock.now,
+      graph: baseline,
+    });
+
+    const context: GraphBatchToolContext = {
+      transactions,
+      resources,
+      locks,
+      idempotency: registry,
+    };
+    const beginSpy = sinon.spy(transactions, "begin");
+    const commitSpy = sinon.spy(transactions, "commit");
+
+    const input = GraphBatchMutateInputSchema.parse({
+      graph_id: baseline.graphId,
+      operations: [
+        { op: "set_node_attribute", id: "alpha", key: "owner", value: "analysis" },
+        { op: "set_edge_attribute", from: "alpha", to: "beta", key: "weight", value: 3 },
+      ],
+      note: "seed attributes",
+      idempotency_key: "graph-batch-1",
+    });
+
+    const first = await handleGraphBatchMutate(context, input);
+    const second = await handleGraphBatchMutate(context, input);
+
+    expect(first.idempotent).to.equal(false);
+    expect(first.idempotency_key).to.equal("graph-batch-1");
+    expect(second.idempotent).to.equal(true);
+    expect(beginSpy.calledOnce).to.equal(true);
+    expect(commitSpy.calledOnce).to.equal(true);
+
+    // Once the TTL elapses, the cached snapshot expires and the mutation runs
+    // again, producing a fresh snapshot and incrementing the commit counter.
+    clock.tick(1_501);
+    const third = await handleGraphBatchMutate(context, input);
+    expect(third.idempotent).to.equal(false);
+    expect(commitSpy.callCount).to.equal(2);
+    expect(beginSpy.callCount).to.equal(2);
   });
 
   it("returns the same transaction descriptor when tx_begin retries", () => {

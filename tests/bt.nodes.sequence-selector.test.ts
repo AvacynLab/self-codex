@@ -1,7 +1,12 @@
 import { describe, it } from "mocha";
 import { expect } from "chai";
 
-import type { BehaviorNode, BehaviorTickResult, TickRuntime } from "../src/executor/bt/types.js";
+import type {
+  BehaviorNode,
+  BehaviorNodeSnapshot,
+  BehaviorTickResult,
+  TickRuntime,
+} from "../src/executor/bt/types.js";
 import { ParallelNode, SelectorNode, SequenceNode } from "../src/executor/bt/nodes.js";
 
 /**
@@ -10,6 +15,8 @@ import { ParallelNode, SelectorNode, SequenceNode } from "../src/executor/bt/nod
  */
 class StubNode implements BehaviorNode {
   private cursor = 0;
+  private ticks = 0;
+  private status: BehaviorNodeSnapshot["status"] = "idle";
 
   constructor(
     public readonly id: string,
@@ -21,11 +28,42 @@ class StubNode implements BehaviorNode {
     if (this.cursor < this.results.length - 1) {
       this.cursor += 1;
     }
+    this.ticks = Math.min(this.ticks + 1, this.results.length);
+    this.status = result.status === "running" ? "running" : result.status;
     return result;
   }
 
   reset(): void {
     this.cursor = 0;
+    this.ticks = 0;
+    this.status = "idle";
+  }
+
+  snapshot(): BehaviorNodeSnapshot {
+    return {
+      id: this.id,
+      type: "stub-node",
+      status: this.status,
+      progress: this.getProgress() * 100,
+      state: { cursor: this.cursor, ticks: this.ticks },
+    } satisfies BehaviorNodeSnapshot;
+  }
+
+  restore(snapshot: BehaviorNodeSnapshot): void {
+    if (snapshot.type !== "stub-node") {
+      throw new Error(`expected stub-node snapshot for ${this.id}, received ${snapshot.type}`);
+    }
+    const state = snapshot.state as { cursor?: number; ticks?: number } | undefined;
+    this.cursor = typeof state?.cursor === "number" ? state.cursor : 0;
+    this.ticks = typeof state?.ticks === "number" ? state.ticks : 0;
+    this.status = snapshot.status;
+  }
+
+  getProgress(): number {
+    if (this.results.length === 0) {
+      return 1;
+    }
+    return Math.min(this.ticks, this.results.length) / this.results.length;
   }
 }
 

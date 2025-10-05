@@ -16,7 +16,12 @@ import {
   type CompiledBehaviorTree,
   type TickRuntime,
 } from "../executor/bt/types.js";
-import { ReactiveScheduler } from "../executor/reactiveScheduler.js";
+import {
+  ReactiveScheduler,
+  type PheromoneBounds,
+  type SchedulerEventMap,
+  type SchedulerEventName,
+} from "../executor/reactiveScheduler.js";
 import { ExecutionLoop } from "../executor/loop.js";
 import {
   PlanLifecycleFeatureDisabledError,
@@ -37,7 +42,7 @@ import {
   type ConsensusDecision,
   type ConsensusVote,
 } from "../coord/consensus.js";
-import { StigmergyField } from "../coord/stigmergy.js";
+import { StigmergyField, type StigmergyIntensityBounds } from "../coord/stigmergy.js";
 import { BlackboardStore, type BlackboardEvent, type BlackboardEntrySnapshot } from "../coord/blackboard.js";
 import type { CausalMemory } from "../knowledge/causalMemory.js";
 import type {
@@ -74,6 +79,7 @@ import {
   type CancellationHandle,
   OperationCancelledError,
 } from "../executor/cancel.js";
+import { BehaviorTreeCancellationError } from "../executor/bt/nodes.js";
 import { GraphDescriptorSchema, normaliseGraphDescriptor } from "./graphTools.js";
 
 /**
@@ -116,6 +122,27 @@ function requireBlackboard(context: PlanToolContext): BlackboardStore {
     throw new BlackboardFeatureDisabledError();
   }
   return context.blackboard;
+}
+
+/**
+ * Guard helper ensuring that lifecycle-aware tools are only invoked when the
+ * lifecycle registry is available. Logging at warn level makes it easier for
+ * operators to diagnose why a request degraded to an explicit lifecycle
+ * feature error when the toggle is disabled.
+ */
+function requirePlanLifecycle(
+  context: PlanToolContext,
+  tool: "plan_status" | "plan_pause" | "plan_resume",
+  runId: string,
+): PlanLifecycleRegistry {
+  if (!context.planLifecycle || context.planLifecycleFeatureEnabled === false) {
+    context.logger.warn("plan_lifecycle_feature_unavailable", {
+      tool,
+      run_id: runId,
+    });
+    throw new PlanLifecycleFeatureDisabledError();
+  }
+  return context.planLifecycle;
 }
 
 /** Serialise a blackboard entry using the public API shape expected by callers. */
@@ -180,8 +207,14 @@ export interface PlanToolContext {
   loopDetector?: LoopDetector;
   /** Optional registry collecting Behaviour Tree node statuses for dashboards. */
   btStatusRegistry?: BehaviorTreeStatusRegistry;
-  /** Optional lifecycle registry exposing pause/resume and status queries. */
+  /**
+   * Lifecycle registry mirroring Behaviour Tree progress snapshots.
+   * The registry may still be present when the feature toggle is disabled so
+   * long-running runs can keep publishing events and resume once re-enabled.
+   */
   planLifecycle?: PlanLifecycleRegistry;
+  /** Whether lifecycle tooling is currently exposed to external callers. */
+  planLifecycleFeatureEnabled?: boolean;
   /** Optional idempotency registry replaying cached Behaviour Tree results. */
   idempotency?: IdempotencyRegistry;
 }
@@ -253,6 +286,66 @@ async function waitWithCancellation(handle: CancellationHandle, ms: number): Pro
     };
     handle.signal.addEventListener("abort", onAbort, { once: true });
   });
+}
+
+/**
+ * Normalise cancellation reasons exposed by the Behaviour Tree runtime so the
+ * MCP tools can surface consistent telemetry and error payloads.
+ */
+function extractCancellationReason(
+  error: OperationCancelledError | BehaviorTreeCancellationError,
+): string | null {
+  if (error instanceof OperationCancelledError) {
+    return error.details.reason ?? null;
+  }
+
+  const candidate = (error as { cause?: unknown }).cause;
+  if (candidate instanceof OperationCancelledError) {
+    return candidate.details.reason ?? null;
+  }
+
+  if (candidate instanceof Error) {
+    const trimmed = candidate.message.trim();
+    if (trimmed.length > 0) {
+      return trimmed;
+    }
+  }
+
+  if (typeof candidate === "string") {
+    const trimmed = candidate.trim();
+    if (trimmed.length > 0) {
+      return trimmed;
+    }
+  }
+
+  const message = error.message.trim();
+  return message.length > 0 ? message : null;
+}
+
+/**
+ * Convert Behaviour Tree level cancellations into structured operation errors
+ * carrying the run/op identifiers managed by the plan tooling.
+ */
+function normalisePlanCancellationError(
+  handle: CancellationHandle,
+  error: OperationCancelledError | BehaviorTreeCancellationError,
+): { reason: string | null; operationError: OperationCancelledError } {
+  if (error instanceof OperationCancelledError) {
+    return { reason: extractCancellationReason(error), operationError: error };
+  }
+
+  const reason = extractCancellationReason(error);
+  const operationError = new OperationCancelledError({
+    opId: handle.opId,
+    runId: handle.runId,
+    jobId: handle.jobId,
+    graphId: handle.graphId,
+    nodeId: handle.nodeId,
+    childId: handle.childId,
+    reason,
+  });
+
+  return { reason, operationError };
 }
 
 /** Snapshot persisted when surfacing value guard decisions to callers. */
@@ -934,11 +1027,82 @@ function attachPlanLifecycleControls(
   }
 }
 
+/**
+ * Serialises scheduler events into a JSON-friendly structure so lifecycle
+ * snapshots can expose the underlying queue activity when observers replay
+ * execution after re-enabling the feature.
+ */
+function normalisePheromoneBoundsForTelemetry(
+  bounds: PheromoneBounds | StigmergyIntensityBounds | null | undefined,
+): { min_intensity: number; max_intensity: number | null; normalisation_ceiling: number } | null {
+  if (!bounds) {
+    return null;
+  }
+  return {
+    min_intensity: bounds.minIntensity,
+    max_intensity: Number.isFinite(bounds.maxIntensity) ? bounds.maxIntensity : null,
+    normalisation_ceiling: bounds.normalisationCeiling,
+  };
+}
+
+function summariseSchedulerEvent<E extends SchedulerEventName>(
+  event: E,
+  payload: SchedulerEventMap[E],
+): Record<string, unknown> {
+  switch (event) {
+    case "taskReady": {
+      const ready = payload as SchedulerEventMap["taskReady"];
+      return {
+        node_id: ready.nodeId,
+        criticality: ready.criticality ?? null,
+        pheromone: ready.pheromone ?? null,
+        pheromone_bounds: normalisePheromoneBoundsForTelemetry(ready.pheromoneBounds),
+      };
+    }
+    case "taskDone": {
+      const done = payload as SchedulerEventMap["taskDone"];
+      return {
+        node_id: done.nodeId,
+        success: done.success,
+        duration_ms: done.duration_ms ?? null,
+      };
+    }
+    case "blackboardChanged": {
+      const change = payload as SchedulerEventMap["blackboardChanged"];
+      return {
+        key: change.key,
+        importance: change.importance ?? null,
+      };
+    }
+    case "stigmergyChanged": {
+      const change = payload as SchedulerEventMap["stigmergyChanged"];
+      return {
+        node_id: change.nodeId,
+        intensity: change.intensity ?? null,
+        type: change.type ?? null,
+        bounds: normalisePheromoneBoundsForTelemetry(change.bounds),
+      };
+    }
+    default:
+      return {};
+  }
+}
+
 /** Tool handlers executed by the Behaviour Tree interpreter. */
 type BehaviorToolHandler = (context: PlanToolContext, input: unknown) => Promise<unknown>;
 
 const BehaviorToolHandlers: Record<string, BehaviorToolHandler> = {
   noop: async (_context, input) => input ?? null,
+  /**
+   * Deterministic helper used by tests to simulate abort-like signals raised by
+   * Behaviour Tree leaves. The error shape mirrors the `AbortError` instances
+   * surfaced by platform runtimes when work is cancelled mid-flight.
+   */
+  abort: async () => {
+    const error = new Error("behaviour tool aborted by test");
+    error.name = "AbortError";
+    throw error;
+  },
   bb_set: async (context, input) => {
     const payload = BbSetInputSchema.parse(input ?? {});
     const blackboard = requireBlackboard(context);
@@ -2364,6 +2528,7 @@ async function executePlanRunBT(
       });
     },
     getPheromoneIntensity: (nodeId) => context.stigmergy.getNodeIntensity(nodeId)?.intensity ?? 0,
+    getPheromoneBounds: () => context.stigmergy.getIntensityBounds(),
     causalMemory,
   });
 
@@ -2377,6 +2542,7 @@ async function executePlanRunBT(
       nodeId: change.nodeId,
       intensity: change.totalIntensity,
       type: change.type,
+      bounds: context.stigmergy.getIntensityBounds(),
     });
   });
 
@@ -2436,15 +2602,19 @@ async function executePlanRunBT(
       child_id: childId,
     };
   } catch (error) {
-    if (error instanceof OperationCancelledError) {
+    if (error instanceof OperationCancelledError || error instanceof BehaviorTreeCancellationError) {
+      // Normalise behaviour tree cancellations so callers always receive the
+      // structured OperationCancelledError along with consistent telemetry.
       sawFailure = true;
       reportedError = true;
       lastResultStatus = "failure";
+      const { reason, operationError } = normalisePlanCancellationError(cancellation, error);
       context.logger.info("plan_run_bt_cancelled", {
         ...baseLogFields,
-        reason: error.details.reason ?? null,
+        reason,
       });
-      publishLifecycleEvent("error", { status: "cancelled", reason: error.details.reason ?? null });
+      publishLifecycleEvent("error", { status: "cancelled", reason });
+      throw operationError;
     }
     throw error;
   } finally {
@@ -2700,15 +2870,19 @@ async function executePlanRunReactive(
     runtime,
     now: runtime.now,
     getPheromoneIntensity: (nodeId) => context.stigmergy.getNodeIntensity(nodeId)?.intensity ?? 0,
+    getPheromoneBounds: () => context.stigmergy.getIntensityBounds(),
     causalMemory,
     cancellation,
     onTick: (trace) => {
       lastResultStatus = trace.result.status;
+      const eventPayload = summariseSchedulerEvent(trace.event, trace.payload);
       publishLifecycleEvent("tick", {
         status: trace.result.status,
         pending_after: trace.pendingAfter,
         scheduler_ticks: scheduler?.tickCount ?? 0,
+        tick_duration_ms: Math.max(0, trace.finishedAt - trace.startedAt),
         event: trace.event,
+        event_payload: eventPayload,
       });
       context.supervisorAgent?.recordSchedulerSnapshot({
         schedulerTick: scheduler?.tickCount ?? 0,
@@ -2751,6 +2925,7 @@ async function executePlanRunReactive(
       nodeId: change.nodeId,
       intensity: change.totalIntensity,
       type: change.type,
+      bounds: context.stigmergy.getIntensityBounds(),
     });
   });
 
@@ -2768,6 +2943,7 @@ async function executePlanRunReactive(
     input.tree.id;
 
   let executedLoopTicks = 0;
+  let pendingLoopEvent: { loopTick: number; executedTicks: number; status: BTStatus } | null = null;
 
   let finish: ((result: BehaviorTickResult) => void) | null = null;
   let fail: ((error: unknown) => void) | null = null;
@@ -2798,6 +2974,25 @@ async function executePlanRunReactive(
     now: runtime.now,
     budgetMs: input.budget_ms,
     reconcilers,
+    afterTick: ({ reconcilers: executedReconcilers }) => {
+      if (!pendingLoopEvent) {
+        return;
+      }
+      const reconcilerSnapshot = executedReconcilers.map((item) => ({
+        id: item.id,
+        status: item.status,
+        duration_ms: item.durationMs,
+        error: item.errorMessage ?? null,
+      }));
+      publishLifecycleEvent("loop", {
+        loop_tick: pendingLoopEvent.loopTick,
+        executed_ticks: pendingLoopEvent.executedTicks,
+        scheduler_ticks: scheduler?.tickCount ?? 0,
+        status: pendingLoopEvent.status,
+        reconcilers: reconcilerSnapshot,
+      });
+      pendingLoopEvent = null;
+    },
     onError: (error) => {
       fail?.(error);
     },
@@ -2813,10 +3008,11 @@ async function executePlanRunReactive(
       try {
         const result = await scheduler.runUntilSettled(initialEvent);
         executedLoopTicks = Math.max(executedLoopTicks, loopContext.tickIndex + 1);
-        publishLifecycleEvent("loop", {
-          loop_tick: loopContext.tickIndex,
-          executed_ticks: executedLoopTicks,
-        });
+        pendingLoopEvent = {
+          loopTick: loopContext.tickIndex,
+          executedTicks: executedLoopTicks,
+          status: result.status,
+        };
         if (result.output !== undefined) {
           lastOutput = result.output;
         }
@@ -2889,23 +3085,25 @@ async function executePlanRunReactive(
       child_id: childId,
     };
   } catch (error) {
-    if (error instanceof OperationCancelledError) {
+    if (error instanceof OperationCancelledError || error instanceof BehaviorTreeCancellationError) {
       lastResultStatus = "failure";
+      const { reason, operationError } = normalisePlanCancellationError(cancellation, error);
       context.logger.info("plan_run_reactive_cancelled", {
         ...baseLogFields,
-        reason: error.details.reason ?? null,
+        reason,
       });
-    } else {
-      context.logger.error("plan_run_reactive_failed", {
-        ...baseLogFields,
-        status: lastResultStatus,
-        message: error instanceof Error ? error.message : String(error),
-      });
-      publishLifecycleEvent("error", {
-        status: lastResultStatus,
-        message: error instanceof Error ? error.message : String(error),
-      });
+      publishLifecycleEvent("error", { status: "cancelled", reason });
+      throw operationError;
     }
+    context.logger.error("plan_run_reactive_failed", {
+      ...baseLogFields,
+      status: lastResultStatus,
+      message: error instanceof Error ? error.message : String(error),
+    });
+    publishLifecycleEvent("error", {
+      status: lastResultStatus,
+      message: error instanceof Error ? error.message : String(error),
+    });
     throw error;
   } finally {
     if (timeoutHandle) {
@@ -3237,10 +3435,8 @@ export function handlePlanDryRun(
 
 /** Retrieve the lifecycle snapshot associated with a Behaviour Tree execution. */
 export function handlePlanStatus(context: PlanToolContext, input: PlanStatusInput): PlanLifecycleSnapshot {
-  if (!context.planLifecycle) {
-    throw new PlanLifecycleFeatureDisabledError();
-  }
-  return context.planLifecycle.getSnapshot(input.run_id);
+  const registry = requirePlanLifecycle(context, "plan_status", input.run_id);
+  return registry.getSnapshot(input.run_id);
 }
 
 /** Pause a running Behaviour Tree execution when lifecycle tooling is enabled. */
@@ -3248,10 +3444,8 @@ export async function handlePlanPause(
   context: PlanToolContext,
   input: PlanPauseInput,
 ): Promise<PlanLifecycleSnapshot> {
-  if (!context.planLifecycle) {
-    throw new PlanLifecycleFeatureDisabledError();
-  }
-  return context.planLifecycle.pause(input.run_id);
+  const registry = requirePlanLifecycle(context, "plan_pause", input.run_id);
+  return registry.pause(input.run_id);
 }
 
 /** Resume a paused Behaviour Tree execution when lifecycle tooling is enabled. */
@@ -3259,10 +3453,8 @@ export async function handlePlanResume(
   context: PlanToolContext,
   input: PlanResumeInput,
 ): Promise<PlanLifecycleSnapshot> {
-  if (!context.planLifecycle) {
-    throw new PlanLifecycleFeatureDisabledError();
-  }
-  return context.planLifecycle.resume(input.run_id);
+  const registry = requirePlanLifecycle(context, "plan_resume", input.run_id);
+  return registry.resume(input.run_id);
 }
 
 /**

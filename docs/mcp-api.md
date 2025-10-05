@@ -162,6 +162,7 @@ const ResourceWatchInput = z.object({
   uri: z.string().min(1),
   from_seq: z.number().int().min(0).optional(),
   limit: z.number().int().positive().max(500).optional(),
+  format: z.enum(["json", "sse"]).optional(),
 }).strict();
 
 interface ResourceWatchResult {
@@ -169,6 +170,9 @@ interface ResourceWatchResult {
   kind: ResourceKind;
   events: Array<ResourceRunEvent | ResourceChildLogEntry>;
   next_seq: number; // pointeur pour l'appel suivant
+  format?: "json" | "sse";
+  messages?: ResourceWatchSseMessage[]; // présent quand format === "sse"
+  stream?: string; // concaténation SSE prête à l'emploi
 }
 ```
 
@@ -176,6 +180,11 @@ Les événements sont ordonnés (seq croissant) et incluent les hints de
 corrélation (`jobId`, `runId`, `opId`, `graphId`, `nodeId`, `childId`). Pour un
 flux complet, bouclez tant que `events.length > 0` en rappelant
 `resources_watch` avec `from_seq = next_seq`.
+
+> ℹ️ En passant `format = "sse"`, la réponse inclut `messages` (`id`, `event`,
+> `data`) et `stream` prêts à l'emploi. Les payloads sont encodés via
+> `serialiseForSse` afin de neutraliser `\r`, `\n`, `U+2028`, `U+2029` tout en
+> conservant la possibilité de décoder avec `JSON.parse`.
 
 ## Contrôles fins du runtime enfant
 
@@ -323,7 +332,39 @@ interface StigBatchResult {
   erreur (type vide, intensité non positive, etc.) restaure le champ et annule
   l'ensemble du lot. Les événements ne sont émis qu'après validation complète.
 * `stig_mark`, `stig_decay` et `stig_snapshot` partagent les mêmes structures
-  sérialisées (`point`, `node_total`).
+  sérialisées (`point`, `node_total`). `stig_snapshot` ajoute également
+  `pheromone_bounds` (bornes normalisées min/max/plafond), un bloc `summary`
+  contenant des `rows` déjà formatées (`Min/Max/Ceiling`) et `heatmap.bounds_tooltip`
+  pour alimenter directement les dashboards/autoscalers.
+
+#### Contract-Net (`cnp_announce`)
+
+* La réponse inclut `auto_bid_enabled` pour signaler si des enchères heuristiques
+  sont gérées automatiquement. Lorsque c'est le cas, les enchères heuristiques
+  exposent `metadata.reason` (`auto` lors de l'annonce, `auto_refresh` après une
+  mise à jour) ainsi que `metadata.pheromone_pressure`, le facteur appliqué à la
+  pénalité `busy_penalty`.
+* Utilise `ContractNetCoordinator.updateCallPheromoneBounds(callId, bounds, options)`
+  pour synchroniser un appel ouvert avec de nouvelles limites stigmergiques. La
+  méthode réémet les enchères heuristiques (sauf si `refreshAutoBids` est désactivé)
+  tout en conservant les offres manuelles.
+* L'outil MCP `cnp_refresh_bounds` réalise cette opération côté serveur. Il accepte
+  un `call_id`, des bornes optionnelles (par défaut les limites du champ
+  stigmergique) et des flags `refresh_auto_bids` / `include_new_agents`. La
+  réponse indique les agents rafraîchis, si les enchères heuristiques ont été
+  rejouées (`auto_bid_refreshed`) et rappelle les options utilisées.
+* L'outil MCP `cnp_watcher_telemetry` expose les compteurs du watcher automatique
+  (`received_updates`, `coalesced_updates`, `skipped_refreshes`, `flushes`,
+  `applied_refreshes`). Il retourne également `emissions`, `last_emitted_at_ms`
+  (et son ISO associé) ainsi que `last_snapshot.last_bounds` pour diagnostiquer
+  la pression stigmergique appliquée lors des derniers rafraîchissements.
+* Chaque émission du watcher est aussi publiée sur le bus d'événements via
+  `cat: "contract_net"` et `msg: "cnp_watcher_telemetry"` ; les clients
+  `events_subscribe` peuvent ainsi corréler ces compteurs en temps réel sans
+  devoir sonder `/metrics`. Le format `format: "sse"` de `events_subscribe`
+  échappe les retours chariot, sauts de ligne et séparateurs Unicode afin que
+  chaque bloc `data:` reste monoligne tout en conservant les raisons
+  multi-lignes après `JSON.parse`.
 
 ```ts
 const GraphBatchMutateInput = z

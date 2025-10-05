@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { buildStigmergySummary, formatPheromoneBoundsTooltip, normalisePheromoneBoundsForTelemetry, } from "../coord/stigmergy.js";
 import { ConsensusConfigSchema, majority, publishConsensusEvent, quorum, weighted, } from "../coord/consensus.js";
 /**
  * Error raised when a requested blackboard key cannot be found. The dedicated
@@ -153,6 +154,26 @@ export const CnpAnnounceInputSchema = z
 })
     .strict();
 export const CnpAnnounceInputShape = CnpAnnounceInputSchema.shape;
+/** Schema validating the payload accepted by the `cnp_refresh_bounds` tool. */
+const CnpPheromoneBoundsSchema = z
+    .object({
+    min_intensity: z.number(),
+    max_intensity: z.number().nullable(),
+    normalisation_ceiling: z.number(),
+})
+    .strict();
+export const CnpRefreshBoundsInputSchema = z
+    .object({
+    call_id: z.string().min(1, "call_id must not be empty"),
+    bounds: CnpPheromoneBoundsSchema.optional(),
+    refresh_auto_bids: z.boolean().optional(),
+    include_new_agents: z.boolean().optional(),
+})
+    .strict();
+export const CnpRefreshBoundsInputShape = CnpRefreshBoundsInputSchema.shape;
+/** Schema validating the payload accepted by the `cnp_watcher_telemetry` tool. */
+export const CnpWatcherTelemetryInputSchema = z.object({}).strict();
+export const CnpWatcherTelemetryInputShape = CnpWatcherTelemetryInputSchema.shape;
 /**
  * Stores or updates a key on the blackboard with optional tags and TTL. The
  * returned payload mirrors the current snapshot so clients can cache it.
@@ -317,11 +338,16 @@ export function handleStigBatch(context, input) {
 /** Returns a deterministic snapshot of the stigmergic field. */
 export function handleStigSnapshot(context, _input) {
     const snapshot = context.stigmergy.fieldSnapshot();
+    const heatmap = context.stigmergy.heatmapSnapshot();
+    const bounds = normalisePheromoneBoundsForTelemetry(context.stigmergy.getIntensityBounds());
+    const summary = buildStigmergySummary(bounds);
+    const boundsTooltip = formatPheromoneBoundsTooltip(bounds);
     context.logger.info("stig_snapshot", {
         points: snapshot.points.length,
         totals: snapshot.totals.length,
+        heatmap_cells: heatmap.cells.length,
     });
-    return serialiseFieldSnapshot(snapshot);
+    return serialiseFieldSnapshot(snapshot, heatmap, summary, boundsTooltip);
 }
 function serialisePoint(snapshot) {
     return {
@@ -338,16 +364,62 @@ function serialiseTotal(total) {
         updated_at: total.updatedAt,
     };
 }
-function serialiseFieldSnapshot(snapshot) {
+function serialiseFieldSnapshot(snapshot, heatmap, summary, boundsTooltip) {
     return {
         generated_at: snapshot.generatedAt,
         points: snapshot.points.map(serialisePoint),
         totals: snapshot.totals.map(serialiseTotal),
+        heatmap: serialiseHeatmap(heatmap, summary.bounds, boundsTooltip),
+        pheromone_bounds: summary.bounds,
+        summary: serialiseSummary(summary, boundsTooltip),
+    };
+}
+function serialiseHeatmap(heatmap, bounds, tooltip) {
+    return {
+        min_intensity: Number(heatmap.minIntensity.toFixed(6)),
+        max_intensity: Number(heatmap.maxIntensity.toFixed(6)),
+        cells: heatmap.cells.map(serialiseHeatmapCell),
+        bounds,
+        bounds_tooltip: tooltip,
+    };
+}
+function serialiseSummary(summary, tooltip) {
+    return {
+        bounds: summary.bounds,
+        rows: summary.rows.map((row) => ({
+            label: row.label,
+            value: row.value,
+            tooltip: row.tooltip ?? null,
+        })),
+        tooltip,
+    };
+}
+function serialiseHeatmapCell(cell) {
+    return {
+        node_id: cell.nodeId,
+        total_intensity: Number(cell.totalIntensity.toFixed(6)),
+        normalised: Number(cell.normalised.toFixed(6)),
+        updated_at: cell.updatedAt,
+        points: cell.points.map(serialiseHeatmapPoint),
+    };
+}
+function serialiseHeatmapPoint(point) {
+    return {
+        type: point.type,
+        intensity: Number(point.intensity.toFixed(6)),
+        normalised: Number(point.normalised.toFixed(6)),
+        updated_at: point.updatedAt,
     };
 }
 /** Announces a task to the Contract-Net and immediately awards the best bid. */
 export function handleCnpAnnounce(context, input) {
     const execute = () => {
+        // Capture the current pheromone bounds before announcing the task so the
+        // resulting snapshot and events mirror the scheduler telemetry. Consumers
+        // (autoscaler UI, Contract-Net heuristics) rely on the ceiling to scale
+        // their decisions consistently even when the stigmergic field evolves
+        // between retries.
+        const pheromoneBounds = normalisePheromoneBoundsForTelemetry(context.stigmergy.getIntensityBounds());
         // Propagate orchestration identifiers so downstream event streams carry
         // run/op hints without relying on out-of-band resolvers.
         const correlation = {
@@ -372,6 +444,7 @@ export function handleCnpAnnounce(context, input) {
                 preferenceBonus: input.heuristics?.preference_bonus,
             },
             correlation,
+            pheromoneBounds,
         });
         if (input.manual_bids) {
             for (const bid of input.manual_bids) {
@@ -409,6 +482,86 @@ export function handleCnpAnnounce(context, input) {
     }
     const snapshot = execute();
     return { ...snapshot, idempotent: false, idempotency_key: key };
+}
+/**
+ * Refreshes the pheromone bounds captured for an existing Contract-Net call.
+ * When callers omit explicit bounds, the helper samples the current
+ * stigmergic field so the coordinator stays aligned with the latest ceiling
+ * before reissuing heuristic bids.
+ */
+export function handleCnpRefreshBounds(context, input) {
+    const parsed = CnpRefreshBoundsInputSchema.parse(input);
+    const requestedBounds = parsed.bounds
+        ? {
+            min_intensity: parsed.bounds.min_intensity,
+            max_intensity: parsed.bounds.max_intensity ?? null,
+            normalisation_ceiling: parsed.bounds.normalisation_ceiling,
+        }
+        : normalisePheromoneBoundsForTelemetry(context.stigmergy.getIntensityBounds());
+    const options = {
+        refreshAutoBids: parsed.refresh_auto_bids,
+        includeNewAgents: parsed.include_new_agents,
+    };
+    const snapshot = context.contractNet.updateCallPheromoneBounds(parsed.call_id, requestedBounds ?? null, options);
+    const refreshRequested = parsed.refresh_auto_bids !== false;
+    const includeNewAgents = parsed.include_new_agents ?? true;
+    const result = {
+        call_id: snapshot.callId,
+        auto_bid_refreshed: snapshot.autoBidRefreshed,
+        refreshed_agents: [...snapshot.refreshedAgents],
+        pheromone_bounds: snapshot.pheromoneBounds,
+        refresh: {
+            requested: refreshRequested,
+            include_new_agents: includeNewAgents,
+        },
+    };
+    context.logger.info("cnp_refresh_bounds", {
+        call_id: result.call_id,
+        auto_bid_refreshed: result.auto_bid_refreshed,
+        refreshed_agents: result.refreshed_agents.length,
+        refresh_requested: result.refresh.requested,
+        include_new_agents: result.refresh.include_new_agents,
+    });
+    return result;
+}
+/**
+ * Exposes the latest telemetry collected by the Contract-Net bounds watcher so
+ * MCP clients can observe coalescing efficiency and refresh cadence.
+ */
+export function handleCnpWatcherTelemetry(context, input) {
+    CnpWatcherTelemetryInputSchema.parse(input);
+    const recorder = context.contractNetWatcherTelemetry;
+    if (!recorder) {
+        return {
+            telemetry_enabled: false,
+            emissions: 0,
+            last_emitted_at_ms: null,
+            last_emitted_at_iso: null,
+            last_snapshot: null,
+        };
+    }
+    const state = recorder.snapshot();
+    const lastSnapshot = state.lastSnapshot
+        ? {
+            reason: state.lastSnapshot.reason,
+            received_updates: state.lastSnapshot.receivedUpdates,
+            coalesced_updates: state.lastSnapshot.coalescedUpdates,
+            skipped_refreshes: state.lastSnapshot.skippedRefreshes,
+            applied_refreshes: state.lastSnapshot.appliedRefreshes,
+            flushes: state.lastSnapshot.flushes,
+            last_bounds: state.lastSnapshot.lastBounds
+                ? { ...state.lastSnapshot.lastBounds }
+                : null,
+        }
+        : null;
+    const lastEmittedAtIso = state.lastEmittedAtMs === null ? null : new Date(state.lastEmittedAtMs).toISOString();
+    return {
+        telemetry_enabled: true,
+        emissions: state.emissions,
+        last_emitted_at_ms: state.lastEmittedAtMs,
+        last_emitted_at_iso: lastEmittedAtIso,
+        last_snapshot: lastSnapshot,
+    };
 }
 /**
  * Computes a consensus decision from raw ballots. The helper mirrors the
@@ -495,6 +648,8 @@ function serialiseContractNetResult(snapshot, decision) {
         awarded_effective_cost: decision.effectiveCost,
         bids: snapshot.bids.map(serialiseContractNetBid),
         heuristics: serialiseContractNetHeuristics(snapshot),
+        pheromone_bounds: snapshot.pheromoneBounds,
+        auto_bid_enabled: snapshot.autoBidEnabled,
         correlation: snapshot.correlation,
     };
 }

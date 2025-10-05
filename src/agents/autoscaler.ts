@@ -147,6 +147,9 @@ const DEFAULT_THRESHOLDS: AutoscalerThresholds = {
  * period to avoid oscillations.
  */
 export class Autoscaler implements LoopReconciler {
+  /** Identifier surfaced in execution loop diagnostics and lifecycle events. */
+  public readonly id = "autoscaler";
+
   private readonly supervisor: AutoscalerSupervisor;
   private readonly logger?: StructuredLogger;
   private readonly now: () => number;

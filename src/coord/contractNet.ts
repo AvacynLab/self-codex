@@ -90,6 +90,8 @@ export interface ContractNetTaskAnnouncement {
   autoBid?: boolean;
   /** Optional correlation identifiers attached to the resulting lifecycle events. */
   correlation?: ContractNetCorrelationContext | null;
+  /** Optional pheromone bounds captured when the task is announced. */
+  pheromoneBounds?: ContractNetPheromoneBounds | null;
 }
 
 /** Additional metadata attached to a bid. */
@@ -120,12 +122,46 @@ export interface ContractNetCallSnapshot {
     busyPenalty: number;
     preferenceBonus: number;
   };
+  pheromoneBounds: ContractNetPheromoneBounds | null;
+  /** Indicates whether heuristic auto-bids are enabled for this call. */
+  autoBidEnabled: boolean;
   status: "open" | "awarded" | "completed";
   announcedAt: number;
   awardedAgentId: string | null;
   awardedAt: number | null;
   bids: ContractNetBidSnapshot[];
   correlation: ContractNetCorrelationContext | null;
+  /**
+   * Agents whose heuristic bids were refreshed the last time bounds changed.
+   * The array remains empty when no heuristic bids were touched.
+   */
+  refreshedAgents: string[];
+  /**
+   * Indicates whether the most recent bounds update reissued heuristic bids.
+   * Useful for observability when callers opt out of auto-bid refreshes.
+   */
+  autoBidRefreshed: boolean;
+}
+
+/**
+ * Options accepted when refreshing a call after the stigmergic bounds have
+ * evolved. Callers can opt out of reissuing heuristic bids or prevent newly
+ * registered agents from joining the refresh cycle when they want to conserve
+ * the original bid list.
+ */
+export interface ContractNetPheromoneRefreshOptions {
+  /**
+   * Reissues heuristic bids for registered agents when true (default). Disable
+   * this when the caller merely wants to update the stored bounds without
+   * touching bid order or timestamps.
+   */
+  refreshAutoBids?: boolean;
+  /**
+   * When {@link refreshAutoBids} is enabled, controls whether agents that
+   * registered after the call announcement should submit fresh heuristic bids.
+   * Defaults to true so updates bring late joiners into the auction.
+   */
+  includeNewAgents?: boolean;
 }
 
 /** Result returned by {@link ContractNetCoordinator.award}. */
@@ -185,6 +221,19 @@ export type ContractNetEvent =
       correlation?: ContractNetCorrelationContext | null;
     }
   | {
+      kind: "call_bounds_updated";
+      at: number;
+      call: ContractNetCallSnapshot;
+      bounds: ContractNetPheromoneBounds | null;
+      refresh: {
+        requested: boolean;
+        includeNewAgents: boolean;
+        autoBidRefreshed: boolean;
+        refreshedAgents: string[];
+      };
+      correlation?: ContractNetCorrelationContext | null;
+    }
+  | {
       kind: "call_completed";
       at: number;
       call: ContractNetCallSnapshot;
@@ -221,6 +270,13 @@ interface BidInternal {
   kind: ContractNetBidKind;
 }
 
+interface CallRefreshState {
+  requested: boolean;
+  includeNewAgents: boolean;
+  autoBidRefreshed: boolean;
+  refreshedAgents: string[];
+}
+
 interface CallInternal {
   callId: string;
   taskId: string;
@@ -229,12 +285,25 @@ interface CallInternal {
   metadata: Record<string, unknown>;
   deadlineMs: number | null;
   heuristics: NormalisedHeuristics;
+  pheromoneBounds: ContractNetPheromoneBounds | null;
+  autoBidEnabled: boolean;
   status: "open" | "awarded" | "completed";
   announcedAt: number;
   awardedBid: BidInternal | null;
   awardedAt: number | null;
   bids: Map<string, BidInternal>;
   correlation: ContractNetCorrelationContext | null;
+  lastRefresh: CallRefreshState;
+}
+
+/** Telemetry block describing the pheromone bounds captured for an announcement. */
+export interface ContractNetPheromoneBounds {
+  /** Lower bound applied to pheromones before normalisation. */
+  min_intensity: number;
+  /** Upper bound applied to pheromones before normalisation (`null` when unbounded). */
+  max_intensity: number | null;
+  /** Effective ceiling used to normalise intensities for telemetry consumers. */
+  normalisation_ceiling: number;
 }
 
 /**
@@ -272,6 +341,17 @@ export class ContractNetCoordinator {
   /** Lists the registered agents. */
   listAgents(): ContractNetAgentSnapshot[] {
     return Array.from(this.agents.values()).map((agent) => this.snapshotAgent(agent));
+  }
+
+  /**
+   * Lists every call that is still open for bidding. Snapshots are returned in
+   * announcement order so watchdogs can deterministically refresh bounds.
+   */
+  listOpenCalls(): ContractNetCallSnapshot[] {
+    return Array.from(this.calls.values())
+      .filter((call) => call.status === "open")
+      .sort((a, b) => (a.announcedAt === b.announcedAt ? a.callId.localeCompare(b.callId) : a.announcedAt - b.announcedAt))
+      .map((call) => this.snapshotCall(call));
   }
 
   /** Retrieves a single agent snapshot when present. */
@@ -336,21 +416,34 @@ export class ContractNetCoordinator {
       metadata: structuredClone(announcement.metadata ?? {}),
       deadlineMs: normalizeDeadline(announcement.deadlineMs ?? null),
       heuristics,
+      pheromoneBounds: clonePheromoneBounds(announcement.pheromoneBounds ?? null),
+      autoBidEnabled: announcement.autoBid !== false,
       status: "open",
       announcedAt: this.now(),
       awardedBid: null,
       awardedAt: null,
       bids: new Map(),
       correlation,
+      lastRefresh: {
+        requested: false,
+        includeNewAgents: true,
+        autoBidRefreshed: false,
+        refreshedAgents: [],
+      },
     };
     this.calls.set(callId, call);
 
-    if (announcement.autoBid !== false) {
-      for (const agent of this.agents.values()) {
-        const cost = computeHeuristicCost(agent);
-        const metadata = { reason: "auto" } as Record<string, unknown>;
-        this.recordBid(call, agent.agentId, cost, metadata, "heuristic");
-      }
+    if (call.autoBidEnabled) {
+      const { refreshedAgents } = this.refreshHeuristicBids(call, {
+        reason: "auto",
+        includeNewAgents: true,
+      });
+      call.lastRefresh = {
+        requested: true,
+        includeNewAgents: true,
+        autoBidRefreshed: refreshedAgents.length > 0,
+        refreshedAgents,
+      };
     }
 
     const snapshot = this.snapshotCall(call);
@@ -380,6 +473,56 @@ export class ContractNetCoordinator {
     }
     this.recordBid(call, agentId, normalizeCost(cost), structuredClone(options.metadata ?? {}), "manual");
     return this.snapshotCall(call);
+  }
+
+  /**
+   * Updates the pheromone bounds captured for a call and, when auto-bids are
+   * enabled, reissues heuristic bids so their timestamps and metadata reflect
+   * the latest stigmergic pressure.
+   */
+  updateCallPheromoneBounds(
+    callId: string,
+    bounds: ContractNetPheromoneBounds | null,
+    options: ContractNetPheromoneRefreshOptions = {},
+  ): ContractNetCallSnapshot {
+    const call = this.requireCall(callId);
+    if (call.status !== "open") {
+      throw new Error(`call ${callId} is not open for updates`);
+    }
+    call.pheromoneBounds = clonePheromoneBounds(bounds ?? null);
+    const refreshRequested = call.autoBidEnabled && options.refreshAutoBids !== false;
+    const includeNewAgents = options.includeNewAgents ?? true;
+    let refreshedAgents: string[] = [];
+    if (refreshRequested) {
+      const { refreshedAgents: refreshed } = this.refreshHeuristicBids(call, {
+        reason: "auto_refresh",
+        includeNewAgents,
+      });
+      refreshedAgents = [...refreshed];
+    }
+    const autoBidRefreshed = refreshRequested && refreshedAgents.length > 0;
+    call.lastRefresh = {
+      requested: refreshRequested,
+      includeNewAgents,
+      autoBidRefreshed,
+      refreshedAgents: [...refreshedAgents],
+    };
+    const snapshot = this.snapshotCall(call);
+    const emittedAt = this.now();
+    this.emitEvent({
+      kind: "call_bounds_updated",
+      at: emittedAt,
+      call: snapshot,
+      bounds: snapshot.pheromoneBounds,
+      refresh: {
+        requested: refreshRequested,
+        includeNewAgents,
+        autoBidRefreshed,
+        refreshedAgents: [...refreshedAgents],
+      },
+      correlation: call.correlation,
+    });
+    return snapshot;
   }
 
   /**
@@ -473,6 +616,8 @@ export class ContractNetCoordinator {
         busyPenalty: call.heuristics.busyPenalty,
         preferenceBonus: call.heuristics.preferenceBonus,
       },
+      pheromoneBounds: clonePheromoneBounds(call.pheromoneBounds),
+      autoBidEnabled: call.autoBidEnabled,
       status: call.status,
       announcedAt: call.announcedAt,
       awardedAgentId: call.awardedBid?.agentId ?? null,
@@ -487,6 +632,8 @@ export class ContractNetCoordinator {
           kind: bid.kind,
         })),
       correlation: cloneCorrelation(call.correlation),
+      refreshedAgents: [...call.lastRefresh.refreshedAgents],
+      autoBidRefreshed: call.lastRefresh.autoBidRefreshed,
     };
   }
 
@@ -566,7 +713,8 @@ export class ContractNetCoordinator {
 
   private computeEffectiveCost(call: CallInternal, bid: BidInternal): number {
     const busy = this.activeAssignments.get(bid.agentId) ?? 0;
-    const busyPenalty = call.heuristics.busyPenalty * busy;
+    const pheromonePressure = computePheromonePressure(call.pheromoneBounds);
+    const busyPenalty = call.heuristics.busyPenalty * busy * pheromonePressure;
     const preferenceBoost = call.heuristics.preferAgents.includes(bid.agentId)
       ? call.heuristics.preferenceBonus
       : 0;
@@ -617,6 +765,62 @@ export class ContractNetCoordinator {
   private emitEvent(event: ContractNetEvent): void {
     this.emitter.emit(CONTRACT_NET_EVENT, event);
   }
+
+  /**
+   * Reissues heuristic bids for the provided call. The helper ensures manual
+   * submissions remain untouched while updating heuristic metadata so observers
+   * can correlate bids with the current pheromone pressure.
+   */
+  private refreshHeuristicBids(
+    call: CallInternal,
+    options: { reason: "auto" | "auto_refresh"; includeNewAgents: boolean },
+  ): { refreshedAgents: string[] } {
+    const pheromonePressure = computePheromonePressure(call.pheromoneBounds);
+    const refreshedAgents: string[] = [];
+    for (const agent of this.agents.values()) {
+      const existing = call.bids.get(agent.agentId) ?? null;
+      if (existing?.kind === "manual") {
+        continue;
+      }
+      if (!existing && !options.includeNewAgents) {
+        continue;
+      }
+      const metadata: Record<string, unknown> = {
+        reason: options.reason,
+        pheromone_pressure: pheromonePressure,
+      };
+      const cost = computeHeuristicCost(agent);
+      this.recordBid(call, agent.agentId, cost, metadata, "heuristic");
+      refreshedAgents.push(agent.agentId);
+    }
+    refreshedAgents.sort((a, b) => a.localeCompare(b));
+    return { refreshedAgents };
+  }
+}
+
+/**
+ * Computes a multiplicative pressure factor derived from the captured
+ * pheromone bounds. Busy penalties are scaled by this factor so auctions become
+ * increasingly sensitive to saturated stigmergic fields while remaining stable
+ * when the load is low or the bounds are missing.
+ */
+export function computePheromonePressure(bounds: ContractNetPheromoneBounds | null): number {
+  if (!bounds) {
+    return 1;
+  }
+  const observed = Math.max(bounds.normalisation_ceiling - bounds.min_intensity, 0);
+  if (observed <= 0) {
+    return 1;
+  }
+  const max = bounds.max_intensity;
+  if (max !== null && Number.isFinite(max)) {
+    const span = Math.max(max - bounds.min_intensity, 0);
+    if (span > 0) {
+      const ratio = Math.min(observed / span, 1);
+      return 1 + ratio;
+    }
+  }
+  return 1 + Math.log1p(observed);
 }
 
 function normalizeBaseCost(cost: number): number {
@@ -683,6 +887,19 @@ function cloneCorrelation(correlation: ContractNetCorrelationContext | null): Co
     graphId: correlation.graphId ?? null,
     nodeId: correlation.nodeId ?? null,
     childId: correlation.childId ?? null,
+  };
+}
+
+function clonePheromoneBounds(
+  bounds: ContractNetPheromoneBounds | null | undefined,
+): ContractNetPheromoneBounds | null {
+  if (!bounds) {
+    return null;
+  }
+  return {
+    min_intensity: bounds.min_intensity,
+    max_intensity: bounds.max_intensity,
+    normalisation_ceiling: bounds.normalisation_ceiling,
   };
 }
 

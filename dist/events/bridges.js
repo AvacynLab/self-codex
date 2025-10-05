@@ -48,6 +48,7 @@ export function bridgeStigmergyEvents(options) {
     const { field, bus, resolveCorrelation } = options;
     const detach = field.onChange((event) => {
         const correlation = resolveCorrelation?.(event) ?? {};
+        const bounds = field.getIntensityBounds();
         bus.publish({
             cat: "stigmergy",
             level: "info",
@@ -64,11 +65,54 @@ export function bridgeStigmergyEvents(options) {
                 intensity: event.intensity,
                 totalIntensity: event.totalIntensity,
                 updatedAt: event.updatedAt,
+                bounds: {
+                    minIntensity: bounds.minIntensity,
+                    maxIntensity: Number.isFinite(bounds.maxIntensity) ? bounds.maxIntensity : null,
+                    normalisationCeiling: bounds.normalisationCeiling,
+                },
             },
         });
     });
     return () => {
         detach();
+    };
+}
+/**
+ * Creates a Contract-Net watcher telemetry listener that records incoming
+ * snapshots and forwards them to the unified event bus. The returned callback
+ * is safe to feed directly into {@link watchContractNetPheromoneBounds}.
+ */
+export function createContractNetWatcherTelemetryListener(options) {
+    const { bus, recorder, resolveCorrelation } = options;
+    return (snapshot) => {
+        recorder?.record(snapshot);
+        const correlation = resolveCorrelation?.(snapshot) ?? {};
+        bus.publish({
+            cat: "contract_net",
+            level: "info",
+            jobId: correlation.jobId ?? null,
+            runId: correlation.runId ?? null,
+            opId: correlation.opId ?? null,
+            graphId: correlation.graphId ?? null,
+            nodeId: correlation.nodeId ?? null,
+            childId: correlation.childId ?? null,
+            msg: "cnp_watcher_telemetry",
+            data: {
+                reason: snapshot.reason,
+                received_updates: snapshot.receivedUpdates,
+                coalesced_updates: snapshot.coalescedUpdates,
+                skipped_refreshes: snapshot.skippedRefreshes,
+                applied_refreshes: snapshot.appliedRefreshes,
+                flushes: snapshot.flushes,
+                last_bounds: snapshot.lastBounds
+                    ? {
+                        min_intensity: snapshot.lastBounds.min_intensity,
+                        max_intensity: snapshot.lastBounds.max_intensity,
+                        normalisation_ceiling: snapshot.lastBounds.normalisation_ceiling,
+                    }
+                    : null,
+            },
+        });
     };
 }
 /**
@@ -283,6 +327,19 @@ export function bridgeContractNetEvents(options) {
             case "call_awarded":
                 msg = "cnp_call_awarded";
                 data = { call: event.call, decision: event.decision };
+                break;
+            case "call_bounds_updated":
+                msg = "cnp_call_bounds_updated";
+                data = {
+                    call: event.call,
+                    bounds: event.bounds,
+                    refresh: {
+                        requested: event.refresh.requested,
+                        includeNewAgents: event.refresh.includeNewAgents,
+                        autoBidRefreshed: event.refresh.autoBidRefreshed,
+                        refreshedAgents: [...event.refresh.refreshedAgents],
+                    },
+                };
                 break;
             case "call_completed":
                 msg = "cnp_call_completed";

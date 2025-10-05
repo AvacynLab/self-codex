@@ -122,7 +122,14 @@ du serveur. Chaque URI suit le schéma `sc://<kind>/…`.
 
 - `resources_list` — Filtre facultativement par préfixe et pagine (`limit ≤ 500`).
 - `resources_read` — Retourne le payload normalisé de l'URI.
-- `resources_watch` — Suivi incrémental des événements (`from_seq`, `next_seq`).
+- `resources_watch` — Suivi incrémental des événements (`from_seq`, `next_seq`, `format`).
+
+Le paramètre `format` (défaut `"json"`) accepte `"sse"` pour obtenir une
+représentation prête à diffuser via Server-Sent Events. La réponse inclut alors
+`messages` (tableau `id/event/data`) et `stream` (concaténation `id:`/`event:`/
+`data:`) générés par `serialiseResourceWatchResultForSse`. Chaque `data:` est
+pré-échappé (`\n`, `\r`, `U+2028`, `U+2029`) afin de rester monoligne tout en
+préservant `next_seq` pour faciliter les reconnexions.
 
 Exemple (HTTP JSON) pour lister les graphes :
 
@@ -353,6 +360,15 @@ payload compilé dans `plan_run_reactive` ou `plan_run_bt`. `tick_ms` cadence le
 ticks du scheduler, `budget_ms` borne la durée d'un tick et `timeout_ms`
 protège l'exécution complète.
 
+Pour éviter la famine lorsque des événements très critiques affluent en
+permanence, le scheduler applique un **aging logarithmique** basé sur l'ancienneté
+(`aging_half_life_ms`, `aging_fairness_boost`) en plus du poids linéaire
+(`age_weight`). Les événements anciens finissent ainsi par dépasser les
+priorités intrinsèques des signaux récents. En parallèle, le quantum CPU
+(`batch_quantum_ms`, `max_batch_ticks`) force un yield coopératif dès qu'une
+série de ticks consomme trop de temps, laissant le temps au runtime Node.js de
+traiter les I/O et de nouvelles requêtes SSE.
+
 ```json
 {
   "tool": "plan_run_reactive",
@@ -375,6 +391,109 @@ protège l'exécution complète.
   }
 }
 ```
+
+Les décorateurs de Behaviour Tree permettent de contrôler finement les reprises
+et les budgets d'exécution :
+
+* `retry` accepte `max_attempts`, `backoff_ms` et `backoff_jitter_ms` pour
+  introduire un délai aléatoire (borné) entre deux tentatives.
+* `timeout` fonctionne soit avec `timeout_ms`, soit avec `timeout_category`
+  (profil côté runtime) pour arrêter une branche trop lente.
+* `guard` compare `runtime.variables[condition_key]` à `expected` (ou teste la
+  vérité de la valeur quand `expected` est omis) avant de déléguer au nœud
+  enfant.
+* `cancellable` vérifie la signalisation `isCancelled`/`throwIfCancelled`,
+  réinitialise l'enfant puis relance l'exception de type
+  `OperationCancelledError` ou `BehaviorTreeCancellationError` afin de laisser
+  l'orchestrateur traiter l'annulation.
+* Les outils `plan_run_bt` et `plan_run_reactive` convertissent toute
+  `BehaviorTreeCancellationError` remontée par les feuilles en
+  `OperationCancelledError` afin que la réponse MCP conserve le code
+  `E-CANCEL-OP` et la raison détaillée.
+
+Avec `--enable-plan-lifecycle` et `--enable-cancellation`, l'outil
+`plan_status` renvoie un snapshot enrichi de la progression (0–100%) et des
+motifs d'échec. Lorsqu'un run est stoppé via `plan_cancel`, la réponse inclut
+désormais directement `progress` ainsi que le snapshot `lifecycle` mis à jour :
+le client peut afficher la progression finale et la raison d'annulation sans
+enchaîner un appel `plan_status` supplémentaire. Le tool `op_cancel` relaie
+également le pourcentage courant et le snapshot lorsque le run est corrélé à un
+cycle de vie actif, ce qui permet de diagnostiquer un arrêt ciblé sans exécuter
+`plan_status`. Quand la fonctionnalité lifecycle est désactivée, ces champs
+retombent proprement à `null` pour signaler l'absence de suivi détaillé.
+
+Les outils d'inspection (`plan_status`) et de pilotage manuel
+(`plan_pause`/`plan_resume`) renvoient l'erreur
+`E-PLAN-LIFECYCLE-DISABLED` assortie du hint `enable_plan_lifecycle`
+quand le registre n'est pas actif, ce qui documente clairement la
+marche à suivre pour réactiver la fonctionnalité.
+
+Si la fonctionnalité est réactivée alors qu'un run est toujours en
+cours, le registre conserve l'historique accumulé pendant la
+désactivation : les snapshots reprennent immédiatement leur progression
+et les contrôles manuels (pause/reprise) restent disponibles sans
+nécessiter une relance de l'exécution.
+
+Les événements `tick` publiés dans le cycle de vie incluent désormais la
+durée du tick (`tick_duration_ms`) et un condensé de l'événement
+ordonnanceur traité (`event_payload`). Cela permet d'inspecter les nœuds
+réveillés ou terminés même si le suivi a été désactivé temporairement.
+Les événements `loop` exposent également la liste des reconcilers
+exécutés (`autoscaler`, `supervisor`, …) avec leur durée et leur statut
+afin de visualiser la reprise des actions d'orchestration lorsque la
+fonctionnalité lifecycle est réactivée en cours de run.
+
+Les clients MCP peuvent récupérer ces informations via `events_subscribe`
+en JSON Lines ou SSE : chaque événement `BT_RUN` de phase `loop` inclut le
+tableau `reconcilers` décrivant les identifiants, les statuts et les
+durées d'exécution des agents (`autoscaler`, `supervisor`, etc.), ce qui
+facilite l'observabilité des runs réactifs dans un tableau de bord.
+Les événements publiés par l'autoscaler (`scale_up`, `scale_down`, …) embarquent
+à présent un bloc `pheromone_bounds` normalisé. Cette enveloppe reflète les
+limites courantes du champ stigmergique (bornes min/max et plafond de
+normalisation) et permet de corréler les décisions de scaling avec la pression
+observée par le scheduler réactif.
+
+Le dashboard HTTP (`/metrics`, `/stream`) expose le même bloc via la clé
+`pheromone_bounds`. Les clients SSE peuvent ainsi afficher la normalisation
+directement dans l'interface sans réimplémenter les calculs du champ
+stigmergique et restent alignés avec les outils MCP et les événements plan.
+Les réponses fournissent également un résumé prêt à afficher dans
+`stigmergy.rows` (tableau « Min/Max/Ceiling ») ainsi qu'une chaîne déjà
+formatée `heatmap.boundsTooltip` pour alimenter les infobulles de la heatmap
+sans logique additionnelle côté client.
+
+Le dashboard `/metrics` et `/stream` exposent en outre un bloc
+`contractNetWatcherTelemetry` qui reflète directement le dernier instantané
+du watcher `watchContractNetPheromoneBounds`. Il indique le nombre d'émissions
+(`emissions`), l'horodatage du dernier envoi (`last_emitted_at_ms`) et recopie
+le dernier jeu de compteurs (`last_snapshot`) comprenant les bornes appliquées.
+Les opérateurs peuvent ainsi visualiser le débit de rafraîchissement (et le
+coalescing) sans interroger l'outil MCP `cnp_watcher_telemetry` ni parser les
+logs.
+
+Les mêmes compteurs sont désormais diffusés en temps réel sur le bus
+d'événements (`cat: "contract_net"`, `msg: "cnp_watcher_telemetry"`). Les
+clients `events_subscribe` peuvent donc corréler chaque émission du watcher avec
+leurs propres métadonnées (par exemple un `graphId`) sans attendre le prochain
+poll `/metrics`.
+
+Le flux SSE `/stream` sérialise chaque snapshot sur une seule ligne et échappe
+les séparateurs de lignes (`\n`, `\r`, U+2028, U+2029) afin d'éviter la
+fragmentation des événements côté clients `EventSource`. Les raisons longues ou
+multilignes rapportées par le watcher Contract-Net restent ainsi lisibles après
+`JSON.parse` tout en conservant un transport conforme au protocole SSE. Le
+format SSE de l'outil `events_subscribe` réutilise la même normalisation : les
+événements `cancel` conservent leurs raisons multi-lignes (ou avec séparateurs
+Unicode) sans casser la ligne `data:` diffusée aux clients MCP.
+
+Pour un aperçu rapide sans outil supplémentaire, l'endpoint racine du dashboard
+(`GET /`) renvoie une page HTML affichant le résumé Contract-Net (compteurs,
+raison de la dernière émission, bornes normalisées) ainsi que les sections
+stigmergie et scheduler. La page embarque désormais un bootstrap léger qui se
+connecte au flux SSE `/stream` : les métriques et compteurs se mettent à jour
+automatiquement sans rechargement, tout en réutilisant le même snapshot que
+`/metrics` pour rester cohérents avec les payloads JSON.
 
 Le scheduler publie le backlog, l'état des nœuds (RUNNING/OK/KO) et les
 phéromones au dashboard SSE (`npm run start:dashboard`). Active
@@ -435,7 +554,29 @@ journal des écritures.
 ```
 
 Les intensités guident le scheduler réactif et sont visibles dans les overlays
-Mermaid et le dashboard.
+Mermaid et le dashboard. Le champ accepte désormais les options suivantes :
+
+* `defaultHalfLifeMs` — demi-vie utilisée par défaut lors d'un `stig_decay`
+  sans paramètre explicite ;
+* `minIntensity` / `maxIntensity` — bornes utilisées pour normaliser les
+  intensités dans les exports heatmap et éviter que les valeurs aberrantes ne
+  saturent l'affichage.
+
+La sortie de `stig_snapshot` inclut un bloc `heatmap` contenant les cellules
+agrégées (`total_intensity`, `normalised`) ainsi que les contributions par
+type. Les dashboards peuvent consommer ce bloc directement pour afficher une
+heatmap à échelle fixe.
+
+Les réponses exposent aussi `pheromone_bounds` (bornes normalisées min/max et
+plafond de normalisation) et un bloc `summary` avec `rows` déjà formatées
+(`Min/Max/Ceiling`) ainsi qu'un `tooltip`. L'autoscaler et les dashboards peuvent
+ainsi afficher les limites courantes sans répliquer la logique de formatage et
+rester alignés avec les outils MCP (`plan_run_*`, Contract-Net, événements SSE).
+
+Les exécutions `plan_run_bt` / `plan_run_reactive` exposent également
+`event_payload.pheromone_bounds` dans leurs événements lifecycle (`tick`) et
+`events_subscribe` relaie ces limites pour que les observateurs MCP puissent
+reconstruire les intensités normalisées côté client.
 
 ### Contrat-Net
 
@@ -456,7 +597,65 @@ Mermaid et le dashboard.
 
 Le résultat contient l'agent attribué (`awarded_agent_id`) et l'historique des
 enchères. Combine-le avec `plan_fanout` ou `child_send` pour adresser
-directement le gagnant.
+directement le gagnant. La réponse inclut également `pheromone_bounds`, un
+instantané des limites stigmergiques au moment de l'annonce, aligné sur la
+structure utilisée par `plan_run_bt` / `plan_run_reactive`. Les événements
+`cnp_call_*` publiés sur le bus MCP exposent le même bloc afin que les
+observateurs puissent auditer l'attribution Contract-Net avec la même échelle
+que celle utilisée par le scheduler.
+
+Lors de la priorisation des enchères, la pénalité d'occupation (`busy_penalty`)
+est multipliée par un facteur de pression dérivé de `pheromone_bounds`. Quand
+le plafond normalisé augmente (pression élevée), ce facteur renforce
+l'avantage accordé aux agents disponibles pour éviter la saturation. À
+l'inverse, l'absence de bornes ou une charge faible maintient un facteur neutre
+(`1`) afin que les préférences explicites (`preference_bonus`, `agent_bias`)
+continuent de dominer.
+
+Les snapshots Contract-Net incluent le booléen `auto_bid_enabled` afin de
+savoir si des enchères heuristiques sont gérées automatiquement pour cet appel.
+Quand cette option est active, chaque enchère heuristique embarque
+`metadata.pheromone_pressure`, le facteur appliqué à `busy_penalty`, ce qui
+permet aux observateurs de corréler visuellement la pression stigmergique et
+les coûts effectifs. Utilise
+`ContractNetCoordinator.updateCallPheromoneBounds(callId, bounds, options)` pour
+mettre à jour un appel ouvert lorsque les limites stigmergiques évoluent : la
+methode actualise `pheromone_bounds` et réémet des enchères heuristiques avec la
+raison `auto_refresh` tout en laissant les offres manuelles intactes. Passe
+`refreshAutoBids: false` pour ne modifier que les bornes, ou
+`includeNewAgents: false` pour ignorer les agents enregistrés après
+l'annonce. Le serveur expose également l'outil `cnp_refresh_bounds` qui réalise
+cette opération pour un `call_id` donné ; si `bounds` n'est pas fourni, les
+limites courantes du champ stigmergique sont utilisées. Le résultat précise les
+agents rafraîchis (`refreshed_agents`) ainsi que le drapeau
+`auto_bid_refreshed`.
+
+Lorsque les bornes évoluent côté stigmergie, un watcher automatique déclenche un
+rafraîchissement pour tous les appels ouverts via
+`watchContractNetPheromoneBounds`. Chaque mise à jour émet l'événement
+`cnp_call_bounds_updated` sur le bus MCP afin que les observateurs suivent les
+re-synchronisations d'enchères et la nouvelle pression de phéromones. Pour
+éviter un bruit excessif lorsque le champ stigmergique est mis à jour en rafale,
+le watcher regroupe par défaut les notifications sur une fenêtre de `50 ms`
+(`coalesce_window_ms`). Abaisse la valeur à `0` pour revenir aux rafraîchissements
+immédiats, ou augmente-la pour amortir davantage les scénarios très agités.
+
+Pour instrumenter ces rafraîchissements, passe un callback `onTelemetry` lors de
+la création du watcher. Il recevra des instantanés cumulés contenant le nombre
+d'événements `received_updates`, ceux coalescés (`coalesced_updates`), les
+rafraîchissements ignorés car les bornes n'ont pas changé (`skipped_refreshes`),
+ainsi que `flushes` et `applied_refreshes` (rafraîchissements ayant appelé
+`updateCallPheromoneBounds`). Les mêmes métriques sont journalisées au niveau
+`debug` (`contract_net_bounds_watcher_telemetry`) pour faciliter l'observation en
+production.
+
+Le serveur démarre automatiquement un watcher connecté au champ de stigmergie
+partagé et enregistre les compteurs dans un collecteur interne. L'outil MCP
+`cnp_watcher_telemetry` expose ces données à la demande : il indique si la
+collecte est active, fournit le nombre total d'émissions, la date du dernier
+snapshot (`last_emitted_at_ms` / `last_emitted_at_iso`) et le dernier bloc de
+compteurs (`last_snapshot`). Les champs reflètent exactement les compteurs du
+callback `onTelemetry`, y compris les bornes applicables (`last_bounds`).
 
 ### Consensus rapide
 

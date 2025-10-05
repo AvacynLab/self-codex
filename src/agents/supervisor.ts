@@ -71,6 +71,9 @@ export interface OrchestratorSupervisorOptions {
  * so it can be registered alongside the autoscaler inside the execution loop.
  */
 export class OrchestratorSupervisor implements LoopReconciler {
+  /** Identifier surfaced in execution loop diagnostics and lifecycle events. */
+  public readonly id = "supervisor";
+
   private readonly childManager: SupervisorChildManager;
   private readonly logger?: StructuredLogger;
   private readonly actions: Required<SupervisorActions>;

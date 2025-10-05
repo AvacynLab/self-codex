@@ -1,7 +1,12 @@
 import { describe, it } from "mocha";
 import { expect } from "chai";
 
-import type { BehaviorNode, BehaviorTickResult, TickRuntime } from "../src/executor/bt/types.js";
+import type {
+  BehaviorNode,
+  BehaviorNodeSnapshot,
+  BehaviorTickResult,
+  TickRuntime,
+} from "../src/executor/bt/types.js";
 import { BehaviorTreeInterpreter } from "../src/executor/bt/interpreter.js";
 import {
   ReactiveScheduler,
@@ -51,6 +56,7 @@ class ManualClock {
 /** Behaviour node returning scripted results to control interpreter progression. */
 class ScriptedNode implements BehaviorNode {
   private index = 0;
+  private status: BehaviorNodeSnapshot["status"] = "idle";
 
   constructor(
     public readonly id: string,
@@ -60,11 +66,39 @@ class ScriptedNode implements BehaviorNode {
   async tick(_runtime: TickRuntime): Promise<BehaviorTickResult> {
     const result = this.results[Math.min(this.index, this.results.length - 1)];
     this.index += 1;
+    this.status = result.status === "running" ? "running" : result.status;
     return result;
   }
 
   reset(): void {
     // Preserve execution history to keep consuming the scripted results.
+  }
+
+  snapshot(): BehaviorNodeSnapshot {
+    return {
+      id: this.id,
+      type: "scripted-node",
+      status: this.status,
+      progress: this.getProgress() * 100,
+      state: { index: this.index, status: this.status },
+    } satisfies BehaviorNodeSnapshot;
+  }
+
+  restore(snapshot: BehaviorNodeSnapshot): void {
+    if (snapshot.type !== "scripted-node") {
+      throw new Error(`expected scripted-node snapshot for ${this.id}, received ${snapshot.type}`);
+    }
+    const state = snapshot.state as { index?: number; status?: BehaviorNodeSnapshot["status"] } | undefined;
+    this.index = typeof state?.index === "number" ? state.index : 0;
+    this.status = state?.status ?? "idle";
+  }
+
+  getProgress(): number {
+    if (this.results.length === 0) {
+      return 1;
+    }
+    const consumed = Math.min(this.index, this.results.length);
+    return consumed / this.results.length;
   }
 }
 
