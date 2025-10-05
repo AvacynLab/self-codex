@@ -25,7 +25,9 @@ import {
   bridgeContractNetEvents,
   bridgeValueEvents,
   bridgeStigmergyEvents,
+  createContractNetWatcherTelemetryListener,
 } from "./events/bridges.js";
+import { serialiseForSse } from "./events/sse.js";
 import { startHttpServer } from "./httpServer.js";
 import { startDashboardServer } from "./monitor/dashboard.js";
 import { LogJournal, type LogStream } from "./monitor/log.js";
@@ -50,14 +52,17 @@ import { selectMemoryContext } from "./memory/attention.js";
 import { LoopDetector } from "./guard/loopDetector.js";
 import { BlackboardStore } from "./coord/blackboard.js";
 import { ContractNetCoordinator } from "./coord/contractNet.js";
+import { ContractNetWatcherTelemetryRecorder, watchContractNetPheromoneBounds } from "./coord/contractNetWatchers.js";
 import { StigmergyField } from "./coord/stigmergy.js";
 import { KnowledgeGraph } from "./knowledge/knowledgeGraph.js";
 import { CausalMemory } from "./knowledge/causalMemory.js";
 import { ValueGraph } from "./values/valueGraph.js";
 import type { ValueFilterDecision } from "./values/valueGraph.js";
 import { ResourceRegistry, ResourceRegistryError } from "./resources/registry.js";
+import { renderResourceWatchSseMessages, serialiseResourceWatchResultForSse } from "./resources/sse.js";
 import { IdempotencyRegistry } from "./infra/idempotency.js";
-import { PlanLifecycleRegistry } from "./executor/planLifecycle.js";
+import { PlanLifecycleRegistry, PlanRunNotFoundError } from "./executor/planLifecycle.js";
+import type { PlanLifecycleSnapshot } from "./executor/planLifecycle.js";
 import {
   ChildCancelInputShape,
   ChildCancelInputSchema,
@@ -165,7 +170,13 @@ import {
   handleStigMark,
   handleStigBatch,
   handleStigSnapshot,
+  CnpRefreshBoundsInputSchema,
+  CnpRefreshBoundsInputShape,
+  handleCnpRefreshBounds,
   handleCnpAnnounce,
+  CnpWatcherTelemetryInputSchema,
+  CnpWatcherTelemetryInputShape,
+  handleCnpWatcherTelemetry,
   ConsensusVoteInputSchema,
   ConsensusVoteInputShape,
   handleConsensusVote,
@@ -359,6 +370,8 @@ const resources = new ResourceRegistry({ blackboard });
 const stigmergy = new StigmergyField();
 /** Shared contract-net coordinator balancing task assignments. */
 const contractNet = new ContractNetCoordinator();
+/** Telemetry recorder tracking automatic Contract-Net bounds refreshes. */
+const contractNetWatcherTelemetry = new ContractNetWatcherTelemetryRecorder();
 /** Registry replaying cached results for idempotent operations. */
 const idempotencyRegistry = new IdempotencyRegistry();
 /** Shared knowledge graph storing reusable plan patterns. */
@@ -626,6 +639,19 @@ let activeLoggerOptions: LoggerOptions = { ...baseLoggerOptions };
 let logger = instantiateLogger(activeLoggerOptions);
 const eventStore = new EventStore({ maxHistory: 5000, logger });
 const eventBus = new EventBus({ historyLimit: 5000 });
+
+const contractNetWatcherTelemetryListener = createContractNetWatcherTelemetryListener({
+  bus: eventBus,
+  recorder: contractNetWatcherTelemetry,
+});
+
+const detachContractNetBoundsWatcher = watchContractNetPheromoneBounds({
+  field: stigmergy,
+  contractNet,
+  logger,
+  onTelemetry: contractNetWatcherTelemetryListener,
+});
+process.once("exit", () => detachContractNetBoundsWatcher());
 
 // Bridge coordination primitives to the unified event bus so downstream MCP
 // clients can observe blackboard and stigmergic activity without bespoke
@@ -1265,7 +1291,8 @@ function getPlanToolContext(): PlanToolContext {
     loopDetector,
     autoscaler: runtimeFeatures.enableAutoscaler ? autoscaler : undefined,
     btStatusRegistry,
-    planLifecycle: runtimeFeatures.enablePlanLifecycle ? planLifecycle : undefined,
+    planLifecycle,
+    planLifecycleFeatureEnabled: runtimeFeatures.enablePlanLifecycle,
     idempotency: runtimeFeatures.enableIdempotency ? idempotencyRegistry : undefined,
   };
 }
@@ -1315,6 +1342,7 @@ function getCoordinationToolContext(): CoordinationToolContext {
     contractNet,
     logger,
     idempotency: runtimeFeatures.enableIdempotency ? idempotencyRegistry : undefined,
+    contractNetWatcherTelemetry,
   };
 }
 
@@ -1809,6 +1837,7 @@ const ResourceWatchInputSchema = z
     uri: z.string().min(1),
     from_seq: z.number().int().min(0).optional(),
     limit: z.number().int().positive().max(500).optional(),
+    format: z.enum(["json", "sse"]).optional(),
   })
   .strict();
 const ResourceWatchInputShape = ResourceWatchInputSchema.shape;
@@ -2657,15 +2686,30 @@ server.registerTool(
         fromSeq: parsed.from_seq,
         limit: parsed.limit,
       });
-      const structured = {
+      const format = parsed.format ?? "json";
+      const baseStructured = {
         uri: result.uri,
         kind: result.kind,
         events: result.events,
         next_seq: result.nextSeq,
-      };
+        format,
+      } as const;
+
+      if (format === "sse") {
+        // Convert each record to a single-line SSE payload so streaming transports remain
+        // resilient when cancellation reasons or log lines contain control characters.
+        const messages = serialiseResourceWatchResultForSse(result);
+        const stream = renderResourceWatchSseMessages(messages);
+        const structured = { ...baseStructured, stream, messages };
+        return {
+          content: [{ type: "text" as const, text: j({ tool: "resources_watch", result: structured }) }],
+          structuredContent: structured,
+        };
+      }
+
       return {
-        content: [{ type: "text" as const, text: j({ tool: "resources_watch", result: structured }) }],
-        structuredContent: structured,
+        content: [{ type: "text" as const, text: j({ tool: "resources_watch", result: baseStructured }) }],
+        structuredContent: baseStructured,
       };
     } catch (error) {
       const uri =
@@ -2726,7 +2770,7 @@ server.registerTool(
       const stream =
         format === "sse"
           ? serialised
-              .map((evt) => [`id: ${evt.seq}`, `event: ${evt.cat}`, `data: ${JSON.stringify(evt)}`, ``].join("\n"))
+              .map((evt) => [`id: ${evt.seq}`, `event: ${evt.cat}`, `data: ${serialiseForSse(evt)}`, ``].join("\n"))
               .join("\n")
           : serialised.map((evt) => JSON.stringify(evt)).join("\n");
       const nextSeq = events.length ? events[events.length - 1].seq : parsed.from_seq ?? null;
@@ -5087,6 +5131,10 @@ server.registerTool(
       const parsed = OpCancelInputSchema.parse(input);
       const outcome = requestCancellation(parsed.op_id, { reason: parsed.reason ?? null });
       const handle = getCancellation(parsed.op_id);
+      const lifecycleSnapshot =
+        handle?.runId != null
+          ? tryGetPlanLifecycleSnapshot(handle.runId, logger, "op_cancel_lifecycle_snapshot_failed")
+          : null;
       // Surface the correlation metadata recorded when the operation was
       // registered so observers can link cancellation requests to plan
       // lifecycle artefacts.
@@ -5099,6 +5147,8 @@ server.registerTool(
         graph_id: handle?.graphId ?? null,
         node_id: handle?.nodeId ?? null,
         child_id: handle?.childId ?? null,
+        progress: lifecycleSnapshot?.progress ?? null,
+        lifecycle: lifecycleSnapshot,
       };
       logger.info("op_cancel", result);
       return {
@@ -5137,13 +5187,28 @@ server.registerTool(
         child_id: operation.childId,
       }));
       const reason = parsed.reason ?? null;
+      // Surface the lifecycle snapshot (state, progress, failure details) when
+      // the plan registry is enabled so MCP clients do not need to issue an
+      // immediate follow-up `plan_status` call after cancelling a run.
+      const lifecycleSnapshot = tryGetPlanLifecycleSnapshot(
+        parsed.run_id,
+        logger,
+        "plan_cancel_lifecycle_snapshot_failed",
+      );
       logger.info("plan_cancel", {
         run_id: parsed.run_id,
         reason,
         affected: serialisedOperations.length,
         operations: serialisedOperations,
+        progress: lifecycleSnapshot?.progress ?? null,
       });
-      const result = { run_id: parsed.run_id, reason, operations: serialisedOperations };
+      const result = {
+        run_id: parsed.run_id,
+        reason,
+        operations: serialisedOperations,
+        progress: lifecycleSnapshot?.progress ?? null,
+        lifecycle: lifecycleSnapshot,
+      };
       return {
         content: [{ type: "text" as const, text: j({ tool: "plan_cancel", result }) }],
         structuredContent: result,
@@ -5370,6 +5435,49 @@ server.registerTool(
       };
     } catch (error) {
       return coordinationToolError("cnp_announce", error);
+    }
+  },
+);
+
+server.registerTool(
+  "cnp_refresh_bounds",
+  {
+    title: "Contract-Net refresh bounds",
+    description: "Met à jour les bornes de phéromones d'un appel Contract-Net ouvert.",
+    inputSchema: CnpRefreshBoundsInputShape,
+  },
+  async (input) => {
+    try {
+      pruneExpired();
+      const parsed = CnpRefreshBoundsInputSchema.parse(input);
+      const result = handleCnpRefreshBounds(getCoordinationToolContext(), parsed);
+      return {
+        content: [{ type: "text" as const, text: j({ tool: "cnp_refresh_bounds", result }) }],
+        structuredContent: result,
+      };
+    } catch (error) {
+      return coordinationToolError("cnp_refresh_bounds", error);
+    }
+  },
+);
+
+server.registerTool(
+  "cnp_watcher_telemetry",
+  {
+    title: "Contract-Net watcher telemetry",
+    description: "Expose les compteurs du watcher de bornes Contract-Net (rafraîchissements auto).",
+    inputSchema: CnpWatcherTelemetryInputShape,
+  },
+  async (input) => {
+    try {
+      const parsed = CnpWatcherTelemetryInputSchema.parse(input);
+      const result = handleCnpWatcherTelemetry(getCoordinationToolContext(), parsed);
+      return {
+        content: [{ type: "text" as const, text: j({ tool: "cnp_watcher_telemetry", result }) }],
+        structuredContent: result,
+      };
+    } catch (error) {
+      return coordinationToolError("cnp_watcher_telemetry", error);
     }
   },
 );
@@ -6837,6 +6945,7 @@ if (isMain) {
         btStatusRegistry,
         supervisorAgent: orchestratorSupervisor,
         logger,
+        contractNetWatcherTelemetry,
       });
       cleanup.push(handle.close);
     } catch (error) {
@@ -6874,6 +6983,7 @@ export {
   server,
   graphState,
   childSupervisor,
+  resources,
   logJournal,
   DEFAULT_CHILD_RUNTIME,
   buildLiveEvents,
@@ -6884,3 +6994,29 @@ export {
   stopHeartbeat,
 };
 
+/**
+ * Helper returning the latest lifecycle snapshot associated with the provided run identifier.
+ * The lookup is guarded by the feature toggle so cancellation tools can call the helper without
+ * duplicating defensive checks or log plumbing in every handler.
+ */
+function tryGetPlanLifecycleSnapshot(
+  runId: string,
+  logger: StructuredLogger,
+  logEvent: string,
+): PlanLifecycleSnapshot | null {
+  if (!runtimeFeatures.enablePlanLifecycle) {
+    return null;
+  }
+  try {
+    return planLifecycle.getSnapshot(runId);
+  } catch (error) {
+    if (error instanceof PlanRunNotFoundError) {
+      return null;
+    }
+    logger.warn(logEvent, {
+      run_id: runId,
+      message: error instanceof Error ? error.message : String(error),
+    });
+    return null;
+  }
+}

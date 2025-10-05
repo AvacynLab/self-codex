@@ -49,6 +49,8 @@ const DEFAULT_THRESHOLDS = {
  * period to avoid oscillations.
  */
 export class Autoscaler {
+    /** Identifier surfaced in execution loop diagnostics and lifecycle events. */
+    id = "autoscaler";
     supervisor;
     logger;
     now;

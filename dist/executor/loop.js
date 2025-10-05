@@ -97,6 +97,7 @@ export class ExecutionLoop {
     budgetMs;
     onError;
     reconcilers;
+    afterTick;
     state = "idle";
     timer = null;
     abortController = new AbortController();
@@ -115,6 +116,7 @@ export class ExecutionLoop {
         this.scheduleYield = options.scheduleYield ?? ((resume) => defaultSetTimeout(resume, 0));
         this.cancelYield = options.cancelYield ?? ((handle) => defaultClearTimeout(handle));
         this.reconcilers = options.reconcilers ? [...options.reconcilers] : [];
+        this.afterTick = options.afterTick;
     }
     /** Total number of ticks successfully executed so far. */
     get tickCount() {
@@ -231,12 +233,29 @@ export class ExecutionLoop {
             }
         }
         finally {
+            const reconcilersRun = [];
             if (this.reconcilers.length > 0) {
                 for (const reconciler of this.reconcilers) {
+                    const before = this.now();
                     try {
                         await reconciler.reconcile(context);
+                        reconcilersRun.push({
+                            id: this.describeReconciler(reconciler),
+                            status: "ok",
+                            durationMs: Math.max(0, this.now() - before),
+                        });
                     }
                     catch (error) {
+                        reconcilersRun.push({
+                            id: this.describeReconciler(reconciler),
+                            status: "error",
+                            durationMs: Math.max(0, this.now() - before),
+                            errorMessage: error instanceof Error
+                                ? error.message
+                                : typeof error === "string"
+                                    ? error
+                                    : undefined,
+                        });
                         if (this.onError) {
                             this.onError(error);
                         }
@@ -248,8 +267,18 @@ export class ExecutionLoop {
                     }
                 }
             }
+            if (this.afterTick) {
+                this.afterTick({ context, reconcilers: reconcilersRun });
+            }
             this.processing = false;
             this.resolveIdle();
         }
+    }
+    describeReconciler(reconciler) {
+        if (typeof reconciler.id === "string" && reconciler.id.trim().length > 0) {
+            return reconciler.id.trim();
+        }
+        const name = reconciler.constructor?.name;
+        return typeof name === "string" && name.length > 0 ? name : "reconciler";
     }
 }

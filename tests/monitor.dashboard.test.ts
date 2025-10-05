@@ -7,8 +7,13 @@ import { EventStore } from "../src/eventStore.js";
 import { GraphState } from "../src/graphState.js";
 import { StructuredLogger } from "../src/logger.js";
 import { StigmergyField } from "../src/coord/stigmergy.js";
+import { ContractNetWatcherTelemetryRecorder } from "../src/coord/contractNetWatchers.js";
 import { BehaviorTreeStatusRegistry } from "../src/monitor/btStatusRegistry.js";
-import { createDashboardRouter, computeDashboardHeatmap } from "../src/monitor/dashboard.js";
+import {
+  createDashboardRouter,
+  computeDashboardHeatmap,
+  type DashboardSnapshot,
+} from "../src/monitor/dashboard.js";
 import { ChildShutdownResult } from "../src/childRuntime.js";
 
 class StubSupervisor {
@@ -129,6 +134,12 @@ describe("monitor/dashboard", function (this: Mocha.Suite) {
     expect(heatmap.errors[0]).to.deep.include({ childId: "child-1", value: 1 });
     expect(heatmap.tokens[0]).to.deep.include({ childId: "child-1", value: 42 });
     expect(heatmap.pheromones[0]).to.deep.include({ childId: "child-1" });
+    expect(heatmap.pheromones[0]?.normalised).to.be.greaterThan(0);
+    expect(heatmap.bounds).to.not.equal(null);
+    expect(heatmap.bounds?.normalisation_ceiling ?? 0).to.be.greaterThan(0);
+    expect(heatmap.boundsTooltip).to.be.a("string");
+    expect(heatmap.boundsTooltip).to.contain("Min");
+    expect(heatmap.boundsTooltip).to.contain("Ceiling");
   });
 
   it("exposes HTTP endpoints for monitoring and control", async () => {
@@ -138,6 +149,25 @@ describe("monitor/dashboard", function (this: Mocha.Suite) {
     const supervisor = new StubSupervisor();
     const stigmergy = new StigmergyField();
     const btStatusRegistry = new BehaviorTreeStatusRegistry();
+    let telemetryNow = 42;
+    const contractNetWatcherTelemetry = new ContractNetWatcherTelemetryRecorder(() => telemetryNow);
+    // Include HTML markup and Unicode line/paragraph separators to ensure the
+    // dashboard bootstrap escapes characters that could otherwise terminate the
+    // inline script prematurely when serialised into the HTML payload.
+    const maliciousReason = "<script>alert('x')</script> next line paragraph";
+    contractNetWatcherTelemetry.record({
+      reason: maliciousReason,
+      receivedUpdates: 1,
+      coalescedUpdates: 0,
+      skippedRefreshes: 0,
+      appliedRefreshes: 0,
+      flushes: 1,
+      lastBounds: {
+        min_intensity: 0,
+        max_intensity: null,
+        normalisation_ceiling: 1,
+      },
+    });
 
     const createdAt = Date.now() - 1000;
     graphState.createJob("job-1", { goal: "demo", createdAt, state: "running" });
@@ -157,6 +187,7 @@ describe("monitor/dashboard", function (this: Mocha.Suite) {
       autoBroadcast: false,
       stigmergy,
       btStatusRegistry,
+      contractNetWatcherTelemetry,
     });
 
     try {
@@ -167,9 +198,47 @@ describe("monitor/dashboard", function (this: Mocha.Suite) {
 
       const metricsRes = new MockResponse();
       await router.handleRequest(createMockRequest("GET", "/metrics"), metricsRes as unknown as ServerResponse);
-      const metrics = JSON.parse(metricsRes.body) as { children: Array<{ id: string }> };
-      expect(metrics).to.have.property("children");
+      const metrics = JSON.parse(metricsRes.body) as DashboardSnapshot;
       expect(metrics.children[0]).to.include({ id: "child-1" });
+      expect(metrics.stigmergy.bounds).to.not.equal(null);
+      expect(metrics.stigmergy.rows[0]?.value).to.not.equal("n/a");
+      expect(metrics.stigmergy.rows.map((row) => row.label)).to.include("Normalisation ceiling");
+      expect(metrics.contractNetWatcherTelemetry).to.deep.equal({
+        emissions: 1,
+        lastEmittedAtMs: 42,
+        lastSnapshot: {
+          reason: maliciousReason,
+          receivedUpdates: 1,
+          coalescedUpdates: 0,
+          skippedRefreshes: 0,
+          appliedRefreshes: 0,
+          flushes: 1,
+          lastBounds: {
+            min_intensity: 0,
+            max_intensity: null,
+            normalisation_ceiling: 1,
+          },
+        },
+      });
+
+      const uiRes = new MockResponse();
+      await router.handleRequest(createMockRequest("GET", "/"), uiRes as unknown as ServerResponse);
+      expect(uiRes.statusCode).to.equal(200);
+      expect(uiRes.headers["content-type"]).to.equal("text/html; charset=utf-8");
+      expect(uiRes.body).to.contain("Contract-Net Watcher");
+      expect(uiRes.body).to.contain("id=\"connection-status\"");
+      expect(uiRes.body).to.contain("EventSource(\"stream\")");
+      expect(uiRes.body).to.contain("Emissions");
+      expect(uiRes.body).to.contain(">1<");
+      expect(uiRes.body).to.contain("Notifications reçues");
+      expect(uiRes.body).to.contain("Normalisation ceiling");
+      expect(uiRes.body).to.contain("&lt;script&gt;alert(&#39;x&#39;)&lt;/script&gt;");
+      expect(uiRes.body).to.contain("next line");
+      expect(uiRes.body).to.contain("paragraph");
+      const scriptPayload = uiRes.body.match(/const initialSnapshot = ([^;]+);/);
+      expect(scriptPayload?.[1]).to.include("\\u003cscript");
+      expect(scriptPayload?.[1]).to.include("\\u2028next line");
+      expect(scriptPayload?.[1]).to.include("\\u2029paragraph");
 
       const streamRes = new MockResponse();
       await router.handleRequest(createMockRequest("GET", "/stream"), streamRes as unknown as ServerResponse);

@@ -178,10 +178,12 @@ export class PlanLifecycleRegistry {
             case "tick":
             case "loop":
             case "node": {
-                if (entry.snapshot.state !== "running") {
-                    entry.snapshot.state = "running";
+                if (entry.snapshot.state !== "done" && entry.snapshot.state !== "failed") {
+                    if (entry.snapshot.state !== "running") {
+                        entry.snapshot.state = "running";
+                    }
+                    entry.snapshot.paused_at = null;
                 }
-                entry.snapshot.paused_at = null;
                 break;
             }
             case "complete": {

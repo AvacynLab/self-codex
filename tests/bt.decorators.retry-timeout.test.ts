@@ -1,7 +1,12 @@
 import { describe, it } from "mocha";
 import { expect } from "chai";
 
-import type { BehaviorNode, BehaviorTickResult, TickRuntime } from "../src/executor/bt/types.js";
+import type {
+  BehaviorNode,
+  BehaviorNodeSnapshot,
+  BehaviorTickResult,
+  TickRuntime,
+} from "../src/executor/bt/types.js";
 import { RetryNode, TaskLeaf, TimeoutNode } from "../src/executor/bt/nodes.js";
 
 /** Minimal fake clock driving deterministic wait promises in tests. */
@@ -45,6 +50,8 @@ class TestClock {
 /** Behaviour node that fails a configurable number of times before succeeding. */
 class FlakyNode implements BehaviorNode {
   private attempts = 0;
+  private ticks = 0;
+  private status: BehaviorNodeSnapshot["status"] = "idle";
 
   constructor(
     public readonly id: string,
@@ -52,15 +59,47 @@ class FlakyNode implements BehaviorNode {
   ) {}
 
   async tick(_runtime: TickRuntime): Promise<BehaviorTickResult> {
+    this.ticks += 1;
     if (this.attempts < this.failBeforeSuccess) {
       this.attempts += 1;
+      this.status = "failure";
       return { status: "failure" };
     }
+    this.status = "success";
     return { status: "success" };
   }
 
   reset(): void {
     // Preserve the attempt counter so retry decorators observe cumulative failures.
+  }
+
+  snapshot(): BehaviorNodeSnapshot {
+    return {
+      id: this.id,
+      type: "flaky-node",
+      status: this.status,
+      progress: this.getProgress() * 100,
+      state: { attempts: this.attempts, ticks: this.ticks },
+    } satisfies BehaviorNodeSnapshot;
+  }
+
+  restore(snapshot: BehaviorNodeSnapshot): void {
+    if (snapshot.type !== "flaky-node") {
+      throw new Error(`expected flaky-node snapshot for ${this.id}, received ${snapshot.type}`);
+    }
+    const state = snapshot.state as { attempts?: number; ticks?: number } | undefined;
+    this.attempts = typeof state?.attempts === "number" ? state.attempts : 0;
+    this.ticks = typeof state?.ticks === "number" ? state.ticks : 0;
+    this.status = snapshot.status;
+  }
+
+  getProgress(): number {
+    const totalAttempts = this.failBeforeSuccess + 1;
+    if (totalAttempts <= 0) {
+      return 1;
+    }
+    const executed = Math.min(this.ticks, totalAttempts);
+    return executed / totalAttempts;
   }
 }
 
@@ -68,6 +107,7 @@ class FlakyNode implements BehaviorNode {
 class DeferredNode implements BehaviorNode {
   private resolver: ((result: BehaviorTickResult) => void) | null = null;
   private pending: Promise<BehaviorTickResult> | null = null;
+  private status: BehaviorNodeSnapshot["status"] = "idle";
 
   constructor(public readonly id: string, private readonly result: BehaviorTickResult) {}
 
@@ -77,6 +117,7 @@ class DeferredNode implements BehaviorNode {
         this.resolver = resolve;
       });
     }
+    this.status = "running";
     return this.pending;
   }
 
@@ -84,11 +125,43 @@ class DeferredNode implements BehaviorNode {
     this.resolver?.(this.result);
     this.resolver = null;
     this.pending = null;
+    this.status = this.result.status === "running" ? "running" : this.result.status;
   }
 
   reset(): void {
     this.pending = null;
     this.resolver = null;
+    this.status = "idle";
+  }
+
+  snapshot(): BehaviorNodeSnapshot {
+    return {
+      id: this.id,
+      type: "deferred-node",
+      status: this.status,
+      progress: this.getProgress() * 100,
+      state: { pending: this.pending !== null },
+    } satisfies BehaviorNodeSnapshot;
+  }
+
+  restore(snapshot: BehaviorNodeSnapshot): void {
+    if (snapshot.type !== "deferred-node") {
+      throw new Error(`expected deferred-node snapshot for ${this.id}, received ${snapshot.type}`);
+    }
+    this.status = snapshot.status;
+    // Pending promises cannot be resumed deterministically, so reset to idle when restoring.
+    this.pending = null;
+    this.resolver = null;
+  }
+
+  getProgress(): number {
+    if (this.status === "idle") {
+      return 0;
+    }
+    if (this.status === "running") {
+      return 0.5;
+    }
+    return 1;
   }
 }
 

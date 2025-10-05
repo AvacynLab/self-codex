@@ -159,6 +159,143 @@ describe("events subscribe plan correlation", () => {
     }
   });
 
+  it("publishes reconcilers telemetry for reactive loop events", async function () {
+    this.timeout(15000);
+
+    const baselineGraphSnapshot = graphState.serialize();
+    const baselineChildrenIndex = childSupervisor.childrenIndex.serialize();
+    const baselineFeatures = getRuntimeFeatures();
+
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    const client = new Client({ name: "events-subscribe-plan-reconcilers", version: "1.0.0-test" });
+
+    await server.close().catch(() => {});
+    await server.connect(serverTransport);
+    await client.connect(clientTransport);
+
+    try {
+      // Enable the scheduler stack so the execution loop publishes reconcilers diagnostics.
+      configureRuntimeFeatures({
+        ...baselineFeatures,
+        enableEventsBus: true,
+        enableReactiveScheduler: true,
+        enablePlanLifecycle: true,
+        enableBT: true,
+        enableStigmergy: true,
+        enableAutoscaler: true,
+        enableSupervisor: true,
+      });
+      graphState.resetFromSnapshot({ nodes: [], edges: [], directives: { graph: "plan-loop-telemetry" } });
+      childSupervisor.childrenIndex.restore({});
+
+      const baselineResponse = await client.callTool({ name: "events_subscribe", arguments: { limit: 1 } });
+      expect(baselineResponse.isError ?? false).to.equal(false);
+      const baselineContent = baselineResponse.structuredContent as { next_seq: number | null };
+      const cursor = baselineContent?.next_seq ?? 0;
+
+      const runId = "plan-loop-run";
+      const opId = "plan-loop-op";
+      const graphId = "plan-loop-graph";
+      const nodeId = "plan-loop-node";
+
+      const reactiveResponse = await client.callTool({
+        name: "plan_run_reactive",
+        arguments: {
+          tree: {
+            id: "plan-loop-tree",
+            root: { type: "task", id: "root", node_id: "root", tool: "noop", input_key: "payload" },
+          },
+          variables: { payload: { ping: "loop" } },
+          tick_ms: 10,
+          timeout_ms: 250,
+          run_id: runId,
+          op_id: opId,
+          graph_id: graphId,
+          node_id: nodeId,
+        },
+      });
+      expect(reactiveResponse.isError ?? false).to.equal(false);
+
+      const jsonlinesResponse = await client.callTool({
+        name: "events_subscribe",
+        arguments: {
+          from_seq: cursor,
+          cats: ["bt_run"],
+          format: "jsonlines",
+        },
+      });
+      expect(jsonlinesResponse.isError ?? false).to.equal(false);
+
+      const jsonlinesStructured = jsonlinesResponse.structuredContent as {
+        events: Array<{
+          run_id: string | null;
+          data?: { [key: string]: unknown };
+        }>;
+      };
+      const loopEvent = jsonlinesStructured.events.find((event) => {
+        const payload = (event.data ?? {}) as { phase?: string; reconcilers?: unknown };
+        return event.run_id === runId && payload.phase === "loop";
+      });
+      expect(loopEvent, "Reactive loop event should be exposed via JSON Lines").to.not.equal(undefined);
+      const loopPayload = (loopEvent?.data ?? {}) as {
+        reconcilers?: Array<{ id?: unknown; status?: unknown; duration_ms?: unknown; error?: unknown }>;
+      };
+      expect(Array.isArray(loopPayload.reconcilers), "Loop events must carry a reconcilers array").to.equal(true);
+      const reconcilers = (loopPayload.reconcilers ?? []) as Array<{
+        id: string;
+        status: string;
+        duration_ms: number;
+        error: unknown;
+      }>;
+      expect(reconcilers.length, "At least one reconciler should be reported").to.be.greaterThan(0);
+      for (const reconciler of reconcilers) {
+        expect(typeof reconciler.id).to.equal("string");
+        expect(["ok", "error"].includes(reconciler.status)).to.equal(true);
+        expect(reconciler.duration_ms).to.be.at.least(0);
+        // Errors are normalised to null when no failure occurred.
+        expect(reconciler.error === null || typeof reconciler.error === "string").to.equal(true);
+      }
+      const reconcilerIds = reconcilers.map((entry) => entry.id);
+      expect(reconcilerIds).to.include("supervisor");
+      expect(reconcilerIds).to.include("autoscaler");
+
+      const sseResponse = await client.callTool({
+        name: "events_subscribe",
+        arguments: {
+          from_seq: cursor,
+          cats: ["bt_run"],
+          format: "sse",
+        },
+      });
+      expect(sseResponse.isError ?? false).to.equal(false);
+      const sseStructured = sseResponse.structuredContent as { stream: string };
+      expect(typeof sseStructured.stream).to.equal("string");
+
+      // Decode every `data:` line to confirm the SSE format preserves reconcilers telemetry.
+      const sseEvents = sseStructured.stream
+        .split("\n")
+        .filter((line) => line.startsWith("data: "))
+        .map((line) => JSON.parse(line.slice("data: ".length)) as {
+          run_id: string | null;
+          data?: { [key: string]: unknown };
+        });
+      const sseLoop = sseEvents.find((event) => {
+        const payload = (event.data ?? {}) as { phase?: string };
+        return event.run_id === runId && payload.phase === "loop";
+      });
+      expect(sseLoop, "Reactive loop event should be serialised in SSE output").to.not.equal(undefined);
+      const ssePayload = (sseLoop?.data ?? {}) as { reconcilers?: unknown };
+      expect(Array.isArray(ssePayload.reconcilers), "SSE payload should expose reconcilers").to.equal(true);
+    } finally {
+      configureRuntimeFeatures(baselineFeatures);
+      childSupervisor.childrenIndex.restore(baselineChildrenIndex);
+      graphState.resetFromSnapshot(baselineGraphSnapshot);
+      await childSupervisor.disposeAll().catch(() => {});
+      await client.close();
+      await server.close().catch(() => {});
+    }
+  });
+
   it("streams correlated events when reactive plans are paused and resumed", async function () {
     this.timeout(15000);
 
@@ -289,6 +426,17 @@ describe("events subscribe plan correlation", () => {
       expect(executedNodeSet.has("fetch"), "fetch node should have executed").to.equal(true);
       expect(executedNodeSet.has("deploy"), "deploy node should have executed").to.equal(true);
       expect(executedNodeSet.has("verify"), "verify node should have executed").to.equal(true);
+
+      const tickLifecycle = runEvents.find((event) => event.data?.phase === "tick");
+      expect(tickLifecycle, "tick event should be published").to.not.equal(undefined);
+      const tickData = (tickLifecycle!.data ?? {}) as { event_payload?: Record<string, unknown> };
+      const tickPayload = tickData.event_payload as
+        | { pheromone_bounds?: { min_intensity?: number; max_intensity?: number | null; normalisation_ceiling?: number } }
+        | undefined;
+      const tickBounds = tickPayload?.pheromone_bounds;
+      expect(tickBounds).to.not.equal(undefined);
+      expect(tickBounds?.min_intensity).to.equal(0);
+      expect(tickBounds?.max_intensity).to.equal(null);
     } finally {
       if (runPromise) {
         await runPromise.catch(() => {});

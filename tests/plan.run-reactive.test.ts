@@ -7,6 +7,10 @@ import {
   PlanRunReactiveInputSchema,
   handlePlanRunReactive,
 } from "../src/tools/planTools.js";
+import {
+  PlanLifecycleRegistry,
+  type PlanLifecycleEvent,
+} from "../src/executor/planLifecycle.js";
 import { StigmergyField } from "../src/coord/stigmergy.js";
 import {
   cancelRun,
@@ -15,6 +19,7 @@ import {
 } from "../src/executor/cancel.js";
 
 class StubAutoscaler {
+  public readonly id = "autoscaler";
   public backlogUpdates: number[] = [];
   public samples: Array<{ durationMs: number; success: boolean }> = [];
   public reconcileCalls = 0;
@@ -33,6 +38,7 @@ class StubAutoscaler {
 }
 
 class StubSupervisorAgent {
+  public readonly id = "supervisor";
   public snapshots: Array<{ backlog: number }> = [];
   public reconcileCalls = 0;
 
@@ -42,6 +48,19 @@ class StubSupervisorAgent {
 
   async reconcile(): Promise<void> {
     this.reconcileCalls += 1;
+  }
+}
+
+class RecordingLifecycle extends PlanLifecycleRegistry {
+  public readonly events: PlanLifecycleEvent[] = [];
+
+  override recordEvent(runId: string, event: PlanLifecycleEvent) {
+    this.events.push({
+      phase: event.phase,
+      payload: structuredClone(event.payload) as Record<string, unknown>,
+      timestamp: event.timestamp,
+    });
+    return super.recordEvent(runId, event);
   }
 }
 
@@ -60,6 +79,8 @@ describe("plan_run_reactive tool", () => {
   function buildContext(options: {
     autoscaler?: StubAutoscaler;
     supervisorAgent?: StubSupervisorAgent;
+    lifecycle?: PlanLifecycleRegistry;
+    lifecycleEnabled?: boolean;
     events?: Array<{ kind: string; level?: string; payload?: unknown }>;
   } = {}): PlanToolContext {
     const logger = {
@@ -70,7 +91,8 @@ describe("plan_run_reactive tool", () => {
     } as unknown as PlanToolContext["logger"];
 
     const events = options.events ?? [];
-    return {
+    const lifecycleEnabled = options.lifecycleEnabled ?? (options.lifecycle ? true : undefined);
+    const context: PlanToolContext = {
       supervisor: {} as PlanToolContext["supervisor"],
       graphState: {} as PlanToolContext["graphState"],
       logger,
@@ -82,7 +104,10 @@ describe("plan_run_reactive tool", () => {
       stigmergy: new StigmergyField(),
       autoscaler: options.autoscaler as unknown as PlanToolContext["autoscaler"],
       supervisorAgent: options.supervisorAgent as unknown as PlanToolContext["supervisorAgent"],
+      planLifecycle: options.lifecycle,
+      planLifecycleFeatureEnabled: lifecycleEnabled,
     } satisfies PlanToolContext;
+    return context;
   }
 
   it("runs the reactive loop and surfaces scheduler telemetry", async () => {
@@ -223,5 +248,115 @@ describe("plan_run_reactive tool", () => {
     expect(cancelEvent, "expected cancellation lifecycle event").to.exist;
     const cancelPayload = cancelEvent?.payload as Record<string, unknown> | undefined;
     expect(cancelPayload?.reason).to.equal("test");
+  });
+
+  it("normalises Behaviour Tree cancellations raised by behaviour tools", async () => {
+    const events: Array<{ kind: string; payload?: unknown }> = [];
+    const context = buildContext({ events });
+
+    const input = PlanRunReactiveInputSchema.parse({
+      tree: {
+        id: "reactive-abort-demo",
+        root: {
+          type: "task",
+          id: "abort-node",
+          node_id: "abort-node",
+          tool: "abort",
+          input_key: "payload",
+        },
+      },
+      variables: { payload: { attempt: 1 } },
+      tick_ms: 25,
+    });
+
+    const executionPromise = handlePlanRunReactive(context, input);
+    await clock.tickAsync(25);
+
+    let caught: unknown;
+    try {
+      await executionPromise;
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).to.be.instanceOf(OperationCancelledError);
+    const cancellationError = caught as OperationCancelledError;
+    expect(cancellationError.details.reason).to.equal("behaviour tool aborted by test");
+
+    const errorEvent = events.find((event) => {
+      if (event.kind !== "BT_RUN" || !event.payload || typeof event.payload !== "object") {
+        return false;
+      }
+      const phase = (event.payload as { phase?: unknown }).phase;
+      return phase === "error";
+    });
+    expect(errorEvent, "expected lifecycle error event").to.exist;
+    const payload = (errorEvent?.payload ?? null) as { status?: unknown; reason?: unknown } | null;
+    expect(payload?.status).to.equal("cancelled");
+    expect(payload?.reason).to.equal("behaviour tool aborted by test");
+  });
+
+  it("records loop reconcilers and scheduler events in lifecycle telemetry", async () => {
+    const autoscaler = new StubAutoscaler();
+    const supervisorAgent = new StubSupervisorAgent();
+    const lifecycle = new RecordingLifecycle({ clock: () => clock.now });
+    const context = buildContext({
+      autoscaler,
+      supervisorAgent,
+      lifecycle,
+      lifecycleEnabled: false,
+    });
+
+    const input = PlanRunReactiveInputSchema.parse({
+      tree: {
+        id: "telemetry",
+        root: {
+          type: "task",
+          id: "root",
+          node_id: "root",
+          tool: "noop",
+          input_key: "payload",
+        },
+      },
+      variables: { payload: { value: 42 } },
+      tick_ms: 25,
+    });
+
+    const execution = handlePlanRunReactive(context, input);
+    await clock.tickAsync(25);
+    const result = await execution;
+
+    expect(result.status).to.equal("success");
+    const phases = lifecycle.events.map((event) => event.phase);
+    expect(phases).to.include("tick");
+    expect(phases).to.include("loop");
+    expect(phases).to.include("complete");
+
+    const tickEvent = lifecycle.events.find((event) => event.phase === "tick");
+    expect(tickEvent).to.not.equal(undefined);
+    const tickPayload = tickEvent!.payload as Record<string, unknown>;
+    expect(tickPayload.event_payload).to.be.an("object");
+    const schedulerSummary = tickPayload.event_payload as Record<string, unknown>;
+    expect(schedulerSummary.node_id).to.equal("root");
+    expect(tickPayload.tick_duration_ms).to.be.a("number");
+    const bounds = schedulerSummary.pheromone_bounds as
+      | { min_intensity?: number; max_intensity?: number | null; normalisation_ceiling?: number }
+      | null
+      | undefined;
+    expect(bounds).to.not.equal(undefined);
+    expect(bounds?.min_intensity).to.equal(0);
+    expect(bounds?.max_intensity).to.equal(null);
+    expect(bounds?.normalisation_ceiling ?? 0).to.be.greaterThan(0);
+
+    const loopEvent = lifecycle.events.find((event) => event.phase === "loop");
+    expect(loopEvent).to.not.equal(undefined);
+    const loopPayload = loopEvent!.payload as Record<string, unknown>;
+    expect(loopPayload.reconcilers).to.be.an("array");
+    const reconcilers = loopPayload.reconcilers as Array<Record<string, unknown>>;
+    const reconcilerIds = reconcilers.map((item) => item.id);
+    expect(reconcilerIds).to.include("autoscaler");
+    expect(reconcilerIds).to.include("supervisor");
+    expect(reconcilers.every((item) => typeof item.duration_ms === "number")).to.equal(true);
+    expect(reconcilers.every((item) => item.status === "ok")).to.equal(true);
   });
 });

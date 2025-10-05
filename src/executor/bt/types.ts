@@ -32,6 +32,8 @@ export interface TickRuntime {
   now(): number;
   /** Await for the provided duration while allowing fake timers in tests. */
   wait(ms: number): Promise<void>;
+  /** Optional pseudo-random source leveraged by jittered backoffs. */
+  random?(): number;
   /** Shared map of variables exposed to guards and task leaves. */
   variables: Record<string, unknown>;
   /** Optional cancellation signal propagated by the orchestrator. */
@@ -93,11 +95,22 @@ export interface SelectorDefinition {
   children: BehaviorNodeDefinition[];
 }
 
+/**
+ * Supported aggregation policies for {@link ParallelDefinition}. The legacy
+ * string shorthands are kept for backward compatibility while the `quota`
+ * variant exposes an explicit threshold so plans can succeed once a subset of
+ * children complete successfully.
+ */
+export type ParallelPolicy =
+  | "all"
+  | "any"
+  | { mode: "quota"; threshold: number };
+
 /** Definition of a parallel composite node. */
 export interface ParallelDefinition {
   type: "parallel";
   id?: string;
-  policy: "all" | "any";
+  policy: ParallelPolicy;
   children: BehaviorNodeDefinition[];
 }
 
@@ -107,6 +120,7 @@ export interface RetryDefinition {
   id?: string;
   max_attempts: number;
   backoff_ms?: number;
+  backoff_jitter_ms?: number;
   child: BehaviorNodeDefinition;
 }
 
@@ -180,7 +194,15 @@ export const BehaviorNodeDefinitionSchema: z.ZodType<BehaviorNodeDefinition> = z
     z.object({
       type: z.literal("parallel"),
       id: z.string().min(1).optional(),
-      policy: z.enum(["all", "any"]),
+      policy: z.union([
+        z.enum(["all", "any"]),
+        z
+          .object({
+            mode: z.literal("quota"),
+            threshold: z.number().int().min(1),
+          })
+          .strict(),
+      ]),
       children: z.array(BehaviorNodeDefinitionSchema).min(1),
     }),
     z.object({
@@ -188,6 +210,7 @@ export const BehaviorNodeDefinitionSchema: z.ZodType<BehaviorNodeDefinition> = z
       id: z.string().min(1).optional(),
       max_attempts: z.number().int().min(1),
       backoff_ms: z.number().int().min(0).optional(),
+      backoff_jitter_ms: z.number().int().min(0).optional(),
       child: BehaviorNodeDefinitionSchema,
     }),
     z.object({

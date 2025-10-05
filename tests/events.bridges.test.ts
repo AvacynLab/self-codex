@@ -13,10 +13,12 @@ import {
   bridgeContractNetEvents,
   bridgeValueEvents,
   bridgeStigmergyEvents,
+  createContractNetWatcherTelemetryListener,
 } from "../src/events/bridges.js";
 import { BlackboardStore } from "../src/coord/blackboard.js";
 import { StigmergyField } from "../src/coord/stigmergy.js";
 import { ContractNetCoordinator } from "../src/coord/contractNet.js";
+import { ContractNetWatcherTelemetryRecorder } from "../src/coord/contractNetWatchers.js";
 import {
   registerCancellation,
   requestCancellation,
@@ -113,9 +115,16 @@ describe("event bridges", () => {
     expect(markEvent.nodeId).to.equal("node-1");
     expect(markEvent.graphId).to.equal("graph-42");
     expect(markEvent.data).to.deep.include({ type: "routing", intensity: 1.5 });
+    const markBounds = (markEvent.data as { bounds?: { minIntensity?: number; maxIntensity?: number | null; normalisationCeiling?: number } }).bounds;
+    expect(markBounds).to.not.equal(undefined);
+    expect(markBounds?.minIntensity).to.equal(0);
+    expect(markBounds?.maxIntensity).to.equal(null);
+    expect(markBounds?.normalisationCeiling).to.equal(1.5);
     expect(evaporateEvent.msg).to.equal("stigmergy_change");
     expect(evaporateEvent.data).to.deep.include({ nodeId: "node-1" });
     expect(evaporateEvent.data.totalIntensity).to.be.lessThan(1.5);
+    const evaporateBounds = (evaporateEvent.data as { bounds?: { normalisationCeiling?: number } }).bounds;
+    expect(evaporateBounds?.normalisationCeiling ?? 0).to.be.lessThanOrEqual(1.5);
   });
 
   it("routes cancellation lifecycle events with correlation metadata", () => {
@@ -274,6 +283,7 @@ describe("event bridges", () => {
     expect(announced.graphId).to.equal("graph-contract");
     expect(announced.data).to.have.nested.property("call.status", "open");
     expect(announced.data).to.have.nested.property("call.bids").that.is.an("array");
+    expect(announced.data).to.have.nested.property("call.pheromoneBounds").that.is.null;
 
     expect(manualBid.msg).to.equal("cnp_bid_updated");
     expect(manualBid.data).to.deep.include({ previousKind: "heuristic" });
@@ -288,12 +298,14 @@ describe("event bridges", () => {
     expect(awarded.graphId).to.equal("graph-contract");
     expect(awarded.data).to.have.nested.property("decision.agentId", agent.agentId);
     expect(awarded.data).to.have.nested.property("call.status", "awarded");
+    expect(awarded.data).to.have.nested.property("call.pheromoneBounds").that.is.null;
 
     expect(completed.runId).to.equal("run-auction");
     expect(completed.jobId).to.equal("job-auction");
     expect(completed.opId).to.equal("op-auction");
     expect(completed.graphId).to.equal("graph-contract");
     expect(completed.data).to.have.nested.property("call.status", "completed");
+    expect(completed.data).to.have.nested.property("call.pheromoneBounds").that.is.null;
 
     expect(unregistered.data).to.deep.include({ agentId: agent.agentId });
     expect(unregistered.data).to.have.property("remainingAssignments", 0);
@@ -773,5 +785,68 @@ describe("event bridges", () => {
     expect(explained?.opId).to.equal("op-values");
 
     dispose();
+  });
+
+  it("records and publishes Contract-Net watcher telemetry on the event bus", () => {
+    // Manual clock keeps recorder timestamps deterministic while the bus still advances.
+    let timestamp = 4_000;
+    const recorder = new ContractNetWatcherTelemetryRecorder(() => timestamp);
+    const bus = new EventBus({ historyLimit: 5, now: () => ++timestamp });
+
+    const listener = createContractNetWatcherTelemetryListener({
+      bus,
+      recorder,
+      resolveCorrelation: () => ({ graphId: "graph-contract-net" }),
+    });
+
+    listener({
+      reason: "flush",
+      receivedUpdates: 3,
+      coalescedUpdates: 1,
+      skippedRefreshes: 2,
+      appliedRefreshes: 4,
+      flushes: 2,
+      lastBounds: {
+        min_intensity: 0,
+        max_intensity: 10,
+        normalisation_ceiling: 5,
+      },
+    });
+
+    const events = bus.list({ cats: ["contract_net"] });
+    expect(events).to.have.lengthOf(1);
+    const [telemetryEvent] = events;
+    expect(telemetryEvent.msg).to.equal("cnp_watcher_telemetry");
+    expect(telemetryEvent.graphId).to.equal("graph-contract-net");
+    expect(telemetryEvent.data).to.deep.equal({
+      reason: "flush",
+      received_updates: 3,
+      coalesced_updates: 1,
+      skipped_refreshes: 2,
+      applied_refreshes: 4,
+      flushes: 2,
+      last_bounds: {
+        min_intensity: 0,
+        max_intensity: 10,
+        normalisation_ceiling: 5,
+      },
+    });
+
+    const state = recorder.snapshot();
+    expect(state.emissions).to.equal(1);
+    expect(state.lastEmittedAtMs).to.equal(4_000);
+    expect(state.lastSnapshot).to.deep.equal({
+      reason: "flush",
+      receivedUpdates: 3,
+      coalescedUpdates: 1,
+      skippedRefreshes: 2,
+      appliedRefreshes: 4,
+      flushes: 2,
+      lastBounds: {
+        min_intensity: 0,
+        max_intensity: 10,
+        normalisation_ceiling: 5,
+      },
+    });
   });
 });

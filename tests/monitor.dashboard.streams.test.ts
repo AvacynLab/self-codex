@@ -7,6 +7,7 @@ import { GraphState } from "../src/graphState.js";
 import { EventStore } from "../src/eventStore.js";
 import { StructuredLogger } from "../src/logger.js";
 import { StigmergyField } from "../src/coord/stigmergy.js";
+import { ContractNetWatcherTelemetryRecorder } from "../src/coord/contractNetWatchers.js";
 import { BehaviorTreeStatusRegistry } from "../src/monitor/btStatusRegistry.js";
 import type { SupervisorSchedulerSnapshot } from "../src/agents/supervisor.js";
 import {
@@ -167,7 +168,13 @@ describe("monitor/dashboard streams", () => {
       expect(firstSnapshot.children[0]).to.include({ id: "child-1" });
       expect(firstSnapshot.scheduler.backlog).to.equal(3);
       expect(firstSnapshot.heatmap.pheromones[0]?.childId).to.equal("node-alpha");
+      expect(firstSnapshot.heatmap.pheromones[0]?.normalised ?? 0).to.be.within(0, 1);
       expect(firstSnapshot.behaviorTrees[0]?.treeId).to.equal("tree-demo");
+      expect(firstSnapshot.pheromoneBounds?.min_intensity).to.equal(0);
+      expect(firstSnapshot.pheromoneBounds?.normalisation_ceiling ?? 0).to.be.greaterThan(0);
+      expect(firstSnapshot.heatmap.boundsTooltip).to.be.a("string");
+      expect(firstSnapshot.stigmergy.bounds).to.not.equal(null);
+      expect(firstSnapshot.stigmergy.rows[0]?.value).to.not.equal("n/a");
 
       graphState.patchChild("child-1", { state: "completed", lastTs: createdAt + 800 });
       eventStore.emit({ kind: "REPLY", level: "info", childId: "child-1", payload: { tokens: 12 } });
@@ -190,6 +197,68 @@ describe("monitor/dashboard streams", () => {
       expect(latestSnapshot.heatmap.tokens[0]?.value ?? 0).to.be.greaterThan(0);
       expect(latestSnapshot.scheduler.backlog).to.equal(1);
       expect(latestSnapshot.behaviorTrees[0]?.nodes[0]?.status).to.equal("success");
+      expect(latestSnapshot.pheromoneBounds?.normalisation_ceiling ?? 0).to.be.greaterThan(0);
+      expect(latestSnapshot.heatmap.boundsTooltip).to.be.a("string");
+      expect(latestSnapshot.stigmergy.rows.find((row) => row.label === "Max intensity")?.value).to.not.equal("n/a");
+    } finally {
+      await router.close();
+    }
+  });
+
+  it("keeps SSE payloads single-line even when telemetry reasons span multiple lines", async () => {
+    const logger = new StructuredLogger();
+    const graphState = new GraphState();
+    const eventStore = new EventStore({ maxHistory: 5, logger });
+    const supervisor = new StubSupervisor();
+    const stigmergy = new StigmergyField();
+    const btStatusRegistry = new BehaviorTreeStatusRegistry();
+    const contractNetWatcherTelemetry = new ContractNetWatcherTelemetryRecorder(() => 1_234);
+
+    // Include classic CR/LF pairs and Unicode separators to mimic verbose watcher reasons.
+    const multiLineReason = "first line\nsecond line\rthird line\u2028separator\u2029closing";
+    contractNetWatcherTelemetry.record({
+      reason: multiLineReason,
+      receivedUpdates: 3,
+      coalescedUpdates: 1,
+      skippedRefreshes: 1,
+      appliedRefreshes: 2,
+      flushes: 1,
+      lastBounds: {
+        min_intensity: 0,
+        max_intensity: null,
+        normalisation_ceiling: 1,
+      },
+    });
+
+    const router = createDashboardRouter({
+      graphState,
+      eventStore,
+      supervisor,
+      logger,
+      streamIntervalMs: 200,
+      autoBroadcast: false,
+      stigmergy,
+      btStatusRegistry,
+      contractNetWatcherTelemetry,
+    });
+
+    try {
+      const response = new StreamResponse();
+      await router.handleRequest(createRequest("GET", "/stream"), response as unknown as ServerResponse);
+
+      const events = response.dataEvents;
+      expect(events.length).to.be.greaterThan(0);
+
+      const payload = events[0];
+      expect(payload).to.not.include("\n");
+      expect(payload).to.not.include("\r");
+      const snapshot = JSON.parse(payload) as DashboardSnapshot;
+      expect(snapshot.contractNetWatcherTelemetry?.lastSnapshot?.reason).to.equal(multiLineReason);
+
+      expect(response.body).to.not.include(String.fromCharCode(0x2028));
+      expect(response.body).to.not.include(String.fromCharCode(0x2029));
+      expect(response.body.includes("\\u2028")).to.equal(true);
+      expect(response.body.includes("\\u2029")).to.equal(true);
     } finally {
       await router.close();
     }

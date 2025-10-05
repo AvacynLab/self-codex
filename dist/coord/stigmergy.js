@@ -16,6 +16,22 @@ export class StigmergyInvalidTypeError extends Error {
 /** Smallest intensity we keep in the field before considering it evaporated. */
 const EPSILON = 1e-6;
 /**
+ * Converts arbitrary pheromone bounds (either scheduler or stigmergy derived)
+ * into a serialisable structure suitable for logs, events, or API responses.
+ * When the upper bound is unbounded (`Infinity`) the helper returns `null`
+ * instead so JSON consumers do not have to special-case the value.
+ */
+export function normalisePheromoneBoundsForTelemetry(bounds) {
+    if (!bounds) {
+        return null;
+    }
+    return {
+        min_intensity: bounds.minIntensity,
+        max_intensity: Number.isFinite(bounds.maxIntensity) ? bounds.maxIntensity : null,
+        normalisation_ceiling: bounds.normalisationCeiling,
+    };
+}
+/**
  * Deterministic stigmergic field storing pheromone intensities per node and type.
  * The field accumulates markings, supports exponential evaporation and notifies
  * observers whenever a value changes so schedulers can react in real time.
@@ -25,8 +41,30 @@ export class StigmergyField {
     totals = new Map();
     emitter = new EventEmitter();
     now;
+    defaultHalfLifeMs;
+    minIntensity;
+    maxIntensity;
+    evictionThreshold;
     constructor(options = {}) {
         this.now = options.now ?? (() => Date.now());
+        if (options.defaultHalfLifeMs !== undefined && (!Number.isFinite(options.defaultHalfLifeMs) || options.defaultHalfLifeMs <= 0)) {
+            throw new Error("defaultHalfLifeMs must be a positive finite number when provided");
+        }
+        if (options.minIntensity !== undefined && (!Number.isFinite(options.minIntensity) || options.minIntensity < 0)) {
+            throw new Error("minIntensity must be a finite number greater than or equal to 0");
+        }
+        if (options.maxIntensity !== undefined && (!Number.isFinite(options.maxIntensity) || options.maxIntensity <= 0)) {
+            throw new Error("maxIntensity must be a positive finite number when provided");
+        }
+        const min = options.minIntensity ?? 0;
+        const max = options.maxIntensity ?? Number.POSITIVE_INFINITY;
+        if (max <= min) {
+            throw new Error("maxIntensity must be greater than minIntensity");
+        }
+        this.defaultHalfLifeMs = options.defaultHalfLifeMs;
+        this.minIntensity = min;
+        this.maxIntensity = max;
+        this.evictionThreshold = EPSILON;
     }
     /** Adds pheromone to the field and returns the updated point snapshot. */
     mark(nodeId, type, intensity) {
@@ -36,18 +74,13 @@ export class StigmergyField {
         const normalisedType = normaliseType(type);
         const timestamp = this.now();
         const key = this.makeKey(nodeId, normalisedType);
-        const existing = this.entries.get(key);
-        const previousIntensity = existing?.intensity ?? 0;
-        const nextIntensity = previousIntensity + intensity;
-        const entry = {
+        const { snapshot, total } = this.applyEntryMutation({
             nodeId,
             type: normalisedType,
-            intensity: nextIntensity,
-            updatedAt: timestamp,
-        };
-        this.entries.set(key, entry);
-        const total = this.adjustTotal(nodeId, nextIntensity - previousIntensity, timestamp);
-        const snapshot = this.cloneEntry(entry);
+            delta: intensity,
+            timestamp,
+            key,
+        });
         this.emitChange({
             nodeId,
             type: normalisedType,
@@ -84,18 +117,13 @@ export class StigmergyField {
                 const normalisedType = normaliseType(payload.type);
                 const timestamp = this.now();
                 const key = this.makeKey(payload.nodeId, normalisedType);
-                const existing = this.entries.get(key);
-                const previousIntensity = existing?.intensity ?? 0;
-                const nextIntensity = previousIntensity + payload.intensity;
-                const entry = {
+                const { snapshot, total } = this.applyEntryMutation({
                     nodeId: payload.nodeId,
                     type: normalisedType,
-                    intensity: nextIntensity,
-                    updatedAt: timestamp,
-                };
-                this.entries.set(key, entry);
-                const total = this.adjustTotal(payload.nodeId, nextIntensity - previousIntensity, timestamp);
-                const snapshot = this.cloneEntry(entry);
+                    delta: payload.intensity,
+                    timestamp,
+                    key,
+                });
                 results.push({ point: snapshot, nodeTotal: { nodeId: payload.nodeId, intensity: total.intensity, updatedAt: total.updatedAt } });
                 events.push({
                     nodeId: payload.nodeId,
@@ -129,7 +157,11 @@ export class StigmergyField {
      * propagate updates.
      */
     evaporate(halfLifeMs) {
-        if (!Number.isFinite(halfLifeMs) || halfLifeMs <= 0) {
+        const effectiveHalfLife = halfLifeMs ?? this.defaultHalfLifeMs;
+        if (effectiveHalfLife === undefined) {
+            throw new Error("halfLifeMs must be provided when no defaultHalfLifeMs is configured");
+        }
+        if (!Number.isFinite(effectiveHalfLife) || effectiveHalfLife <= 0) {
             throw new Error("halfLifeMs must be a positive finite number");
         }
         const timestamp = this.now();
@@ -141,15 +173,15 @@ export class StigmergyField {
                 entry.updatedAt = timestamp;
                 continue;
             }
-            const decayFactor = Math.pow(0.5, elapsed / halfLifeMs);
+            const decayFactor = Math.pow(0.5, elapsed / effectiveHalfLife);
             const decayed = entry.intensity * decayFactor;
-            const nextIntensity = decayed <= EPSILON ? 0 : decayed;
+            const nextIntensity = decayed <= this.evictionThreshold ? 0 : this.clampIntensity(decayed);
             const delta = nextIntensity - entry.intensity;
             if (Math.abs(delta) <= EPSILON) {
                 entry.updatedAt = timestamp;
                 continue;
             }
-            if (nextIntensity <= EPSILON) {
+            if (nextIntensity <= this.evictionThreshold) {
                 this.entries.delete(key);
             }
             else {
@@ -178,6 +210,20 @@ export class StigmergyField {
         }
         return { nodeId, intensity: total.intensity, updatedAt: total.updatedAt };
     }
+    /**
+     * Exposes the configured intensity bounds alongside the current
+     * normalisation ceiling so downstream consumers can map pheromones to a
+     * fixed scale without duplicating the field's logic.
+     */
+    getIntensityBounds() {
+        const intensities = [...this.totals.values()].map((total) => total.intensity);
+        const normalisationCeiling = this.resolveNormalisationCeiling(intensities);
+        return {
+            minIntensity: this.minIntensity,
+            maxIntensity: this.maxIntensity,
+            normalisationCeiling,
+        };
+    }
     /** Produces a deterministic snapshot of the entire field for diagnostics. */
     fieldSnapshot() {
         const generatedAt = this.now();
@@ -199,6 +245,67 @@ export class StigmergyField {
         });
         return { generatedAt, points, totals };
     }
+    /** Builds a heatmap-friendly snapshot aggregating intensities per node and type. */
+    heatmapSnapshot() {
+        const generatedAt = this.now();
+        const totals = new Map();
+        const contributions = new Map();
+        for (const entry of this.entries.values()) {
+            const pointBucket = contributions.get(entry.nodeId) ?? [];
+            pointBucket.push(entry);
+            contributions.set(entry.nodeId, pointBucket);
+            const total = totals.get(entry.nodeId);
+            if (!total) {
+                totals.set(entry.nodeId, { intensity: entry.intensity, updatedAt: entry.updatedAt });
+            }
+            else {
+                total.intensity += entry.intensity;
+                if (entry.updatedAt > total.updatedAt) {
+                    total.updatedAt = entry.updatedAt;
+                }
+            }
+        }
+        const intensities = [...totals.values()].map((total) => total.intensity);
+        const normalisationCeiling = this.resolveNormalisationCeiling(intensities);
+        const cells = [];
+        for (const [nodeId, total] of totals.entries()) {
+            const rawPoints = contributions.get(nodeId) ?? [];
+            const points = rawPoints
+                .map((entry) => ({
+                nodeId: entry.nodeId,
+                type: entry.type,
+                intensity: entry.intensity,
+                normalised: this.normaliseIntensity(entry.intensity, normalisationCeiling),
+                updatedAt: entry.updatedAt,
+            }))
+                .sort((a, b) => {
+                if (b.intensity === a.intensity) {
+                    return a.type.localeCompare(b.type);
+                }
+                return b.intensity - a.intensity;
+            });
+            const cell = {
+                nodeId,
+                totalIntensity: total.intensity,
+                normalised: this.normaliseIntensity(total.intensity, normalisationCeiling),
+                updatedAt: total.updatedAt,
+                points,
+            };
+            cells.push(cell);
+        }
+        cells.sort((a, b) => {
+            if (b.totalIntensity === a.totalIntensity) {
+                return a.nodeId.localeCompare(b.nodeId);
+            }
+            return b.totalIntensity - a.totalIntensity;
+        });
+        return {
+            generatedAt,
+            minIntensity: this.minIntensity,
+            maxIntensity: normalisationCeiling,
+            cells,
+        };
+    }
     /** Registers a listener invoked for every mutation of the field. */
     onChange(listener) {
         this.emitter.on("change", listener);
@@ -211,12 +318,13 @@ export class StigmergyField {
     }
     adjustTotal(nodeId, delta, timestamp) {
         const current = this.totals.get(nodeId) ?? { intensity: 0, updatedAt: timestamp };
-        const nextIntensity = Math.max(0, current.intensity + delta);
-        if (nextIntensity <= EPSILON) {
+        const nextIntensity = current.intensity + delta;
+        if (nextIntensity <= this.evictionThreshold) {
             this.totals.delete(nodeId);
             return { intensity: 0, updatedAt: timestamp };
         }
-        const updated = { intensity: nextIntensity, updatedAt: timestamp };
+        const clamped = Math.min(this.maxIntensity, nextIntensity);
+        const updated = { intensity: clamped, updatedAt: timestamp };
         this.totals.set(nodeId, updated);
         return updated;
     }
@@ -226,6 +334,58 @@ export class StigmergyField {
     makeKey(nodeId, type) {
         return `${nodeId}::${type}`;
     }
+    applyEntryMutation(payload) {
+        const existing = this.entries.get(payload.key);
+        const previousIntensity = existing?.intensity ?? 0;
+        const nextRaw = previousIntensity + payload.delta;
+        const clamped = this.clampIntensity(nextRaw);
+        const finalIntensity = clamped <= this.evictionThreshold ? 0 : clamped;
+        const delta = finalIntensity - previousIntensity;
+        if (finalIntensity <= this.evictionThreshold) {
+            this.entries.delete(payload.key);
+        }
+        else {
+            const entry = {
+                nodeId: payload.nodeId,
+                type: payload.type,
+                intensity: finalIntensity,
+                updatedAt: payload.timestamp,
+            };
+            this.entries.set(payload.key, entry);
+        }
+        const total = this.adjustTotal(payload.nodeId, delta, payload.timestamp);
+        const snapshot = finalIntensity <= this.evictionThreshold
+            ? { nodeId: payload.nodeId, type: payload.type, intensity: 0, updatedAt: payload.timestamp }
+            : this.cloneEntry(this.entries.get(payload.key));
+        return { snapshot, total };
+    }
+    clampIntensity(value) {
+        return Math.min(this.maxIntensity, Math.max(0, value));
+    }
+    normaliseIntensity(value, ceiling) {
+        const effectiveMax = ceiling;
+        const span = effectiveMax - this.minIntensity;
+        if (!Number.isFinite(span) || span <= 0) {
+            return value > this.minIntensity ? 1 : 0;
+        }
+        if (value <= this.minIntensity) {
+            return 0;
+        }
+        if (value >= effectiveMax) {
+            return 1;
+        }
+        return (value - this.minIntensity) / span;
+    }
+    resolveNormalisationCeiling(intensities) {
+        if (Number.isFinite(this.maxIntensity)) {
+            return this.maxIntensity;
+        }
+        let observedMax = this.minIntensity;
+        for (const value of intensities) {
+            observedMax = Math.max(observedMax, value);
+        }
+        return observedMax === this.minIntensity ? this.minIntensity + 1 : observedMax;
+    }
 }
 function normaliseType(raw) {
     const trimmed = raw.trim();
@@ -233,4 +393,61 @@ function normaliseType(raw) {
         throw new StigmergyInvalidTypeError(raw);
     }
     return trimmed.toLowerCase();
+}
+/** Formats an intensity bound into a concise human readable representation. */
+export function formatPheromoneBoundValue(value) {
+    if (value == null || !Number.isFinite(value)) {
+        return "∞";
+    }
+    const rounded = Number(value.toFixed(3));
+    const normalised = Object.is(rounded, -0) ? 0 : rounded;
+    return normalised.toString();
+}
+/** Builds the tooltip displayed when hovering the pheromone heatmap. */
+export function formatPheromoneBoundsTooltip(bounds) {
+    if (!bounds) {
+        return null;
+    }
+    const min = formatPheromoneBoundValue(bounds.min_intensity);
+    const max = formatPheromoneBoundValue(bounds.max_intensity);
+    const ceiling = formatPheromoneBoundValue(bounds.normalisation_ceiling);
+    return `Min ${min} • Max ${max} • Ceiling ${ceiling}`;
+}
+/**
+ * Generates pre-formatted rows describing the current pheromone bounds so
+ * dashboards and autoscaler views can surface the data without reimplementing
+ * formatting helpers.
+ */
+export function buildStigmergySummary(bounds) {
+    if (!bounds) {
+        const tooltip = "Les bornes ne sont pas encore disponibles : le champ n'a pas été initialisé.";
+        return {
+            bounds: null,
+            rows: [
+                { label: "Min intensity", value: "n/a", tooltip },
+                { label: "Max intensity", value: "n/a", tooltip },
+                { label: "Normalisation ceiling", value: "n/a", tooltip },
+            ],
+        };
+    }
+    return {
+        bounds,
+        rows: [
+            {
+                label: "Min intensity",
+                value: formatPheromoneBoundValue(bounds.min_intensity),
+                tooltip: "Borne basse appliquée avant normalisation (évite les valeurs négatives).",
+            },
+            {
+                label: "Max intensity",
+                value: formatPheromoneBoundValue(bounds.max_intensity),
+                tooltip: "Borne haute appliquée avant normalisation (∞ signifie pas de plafond fixe).",
+            },
+            {
+                label: "Normalisation ceiling",
+                value: formatPheromoneBoundValue(bounds.normalisation_ceiling),
+                tooltip: "Plafond utilisé pour calculer la valeur normalisée des cellules heatmap.",
+            },
+        ],
+    };
 }

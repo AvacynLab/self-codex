@@ -3,7 +3,12 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { BehaviorTreeInterpreter } from "../../src/executor/bt/interpreter.js";
-import type { BehaviorNode, BehaviorTickResult, TickRuntime } from "../../src/executor/bt/types.js";
+import type {
+  BehaviorNode,
+  BehaviorNodeSnapshot,
+  BehaviorTickResult,
+  TickRuntime,
+} from "../../src/executor/bt/types.js";
 import { ReactiveEventBus, ReactiveScheduler } from "../../src/executor/reactiveScheduler.js";
 
 /**
@@ -41,17 +46,47 @@ export const DEFAULT_SCHEDULER_BENCH_CONFIG: SchedulerBenchConfig = {
  * explicitly halts it once all events drained to keep the measurements bounded.
  */
 class BenchmarkBehaviorNode implements BehaviorNode {
+  public readonly id = "benchmark";
   public ticksExecuted = 0;
+  private status: BehaviorNodeSnapshot["status"] = "idle";
 
   async tick(runtime: TickRuntime): Promise<BehaviorTickResult> {
     this.ticksExecuted += 1;
     await runtime.invokeTool("bench.task", { step: this.ticksExecuted });
+    this.status = "running";
     return { status: "running" };
   }
 
   reset(): void {
     // The benchmark never asks for a reset because the node never succeeds.
     this.ticksExecuted = 0;
+    this.status = "idle";
+  }
+
+  snapshot(): BehaviorNodeSnapshot {
+    return {
+      id: this.id,
+      type: "benchmark-node",
+      status: this.status,
+      progress: this.getProgress() * 100,
+      state: { ticksExecuted: this.ticksExecuted },
+    } satisfies BehaviorNodeSnapshot;
+  }
+
+  restore(snapshot: BehaviorNodeSnapshot): void {
+    if (snapshot.type !== "benchmark-node") {
+      throw new Error(`expected benchmark-node snapshot for ${this.id}, received ${snapshot.type}`);
+    }
+    const state = snapshot.state as { ticksExecuted?: number } | undefined;
+    this.ticksExecuted = typeof state?.ticksExecuted === "number" ? state.ticksExecuted : 0;
+    this.status = snapshot.status;
+  }
+
+  getProgress(): number {
+    if (this.status === "running") {
+      return 0.5;
+    }
+    return this.status === "idle" ? 0 : 1;
   }
 }
 

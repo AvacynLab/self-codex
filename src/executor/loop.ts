@@ -27,6 +27,8 @@ export interface ExecutionLoopOptions {
   readonly tick: (context: LoopTickContext) => Promise<void> | void;
   /** Optional reconcilers invoked after each tick (autoscaler, monitors…). */
   readonly reconcilers?: LoopReconciler[];
+  /** Optional hook executed once the tick and reconcilers completed. */
+  readonly afterTick?: (details: LoopAfterTickDetails) => void;
   /** Custom clock used for diagnostics (defaults to {@link Date.now}). */
   readonly now?: () => number;
   /** Optional budget (in ms) after which ticks should yield cooperatively. */
@@ -45,8 +47,32 @@ export interface ExecutionLoopOptions {
  * high-level invariants (autoscaling, supervision, metrics collection…).
  */
 export interface LoopReconciler {
+  /** Optional identifier surfaced in loop diagnostics and lifecycle events. */
+  readonly id?: string;
   /** Reacts to the completion of a tick. */
   reconcile(context: LoopTickContext): Promise<void> | void;
+}
+
+/** Structured telemetry describing the execution of a reconciler during a tick. */
+export interface LoopReconcilerRun {
+  /** Identifier advertised by the reconciler or derived from its constructor name. */
+  readonly id: string;
+  /** Execution status reported after the reconciler returned. */
+  readonly status: "ok" | "error";
+  /** Duration spent executing the reconciler in milliseconds. */
+  readonly durationMs: number;
+  /** Optional error message surfaced when the reconciler threw. */
+  readonly errorMessage?: string;
+}
+
+/**
+ * Snapshot emitted after every tick so observers can correlate loop progress
+ * with the reconcilers that executed. Plan lifecycle events leverage this to
+ * document autoscaler/supervisor activity when the feature is toggled back on.
+ */
+export interface LoopAfterTickDetails {
+  readonly context: LoopTickContext;
+  readonly reconcilers: LoopReconcilerRun[];
 }
 
 /**
@@ -159,6 +185,7 @@ export class ExecutionLoop {
   private readonly budgetMs?: number;
   private readonly onError?: (error: unknown) => void;
   private readonly reconcilers: LoopReconciler[];
+  private readonly afterTick?: (details: LoopAfterTickDetails) => void;
 
   private state: LoopState = "idle";
   private timer: NodeJS.Timeout | null = null;
@@ -179,6 +206,7 @@ export class ExecutionLoop {
     this.scheduleYield = options.scheduleYield ?? ((resume) => defaultSetTimeout(resume, 0));
     this.cancelYield = options.cancelYield ?? ((handle) => defaultClearTimeout(handle as NodeJS.Timeout));
     this.reconcilers = options.reconcilers ? [...options.reconcilers] : [];
+    this.afterTick = options.afterTick;
   }
 
   /** Total number of ticks successfully executed so far. */
@@ -312,11 +340,29 @@ export class ExecutionLoop {
         });
       }
     } finally {
+      const reconcilersRun: LoopReconcilerRun[] = [];
       if (this.reconcilers.length > 0) {
         for (const reconciler of this.reconcilers) {
+          const before = this.now();
           try {
             await reconciler.reconcile(context);
+            reconcilersRun.push({
+              id: this.describeReconciler(reconciler),
+              status: "ok",
+              durationMs: Math.max(0, this.now() - before),
+            });
           } catch (error) {
+            reconcilersRun.push({
+              id: this.describeReconciler(reconciler),
+              status: "error",
+              durationMs: Math.max(0, this.now() - before),
+              errorMessage:
+                error instanceof Error
+                  ? error.message
+                  : typeof error === "string"
+                    ? error
+                    : undefined,
+            });
             if (this.onError) {
               this.onError(error);
             } else {
@@ -327,8 +373,19 @@ export class ExecutionLoop {
           }
         }
       }
+      if (this.afterTick) {
+        this.afterTick({ context, reconcilers: reconcilersRun });
+      }
       this.processing = false;
       this.resolveIdle();
     }
+  }
+
+  private describeReconciler(reconciler: LoopReconciler): string {
+    if (typeof reconciler.id === "string" && reconciler.id.trim().length > 0) {
+      return reconciler.id.trim();
+    }
+    const name = (reconciler as { constructor?: { name?: unknown } }).constructor?.name;
+    return typeof name === "string" && name.length > 0 ? name : "reconciler";
   }
 }

@@ -15,7 +15,15 @@ export const BehaviorNodeDefinitionSchema = z.lazy(() => z
     z.object({
         type: z.literal("parallel"),
         id: z.string().min(1).optional(),
-        policy: z.enum(["all", "any"]),
+        policy: z.union([
+            z.enum(["all", "any"]),
+            z
+                .object({
+                mode: z.literal("quota"),
+                threshold: z.number().int().min(1),
+            })
+                .strict(),
+        ]),
         children: z.array(BehaviorNodeDefinitionSchema).min(1),
     }),
     z.object({
@@ -23,6 +31,7 @@ export const BehaviorNodeDefinitionSchema = z.lazy(() => z
         id: z.string().min(1).optional(),
         max_attempts: z.number().int().min(1),
         backoff_ms: z.number().int().min(0).optional(),
+        backoff_jitter_ms: z.number().int().min(0).optional(),
         child: BehaviorNodeDefinitionSchema,
     }),
     z.object({

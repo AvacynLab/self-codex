@@ -124,7 +124,7 @@ export function buildBehaviorTree(
       case "retry": {
         const id = nextId(`${prefix}-retry`, node.id);
         const child = instantiate(node.child, `${id}-child`);
-        return track(new RetryNode(id, node.max_attempts, child, node.backoff_ms));
+        return track(new RetryNode(id, node.max_attempts, child, node.backoff_ms, node.backoff_jitter_ms));
       }
       case "timeout": {
         const id = nextId(`${prefix}-timeout`, node.id);

@@ -5,6 +5,8 @@ import { extractCorrelationHints } from "../events/correlation.js";
  * so it can be registered alongside the autoscaler inside the execution loop.
  */
 export class OrchestratorSupervisor {
+    /** Identifier surfaced in execution loop diagnostics and lifecycle events. */
+    id = "supervisor";
     childManager;
     logger;
     actions;
