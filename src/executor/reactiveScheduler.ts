@@ -101,6 +101,29 @@ interface ScheduledTick<E extends SchedulerEventName = SchedulerEventName> {
   causalEventId?: string;
 }
 
+/** Telemetry captured whenever the scheduler enqueues a new event. */
+export interface SchedulerEnqueueTelemetry<E extends SchedulerEventName = SchedulerEventName> {
+  /** Name of the scheduler event that was queued. */
+  event: E;
+  /** Raw payload describing the enqueued event. */
+  payload: SchedulerEventMap[E];
+  /** Total number of entries that were waiting in the queue before this enqueue. */
+  pendingBefore: number;
+  /** Total number of entries waiting in the queue after the enqueue operation. */
+  pendingAfter: number;
+  /**
+   * Retained for backwards compatibility with pre-`pendingAfter` consumers.
+   * Always mirrors {@link SchedulerEnqueueTelemetry.pendingAfter}.
+   */
+  pending: number;
+  /** Base priority assigned before fairness adjustments. */
+  basePriority: number;
+  /** Millisecond timestamp captured when the event was enqueued. */
+  enqueuedAt: number;
+  /** Monotonic identifier associated with the enqueued entry. */
+  sequence: number;
+}
+
 /**
  * Information surfaced after each tick so observers can inspect the scheduler
  * decisions, mainly for debugging and tests.
@@ -109,11 +132,17 @@ export interface SchedulerTickTrace<E extends SchedulerEventName = SchedulerEven
   event: E;
   payload: SchedulerEventMap[E];
   priority: number;
+  /** Base priority assigned before fairness adjustments took place. */
+  basePriority: number;
   enqueuedAt: number;
   startedAt: number;
   finishedAt: number;
   result: BehaviorTickResult;
+  /** Number of entries waiting in the queue right before this tick ran. */
+  pendingBefore: number;
   pendingAfter: number;
+  /** Monotonic identifier of the scheduled entry that triggered the tick. */
+  sequence: number;
   /** Monotonic batch identifier incremented every time the scheduler yields. */
   batchIndex: number;
   /** Number of ticks processed in the current batch so far (1-indexed). */
@@ -142,6 +171,8 @@ export interface ReactiveSchedulerOptions {
   batchQuantumMs?: number;
   /** Hard limit on the number of ticks processed per batch before yielding. */
   maxBatchTicks?: number;
+  /** Callback invoked whenever an event is enqueued on the scheduler bus. */
+  onEvent?: <E extends SchedulerEventName>(telemetry: SchedulerEnqueueTelemetry<E>) => void;
 }
 
 /** Default base priority assigned to each event type. */
@@ -174,6 +205,7 @@ export class ReactiveScheduler {
   private readonly agingFairnessBoost: number;
   private readonly basePriorities: Record<SchedulerEventName, number>;
   private readonly onTick?: (trace: SchedulerTickTrace) => void;
+  private readonly onEvent?: <E extends SchedulerEventName>(telemetry: SchedulerEnqueueTelemetry<E>) => void;
   private readonly getPheromoneIntensity?: (nodeId: string) => number;
   private readonly getPheromoneBounds?: () => PheromoneBounds | null | undefined;
   private readonly causalMemory?: CausalMemory;
@@ -224,6 +256,7 @@ export class ReactiveScheduler {
       ...(options.basePriorities ?? {}),
     };
     this.onTick = options.onTick;
+    this.onEvent = options.onEvent;
     this.getPheromoneIntensity = options.getPheromoneIntensity;
     this.getPheromoneBounds = options.getPheromoneBounds;
     this.causalMemory = options.causalMemory;
@@ -350,7 +383,21 @@ export class ReactiveScheduler {
       ) ?? undefined,
     };
     this.sequence += 1;
+    const pendingBefore = this.queue.length;
     this.queue.push(entry);
+    if (this.onEvent) {
+      const pendingAfter = this.queue.length;
+      this.onEvent({
+        event,
+        payload,
+        pendingBefore,
+        pendingAfter,
+        pending: pendingAfter,
+        basePriority: entry.basePriority,
+        enqueuedAt: entry.enqueuedAt,
+        sequence: entry.id,
+      });
+    }
     this.scheduleProcessing();
   }
 
@@ -409,11 +456,14 @@ export class ReactiveScheduler {
           event: next.event,
           payload: next.payload,
           priority,
+          basePriority: next.basePriority,
           enqueuedAt: next.enqueuedAt,
           startedAt,
           finishedAt,
           result,
+          pendingBefore,
           pendingAfter,
+          sequence: next.id,
           batchIndex,
           ticksInBatch,
           batchElapsedMs: batchElapsed,

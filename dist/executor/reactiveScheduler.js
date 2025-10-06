@@ -52,6 +52,7 @@ export class ReactiveScheduler {
     agingFairnessBoost;
     basePriorities;
     onTick;
+    onEvent;
     getPheromoneIntensity;
     getPheromoneBounds;
     causalMemory;
@@ -96,6 +97,7 @@ export class ReactiveScheduler {
             ...(options.basePriorities ?? {}),
         };
         this.onTick = options.onTick;
+        this.onEvent = options.onEvent;
         this.getPheromoneIntensity = options.getPheromoneIntensity;
         this.getPheromoneBounds = options.getPheromoneBounds;
         this.causalMemory = options.causalMemory;
@@ -208,7 +210,21 @@ export class ReactiveScheduler {
             causalEventId: this.recordCausalEvent(`scheduler.event.${event}`, this.serialiseEventPayload(event, payload), this.buildCauses(this.lastTickResultEventId)) ?? undefined,
         };
         this.sequence += 1;
+        const pendingBefore = this.queue.length;
         this.queue.push(entry);
+        if (this.onEvent) {
+            const pendingAfter = this.queue.length;
+            this.onEvent({
+                event,
+                payload,
+                pendingBefore,
+                pendingAfter,
+                pending: pendingAfter,
+                basePriority: entry.basePriority,
+                enqueuedAt: entry.enqueuedAt,
+                sequence: entry.id,
+            });
+        }
         this.scheduleProcessing();
     }
     scheduleProcessing() {
@@ -259,11 +275,14 @@ export class ReactiveScheduler {
                     event: next.event,
                     payload: next.payload,
                     priority,
+                    basePriority: next.basePriority,
                     enqueuedAt: next.enqueuedAt,
                     startedAt,
                     finishedAt,
                     result,
+                    pendingBefore,
                     pendingAfter,
+                    sequence: next.id,
                     batchIndex,
                     ticksInBatch,
                     batchElapsedMs: batchElapsed,

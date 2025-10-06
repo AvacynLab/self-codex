@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import type { KnowledgeGraph, KnowledgeTripleSnapshot } from "../knowledge/knowledgeGraph.js";
+import { suggestPlanFragments, type PlanAssistSuggestion } from "../knowledge/assist.js";
 import { StructuredLogger } from "../logger.js";
 
 /** Context injected by the server when invoking knowledge graph tools. */
@@ -48,6 +49,23 @@ export const KgQueryInputShape = KgQueryInputSchema.shape;
 export const KgExportInputSchema = z.object({}).strict();
 export const KgExportInputShape = KgExportInputSchema.shape;
 
+const KgSuggestPlanContextSchema = z
+  .object({
+    preferred_sources: z.array(z.string().min(1).max(120)).max(16).optional(),
+    exclude_tasks: z.array(z.string().min(1).max(120)).max(256).optional(),
+    max_fragments: z.number().int().min(1).max(5).optional(),
+  })
+  .strict();
+
+/** Schema validating the payload accepted by the `kg_suggest_plan` tool. */
+export const KgSuggestPlanInputSchema = z
+  .object({
+    goal: z.string().min(1, "goal must not be empty"),
+    context: KgSuggestPlanContextSchema.optional(),
+  })
+  .strict();
+export const KgSuggestPlanInputShape = KgSuggestPlanInputSchema.shape;
+
 interface SerializedTriple extends Record<string, unknown> {
   id: string;
   subject: string;
@@ -81,6 +99,9 @@ export interface KgExportResult extends Record<string, unknown> {
   triples: SerializedTriple[];
   total: number;
 }
+
+/** Result returned by {@link handleKgSuggestPlan}. */
+export interface KgSuggestPlanResult extends PlanAssistSuggestion {}
 
 /** Stores or updates a batch of triples on the knowledge graph. */
 export function handleKgInsert(
@@ -141,6 +162,31 @@ export function handleKgExport(
   const triples = context.knowledgeGraph.exportAll().map(serializeTriple);
   context.logger.info("kg_export", { total: triples.length });
   return { triples, total: triples.length };
+}
+
+/** Generates plan fragments aligned with the stored knowledge graph patterns. */
+export function handleKgSuggestPlan(
+  context: KnowledgeToolContext,
+  input: z.infer<typeof KgSuggestPlanInputSchema>,
+): KgSuggestPlanResult {
+  const suggestion = suggestPlanFragments(context.knowledgeGraph, {
+    goal: input.goal,
+    context: {
+      preferredSources: input.context?.preferred_sources,
+      excludeTasks: input.context?.exclude_tasks,
+      maxFragments: input.context?.max_fragments,
+    },
+  });
+
+  context.logger.info("kg_suggest_plan", {
+    goal: suggestion.goal,
+    fragments: suggestion.fragments.length,
+    suggested_tasks: suggestion.coverage.suggested_tasks.length,
+    preferred_sources_applied: suggestion.preferred_sources_applied.length,
+    preferred_sources_ignored: suggestion.preferred_sources_ignored.length,
+  });
+
+  return suggestion;
 }
 
 function serializeTriple(snapshot: KnowledgeTripleSnapshot): SerializedTriple {

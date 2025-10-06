@@ -62,6 +62,9 @@ describe("mcp introspection helpers", () => {
       btTickMs: originalTimings.btTickMs + 5,
       stigHalfLifeMs: originalTimings.stigHalfLifeMs + 10_000,
       supervisorStallTicks: originalTimings.supervisorStallTicks + 1,
+      defaultTimeoutMs: originalTimings.defaultTimeoutMs + 5_000,
+      autoscaleCooldownMs: Math.max(1_000, originalTimings.autoscaleCooldownMs - 500),
+      heartbeatIntervalMs: Math.max(250, originalTimings.heartbeatIntervalMs - 250),
     };
     configureRuntimeTimings(timings);
 

@@ -15,6 +15,7 @@ export type EventKind =
   | "WARN"
   | "ERROR"
   | "BT_RUN"
+  | "SCHEDULER"
   | "AUTOSCALER"
   | "COGNITIVE";
 

@@ -14,6 +14,7 @@ import {
   PlanReduceInputSchema,
   PlanToolContext,
   ValueGuardRejectionError,
+  ValueGuardRequiredError,
   handlePlanFanout,
   handlePlanReduce,
 } from "../src/tools/planTools.js";
@@ -31,8 +32,8 @@ function createPlanContext(options: {
   supervisor: ChildSupervisor;
   graphState: GraphState;
   logger: StructuredLogger;
-  valueGraph: ValueGraph;
   events: Array<{ kind: string; payload?: unknown }>;
+  valueGraph?: ValueGraph | null;
 }): PlanToolContext {
   const stigmergy = new StigmergyField();
   return {
@@ -45,7 +46,7 @@ function createPlanContext(options: {
       options.events.push({ kind: event.kind, payload: event.payload });
     },
     stigmergy,
-    valueGuard: { graph: options.valueGraph, registry: new Map() },
+    valueGuard: options.valueGraph ? { graph: options.valueGraph, registry: new Map() } : undefined,
   };
 }
 
@@ -71,6 +72,60 @@ async function sendPromptAndWait(
 
 /** Validates the guard integration across fan-out and reduction flows. */
 describe("plan tools value guard integration", () => {
+  it("refuses riskful fan-out when the value guard is disabled", async function () {
+    this.timeout(10_000);
+    const childrenRoot = await mkdtemp(path.join(tmpdir(), "plan-values-guard-disabled-"));
+    const supervisor = new ChildSupervisor({
+      childrenRoot,
+      defaultCommand: process.execPath,
+      defaultArgs: [mockRunnerPath],
+    });
+    const graphState = new GraphState();
+    const logger = new StructuredLogger({ logFile: path.join(childrenRoot, "tmp", "orchestrator.log") });
+    const events: Array<{ kind: string; payload?: unknown }> = [];
+    const context = createPlanContext({ childrenRoot, supervisor, graphState, logger, events, valueGraph: null });
+
+    try {
+      const input = PlanFanoutInputSchema.parse({
+        goal: "Dispatch network write",
+        prompt_template: { system: "Clone", user: "Task" },
+        children_spec: {
+          list: [
+            {
+              name: "alpha",
+              value_impacts: [
+                { value: "network_write", impact: "risk", severity: 0.8 },
+              ],
+            },
+            {
+              name: "beta",
+              value_impacts: [
+                { value: "safety", impact: "risk", severity: 0.6 },
+              ],
+            },
+          ],
+        },
+      });
+
+      let caught: unknown;
+      try {
+        await handlePlanFanout(context, input);
+      } catch (error) {
+        caught = error;
+      }
+      expect(caught).to.be.instanceOf(ValueGuardRequiredError);
+      const guardError = caught as ValueGuardRequiredError;
+      // Every risky child must be reported so operators know which plans were
+      // skipped until the guard is enabled again.
+      expect(guardError.children).to.deep.equal(["alpha", "beta"]);
+      expect(events).to.be.empty;
+    } finally {
+      await logger.flush();
+      await supervisor.disposeAll();
+      await rm(childrenRoot, { recursive: true, force: true });
+    }
+  });
+
   it("rejects a fan-out when every plan violates the guard", async function () {
     this.timeout(10_000);
     const childrenRoot = await mkdtemp(path.join(tmpdir(), "plan-values-reject-"));

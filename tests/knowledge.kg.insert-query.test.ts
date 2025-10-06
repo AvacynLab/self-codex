@@ -99,4 +99,59 @@ describe("knowledge graph storage and queries", () => {
     expect(exported.total).to.equal(4);
     expect(exported.triples.map((triple) => triple.ordinal)).to.deep.equal([1, 2, 3, 4]);
   });
+
+  it("filters efficiently when both the predicate and subject/object are fixed", () => {
+    const graph = new KnowledgeGraph({ now: () => 0 });
+
+    // Populate the graph with multiple predicates to ensure the composite
+    // indexes correctly narrow down the search space to the matching triples.
+    graph.insert({ subject: "incident", predicate: "includes", object: "detect" });
+    graph.insert({ subject: "incident", predicate: "includes", object: "contain" });
+    graph.insert({ subject: "incident", predicate: "owner", object: "alice" });
+    graph.insert({ subject: "playbook", predicate: "includes", object: "detect" });
+    graph.insert({ subject: "playbook", predicate: "includes", object: "recover" });
+
+    const subjectPredicate = graph.query({ subject: "incident", predicate: "includes" });
+    expect(subjectPredicate.map((triple) => triple.object)).to.deep.equal(["detect", "contain"]);
+
+    const objectPredicate = graph.query({ object: "detect", predicate: "includes" });
+    expect(objectPredicate.map((triple) => triple.subject)).to.deep.equal(["incident", "playbook"]);
+  });
+
+  it("uses the primary key when every part of the triple is constrained", () => {
+    const graph = new KnowledgeGraph({ now: () => 0 });
+
+    graph.insert({ subject: "incident", predicate: "includes", object: "detect" });
+    graph.insert({ subject: "incident", predicate: "includes", object: "contain" });
+
+    const exact = graph.query({
+      subject: "incident",
+      predicate: "includes",
+      object: "detect",
+    });
+
+    expect(exact).to.have.length(1);
+    expect(exact[0].object).to.equal("detect");
+  });
+
+  it("clears and restores triples using exported snapshots", () => {
+    const graph = new KnowledgeGraph({ now: () => 0 });
+
+    graph.insert({ subject: "plan", predicate: "includes", object: "ingest" });
+    graph.insert({ subject: "plan", predicate: "includes", object: "review" });
+
+    const baseline = graph.exportAll();
+    graph.insert({ subject: "plan", predicate: "owner", object: "alice" });
+    expect(graph.count()).to.equal(3);
+
+    graph.restore(baseline);
+    const restored = graph.query({ subject: "plan", predicate: "includes" });
+    expect(restored.map((triple) => triple.object)).to.deep.equal(["ingest", "review"]);
+    expect(restored.map((triple) => triple.ordinal)).to.deep.equal([1, 2]);
+
+    graph.clear();
+    expect(graph.count()).to.equal(0);
+    const fresh = graph.insert({ subject: "plan", predicate: "includes", object: "deploy" });
+    expect(fresh.snapshot.ordinal).to.equal(1);
+  });
 });
