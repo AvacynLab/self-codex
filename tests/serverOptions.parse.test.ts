@@ -56,6 +56,7 @@ describe("parseOrchestratorRuntimeOptions", () => {
       supervisorStallTicks: 6,
       defaultTimeoutMs: 60_000,
       autoscaleCooldownMs: 10_000,
+      heartbeatIntervalMs: 2_000,
     });
     expect(result.dashboard).to.deep.equal({
       enabled: false,
@@ -240,8 +241,21 @@ describe("parseOrchestratorRuntimeOptions", () => {
       supervisorStallTicks: 9,
       defaultTimeoutMs: 45_000,
       autoscaleCooldownMs: 3_000,
+      heartbeatIntervalMs: 2_000,
     });
     expect(result.dashboard.streamIntervalMs).to.equal(250);
+  });
+
+  it("configure l'intervalle heartbeat via les flags", () => {
+    // Provide an explicit heartbeat cadence so operators can pace the event bus.
+    const result = parseOrchestratorRuntimeOptions(["--heartbeat-interval-ms", "750"]);
+    expect(result.timings.heartbeatIntervalMs).to.equal(750);
+  });
+
+  it("borne l'intervalle heartbeat pour éviter les surcharges", () => {
+    // Values below the safety floor are clamped to protect streaming clients.
+    const result = parseOrchestratorRuntimeOptions(["--heartbeat-interval-ms", "100"]);
+    expect(result.timings.heartbeatIntervalMs).to.equal(250);
   });
 
   it("applique le seuil qualité lorsque fourni", () => {

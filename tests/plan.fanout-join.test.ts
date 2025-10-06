@@ -6,6 +6,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { ChildSupervisor } from "../src/childSupervisor.js";
+import type { ChildCollectedOutputs, ChildRuntimeMessage } from "../src/childRuntime.js";
 import { GraphState } from "../src/graphState.js";
 import { StructuredLogger } from "../src/logger.js";
 import { childWorkspacePath } from "../src/paths.js";
@@ -20,9 +21,18 @@ import {
 } from "../src/tools/planTools.js";
 import { writeArtifact } from "../src/artifacts.js";
 import { StigmergyField } from "../src/coord/stigmergy.js";
+import type { EventCorrelationHints } from "../src/events/correlation.js";
 
 const mockRunnerPath = fileURLToPath(new URL("./fixtures/mock-runner.js", import.meta.url));
 const stubbornRunnerPath = fileURLToPath(new URL("./fixtures/stubborn-runner.js", import.meta.url));
+
+interface RecordedEvent {
+  kind: string;
+  payload?: unknown;
+  jobId: string | null;
+  childId: string | null;
+  correlation: EventCorrelationHints | null;
+}
 
 function createPlanContext(options: {
   childrenRoot: string;
@@ -30,7 +40,7 @@ function createPlanContext(options: {
   graphState: GraphState;
   logger: StructuredLogger;
   defaultRuntime?: string;
-  events: Array<{ kind: string; payload?: unknown }>;
+  events: RecordedEvent[];
 }): PlanToolContext {
   const stigmergy = new StigmergyField();
   return {
@@ -40,7 +50,13 @@ function createPlanContext(options: {
     childrenRoot: options.childrenRoot,
     defaultChildRuntime: options.defaultRuntime ?? "codex",
     emitEvent: (event) => {
-      options.events.push({ kind: event.kind, payload: event.payload });
+      options.events.push({
+        kind: event.kind,
+        payload: event.payload,
+        jobId: event.jobId ?? null,
+        childId: event.childId ?? null,
+        correlation: event.correlation ?? null,
+      });
     },
     stigmergy,
   };
@@ -231,6 +247,112 @@ describe("plan tools", () => {
       await supervisor.disposeAll();
       await rm(childrenRoot, { recursive: true, force: true });
     }
+  });
+
+  it("emits correlated STATUS and AGGREGATE events when hints are supplied", async () => {
+    const events: RecordedEvent[] = [];
+    const supervisor = {
+      collect: async (childId: string): Promise<ChildCollectedOutputs> => {
+        const message: ChildRuntimeMessage<{ type: string; content: string }> = {
+          raw: JSON.stringify({ type: "response", content: `${childId}:ok` }),
+          parsed: { type: "response", content: `${childId}:ok` },
+          stream: "stdout",
+          receivedAt: Date.now(),
+          sequence: 1,
+        };
+        return {
+          childId,
+          manifestPath: path.join(tmpdir(), `${childId}.manifest.json`),
+          logPath: path.join(tmpdir(), `${childId}.child.log`),
+          messages: [message],
+          artifacts: [],
+        };
+      },
+      waitForMessage: async () => {
+        throw new Error("waitForMessage should not be invoked when outputs are already terminal");
+      },
+    } as unknown as ChildSupervisor;
+
+    const logger = {
+      info: () => {},
+      debug: () => {},
+      warn: () => {},
+      error: () => {},
+      flush: async () => {},
+    } as unknown as StructuredLogger;
+
+    const context = createPlanContext({
+      childrenRoot: tmpdir(),
+      supervisor,
+      graphState: new GraphState(),
+      logger,
+      events,
+    });
+
+    const hints = {
+      run_id: "plan-join-reduce-run",
+      op_id: "plan-join-reduce-op",
+      job_id: "plan-join-reduce-job",
+      graph_id: "plan-join-reduce-graph",
+      node_id: "plan-join-reduce-node",
+      child_id: "plan-join-reduce-parent",
+    } as const;
+
+    await handlePlanJoin(
+      context,
+      PlanJoinInputSchema.parse({
+        children: ["child-correlation"],
+        join_policy: "all",
+        timeout_sec: 1,
+        ...hints,
+      }),
+    );
+
+    const statusEvent = events.find((event) => event.kind === "STATUS");
+    expect(statusEvent, "status event should be recorded").to.not.equal(undefined);
+    expect(statusEvent?.correlation?.runId).to.equal(hints.run_id);
+    expect(statusEvent?.correlation?.opId).to.equal(hints.op_id);
+    expect(statusEvent?.correlation?.jobId).to.equal(hints.job_id);
+    expect(statusEvent?.correlation?.graphId).to.equal(hints.graph_id);
+    expect(statusEvent?.correlation?.nodeId).to.equal(hints.node_id);
+    expect(statusEvent?.correlation?.childId).to.equal(hints.child_id);
+    expect(statusEvent?.jobId).to.equal(hints.job_id);
+    expect(statusEvent?.childId).to.equal(hints.child_id);
+    const statusPayload = (statusEvent?.payload ?? {}) as Record<string, unknown>;
+    expect(statusPayload.run_id).to.equal(hints.run_id);
+    expect(statusPayload.op_id).to.equal(hints.op_id);
+    expect(statusPayload.job_id).to.equal(hints.job_id);
+    expect(statusPayload.graph_id).to.equal(hints.graph_id);
+    expect(statusPayload.node_id).to.equal(hints.node_id);
+    expect(statusPayload.child_id).to.equal(hints.child_id);
+
+    await handlePlanReduce(
+      context,
+      PlanReduceInputSchema.parse({
+        children: ["child-correlation"],
+        reducer: "concat",
+        spec: undefined,
+        ...hints,
+      }),
+    );
+
+    const aggregateEvent = events.find((event) => event.kind === "AGGREGATE");
+    expect(aggregateEvent, "aggregate event should be recorded").to.not.equal(undefined);
+    expect(aggregateEvent?.correlation?.runId).to.equal(hints.run_id);
+    expect(aggregateEvent?.correlation?.opId).to.equal(hints.op_id);
+    expect(aggregateEvent?.correlation?.jobId).to.equal(hints.job_id);
+    expect(aggregateEvent?.correlation?.graphId).to.equal(hints.graph_id);
+    expect(aggregateEvent?.correlation?.nodeId).to.equal(hints.node_id);
+    expect(aggregateEvent?.correlation?.childId).to.equal(hints.child_id);
+    expect(aggregateEvent?.jobId).to.equal(hints.job_id);
+    expect(aggregateEvent?.childId).to.equal(hints.child_id);
+    const aggregatePayload = (aggregateEvent?.payload ?? {}) as Record<string, unknown>;
+    expect(aggregatePayload.run_id).to.equal(hints.run_id);
+    expect(aggregatePayload.op_id).to.equal(hints.op_id);
+    expect(aggregatePayload.job_id).to.equal(hints.job_id);
+    expect(aggregatePayload.graph_id).to.equal(hints.graph_id);
+    expect(aggregatePayload.node_id).to.equal(hints.node_id);
+    expect(aggregatePayload.child_id).to.equal(hints.child_id);
   });
 
   it("joins child responses using different policies and aggregates outputs", async function () {

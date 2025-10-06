@@ -8,7 +8,11 @@ import type {
   TickRuntime,
 } from "../src/executor/bt/types.js";
 import { BehaviorTreeInterpreter } from "../src/executor/bt/interpreter.js";
-import { ReactiveScheduler } from "../src/executor/reactiveScheduler.js";
+import {
+  ReactiveScheduler,
+  type SchedulerEnqueueTelemetry,
+  type SchedulerTickTrace,
+} from "../src/executor/reactiveScheduler.js";
 
 /**
  * Minimal deterministic clock used to drive scheduler tests without relying on
@@ -134,6 +138,86 @@ describe("reactive scheduler", () => {
     expect(node.ticks).to.have.length(2);
     expect(node.ticks[1]).to.equal(25);
     expect(scheduler.tickCount).to.equal(2);
+
+    scheduler.stop();
+  });
+
+  it("reports queue depth snapshots through enqueue and tick telemetry", async () => {
+    const clock = new ManualClock();
+    const node = new CountingNode();
+    const interpreter = new BehaviorTreeInterpreter(node);
+
+    const enqueues: SchedulerEnqueueTelemetry[] = [];
+    const ticks: SchedulerTickTrace[] = [];
+
+    const scheduler = new ReactiveScheduler({
+      interpreter,
+      runtime: {
+        invokeTool: async () => undefined,
+        now: () => clock.now(),
+        wait: (ms) => clock.wait(ms),
+        variables: {},
+      },
+      now: () => clock.now(),
+      onEvent: (telemetry) => {
+        // Capture the raw queue depth before/after each enqueue so the test can
+        // assert the scheduler surfaces the exact snapshots instead of letting
+        // downstream consumers derive the values post-hoc.
+        enqueues.push(telemetry);
+      },
+      onTick: (trace) => {
+        // Persist the per-tick diagnostics to validate that the queue depth
+        // observed right before executing the tick matches the expected
+        // cardinality (`pending_before`) and that the scheduler records the
+        // post-tick depth in `pending_after`.
+        ticks.push(trace);
+      },
+    });
+
+    scheduler.emit("taskReady", { nodeId: "root", criticality: 1 });
+    scheduler.emit("blackboardChanged", { key: "status", importance: 1 });
+
+    expect(enqueues).to.have.length(2);
+    const [firstEnqueue, secondEnqueue] = enqueues;
+
+    const expectedTaskReadyPriority = 100 + 1 * 10;
+    const expectedBlackboardPriority = 55 + 1 * 5;
+
+    // The first telemetry frame observes an empty queue before enqueueing the
+    // `taskReady` event and a single entry afterwards.
+    expect(firstEnqueue.event).to.equal("taskReady");
+    expect(firstEnqueue.pendingBefore).to.equal(0);
+    expect(firstEnqueue.pendingAfter).to.equal(1);
+    expect(firstEnqueue.pending).to.equal(firstEnqueue.pendingAfter);
+    expect(firstEnqueue.basePriority).to.equal(expectedTaskReadyPriority);
+
+    // The second telemetry frame runs while one item is already queued, so the
+    // scheduler reports a `pendingBefore` depth of one and `pendingAfter` of
+    // two once the new event joins the queue.
+    expect(secondEnqueue.event).to.equal("blackboardChanged");
+    expect(secondEnqueue.pendingBefore).to.equal(1);
+    expect(secondEnqueue.pendingAfter).to.equal(2);
+    expect(secondEnqueue.pending).to.equal(secondEnqueue.pendingAfter);
+    expect(secondEnqueue.basePriority).to.equal(expectedBlackboardPriority);
+    expect(secondEnqueue.sequence).to.equal(firstEnqueue.sequence + 1);
+
+    await scheduler.runUntilSettled();
+
+    expect(ticks).to.have.length(2);
+    const [firstTick, secondTick] = ticks;
+
+    // When the first tick starts there are still two entries pending (the one
+    // currently executing plus the second event waiting in the queue).
+    expect(firstTick.pendingBefore).to.equal(2);
+    expect(firstTick.pendingAfter).to.equal(1);
+    expect(firstTick.basePriority).to.equal(expectedTaskReadyPriority);
+
+    // The second tick processes the last queued event, so the queue depth drops
+    // to zero right after the tick completes.
+    expect(secondTick.pendingBefore).to.equal(1);
+    expect(secondTick.pendingAfter).to.equal(0);
+    expect(secondTick.basePriority).to.equal(expectedBlackboardPriority);
+    expect(secondTick.sequence).to.equal(firstTick.sequence + 1);
 
     scheduler.stop();
   });

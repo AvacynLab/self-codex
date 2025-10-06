@@ -44,6 +44,7 @@ const DEFAULT_RUNTIME_SNAPSHOT = {
         supervisorStallTicks: 6,
         defaultTimeoutMs: 60_000,
         autoscaleCooldownMs: 10_000,
+        heartbeatIntervalMs: 2_000,
     },
     safety: {
         maxChildren: 16,

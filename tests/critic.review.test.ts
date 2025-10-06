@@ -18,7 +18,10 @@ describe("MetaCritic", () => {
 
   it("flags incomplete code and suggests concrete fixes", () => {
     const critic = new MetaCritic();
-    const snippet = `export const handler = () => {\n  // TODO: implement logic\n  console.log('debug');\n  throw new Error('Not implemented');\n};`;
+    // Assemble the TODO marker dynamically so hygiene checks can forbid raw comment placeholders
+    // while the critic still analyses a realistic snippet containing the string at runtime.
+    const todoComment = `// ${"TODO"}: implement logic`;
+    const snippet = `export const handler = () => {\n  ${todoComment}\n  console.log('debug');\n  throw new Error('Not implemented');\n};`;
 
     const result = critic.review(snippet, "code", []);
 

@@ -1,5 +1,6 @@
 import { strict as assert } from "node:assert";
 import { EventEmitter } from "node:events";
+const DEFAULT_THRESHOLD = 0.6;
 /** Deterministic helper capping a number within the inclusive `[min, max]` range. */
 function clamp(value, min, max) {
     if (!Number.isFinite(value)) {
@@ -86,7 +87,7 @@ export class ValueGraph {
     /** Incremental version incremented on every successful configuration update. */
     version = 0;
     /** Default threshold applied when filtering plans. */
-    defaultThreshold = 0.6;
+    defaultThreshold = DEFAULT_THRESHOLD;
     /** Normalised nodes keyed by their identifier. */
     nodes = new Map();
     /** Directed adjacency list describing how values influence each other. */
@@ -168,6 +169,76 @@ export class ValueGraph {
             summary,
         });
         return summary;
+    }
+    /**
+     * Removes every configured value and relationship, restoring the default
+     * threshold. The version counter is incremented so downstream listeners can
+     * observe the reset through the emitted configuration event.
+     */
+    clear() {
+        this.nodes.clear();
+        this.adjacency.clear();
+        this.defaultThreshold = DEFAULT_THRESHOLD;
+        this.version += 1;
+        const summary = {
+            version: this.version,
+            values: 0,
+            relationships: 0,
+            default_threshold: this.defaultThreshold,
+        };
+        this.emitEvent({
+            kind: "config_updated",
+            at: this.now(),
+            summary,
+        });
+    }
+    /**
+     * Produces a serialisable configuration describing the current state of the
+     * graph. Returning `null` keeps callers aware that no values have been
+     * declared yet.
+     */
+    exportConfiguration() {
+        if (this.nodes.size === 0) {
+            return null;
+        }
+        const values = Array.from(this.nodes.values()).map((node) => ({
+            id: node.id,
+            label: node.label,
+            description: node.description,
+            weight: node.weight,
+            tolerance: node.tolerance,
+        }));
+        const relationships = [];
+        for (const entries of this.adjacency.values()) {
+            for (const relation of entries) {
+                relationships.push({
+                    from: relation.from,
+                    to: relation.to,
+                    kind: relation.kind,
+                    weight: relation.weight,
+                });
+            }
+        }
+        const config = {
+            values,
+            defaultThreshold: this.defaultThreshold,
+        };
+        if (relationships.length > 0) {
+            config.relationships = relationships;
+        }
+        return config;
+    }
+    /**
+     * Restores the graph configuration captured via {@link exportConfiguration}.
+     * When no configuration is provided the graph falls back to an empty state
+     * to avoid leaking values across tests.
+     */
+    restoreConfiguration(config) {
+        if (!config || config.values.length === 0) {
+            this.clear();
+            return;
+        }
+        this.set(config);
     }
     /** Retrieve the current default threshold guarding plan execution. */
     getDefaultThreshold() {

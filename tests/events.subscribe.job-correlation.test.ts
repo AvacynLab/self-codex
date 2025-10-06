@@ -13,6 +13,7 @@ import {
   getRuntimeFeatures,
   configureRuntimeFeatures,
 } from "../src/server.js";
+import { parseSseStream } from "./helpers/sse.js";
 import type { MessageRecord } from "../src/types.js";
 
 /**
@@ -122,6 +123,59 @@ describe("events subscribe job correlation", () => {
       expect(aggregateEvent?.op_id).to.equal(opId);
 
       expect(structured.events.length).to.be.at.least(3);
+
+      // Validate the SSE variant so heartbeat/status/aggregate events remain
+      // correlated for streaming consumers as well.
+      const sseResponse = await client.callTool({
+        name: "events_subscribe",
+        arguments: {
+          from_seq: cursor,
+          cats: ["status", "aggregate", "heartbeat"],
+          format: "sse",
+        },
+      });
+      expect(sseResponse.isError ?? false).to.equal(false);
+      const sseStructured = sseResponse.structuredContent as { stream: string };
+      expect(typeof sseStructured.stream).to.equal("string");
+
+      const parsedStream = parseSseStream(sseStructured.stream);
+      const heartbeatStreamEvent = parsedStream.find((entry) => entry.event === "HEARTBEAT");
+      expect(heartbeatStreamEvent, "Heartbeat SSE record should expose the HEARTBEAT event name").to.not.equal(undefined);
+      const statusStreamEvent = parsedStream.find((entry) => entry.event === "STATUS");
+      expect(statusStreamEvent, "Status SSE record should expose the STATUS event name").to.not.equal(undefined);
+      const aggregateStreamEvent = parsedStream.find((entry) => entry.event === "AGGREGATE");
+      expect(aggregateStreamEvent, "Aggregate SSE record should expose the AGGREGATE event name").to.not.equal(undefined);
+
+      const decoded = parsedStream.flatMap((entry) =>
+        entry.data.map((chunk) => JSON.parse(chunk) as {
+          kind: string;
+          job_id: string | null;
+          run_id: string | null;
+          op_id: string | null;
+          graph_id: string | null;
+          node_id: string | null;
+        }),
+      );
+
+      const sseHeartbeat = decoded.find((event) => event.kind === "HEARTBEAT");
+      expect(sseHeartbeat, "Heartbeat SSE event should preserve correlations").to.not.equal(undefined);
+      expect(sseHeartbeat?.job_id).to.equal(jobId);
+      expect(sseHeartbeat?.run_id).to.equal(runId);
+      expect(sseHeartbeat?.op_id).to.equal(opId);
+      expect(sseHeartbeat?.graph_id).to.equal(graphId);
+      expect(sseHeartbeat?.node_id).to.equal(nodeId);
+
+      const sseStatus = decoded.find((event) => event.kind === "STATUS");
+      expect(sseStatus, "Status SSE event should be present").to.not.equal(undefined);
+      expect(sseStatus?.job_id).to.equal(jobId);
+      expect(sseStatus?.run_id).to.equal(runId);
+      expect(sseStatus?.op_id).to.equal(opId);
+
+      const sseAggregate = decoded.find((event) => event.kind === "AGGREGATE");
+      expect(sseAggregate, "Aggregate SSE event should be present").to.not.equal(undefined);
+      expect(sseAggregate?.job_id).to.equal(jobId);
+      expect(sseAggregate?.run_id).to.equal(runId);
+      expect(sseAggregate?.op_id).to.equal(opId);
     } finally {
       configureRuntimeFeatures(baselineFeatures);
       stopHeartbeat();

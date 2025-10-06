@@ -86,7 +86,7 @@ function outboxPath(childrenRoot: string, childId: string, relativePath?: string
 }
 
 async function loadManifest(outboxDir: string): Promise<Map<string, ArtifactManifestEntry>> {
-  const manifestPath = path.join(outboxDir, MANIFEST_FILENAME);
+  const manifestPath = resolveWithin(outboxDir, MANIFEST_FILENAME);
 
   try {
     const raw = await fs.readFile(manifestPath, 'utf8');
@@ -122,7 +122,7 @@ async function persistManifest(
   outboxDir: string,
   entries: Iterable<ArtifactManifestEntry>,
 ): Promise<void> {
-  const manifestPath = path.join(outboxDir, MANIFEST_FILENAME);
+  const manifestPath = resolveWithin(outboxDir, MANIFEST_FILENAME);
   const serialised: PersistedManifest = {
     version: MANIFEST_VERSION,
     entries: Array.from(entries).sort((a, b) => a.path.localeCompare(b.path)),
@@ -191,39 +191,55 @@ export async function scanArtifacts(
   const manifest = await loadManifest(outboxDir);
   const refreshed = new Map<string, ArtifactManifestEntry>();
 
-  async function traverse(directory: string, prefix: string): Promise<void> {
-    const entries = await fs.readdir(directory, { withFileTypes: true });
+  async function traverse(relativeDirectory: string): Promise<void> {
+    const absoluteDirectory =
+      relativeDirectory.length > 0
+        ? resolveWithin(outboxDir, relativeDirectory)
+        : outboxDir;
+    const entries = await fs.readdir(absoluteDirectory, { withFileTypes: true });
 
     for (const entry of entries) {
-      const entryPath = path.join(directory, entry.name);
-      const relativePath = prefix ? path.join(prefix, entry.name) : entry.name;
+      if (entry.name === MANIFEST_FILENAME) {
+        // Skip the manifest itself: it is regenerated at the end of the scan.
+        continue;
+      }
+
+      const entryRelativePath =
+        relativeDirectory.length > 0 ? path.join(relativeDirectory, entry.name) : entry.name;
+
+      if (entry.isSymbolicLink()) {
+        // Symbolic links could point outside of the workspace. Skipping them prevents
+        // accidental disclosures when a child tries to reference external data.
+        continue;
+      }
 
       if (entry.isDirectory()) {
-        await traverse(entryPath, relativePath);
+        await traverse(entryRelativePath);
         continue;
       }
 
-      if (!entry.isFile() || entry.name === MANIFEST_FILENAME) {
+      if (!entry.isFile()) {
         continue;
       }
 
-      const stats = await fs.stat(entryPath);
-      const previous = manifest.get(relativePath);
+      const entryAbsolutePath = resolveWithin(outboxDir, entryRelativePath);
+      const stats = await fs.stat(entryAbsolutePath);
+      const previous = manifest.get(entryRelativePath);
       const mimeType = previous?.mimeType ?? 'application/octet-stream';
-      const sha256 = await hashFile(entryPath);
+      const sha256 = await hashFile(entryAbsolutePath);
 
       const descriptor: ArtifactManifestEntry = {
-        path: relativePath,
+        path: entryRelativePath,
         size: stats.size,
         mimeType,
         sha256,
       };
 
-      refreshed.set(relativePath, descriptor);
+      refreshed.set(entryRelativePath, descriptor);
     }
   }
 
-  await traverse(outboxDir, '');
+  await traverse('');
   await persistManifest(outboxDir, refreshed.values());
 
   return Array.from(refreshed.values()).sort((a, b) => a.path.localeCompare(b.path));

@@ -17,6 +17,7 @@ const FLAG_WITH_VALUE = new Set([
     "--supervisor-stall-ticks",
     "--default-timeout-ms",
     "--autoscale-cooldown-ms",
+    "--heartbeat-interval-ms",
     "--dashboard-port",
     "--dashboard-host",
     "--dashboard-interval-ms",
@@ -43,6 +44,15 @@ function parseQualityThreshold(value, flag) {
  * enforce a sane minimum to avoid overwhelming clients.
  */
 function parseDashboardInterval(value, flag) {
+    const parsed = parsePositiveInteger(value, flag);
+    return Math.max(250, parsed);
+}
+/**
+ * Parses the heartbeat interval and enforces a conservative lower bound so the
+ * orchestrator continues emitting periodic events without overwhelming
+ * observers.
+ */
+function parseHeartbeatInterval(value, flag) {
     const parsed = parsePositiveInteger(value, flag);
     return Math.max(250, parsed);
 }
@@ -114,6 +124,7 @@ const DEFAULT_STATE = {
         supervisorStallTicks: 6,
         defaultTimeoutMs: 60_000,
         autoscaleCooldownMs: 10_000,
+        heartbeatIntervalMs: 2_000,
     },
     safety: {
         maxChildren: 16,
@@ -404,6 +415,9 @@ export function parseOrchestratorRuntimeOptions(argv) {
                 break;
             case "--autoscale-cooldown-ms":
                 state.timings.autoscaleCooldownMs = parsePositiveInteger(value ?? "", flag);
+                break;
+            case "--heartbeat-interval-ms":
+                state.timings.heartbeatIntervalMs = parseHeartbeatInterval(value ?? "", flag);
                 break;
             default:
                 // Ignore unknown flags so the orchestrator remains permissive for

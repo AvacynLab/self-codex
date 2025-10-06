@@ -4,6 +4,8 @@ import path from "node:path";
 import { tmpdir } from "node:os";
 import { mkdtemp, rm } from "node:fs/promises";
 
+import { z } from "zod";
+
 import { StructuredLogger } from "../src/logger.js";
 import { KnowledgeGraph, KnowledgeBadTripleError } from "../src/knowledge/knowledgeGraph.js";
 import { handleKgInsert } from "../src/tools/knowledgeTools.js";
@@ -19,11 +21,19 @@ import {
 } from "../src/tools/coordTools.js";
 import { StigmergyField, StigmergyInvalidTypeError } from "../src/coord/stigmergy.js";
 import { ContractNetCoordinator, ContractNetNoBidsError } from "../src/coord/contractNet.js";
-import { handlePlanReduce, handlePlanRunBT, PlanReduceInputSchema } from "../src/tools/planTools.js";
+import { handlePlanReduce, handlePlanRunBT, PlanFanoutInputSchema, PlanReduceInputSchema } from "../src/tools/planTools.js";
 import { GraphState } from "../src/graphState.js";
 import { ConsensusNoQuorumError, BehaviorTreeRunTimeoutError } from "../src/tools/planTools.js";
 import type { PlanToolContext } from "../src/tools/planTools.js";
 import type { ChildCollectedOutputs } from "../src/childRuntime.js";
+import { UnknownChildError } from "../src/state/childrenIndex.js";
+import {
+  childToolError as formatChildToolError,
+  planToolError as formatPlanToolError,
+  graphToolError as formatGraphToolError,
+  valueToolError as formatValueToolError,
+  resourceToolError as formatResourceToolError,
+} from "../src/server/toolErrors.js";
 
 /** Creates a no-op structured logger for test contexts. */
 function createLogger(): StructuredLogger {
@@ -173,5 +183,61 @@ describe("server tool error codes", () => {
     } finally {
       await rm(planContext.childrenRoot, { recursive: true, force: true });
     }
+  });
+
+  it("wraps plan validation errors with E-PLAN-INVALID-INPUT", () => {
+    const result = PlanFanoutInputSchema.safeParse({});
+    if (result.success) {
+      expect.fail("expected PlanFanoutInputSchema to reject the payload");
+    }
+    const response = formatPlanToolError(createLogger(), "plan_fanout", result.error);
+    const payload = JSON.parse(response.content[0].text);
+    expect(payload.error).to.equal("E-PLAN-INVALID-INPUT");
+    expect(payload.hint).to.equal("invalid_input");
+    expect(payload.tool).to.equal("plan_fanout");
+    expect(payload).to.have.property("details");
+  });
+
+  it("wraps missing child errors with E-CHILD-NOT-FOUND", () => {
+    const response = formatChildToolError(
+      createLogger(),
+      "child_status",
+      new UnknownChildError("ghost"),
+      { child_id: "ghost" },
+    );
+    const payload = JSON.parse(response.content[0].text);
+    expect(payload.error).to.equal("E-CHILD-NOT-FOUND");
+    expect(payload.hint).to.equal("unknown_child");
+    expect(payload.details).to.deep.equal({ child_id: "ghost" });
+  });
+
+  it("wraps graph patch failures with E-PATCH-APPLY", () => {
+    const response = formatGraphToolError(
+      createLogger(),
+      "graph_patch",
+      new Error("boom"),
+      { graph_id: "g" },
+      { defaultCode: "E-PATCH-APPLY", invalidInputCode: "E-PATCH-INVALID" },
+    );
+    const payload = JSON.parse(response.content[0].text);
+    expect(payload.error).to.equal("E-PATCH-APPLY");
+    expect(payload.tool).to.equal("graph_patch");
+  });
+
+  it("wraps value guard errors with E-VALUES-UNEXPECTED", () => {
+    const response = formatValueToolError(createLogger(), "values_score", new Error("denied"));
+    const payload = JSON.parse(response.content[0].text);
+    expect(payload.error).to.equal("E-VALUES-UNEXPECTED");
+  });
+
+  it("wraps resource validation errors with E-RES-INVALID-INPUT", () => {
+    const response = formatResourceToolError(
+      createLogger(),
+      "resources_list",
+      new z.ZodError([]),
+    );
+    const payload = JSON.parse(response.content[0].text);
+    expect(payload.error).to.equal("E-RES-INVALID-INPUT");
+    expect(payload.hint).to.equal("invalid_input");
   });
 });

@@ -210,6 +210,23 @@ export class ValueGuardRejectionError extends Error {
     }
 }
 /**
+ * Error raised when a plan declares risky impacts while the value guard module
+ * is disabled. The orchestrator refuses to execute such plans so unvetted
+ * network or file side effects never occur without the guard explicitly
+ * enabled.
+ */
+export class ValueGuardRequiredError extends Error {
+    code = "E-VALUES-REQUIRED";
+    hint = "enable_value_guard";
+    children;
+    constructor(children) {
+        const label = children.length === 1 ? `child "${children[0]}"` : `${children.length} children`;
+        super(`value guard must be enabled before dispatching ${label} with declared risks`);
+        this.name = "ValueGuardRequiredError";
+        this.children = [...children];
+    }
+}
+/**
  * Error raised when consensus-based reducers cannot reach the required quorum.
  * The decision payload is embedded so operators can inspect tallies when
  * debugging the rejection.
@@ -385,20 +402,24 @@ export const PlanFanoutInputShape = PlanFanoutInputSchema.shape;
 /** Schema describing the supported join policies. */
 const JoinPolicySchema = z.enum(["all", "first_success", "quorum"]);
 /** Input payload accepted by the `plan_join` tool. */
-export const PlanJoinInputSchema = z.object({
+export const PlanJoinInputSchema = z
+    .object({
     children: z.array(z.string().min(1)).min(1),
     join_policy: JoinPolicySchema.default("all"),
     timeout_sec: z.number().int().positive().optional(),
     quorum_count: z.number().int().positive().optional(),
     consensus: ConsensusConfigSchema.optional(),
-});
+})
+    .extend(PlanCorrelationHintsSchema.shape);
 export const PlanJoinInputShape = PlanJoinInputSchema.shape;
 /** Input payload accepted by the `plan_reduce` tool. */
-export const PlanReduceInputSchema = z.object({
+export const PlanReduceInputSchema = z
+    .object({
     children: z.array(z.string().min(1)).min(1),
     reducer: z.enum(["concat", "merge_json", "vote", "custom"]),
     spec: z.record(z.unknown()).optional(),
-});
+})
+    .extend(PlanCorrelationHintsSchema.shape);
 export const PlanReduceInputShape = PlanReduceInputSchema.shape;
 /**
  * Input payload accepted by the `plan_compile_bt` tool.
@@ -508,6 +529,11 @@ export const PlanResumeInputShape = PlanResumeInputSchema.shape;
 const BehaviorTaskSchemas = {
     noop: z.any(),
     bb_set: BbSetInputSchema,
+    wait: z
+        .object({
+        duration_ms: z.number().int().min(1).max(60_000).default(100),
+    })
+        .strict(),
 };
 /** Estimate the amount of work a Behaviour Tree represents for progress heuristics. */
 function estimateBehaviorTreeWorkload(definition) {
@@ -664,6 +690,24 @@ const BehaviorToolHandlers = {
             ttl_ms: payload.ttl_ms ?? null,
         });
         return serialiseBlackboardEntry(snapshot);
+    },
+    /**
+     * Cooperative wait primitive allowing plans to yield for a bounded duration
+     * while still honouring cancellation requests. The helper leverages the
+     * active cancellation handle when available so fake timers in tests remain
+     * deterministic.
+     */
+    wait: async (context, input) => {
+        const payload = BehaviorTaskSchemas.wait.parse(input ?? {});
+        const handle = context.activeCancellation ?? null;
+        if (handle) {
+            await waitWithCancellation(handle, payload.duration_ms);
+        }
+        else {
+            await delay(payload.duration_ms);
+        }
+        context.logger.info("bt_wait", { duration_ms: payload.duration_ms });
+        return null;
     },
 };
 function resolveChildrenPlans(input, defaultRuntime) {
@@ -920,6 +964,17 @@ async function runWithConcurrency(limit, tasks) {
  */
 export async function handlePlanFanout(context, input) {
     const resolvedPlans = resolveChildrenPlans(input, context.defaultChildRuntime);
+    if (!context.valueGuard) {
+        // Without the value guard we refuse to dispatch children that already
+        // advertise risky impacts so unvetted side-effects (network writes, file
+        // mutations…) never occur implicitly.
+        const riskyPlans = resolvedPlans
+            .filter((plan) => (plan.valueImpacts ?? []).some((impact) => impact.impact === "risk" && (impact.severity ?? 1) > 0))
+            .map((plan) => plan.name);
+        if (riskyPlans.length > 0) {
+            throw new ValueGuardRequiredError(riskyPlans);
+        }
+    }
     const rejectedPlans = [];
     const plans = [];
     const providedCorrelation = extractPlanCorrelationHints(input) ?? null;
@@ -1214,10 +1269,14 @@ async function observeChildForJoin(context, childId, timeoutMs) {
  */
 export async function handlePlanJoin(context, input) {
     const timeoutMs = (input.timeout_sec ?? 10) * 1000;
+    const providedCorrelation = extractPlanCorrelationHints(input);
+    const correlationHints = toEventCorrelationHints(providedCorrelation);
+    const correlationPayload = serialiseCorrelationForPayload(correlationHints);
     context.logger.info("plan_join", {
         children: input.children.length,
         policy: input.join_policy,
         timeout_ms: timeoutMs,
+        ...correlationPayload,
     });
     const observations = await Promise.all(input.children.map((childId) => observeChildForJoin(context, childId, timeoutMs)));
     const successes = observations.filter((obs) => obs.status === "success");
@@ -1334,17 +1393,24 @@ export async function handlePlanJoin(context, input) {
                 winning_child_id: winningChild,
                 quorum_threshold: threshold,
             },
+            jobId: correlationHints.jobId ?? null,
+            runId: correlationHints.runId ?? null,
+            opId: correlationHints.opId ?? null,
         });
     }
     context.emitEvent({
         kind: "STATUS",
+        jobId: correlationHints.jobId ?? undefined,
+        childId: correlationHints.childId ?? undefined,
         payload: {
+            ...correlationPayload,
             policy: input.join_policy,
             satisfied,
             successes: successes.length,
             failures: failures.length,
             consensus: consensusPayload,
         },
+        correlation: correlationHints,
     });
     context.logger.info("plan_join_completed", {
         policy: input.join_policy,
@@ -1354,6 +1420,7 @@ export async function handlePlanJoin(context, input) {
         winning_child_id: winningChild,
         consensus_mode: consensusPayload?.mode ?? null,
         consensus_outcome: consensusPayload?.outcome ?? null,
+        ...correlationPayload,
     });
     return {
         policy: input.join_policy,
@@ -1443,6 +1510,9 @@ function normaliseVoteSummary(summary) {
  */
 export async function handlePlanReduce(context, input) {
     const outputs = await Promise.all(input.children.map((childId) => context.supervisor.collect(childId)));
+    const providedCorrelation = extractPlanCorrelationHints(input);
+    const correlationHints = toEventCorrelationHints(providedCorrelation);
+    const correlationPayload = serialiseCorrelationForPayload(correlationHints);
     const guardDecisions = new Map();
     if (context.valueGuard) {
         for (const childId of input.children) {
@@ -1465,13 +1535,18 @@ export async function handlePlanReduce(context, input) {
         reducer: input.reducer,
         children: input.children.length,
         has_spec: input.spec ? true : false,
+        ...correlationPayload,
     });
     context.emitEvent({
         kind: "AGGREGATE",
+        jobId: correlationHints.jobId ?? undefined,
+        childId: correlationHints.childId ?? undefined,
         payload: {
+            ...correlationPayload,
             reducer: input.reducer,
             children: summaries.map((item) => item.child_id),
         },
+        correlation: correlationHints,
     });
     let result;
     switch (input.reducer) {
@@ -1728,6 +1803,8 @@ async function executePlanRunBT(context, input) {
         nodeId,
         childId,
     });
+    const previousCancellation = context.activeCancellation ?? null;
+    context.activeCancellation = cancellation;
     let cancellationSubscription = null;
     if (context.btStatusRegistry) {
         context.btStatusRegistry.reset(input.tree.id);
@@ -1950,6 +2027,7 @@ async function executePlanRunBT(context, input) {
         if (sawFailure && !reportedError) {
             publishLifecycleEvent("error", { status: lastResultStatus });
         }
+        context.activeCancellation = previousCancellation;
     }
 }
 export async function handlePlanRunBT(context, input) {
@@ -2048,6 +2126,33 @@ async function executePlanRunReactive(context, input) {
             },
         });
     };
+    /**
+     * Publish scheduler telemetry with a stable `msg` value so event
+     * subscriptions can easily discriminate enqueued events from tick results
+     * without inspecting the nested payload. Each emission carries the
+     * correlation hints propagated by the caller so dashboards may link the
+     * scheduler activity back to the originating plan run.
+     */
+    const emitSchedulerTelemetry = (message, payload) => {
+        context.emitEvent({
+            kind: "SCHEDULER",
+            jobId: jobId ?? undefined,
+            childId: childId ?? undefined,
+            payload: {
+                msg: message,
+                ...correlationLogFields,
+                ...payload,
+            },
+            correlation: {
+                runId,
+                opId,
+                jobId,
+                graphId,
+                nodeId,
+                childId,
+            },
+        });
+    };
     publishLifecycleEvent("start", { tick_ms: input.tick_ms, budget_ms: input.budget_ms ?? null });
     const causalMemory = context.causalMemory;
     const loopDetector = context.loopDetector ?? null;
@@ -2062,6 +2167,8 @@ async function executePlanRunReactive(context, input) {
         nodeId,
         childId,
     });
+    const previousCancellation = context.activeCancellation ?? null;
+    context.activeCancellation = cancellation;
     let cancellationSubscription = null;
     if (context.btStatusRegistry) {
         context.btStatusRegistry.reset(input.tree.id);
@@ -2160,6 +2267,29 @@ async function executePlanRunReactive(context, input) {
         getPheromoneBounds: () => context.stigmergy.getIntensityBounds(),
         causalMemory,
         cancellation,
+        onEvent: (telemetry) => {
+            const eventPayload = summariseSchedulerEvent(telemetry.event, telemetry.payload);
+            emitSchedulerTelemetry("scheduler_event_enqueued", {
+                event_type: telemetry.event,
+                pending: telemetry.pendingAfter,
+                // Capture the queue depth snapshot directly from the scheduler so
+                // downstream consumers no longer rely on derived calculations. The
+                // scheduler reports both depths explicitly, ensuring parity even if
+                // future implementations enqueue batched events.
+                pending_before: telemetry.pendingBefore,
+                // Expose the queue depth after the enqueue to keep JSON Lines and SSE
+                // consumers aligned with the documentation promise that both
+                // transports share the same scheduler metrics.
+                pending_after: telemetry.pendingAfter,
+                base_priority: telemetry.basePriority,
+                enqueued_at_ms: telemetry.enqueuedAt,
+                sequence: telemetry.sequence,
+                duration_ms: null,
+                batch_index: null,
+                ticks_in_batch: null,
+                event_payload: eventPayload,
+            });
+        },
         onTick: (trace) => {
             lastResultStatus = trace.result.status;
             const eventPayload = summariseSchedulerEvent(trace.event, trace.payload);
@@ -2184,6 +2314,22 @@ async function executePlanRunReactive(context, input) {
                     success: trace.result.status !== "failure",
                 });
             }
+            emitSchedulerTelemetry("scheduler_tick_result", {
+                event_type: "tick_result",
+                status: trace.result.status,
+                duration_ms: Math.max(0, trace.finishedAt - trace.startedAt),
+                pending: trace.pendingAfter,
+                pending_before: trace.pendingBefore,
+                pending_after: trace.pendingAfter,
+                batch_index: trace.batchIndex,
+                ticks_in_batch: trace.ticksInBatch,
+                priority: trace.priority,
+                base_priority: trace.basePriority,
+                enqueued_at_ms: trace.enqueuedAt,
+                sequence: trace.sequence,
+                source_event: trace.event,
+                event_payload: eventPayload,
+            });
         },
     });
     if (context.blackboard) {
@@ -2398,6 +2544,7 @@ async function executePlanRunReactive(context, input) {
             loop_ticks: executedLoopTicks,
             scheduler_ticks: scheduler?.tickCount ?? 0,
         });
+        context.activeCancellation = previousCancellation;
     }
 }
 export async function handlePlanRunReactive(context, input) {
@@ -2693,4 +2840,43 @@ function extractPlanCorrelationHints(input) {
     if (input.child_id !== undefined)
         hints.childId = input.child_id;
     return Object.keys(hints).length > 0 ? hints : null;
+}
+/**
+ * Convert plan-level correlation hints into the event-centric structure consumed by
+ * the unified MCP bus. Keeping the mapping centralised ensures every tool uses the
+ * same normalisation (notably the preservation of explicit `null` values).
+ */
+function toEventCorrelationHints(hints) {
+    const correlation = {};
+    if (!hints) {
+        return correlation;
+    }
+    if (hints.runId !== undefined)
+        correlation.runId = hints.runId;
+    if (hints.opId !== undefined)
+        correlation.opId = hints.opId;
+    if (hints.jobId !== undefined)
+        correlation.jobId = hints.jobId;
+    if (hints.graphId !== undefined)
+        correlation.graphId = hints.graphId;
+    if (hints.nodeId !== undefined)
+        correlation.nodeId = hints.nodeId;
+    if (hints.childId !== undefined)
+        correlation.childId = hints.childId;
+    return correlation;
+}
+/**
+ * Serialise correlation hints with snake_case keys for event payloads and logs.
+ * The helper mirrors {@link toEventCorrelationHints} so call sites can reuse the
+ * same structure without hand-crafting objects repeatedly.
+ */
+function serialiseCorrelationForPayload(hints) {
+    return {
+        run_id: hints.runId ?? null,
+        op_id: hints.opId ?? null,
+        job_id: hints.jobId ?? null,
+        graph_id: hints.graphId ?? null,
+        node_id: hints.nodeId ?? null,
+        child_id: hints.childId ?? null,
+    };
 }

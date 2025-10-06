@@ -121,6 +121,10 @@ export class KnowledgeGraph {
   private readonly subjectIndex = new Map<string, Set<string>>();
   private readonly predicateIndex = new Map<string, Set<string>>();
   private readonly objectIndex = new Map<string, Set<string>>();
+  /** Index accelerating lookups constrained by both subject and predicate. */
+  private readonly subjectPredicateIndex = new Map<string, Set<string>>();
+  /** Index accelerating lookups constrained by both object and predicate. */
+  private readonly objectPredicateIndex = new Map<string, Set<string>>();
   private sequence = 0;
 
   constructor(options: KnowledgeGraphOptions = {}) {
@@ -191,6 +195,8 @@ export class KnowledgeGraph {
     this.index(this.subjectIndex, subject, id);
     this.index(this.predicateIndex, predicate, id);
     this.index(this.objectIndex, object, id);
+    this.index(this.subjectPredicateIndex, makePairKey(subject, predicate), id);
+    this.index(this.objectPredicateIndex, makePairKey(object, predicate), id);
     return { snapshot: cloneRecord(record), created: true, updated: false };
   }
 
@@ -271,26 +277,112 @@ export class KnowledgeGraph {
     };
   }
 
+  /**
+   * Removes every stored triple along with the derived indexes. The internal
+   * ordinal counter is reset so future insertions start from a clean slate.
+   */
+  clear(): void {
+    this.records.clear();
+    this.keyIndex.clear();
+    this.subjectIndex.clear();
+    this.predicateIndex.clear();
+    this.objectIndex.clear();
+    this.subjectPredicateIndex.clear();
+    this.objectPredicateIndex.clear();
+    this.sequence = 0;
+  }
+
+  /**
+   * Restores the graph to match the provided snapshots. Existing triples are
+   * discarded before the snapshots are indexed so the graph mirrors the
+   * captured state deterministically (including ordinals and revisions).
+   */
+  restore(snapshots: KnowledgeTripleSnapshot[]): void {
+    this.clear();
+
+    for (const snapshot of snapshots) {
+      const record: KnowledgeTripleRecord = {
+        ...snapshot,
+        key: makeKey(snapshot.subject, snapshot.predicate, snapshot.object),
+      };
+      this.records.set(record.id, record);
+      this.keyIndex.set(record.key, record.id);
+      this.index(this.subjectIndex, record.subject, record.id);
+      this.index(this.predicateIndex, record.predicate, record.id);
+      this.index(this.objectIndex, record.object, record.id);
+      this.index(this.subjectPredicateIndex, makePairKey(record.subject, record.predicate), record.id);
+      this.index(this.objectPredicateIndex, makePairKey(record.object, record.predicate), record.id);
+      if (record.ordinal > this.sequence) {
+        this.sequence = record.ordinal;
+      }
+    }
+  }
+
   private collectCandidates(pattern: KnowledgeQueryPattern): string[] {
+    const exactSubject = typeof pattern.subject === "string" && !hasWildcard(pattern.subject);
+    const exactPredicate = typeof pattern.predicate === "string" && !hasWildcard(pattern.predicate);
+    const exactObject = typeof pattern.object === "string" && !hasWildcard(pattern.object);
+
+    // When the caller fixes the full triple we can leverage the primary key
+    // index directly and avoid walking any of the secondary indexes.
+    if (exactSubject && exactPredicate && exactObject) {
+      const key = makeKey(pattern.subject!, pattern.predicate!, pattern.object!);
+      const identifier = this.keyIndex.get(key);
+      return identifier ? [identifier] : [];
+    }
+
     const sets: Array<Set<string>> = [];
-    if (pattern.subject && !hasWildcard(pattern.subject)) {
-      const set = this.subjectIndex.get(pattern.subject);
-      if (set) sets.push(set);
+    const addSet = (set: Set<string> | undefined) => {
+      if (set && !sets.includes(set)) {
+        sets.push(set);
+      }
+    };
+
+    if (exactSubject && exactPredicate) {
+      const composite = this.subjectPredicateIndex.get(
+        makePairKey(pattern.subject!, pattern.predicate!),
+      );
+      if (composite) {
+        addSet(composite);
+      } else {
+        addSet(this.subjectIndex.get(pattern.subject!));
+        addSet(this.predicateIndex.get(pattern.predicate!));
+      }
+    } else {
+      if (exactSubject) {
+        addSet(this.subjectIndex.get(pattern.subject!));
+      }
+      if (exactPredicate) {
+        addSet(this.predicateIndex.get(pattern.predicate!));
+      }
     }
-    if (pattern.predicate && !hasWildcard(pattern.predicate)) {
-      const set = this.predicateIndex.get(pattern.predicate);
-      if (set) sets.push(set);
+
+    if (exactObject && exactPredicate) {
+      const composite = this.objectPredicateIndex.get(
+        makePairKey(pattern.object!, pattern.predicate!),
+      );
+      if (composite) {
+        addSet(composite);
+      } else {
+        addSet(this.objectIndex.get(pattern.object!));
+        addSet(this.predicateIndex.get(pattern.predicate!));
+      }
+    } else if (exactObject) {
+      addSet(this.objectIndex.get(pattern.object!));
     }
-    if (pattern.object && !hasWildcard(pattern.object)) {
-      const set = this.objectIndex.get(pattern.object);
-      if (set) sets.push(set);
-    }
+
+    // Prefer intersecting the smallest candidate sets first so that the
+    // wildcard-aware filtering has the least amount of work to do afterwards.
     if (!sets.length) {
       return Array.from(this.records.keys());
     }
+    sets.sort((left, right) => left.size - right.size);
     let intersection = new Set(sets[0]);
     for (let i = 1; i < sets.length; i += 1) {
       intersection = intersect(intersection, sets[i]);
+      if (intersection.size === 0) {
+        break;
+      }
     }
     return Array.from(intersection);
   }
@@ -309,14 +401,19 @@ function makeKey(subject: string, predicate: string, object: string): string {
   return `${subject}\u0000${predicate}\u0000${object}`;
 }
 
+function makePairKey(left: string, right: string): string {
+  return `${left}\u0000${right}`;
+}
+
 function cloneRecord(record: KnowledgeTripleRecord): KnowledgeTripleSnapshot {
   return { ...record };
 }
 
 function intersect(left: Set<string>, right: Set<string>): Set<string> {
+  const [small, large] = left.size <= right.size ? [left, right] : [right, left];
   const result = new Set<string>();
-  for (const value of left) {
-    if (right.has(value)) {
+  for (const value of small) {
+    if (large.has(value)) {
       result.add(value);
     }
   }

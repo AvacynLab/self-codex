@@ -1,6 +1,8 @@
 import { strict as assert } from "node:assert";
 import { EventEmitter } from "node:events";
 
+const DEFAULT_THRESHOLD = 0.6;
+
 /** Allowed relationship kinds between value nodes. */
 export type ValueRelationshipKind = "supports" | "conflicts";
 
@@ -332,7 +334,7 @@ export class ValueGraph {
   private version = 0;
 
   /** Default threshold applied when filtering plans. */
-  private defaultThreshold = 0.6;
+  private defaultThreshold = DEFAULT_THRESHOLD;
 
   /** Normalised nodes keyed by their identifier. */
   private readonly nodes = new Map<string, ValueNode>();
@@ -429,6 +431,84 @@ export class ValueGraph {
     });
 
     return summary;
+  }
+
+  /**
+   * Removes every configured value and relationship, restoring the default
+   * threshold. The version counter is incremented so downstream listeners can
+   * observe the reset through the emitted configuration event.
+   */
+  clear(): void {
+    this.nodes.clear();
+    this.adjacency.clear();
+    this.defaultThreshold = DEFAULT_THRESHOLD;
+    this.version += 1;
+
+    const summary: ValueGraphSummary = {
+      version: this.version,
+      values: 0,
+      relationships: 0,
+      default_threshold: this.defaultThreshold,
+    };
+
+    this.emitEvent({
+      kind: "config_updated",
+      at: this.now(),
+      summary,
+    });
+  }
+
+  /**
+   * Produces a serialisable configuration describing the current state of the
+   * graph. Returning `null` keeps callers aware that no values have been
+   * declared yet.
+   */
+  exportConfiguration(): ValueGraphConfig | null {
+    if (this.nodes.size === 0) {
+      return null;
+    }
+
+    const values = Array.from(this.nodes.values()).map((node) => ({
+      id: node.id,
+      label: node.label,
+      description: node.description,
+      weight: node.weight,
+      tolerance: node.tolerance,
+    }));
+
+    const relationships: ValueRelationshipInput[] = [];
+    for (const entries of this.adjacency.values()) {
+      for (const relation of entries) {
+        relationships.push({
+          from: relation.from,
+          to: relation.to,
+          kind: relation.kind,
+          weight: relation.weight,
+        });
+      }
+    }
+
+    const config: ValueGraphConfig = {
+      values,
+      defaultThreshold: this.defaultThreshold,
+    };
+    if (relationships.length > 0) {
+      config.relationships = relationships;
+    }
+    return config;
+  }
+
+  /**
+   * Restores the graph configuration captured via {@link exportConfiguration}.
+   * When no configuration is provided the graph falls back to an empty state
+   * to avoid leaking values across tests.
+   */
+  restoreConfiguration(config: ValueGraphConfig | null): void {
+    if (!config || config.values.length === 0) {
+      this.clear();
+      return;
+    }
+    this.set(config);
   }
 
   /** Retrieve the current default threshold guarding plan execution. */

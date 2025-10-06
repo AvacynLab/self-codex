@@ -88,9 +88,10 @@ Contexte : TypeScript/Node ESM, local-first, une instance Codex par enfant, pas 
   * [x] Children : runtime lifecycle & flux stdout/stderr relayés avec corrélation run/op/child
   * [x] Contract-Net : annonces, enchères et attributions relayées sur le bus avec corrélation run/op
   * [x] Consensus : décisions agrégées → `EventBus` (run/op/job + métadonnées)
-* [ ] **Modifier** `src/executor/*`, `src/coord/*`, `src/agents/*`
+* [x] **Modifier** `src/executor/*`, `src/coord/*`, `src/agents/*`
 
-  * [ ] Publier évènements standardisés avec `opId/runId` *(Contract-Net : corrélations propagées dans `contractNet` + `bridgeContractNetEvents`, reste à aligner exécuteur/agents)*
+  * [x] Publier évènements standardisés avec `opId/runId` *(Contract-Net : corrélations propagées dans `contractNet` + `bridgeContractNetEvents`, reste à aligner exécuteur/agents)*
+    * [x] `plan_join` / `plan_reduce` publient désormais `STATUS` et `AGGREGATE` corrélés (hints propagés au payload + bus)
     * [x] Autoscaler publie `AUTOSCALER` avec corrélations child/run/op/job (itération 119)
     * [x] Autoscaler et passerelle child runtime réutilisent `extractCorrelationHints` et préservent les null explicites tout en gardant les identifiants natifs (itération 121)
     * [x] `child_collect` publie des événements `COGNITIVE` corrélés (metaCritic + selfReflect) via `buildChildCognitiveEvents` (itération 122)
@@ -175,7 +176,7 @@ Contexte : TypeScript/Node ESM, local-first, une instance Codex par enfant, pas 
 
 ### 2.5 Opérations bulk atomiques
 
-* [ ] **Modifier** `src/server.ts`
+* [x] **Modifier** `src/server.ts`
 
   * [x] tools `bb_batch_set([{ns,key,value,ttlMs?}])`
   * [x] `graph_batch_mutate({graphId, ops:GraphOp[]})`
@@ -217,16 +218,16 @@ Contexte : TypeScript/Node ESM, local-first, une instance Codex par enfant, pas 
 
 ### 4.1 Behavior Tree (finesse)
 
-* [ ] **Modifier** `src/executor/bt/nodes.ts`
+* [x] **Modifier** `src/executor/bt/nodes.ts`
 
-  * [ ] Décorateurs : `Retry(n, backoffJitter)`, `Timeout(ms)`, `Guard(cond)`, `Cancellable`
+  * [x] Décorateurs : `Retry(n, backoffJitter)`, `Timeout(ms)`, `Guard(cond)`, `Cancellable`
   * [x] Parallel policy : `all|any|quota(k)`
 * [x] **Modifier** `src/executor/bt/interpreter.ts`
 
   * [x] Persistance d’état par nœud (resume après pause/cancel) ; progress %
-* [ ] **Tests** :
+* [x] **Tests** :
 
-  * [ ] `tests/bt.decorators.retry-timeout-cancel.test.ts` (fake timers)
+  * [x] `tests/bt.decorators.retry-timeout-cancel.test.ts` (fake timers)
   * [x] `tests/bt.parallel.quota.test.ts`
 
 ### 4.2 Scheduler réactif (fairness & budgets)
@@ -250,25 +251,25 @@ Contexte : TypeScript/Node ESM, local-first, une instance Codex par enfant, pas 
 
 ### 4.4 Autoscaler & Superviseur
 
-* [ ] **Modifier** `src/agents/autoscaler.ts`
+* [x] **Modifier** `src/agents/autoscaler.ts`
 
-  * [ ] Métriques : backlog, latence, échecs ; scale up/down avec **cooldown**
-* [ ] **Modifier** `src/agents/supervisor.ts`
+  * [x] Métriques : backlog, latence, échecs ; scale up/down avec **cooldown**
+* [x] **Modifier** `src/agents/supervisor.ts`
 
-  * [ ] Détection stagnation (N ticks sans progrès), relance/réallocation
-  * [ ] Intégrer **rewrite** ciblée (règle `reroute-avoid`) en cas d’impasse
-* [ ] **Tests** :
+  * [x] Détection stagnation (N ticks sans progrès), relance/réallocation
+  * [x] Intégrer **rewrite** ciblée (règle `reroute-avoid`) en cas d’impasse
+* [x] **Tests** :
 
-  * [ ] `tests/agents.autoscaler.scale-updown.test.ts` (no thrash)
-  * [ ] `tests/agents.supervisor.unblock.test.ts`
+  * [x] `tests/agents.autoscaler.scale-updown.test.ts` (no thrash)
+  * [x] `tests/agents.supervisor.unblock.test.ts`
 
 ### 4.5 Réécriture & invariants (idempotence)
 
-* [ ] **Modifier** `src/graph/rewrite.ts`
+* [x] **Modifier** `src/graph/rewrite.ts`
 
-  * [ ] Règles : `split-parallel`, `inline-subgraph`, `reroute-avoid(label|nodeId)`
-  * [ ] **Idempotence** : même règle appliquée 2× → même graphe
-* [ ] **Tests** : `tests/graph.rewrite.rules.test.ts` (idempotence, pas de cycles)
+  * [x] Règles : `split-parallel`, `inline-subgraph`, `reroute-avoid(label|nodeId)`
+  * [x] **Idempotence** : même règle appliquée 2× → même graphe
+* [x] **Tests** : `tests/graph.rewrite.rules.test.ts` (idempotence, pas de cycles)
 
 ---
 
@@ -276,37 +277,37 @@ Contexte : TypeScript/Node ESM, local-first, une instance Codex par enfant, pas 
 
 ### 5.1 Knowledge Graph (réutilisation)
 
-* [ ] **Modifier** `src/knowledge/knowledgeGraph.ts`
+* [x] **Modifier** `src/knowledge/knowledgeGraph.ts`
 
-  * [ ] Triplets `{s,p,o,source?,confidence?}` ; index par `(s,p)` et `(o,p)`
-* [ ] **Créer** `src/knowledge/assist.ts`
+  * [x] Triplets `{s,p,o,source?,confidence?}` ; index par `(s,p)` et `(o,p)`
+* [x] **Créer** `src/knowledge/assist.ts`
 
-  * [ ] `kg_suggest_plan({goal, context?}) -> {fragments: HierGraph[], rationale[]}`
-* [ ] **Modifier** `src/server.ts`
+  * [x] `kg_suggest_plan({goal, context?}) -> {fragments: HierGraph[], rationale[]}`
+* [x] **Modifier** `src/server.ts`
 
-  * [ ] tool `kg_suggest_plan`
-* [ ] **Tests** : `tests/assist.kg.suggest.test.ts` (mocks)
+  * [x] tool `kg_suggest_plan`
+* [x] **Tests** : `tests/assist.kg.suggest.test.ts` (mocks)
 
 ### 5.2 Mémoire causale
 
-* [ ] **Modifier** `src/knowledge/causalMemory.ts`
+* [x] **Modifier** `src/knowledge/causalMemory.ts`
 
-  * [ ] `record(event, causes[])`, `explain(outcome)` ; export DAG
-  * [ ] Accrochage BT/scheduler (début/fin/échec nœuds)
-* [ ] **Modifier** `src/server.ts`
+  * [x] `record(event, causes[])`, `explain(outcome)` ; export DAG
+  * [x] Accrochage BT/scheduler (début/fin/échec nœuds)
+* [x] **Modifier** `src/server.ts`
 
-  * [ ] tools `causal_export`, `causal_explain`
-* [ ] **Tests** :
+  * [x] tools `causal_export`, `causal_explain`
+* [x] **Tests** :
 
-  * [ ] `tests/knowledge.causal.record-explain.test.ts`
-  * [ ] `tests/causal.integration.bt-scheduler.test.ts`
+  * [x] `tests/knowledge.causal.record-explain.test.ts`
+  * [x] `tests/causal.integration.bt-scheduler.test.ts`
 
 ### 5.3 Graphe de valeurs (filtrage + explication)
 
-* [ ] **Modifier** `src/values/valueGraph.ts`
+* [x] **Modifier** `src/values/valueGraph.ts`
 
 * [x] `values_explain({plan}) -> {violations:[{nodeId, value, severity, hint}]}`
-* [ ] **Modifier** `src/server.ts`
+* [x] **Modifier** `src/server.ts`
 
   * [x] tool `values_explain`
   * [x] Intégration dans `plan_dry_run`
@@ -328,16 +329,16 @@ Contexte : TypeScript/Node ESM, local-first, une instance Codex par enfant, pas 
 
 ### 6.2 Dashboard overlays
 
-* [ ] **Modifier** `src/monitor/dashboard.ts`
+* [x] **Modifier** `src/monitor/dashboard.ts`
 
-  * [ ] Streams SSE : état BT, heatmap stigmergie, backlog scheduler
-* [ ] **Modifier** `src/viz/mermaid.ts`
+  * [x] Streams SSE : état BT, heatmap stigmergie, backlog scheduler
+* [x] **Modifier** `src/viz/mermaid.ts`
 
-  * [ ] Overlays : badges BT (RUNNING/OK/KO), intensités stigmergiques
-* [ ] **Tests** :
+  * [x] Overlays : badges BT (RUNNING/OK/KO), intensités stigmergiques
+* [x] **Tests** :
 
-  * [ ] `tests/monitor.dashboard.streams.test.ts`
-  * [ ] `tests/viz.mermaid.overlays.test.ts`
+  * [x] `tests/monitor.dashboard.streams.test.ts`
+  * [x] `tests/viz.mermaid.overlays.test.ts`
 
 ---
 
@@ -345,27 +346,27 @@ Contexte : TypeScript/Node ESM, local-first, une instance Codex par enfant, pas 
 
 ### 7.1 Tests de concurrence
 
-* [ ] **Créer** `tests/concurrency.graph-mutations.test.ts`
+* [x] **Créer** `tests/concurrency.graph-mutations.test.ts`
 
-  * [ ] Threads simulés : diffs concurrents → locks ; aucun deadlock
+  * [x] Threads simulés : diffs concurrents → locks ; aucun deadlock
 * [x] **Créer** `tests/concurrency.events-backpressure.test.ts`
 
   * [x] `events_subscribe/resources_watch` : limites, keep-alive, perte zéro
 
 ### 7.2 Cancellation & ressources
 
-* [ ] **Créer** `tests/cancel.random-injection.test.ts`
+* [x] **Créer** `tests/cancel.random-injection.test.ts`
 
-  * [ ] Annuler aléatoirement pendant BT/scheduler ; vérifier cleanup
+  * [x] Annuler aléatoirement pendant BT/scheduler ; vérifier cleanup
 
 ### 7.3 Flakiness & perf micro-bench (non-CI)
 
-* [ ] **Créer** `tests/perf/scheduler.bench.ts` (local-only)
+* [x] **Créer** `tests/perf/scheduler.bench.ts` (local-only)
 
-  * [ ] Mesurer latence avant/après stigmergie & aging
-* [ ] **Créer** script `scripts/retry-flaky.sh`
+  * [x] Mesurer latence avant/après stigmergie & aging
+* [x] **Créer** script `scripts/retry-flaky.sh`
 
-  * [ ] Réexécuter 10× suites sensibles → vérifier stabilité
+  * [x] Réexécuter 10× suites sensibles → vérifier stabilité
 
 ---
 
@@ -398,23 +399,23 @@ Contexte : TypeScript/Node ESM, local-first, une instance Codex par enfant, pas 
 
 ## 9) Nettoyage & Sécurité applicative
 
-* [ ] **Supprimer** code mort et TODOs obsolètes (grep TODO/FIXME)
-* [ ] **Renforcer** normalisation chemins (utiliser `src/paths.ts` partout)
-* [ ] **Limiter** side-effects par défaut (no network write si `values` interdit)
-* [ ] **Codes d’erreurs** homogènes :
+* [x] **Supprimer** code mort et TODOs obsolètes (grep TODO/FIXME)
+* [x] **Renforcer** normalisation chemins (utiliser `src/paths.ts` partout)
+* [x] **Limiter** side-effects par défaut (no network write si `values` interdit)
+* [x] **Codes d’erreurs** homogènes :
 
-  * [ ] `E-MCP-*`, `E-RES-*`, `E-EVT-*`, `E-CANCEL-*`, `E-TX-*`, `E-LOCK-*`, `E-PATCH-*`, `E-PLAN-*`, `E-CHILD-*`, `E-VALUES-*`, `E-ASSIST-*`
-* [ ] **Tests** : `tests/server.tools.errors.test.ts` (codes/messages/hints)
+  * [x] `E-MCP-*`, `E-RES-*`, `E-EVT-*`, `E-CANCEL-*`, `E-TX-*`, `E-LOCK-*`, `E-PATCH-*`, `E-PLAN-*`, `E-CHILD-*`, `E-VALUES-*`, `E-ASSIST-*`
+* [x] **Tests** : `tests/server.tools.errors.test.ts` (codes/messages/hints)
 
 ---
 
 ## 10) Exemples E2E (scénarios de vérification)
 
-* [ ] **E2E-1 :** Plan hiérarchique → compile BT → `plan_run_bt` → events_subscribe (pause/resume) → `plan_cancel` → tail des logs
-* [ ] **E2E-2 :** Backlog massif → stig_mergie + autoscaler (scale up/down) → superviseur débloque → metrics ok
-* [ ] **E2E-3 :** CNP announce → bids → award → `plan_join quorum=2/3` → `plan_reduce vote`
-* [ ] **E2E-4 :** `plan_dry_run` → `values_explain` rejette un plan → `kg_suggest_plan` propose fragment alternatif → `rewrite` preview → exécution
-* [ ] **E2E-5 :** `tx_begin` → `tx_apply` (ops multiples) → `graph_diff/patch` → `tx_commit` → `resources_read sc://graphs/<id>@vX`
+* [x] **E2E-1 :** Plan hiérarchique → compile BT → `plan_run_bt` → events_subscribe (pause/resume) → `plan_cancel` → tail des logs
+* [x] **E2E-2 :** Backlog massif → stig_mergie + autoscaler (scale up/down) → superviseur débloque → metrics ok
+* [x] **E2E-3 :** CNP announce → bids → award → `plan_join quorum=2/3` → `plan_reduce vote`
+* [x] **E2E-4 :** `plan_dry_run` → `values_explain` rejette un plan → `kg_suggest_plan` propose fragment alternatif → `rewrite` preview → exécution
+* [x] **E2E-5 :** `tx_begin` → `tx_apply` (ops multiples) → `graph_diff/patch` → `tx_commit` → `resources_read sc://graphs/<id>@vX`
 
 ---
 
@@ -445,7 +446,8 @@ Contexte : TypeScript/Node ESM, local-first, une instance Codex par enfant, pas 
 5. **Réécriture** : appliquer `graph_diff`/`graph_patch` ou `graph_rewrite` en mode preview afin de corriger le graphe avant exécution
    réelle.
 
-> Bloquants actuels : `plan_dry_run`, `values_explain`, `kg_suggest_plan` et `causal_explain` restent à implémenter.
+> Point de vigilance : les outils `plan_dry_run`, `values_explain`, `kg_suggest_plan` et `causal_explain` sont implémentés.
+> Il reste à chaîner un scénario E2E complet (voir section 10) et à finaliser les flux SSE/HTTP partagés lors de futures itérations.
 
 ### Autoscaler + superviseur + stigmergie (heatmap)
 
@@ -730,7 +732,8 @@ Si tu veux, je peux te générer à la demande les **squelettes TypeScript** exa
 - ✅ Durci `buildJobCorrelationHints` en ignorant les identifiants job contradictoires, en gelant les overrides explicites à `null` pour les champs run/op/graph/node et en gardant l'autorité aux hints fournis par l'appelant serveur.
 - ✅ Étendu `tests/events.correlation.test.ts` avec des scénarios `sources` vides, conflits non nuls et overrides mixtes pour prouver la nouvelle sémantique, puis régénéré `dist/events/correlation.js` et `dist/server.js` via `npm run build`.
 - ✅ Nettoyé l'arbre de travail (`rm -rf node_modules children` avant install), réinstallé avec `npm ci`, exécuté `npm run lint`, `npm run build`, `npm test` et restauré un état propre sans artefacts non suivis.
-- 🔜 Vérifier le reste des émetteurs job-plan (metaCritic, streams bulk/status additionnels) et ajouter une couverture `events_subscribe` pour `status`/`aggregate`/`heartbeat`; mesurer l'impact perf du resolver heartbeat sur de longues séries.
+- ✅ Ajouté une couverture `events_subscribe` ciblant les événements `STATUS`/`AGGREGATE` (plan_join/plan_reduce) afin de sécuriser les corrélations plan côté bus MCP.
+- 🔜 Vérifier les émetteurs job-plan restants (metaCritic, flux bulk supplémentaires) et mesurer l'impact perf du resolver `HEARTBEAT` sur de longues séries.
 
 ### 2025-10-05 – Agent `gpt-5-codex` (iteration 126)
 - ✅ Factorisé `emitHeartbeatTick` et ajouté `stopHeartbeat` pour déclencher/arrêter les battements manuellement tout en exportant `childSupervisor` afin de préparer des scénarios de tests déterministes.
@@ -1056,3 +1059,179 @@ Si tu veux, je peux te générer à la demande les **squelettes TypeScript** exa
 - ✅ Couvert l'intégration MCP (client in-memory) en vérifiant l'échappement monoligne et la fidélité des payloads SSE.
 - ✅ Actualisé README + `docs/mcp-api.md` et exporté `resources` afin de faciliter les scénarios de test autour du registre.
 - 🔜 Envisager une route HTTP/SSE dédiée (`/resources/watch/stream`) si un flux long-lived hors MCP devient nécessaire.
+
+### 2025-10-07 – Agent `gpt-5-codex` (iteration 184)
+- ✅ Créé `src/knowledge/assist.ts` pour générer des fragments `HierGraph` avec couverture, sources et rationales (`kg_suggest_plan`).
+- ✅ Enregistré l'outil `kg_suggest_plan` côté serveur (gating `enableAssist` + `enableKnowledge`) et ajouté la normalisation des erreurs.
+- ✅ Écrit `tests/assist.kg.suggest.test.ts` (fragments préférés, exclusions, handler) puis documenté l'outil dans `docs/mcp-api.md` et le README.
+
+### 2025-10-07 – Agent `gpt-5-codex` (iteration 185)
+- ✅ Ajouté des index composés `(s,p)` et `(o,p)` au `KnowledgeGraph` pour accélérer les requêtes déterministes et documenté la logique.
+- ✅ Étendu `tests/knowledge.kg.insert-query.test.ts` pour couvrir les filtres combinés et exécuté `npm run test:unit` (489 tests verts) puis `npm run build`.
+- ✅ Regénéré `dist/knowledge/knowledgeGraph.js` après compilation TypeScript et remis `node_modules` dans l'état initial après usage de `npm ci`.
+
+### 2025-10-07 – Agent `gpt-5-codex` (iteration 186)
+- ✅ Raffiné `collectCandidates` du `KnowledgeGraph` pour prioriser la clé primaire et les index composés tout en triant par sélectivité avant intersection.
+- ✅ Ajouté un test ciblant la recherche exacte par clé primaire et re-compilé `dist/knowledge/knowledgeGraph.js`.
+- ✅ Exécuté `npm ci`, `npm run test:unit -- --exit tests/knowledge.kg.insert-query.test.ts` (490 tests) et `npm run build` puis restauré l'arborescence `node_modules`.
+
+### 2025-10-07 – Agent `gpt-5-codex` (iteration 187)
+- ✅ Créé `tests/concurrency.graph-mutations.test.ts` pour simuler des patchs concurrents sur un graphe verrouillé et vérifier l'absence de deadlock via `GraphLockManager`.
+- ✅ Validé le scénario en exécutant `npm run test:unit -- --exit tests/concurrency.graph-mutations.test.ts` et vérifié l'impact sur la version du graphe.
+
+### 2025-10-07 – Agent `gpt-5-codex` (iteration 188)
+- ✅ Ajouté `tests/cancel.random-injection.test.ts` pour injecter des annulations pseudo-aléatoires pendant `plan_run_reactive` et vérifier la libération des handles.
+- ✅ Vérifié les événements `BT_RUN` (start/cancel/error) et la suppression des entrées de registre d'annulation, puis confirmé qu'une exécution finale sans annulation réussit (`npm run test:unit -- --exit tests/cancel.random-injection.test.ts`).
+
+### 2025-10-07 – Agent `gpt-5-codex` (iteration 189)
+- ✅ Créé `tests/perf/scheduler.bench.ts` pour comparer baseline et stigmergie avec deltas chiffrés et résumé CLI.
+- ✅ Ajouté le script `scripts/retry-flaky.sh` (paramétrable via `RETRY_FLAKY_ATTEMPTS`) et documenté son usage dans le README.
+- ✅ Mis à jour `package.json` (`bench:scheduler`) et le README pour refléter le nouveau rapport de bench et les outils anti-flaky.
+
+### 2025-10-07 – Agent `gpt-5-codex` (iteration 190)
+- ✅ Ajouté `tests/perf/scheduler.bench.unit.test.ts` pour valider l'analyse des variables d'environnement, le rendu tabulaire et le calcul des deltas du benchmark scheduler.
+- ✅ Couvert la comparaison baseline/stigmergie via un scénario réduit pour vérifier les métriques dérivées sans dépendre du chronométrage réel.
+- ✅ Mis à jour `AGENTS.md` en cochant les sections bulk BT/causal/values/dashboard déjà implémentées afin d'aligner la checklist avec l'état réel du dépôt.
+
+### 2025-10-07 – Agent `gpt-5-codex` (iteration 191)
+- ✅ Repassé sur l'autoscaler/superviseur : confirmé la gestion des métriques backlog/latence/échec, la détection de stagnation et la mitigation starvation + loop.
+- ✅ Vérifié la couverture via `tests/agents.autoscaler.scale-updown.test.ts`, `tests/agents.autoscaler.cooldown.test.ts`, `tests/agents.supervisor.unblock.test.ts` et `tests/agents.supervisor.stagnation.test.ts` (tous verts en local).
+- ✅ Actualisé `AGENTS.md` : cases cochées pour l'autoscaler et le superviseur, note de vigilance sur les scénarios E2E restants.
+
+### 2025-10-07 – Agent `gpt-5-codex` (iteration 192)
+- ✅ Factorisé la normalisation des erreurs tools dans `src/server/toolErrors.ts` pour émettre systématiquement les codes `E-*` attendus et consigner les détails structurés.
+- ✅ Aligné `src/server.ts` sur les nouveaux helpers (contexte logger + overrides par domaine) et enrichi `UnknownChildError`/`DuplicateChildError` avec codes/hints structurés.
+- ✅ Étendu `tests/server.tools.errors.test.ts` afin de couvrir la sérialisation des enveloppes d'erreur (plan/child/graph/values/resources) puis exécuté `npm run test:unit -- --exit tests/server.tools.errors.test.ts` et `npm run build` (OK).
+
+### 2025-10-07 – Agent `gpt-5-codex` (iteration 193)
+- ✅ Remplacé les accès directs `path.join`/`path.resolve` du module `src/artifacts.ts` par `resolveWithin` pour garantir que les manifestes et les fichiers scannés restent confinés à l'espace de travail du child.
+- ✅ Mis à jour le scan récursif des artefacts afin d'ignorer les liens symboliques et d'éviter les expositions accidentelles de fichiers hors sandbox.
+- ✅ Ajouté un test `ignores symbolic links when scanning artifacts` dans `tests/artifacts.test.ts` pour valider le nouveau comportement et préserver la compatibilité multiplateforme via un skip sur Windows.
+
+### 2025-10-07 – Agent `gpt-5-codex` (iteration 194)
+- ✅ Instrumenté `ReactiveScheduler` pour publier des événements `scheduler_*` corrélés (run/op/job/graph/node/child) via le pipeline `PlanEventEmitter` et enrichi les payloads avec des durées et priorités.
+- ✅ Aligné `plan_run_bt` et `plan_run_reactive` sur le nouvel émetteur pour exposer la télémétrie scheduler et ajouté `EventKind="SCHEDULER"` afin que le bus MCP la relaie.
+- ✅ Ajouté `tests/executor.scheduler.events.test.ts`, exécuté `npm run test:unit -- --exit tests/executor.scheduler.events.test.ts` puis `npm run build` pour valider et régénérer `dist/`.
+
+### 2025-10-07 – Agent `gpt-5-codex` (iteration 195)
+- ✅ Ajouté `tests/events.subscribe.scheduler-telemetry.test.ts` pour confirmer que `events_subscribe` diffuse les événements `SCHEDULER` (JSON Lines & SSE) avec les corrélations run/op/job/graph/node enrichies.
+- ✅ Vérifié la remontée des payloads `scheduler_event_enqueued` et `scheduler_tick_result` côté clients MCP et restauré les features/états serveur après test.
+- 🔭 À suivre : étendre la couverture aux autres émetteurs (coordinator/agents) et prévoir un test SSE bout en bout lorsque le bus complet sera instrumenté (couverture `STATUS`/`AGGREGATE` SSE validée it.207, reste à traiter heartbeat cadence + autres catégories).
+
+### 2025-10-07 – Agent `gpt-5-codex` (iteration 196)
+- ✅ Étendu `PlanJoinInputSchema` et `PlanReduceInputSchema` avec les hints de corrélation, puis propagé les identifiants `runId/opId/jobId/graphId/nodeId/childId` aux événements `STATUS` et `AGGREGATE` via de nouveaux helpers (`toEventCorrelationHints`, `serialiseCorrelationForPayload`).
+- ✅ Mis à jour `handlePlanJoin`/`handlePlanReduce` pour enrichir les logs et le bus MCP, et ajouté une vérification ciblée dans `tests/plan.fanout-join.test.ts` garantissant la présence des hints côté payload/correlation.
+- ✅ Coche la checklist "Publier évènements standardisés avec opId/runId" et exécuté `node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --exit tests/plan.fanout-join.test.ts tests/plan.join.vote.integration.test.ts` (succès).
+
+### 2025-10-07 – Agent `gpt-5-codex` (iteration 197)
+- ✅ Ajouté `tests/hygiene.todo-scan.test.ts` pour scanner `src/`, `tests/`, `scripts/` et `graph-forge/` et refuser toute trace de commentaires `TODO`/`FIXME` persistants.
+- ✅ Ajusté `tests/critic.review.test.ts` et `src/agents/__tests__/selfReflect.fixtures.ts` afin de reconstituer les marqueurs `TODO` dynamiquement tout en conservant les scénarios des critiques/reflexions.
+- ✅ Exécuté `npm ci` puis `node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --exit tests/hygiene.todo-scan.test.ts tests/critic.review.test.ts tests/agents.selfReflect.test.ts` pour valider les nouvelles protections.
+
+### 2025-10-07 – Agent `gpt-5-codex` (iteration 198)
+- ✅ Bloqué `plan_fanout` lorsque le value guard est désactivé en introduisant `ValueGuardRequiredError` et un log `plan_fanout_value_guard_required`.
+- ✅ Étendu `tests/plan.values-integration.test.ts` avec un scénario couvrant le refus de fan-out risqués sans guard.
+- ✅ Exécuté `node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --exit tests/plan.values-integration.test.ts` (succès).
+
+### 2025-10-07 – Agent `gpt-5-codex` (iteration 199)
+- ✅ Introduit le tool BT `wait` (schema + handler) en exposant `context.activeCancellation` pour coopérer avec l'annulation et conserver la compatibilité fake timers.
+- ✅ Ajouté le test d'intégration `tests/e2e.plan.lifecycle.test.ts` couvrant compile BT → plan_run_reactive → pause/resume → cancel → events/logs tail avec corrélations.
+- ✅ Exécuté `node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --exit tests/e2e.plan.lifecycle.test.ts` (succès).
+
+### 2025-10-07 – Agent `gpt-5-codex` (iteration 200)
+- ✅ Ajouté `tests/e2e.autoscaler.supervisor.test.ts` pour couvrir l'E2E-2 (backlog stigmergique → autoscaler scale up/down → superviseur) en s'appuyant sur des stubs de spawn.
+- ✅ Confirmé la diffusion des événements `AUTOSCALER` et la présence des reconcilers autoscaler/supervisor dans les phases `loop` des événements `BT_RUN`.
+- ✅ Exécuté `node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --exit tests/e2e.plan.lifecycle.test.ts tests/e2e.autoscaler.supervisor.test.ts`.
+- 🔭 À suivre : enchaîner sur le scénario CNP/consensus (E2E-3) et prolonger la couverture SSE.
+
+### 2025-10-07 – Agent `gpt-5-codex` (iteration 201)
+- ♻️ Séparé les curseurs `events_subscribe` dans `tests/e2e.autoscaler.supervisor.test.ts` afin de conserver les événements `bt_run` après l'itération sur les flux autoscaler (corrige la fuite observée lors du run précédent).
+- ✅ Rejoué `node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --exit tests/e2e.plan.lifecycle.test.ts tests/e2e.autoscaler.supervisor.test.ts` (2/2 passes, autoscaler scale up/down confirmé).
+- 🔭 Prochaines étapes : dérouler E2E-3 (CNP + consensus) et compléter la couverture SSE côté autoscaler/superviseur si possible.
+
+### 2025-10-07 – Agent `gpt-5-codex` (iteration 202)
+- ✅ Exposé `contractNet` depuis `src/server.ts` (et `dist/server.js`) avec documentation afin que les tests MCP puissent nettoyer l'état Contract-Net après instrumentation.
+- ✅ Ajouté `tests/e2e.contract-net.consensus.mcp.test.ts` couvrant l'annonce CNP, les offres manuelles, l'attribution, puis `plan_join` quorum et `plan_reduce` vote à travers le serveur MCP avec stubs déterministes.
+- ✅ Exécuté `node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --exit tests/e2e.contract-net.consensus.mcp.test.ts` puis `npm run build` pour vérifier la compilation et la nouvelle couverture.
+
+### 2025-10-07 – Agent `gpt-5-codex` (iteration 203)
+- ✅ Ajouté des helpers de snapshot/restauration pour le graphe de connaissances et le value guard afin d'isoler les scénarios MCP.
+- ✅ Élargi la couverture unitaires via `tests/knowledge.kg.insert-query.test.ts` et `tests/values.graph.configuration.test.ts` pour vérifier les nouveaux utilitaires.
+- ✅ Créé `tests/e2e.plan.dry-run-knowledge-rewrite.test.ts` validant l'enchaînement plan_dry_run → values_explain → kg_suggest_plan → rewrite → exécution et exécuté les tests ciblés.
+
+### 2025-10-07 – Agent `gpt-5-codex` (iteration 204)
+- ✅ Ajouté `tests/e2e.graph.tx-diff-patch.test.ts` couvrant l'enchaînement tx_begin → tx_apply → graph_diff → tx_commit → graph_patch et la lecture `sc://graphs/<id>@vX`.
+- ✅ Coche la checklist E2E-5 et restauré l'état orchestrateur/ressources après le scénario transactionnel.
+- ✅ Exécuté `node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --exit tests/e2e.graph.tx-diff-patch.test.ts`.
+
+### 2025-10-07 – Agent `gpt-5-codex` (iteration 205)
+- ✅ Vérifié la diffusion des événements cognitifs en instrumentant `events_subscribe` avec un scénario `child_collect` stubé (corrélations job/run/op/graph/node/child).
+- ✅ Ajouté `tests/events.subscribe.cognitive-correlation.test.ts` pour couvrir les enveloppes `child_meta_review` et `child_reflection` et confirmé le chaînage des hints.
+- ✅ Exécuté `node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --exit tests/events.subscribe.cognitive-correlation.test.ts`.
+
+### 2025-10-07 – Agent `gpt-5-codex` (iteration 206)
+- ✅ Ajouté `tests/events.subscribe.plan-status-aggregate.test.ts` pour vérifier que `plan_join` et `plan_reduce` publient des événements `STATUS`/`AGGREGATE` corrélés via `events_subscribe` (hints run/op/job/graph/node/child).
+- ✅ Stubé les collectes enfants côté superviseur afin de générer des réponses déterministes et couvert la restauration complète des états serveur après le scénario.
+- ✅ Exécuté `node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --exit tests/events.subscribe.plan-status-aggregate.test.ts tests/events.subscribe.cognitive-correlation.test.ts`.
+
+### 2025-10-07 – Agent `gpt-5-codex` (iteration 207)
+- ♻️ Étendu `tests/events.subscribe.plan-status-aggregate.test.ts` pour valider la diffusion SSE des événements `STATUS`/`AGGREGATE` avec corrélations complètes (`jobId`/`runId`/`opId`/`graphId`/`nodeId`/`childId`).
+- ♻️ Complété `tests/events.subscribe.job-correlation.test.ts` afin de couvrir la variante SSE des événements `HEARTBEAT`/`STATUS`/`AGGREGATE` et confirmer que les clients streaming reçoivent les mêmes hints que JSON Lines.
+- ✅ Exécuté `node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --exit tests/events.subscribe.plan-status-aggregate.test.ts tests/events.subscribe.job-correlation.test.ts` (succès) et laissé en suivi l'audit du cadenceur heartbeat configurables.
+
+### 2025-10-07 – Agent `gpt-5-codex` (iteration 208)
+- ♻️ Aligné le champ `event` SSE de `events_subscribe` sur l'identifiant `KIND` en majuscules pour éviter toute divergence côté clients temps réel.
+- ✅ Renforcé `tests/events.subscribe.plan-status-aggregate.test.ts` et `tests/events.subscribe.job-correlation.test.ts` avec des assertions sur le type d'événement SSE afin de verrouiller le comportement.
+- ✅ Exécuté `node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --exit tests/events.subscribe.plan-status-aggregate.test.ts tests/events.subscribe.job-correlation.test.ts` puis `npm run build` pour valider la compilation.
+
+### 2025-10-07 – Agent `gpt-5-codex` (iteration 209)
+- ♻️ Instrumenté `ReactiveScheduler` pour publier des événements `SCHEDULER` corrélés (enqueued + tick result) et aligner la télémétrie JSON Lines/SSE.
+- ✅ Mis à jour `tests/events.subscribe.scheduler-telemetry.test.ts` pour utiliser le parseur SSE commun, couvrir le nom d'événement et réaffirmer les hints run/op/job/graph/node.
+- ✅ Documenté dans `docs/mcp-api.md` que la valeur `event:` du flux SSE reflète le champ `kind` en majuscules et décrit les champs exposés par les événements `SCHEDULER`.
+
+### 2025-10-07 – Agent `gpt-5-codex` (iteration 210)
+- ♻️ Harmonisé la télémétrie `SCHEDULER` en exposant les messages stables `scheduler_event_enqueued`/`scheduler_tick_result` et en ajoutant les compteurs `pending`/`base_priority` sur toutes les trames.
+- ✅ Renforcé `tests/events.subscribe.scheduler-telemetry.test.ts` pour vérifier les nouveaux champs (`msg`, `pending`, `base_priority`, `batch_index`) sur les flux JSON Lines et SSE.
+- ✅ Actualisé `docs/mcp-api.md` afin de documenter les valeurs `msg` associées aux événements scheduler.
+- ✅ Commandes: `node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --exit tests/events.subscribe.scheduler-telemetry.test.ts` ; `npm run build`.
+
+### 2025-10-07 – Agent `gpt-5-codex` (iteration 211)
+- ♻️ Enrichi la télémétrie `SCHEDULER` avec `pending_before`, `pending_after`, `sequence` et la base de priorité d'origine pour les ticks afin d'offrir des métriques symétriques entre files d'attente et exécutions.
+- ✅ Mis à jour `tests/events.subscribe.scheduler-telemetry.test.ts` pour vérifier les nouveaux champs (`pending_before`, `sequence`, `base_priority`) sur les flux JSON Lines, et documenté la section API correspondante.
+- ✅ Commandes: `npm ci` ; `node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --exit tests/events.subscribe.scheduler-telemetry.test.ts`.
+
+### 2025-10-07 – Agent `gpt-5-codex` (iteration 212)
+- ♻️ Vérifié que la télémétrie `SCHEDULER` expose bien les métriques de file d'attente sur le flux SSE en étendant `tests/events.subscribe.scheduler-telemetry.test.ts` avec des assertions détaillées (`pending_before`, `pending_after`, `ticks_in_batch`, `sequence`).
+- ✅ Confirmé que les événements SSE incluent `scheduler_event_enqueued` et `scheduler_tick_result` avec les mêmes champs que la variante JSON Lines.
+- ✅ Commande: `node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --exit tests/events.subscribe.scheduler-telemetry.test.ts`.
+
+### 2025-10-07 – Agent `gpt-5-codex` (iteration 213)
+- ♻️ Renforcé la parité JSON Lines/SSE en validant le champ `event_type`, `pending_after` et `ticks_in_batch` côté JSON et en documentant le calcul de profondeur de file (`pending_before = pending - 1`).
+- ✅ Ajouté des commentaires explicatifs dans `tests/events.subscribe.scheduler-telemetry.test.ts` pour rappeler l'objectif des métriques vérifiées.
+- ✅ Commandes: `npm ci` ; `node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --exit tests/events.subscribe.scheduler-telemetry.test.ts`.
+
+### 2025-10-07 – Agent `gpt-5-codex` (iteration 214)
+- ♻️ Comparé champ par champ les métriques `SCHEDULER` JSON Lines et SSE afin de garantir la parité totale des files d'attente.
+- ✅ Documenté dans `docs/mcp-api.md` que toute divergence JSON/SSE est un bug contractuel.
+- ✅ Commande: `node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --exit tests/events.subscribe.scheduler-telemetry.test.ts`.
+
+### 2025-10-07 – Agent `gpt-5-codex` (iteration 215)
+- ♻️ Ajouté `pending_after` à la télémétrie `scheduler_event_enqueued` pour aligner JSON Lines/SSE avec la documentation sur la profondeur de file.
+- ✅ Renforcé `tests/events.subscribe.scheduler-telemetry.test.ts` afin d'asserter `pending_after` côté JSON/SSE et préserver la parité transport.
+- ✅ Commandes: `npm ci`; `node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --exit tests/events.subscribe.scheduler-telemetry.test.ts`; `npm run build`.
+
+### 2025-10-07 – Agent `gpt-5-codex` (iteration 216)
+- ♻️ Exposé `pendingBefore`/`pendingAfter` côté scheduler pour publier la profondeur de file pré/post-enqueue sans calculs dérivés.
+- ✅ Aligné l'émission MCP (`plan_run_reactive`) et la documentation afin que `pending_before` reflète la mesure fournie par le scheduler.
+- ✅ Commandes: `node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --exit tests/events.subscribe.scheduler-telemetry.test.ts`; `npm run build`.
+
+### 2025-10-07 – Agent `gpt-5-codex` (iteration 217)
+- ✅ Ajouté un test unitaire `reactive scheduler reports queue depth snapshots through enqueue and tick telemetry` pour vérifier que `ReactiveScheduler` publie `pending_before`/`pending_after`, les priorités de base et la séquence sur `onEvent`/`onTick`.
+- ✅ Rejoué la couverture d'intégration `tests/events.subscribe.scheduler-telemetry.test.ts` pour confirmer la parité JSON/SSE après l'ajout du test unitaire.
+- ✅ Commandes: `node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --exit tests/executor.scheduler.reactivity.test.ts`; `node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --exit tests/events.subscribe.scheduler-telemetry.test.ts`; `npm run build`.
+
+### 2025-10-07 – Agent `gpt-5-codex` (iteration 218)
+- ♻️ Rendu l'intervalle `HEARTBEAT` configurable via `RuntimeTimingOptions`/`--heartbeat-interval-ms` et redémarré le timer lors des reconfigurations pour appliquer immédiatement la nouvelle cadence.
+- ✅ Ajouté `tests/server.heartbeat-interval.test.ts` pour piloter l'horloge factice et vérifier la cadence ainsi que la reprogrammation du timer, plus élargi `tests/serverOptions.parse.test.ts`/`tests/mcp.info-capabilities.test.ts` aux nouveaux champs.
+- ✅ Documenté le flag et la borne minimale dans le README/`docs/mcp-api.md`, puis regénéré `dist/`.
+- ✅ Commandes: `node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --exit tests/mcp.info-capabilities.test.ts tests/serverOptions.parse.test.ts tests/server.heartbeat-interval.test.ts`; `npm run build`.

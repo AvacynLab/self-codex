@@ -21,7 +21,6 @@ import { LogJournal } from "./monitor/log.js";
 import { BehaviorTreeStatusRegistry } from "./monitor/btStatusRegistry.js";
 import { parseOrchestratorRuntimeOptions, } from "./serverOptions.js";
 import { ChildSupervisor } from "./childSupervisor.js";
-import { UnknownChildError } from "./state/childrenIndex.js";
 import { Autoscaler } from "./agents/autoscaler.js";
 import { OrchestratorSupervisor, inferSupervisorIncidentCorrelation } from "./agents/supervisor.js";
 import { MetaCritic } from "./agents/metaCritic.js";
@@ -37,12 +36,12 @@ import { StigmergyField } from "./coord/stigmergy.js";
 import { KnowledgeGraph } from "./knowledge/knowledgeGraph.js";
 import { CausalMemory } from "./knowledge/causalMemory.js";
 import { ValueGraph } from "./values/valueGraph.js";
-import { ResourceRegistry, ResourceRegistryError } from "./resources/registry.js";
+import { ResourceRegistry } from "./resources/registry.js";
 import { renderResourceWatchSseMessages, serialiseResourceWatchResultForSse } from "./resources/sse.js";
 import { IdempotencyRegistry } from "./infra/idempotency.js";
 import { PlanLifecycleRegistry, PlanRunNotFoundError } from "./executor/planLifecycle.js";
 import { ChildCancelInputShape, ChildCancelInputSchema, ChildCollectInputShape, ChildCollectInputSchema, ChildCreateInputShape, ChildCreateInputSchema, ChildGcInputShape, ChildGcInputSchema, ChildKillInputShape, ChildKillInputSchema, ChildSendInputShape, ChildSendInputSchema, ChildStreamInputShape, ChildStreamInputSchema, ChildStatusInputShape, ChildStatusInputSchema, ChildSpawnCodexInputShape, ChildSpawnCodexInputSchema, ChildBatchCreateInputShape, ChildBatchCreateInputSchema, ChildAttachInputShape, ChildAttachInputSchema, ChildSetRoleInputShape, ChildSetRoleInputSchema, ChildSetLimitsInputShape, ChildSetLimitsInputSchema, handleChildCancel, handleChildCollect, handleChildCreate, handleChildSpawnCodex, handleChildBatchCreate, handleChildAttach, handleChildSetRole, handleChildSetLimits, handleChildGc, handleChildKill, handleChildSend, handleChildStream, handleChildStatus, } from "./tools/childTools.js";
-import { PlanFanoutInputSchema, PlanFanoutInputShape, PlanJoinInputSchema, PlanJoinInputShape, PlanCompileBTInputSchema, PlanCompileBTInputShape, PlanRunBTInputSchema, PlanRunBTInputShape, PlanRunReactiveInputSchema, PlanRunReactiveInputShape, PlanReduceInputSchema, PlanReduceInputShape, PlanDryRunInputSchema, PlanDryRunInputShape, PlanStatusInputSchema, PlanStatusInputShape, PlanPauseInputSchema, PlanPauseInputShape, PlanResumeInputSchema, PlanResumeInputShape, handlePlanFanout, handlePlanJoin, handlePlanCompileBT, handlePlanRunBT, handlePlanRunReactive, handlePlanReduce, handlePlanDryRun, handlePlanStatus, handlePlanPause, handlePlanResume, ValueGuardRejectionError, } from "./tools/planTools.js";
+import { PlanFanoutInputSchema, PlanFanoutInputShape, PlanJoinInputSchema, PlanJoinInputShape, PlanCompileBTInputSchema, PlanCompileBTInputShape, PlanRunBTInputSchema, PlanRunBTInputShape, PlanRunReactiveInputSchema, PlanRunReactiveInputShape, PlanReduceInputSchema, PlanReduceInputShape, PlanDryRunInputSchema, PlanDryRunInputShape, PlanStatusInputSchema, PlanStatusInputShape, PlanPauseInputSchema, PlanPauseInputShape, PlanResumeInputSchema, PlanResumeInputShape, handlePlanFanout, handlePlanJoin, handlePlanCompileBT, handlePlanRunBT, handlePlanRunReactive, handlePlanReduce, handlePlanDryRun, handlePlanStatus, handlePlanPause, handlePlanResume, ValueGuardRejectionError, ValueGuardRequiredError, } from "./tools/planTools.js";
 import { BbGetInputSchema, BbGetInputShape, BbQueryInputSchema, BbQueryInputShape, BbSetInputSchema, BbSetInputShape, BbBatchSetInputSchema, BbBatchSetInputShape, BbWatchInputSchema, BbWatchInputShape, CnpAnnounceInputSchema, CnpAnnounceInputShape, handleBbGet, handleBbBatchSet, handleBbQuery, handleBbSet, handleBbWatch, StigDecayInputSchema, StigDecayInputShape, StigMarkInputSchema, StigMarkInputShape, StigBatchInputSchema, StigBatchInputShape, StigSnapshotInputSchema, StigSnapshotInputShape, handleStigDecay, handleStigMark, handleStigBatch, handleStigSnapshot, CnpRefreshBoundsInputSchema, CnpRefreshBoundsInputShape, handleCnpRefreshBounds, handleCnpAnnounce, CnpWatcherTelemetryInputSchema, CnpWatcherTelemetryInputShape, handleCnpWatcherTelemetry, ConsensusVoteInputSchema, ConsensusVoteInputShape, handleConsensusVote, } from "./tools/coordTools.js";
 import { requestCancellation, cancelRun, getCancellation } from "./executor/cancel.js";
 import { AgentAutoscaleSetInputSchema, AgentAutoscaleSetInputShape, handleAgentAutoscaleSet, } from "./tools/agentTools.js";
@@ -51,13 +50,14 @@ import { GraphBatchMutateInputSchema, GraphBatchMutateInputShape, handleGraphBat
 import { GraphLockInputShape, GraphLockInputSchema, GraphUnlockInputShape, GraphUnlockInputSchema, handleGraphLock, handleGraphUnlock, } from "./tools/graphLockTools.js";
 import { GraphDiffInputSchema, GraphDiffInputShape, GraphPatchInputSchema, GraphPatchInputShape, handleGraphDiff, handleGraphPatch, } from "./tools/graphDiffTools.js";
 import { TxBeginInputSchema, TxBeginInputShape, TxApplyInputSchema, TxApplyInputShape, TxCommitInputSchema, TxCommitInputShape, TxRollbackInputSchema, TxRollbackInputShape, handleTxBegin, handleTxApply, handleTxCommit, handleTxRollback, } from "./tools/txTools.js";
-import { KgExportInputSchema, KgExportInputShape, KgInsertInputSchema, KgInsertInputShape, KgQueryInputSchema, KgQueryInputShape, handleKgExport, handleKgInsert, handleKgQuery, } from "./tools/knowledgeTools.js";
+import { KgExportInputSchema, KgExportInputShape, KgInsertInputSchema, KgInsertInputShape, KgQueryInputSchema, KgQueryInputShape, KgSuggestPlanInputSchema, KgSuggestPlanInputShape, handleKgExport, handleKgInsert, handleKgQuery, handleKgSuggestPlan, } from "./tools/knowledgeTools.js";
 import { CausalExportInputSchema, CausalExportInputShape, CausalExplainInputSchema, CausalExplainInputShape, handleCausalExport, handleCausalExplain, } from "./tools/causalTools.js";
 import { ValuesExplainInputSchema, ValuesExplainInputShape, ValuesFilterInputSchema, ValuesFilterInputShape, ValuesScoreInputSchema, ValuesScoreInputShape, ValuesSetInputSchema, ValuesSetInputShape, handleValuesExplain, handleValuesFilter, handleValuesScore, handleValuesSet, } from "./tools/valueTools.js";
 import { renderMermaidFromGraph } from "./viz/mermaid.js";
 import { renderDotFromGraph } from "./viz/dot.js";
 import { renderGraphmlFromGraph } from "./viz/graphml.js";
 import { snapshotToGraphDescriptor } from "./viz/snapshot.js";
+import { childToolError, planToolError, graphToolError, transactionToolError, coordinationToolError, knowledgeToolError, causalToolError, valueToolError, resourceToolError, } from "./server/toolErrors.js";
 import { SUBGRAPH_REGISTRY_KEY, collectMissingSubgraphDescriptors, collectSubgraphReferences, } from "./graph/subgraphRegistry.js";
 import { extractSubgraphToFile } from "./graph/subgraphExtract.js";
 import { getMcpCapabilities, getMcpInfo, updateMcpRuntimeSnapshot, } from "./mcp/info.js";
@@ -139,7 +139,9 @@ const DEFAULT_RUNTIME_TIMINGS = {
     supervisorStallTicks: 6,
     defaultTimeoutMs: 60_000,
     autoscaleCooldownMs: 10_000,
+    heartbeatIntervalMs: 2_000,
 };
+const MIN_HEARTBEAT_INTERVAL_MS = 250;
 const DEFAULT_CHILD_SAFETY_LIMITS = {
     maxChildren: 16,
     memoryLimitMb: 512,
@@ -172,8 +174,10 @@ export function getRuntimeTimings() {
 }
 /** Applies a new pacing configuration for optional modules. */
 export function configureRuntimeTimings(next) {
-    runtimeTimings = { ...next };
+    const heartbeatInterval = Math.max(MIN_HEARTBEAT_INTERVAL_MS, next.heartbeatIntervalMs ?? DEFAULT_RUNTIME_TIMINGS.heartbeatIntervalMs);
+    runtimeTimings = { ...next, heartbeatIntervalMs: heartbeatInterval };
     updateMcpRuntimeSnapshot({ timings: runtimeTimings });
+    refreshHeartbeatTimer();
 }
 /** Returns the safety guardrails applied to child runtimes. */
 export function getChildSafetyLimits() {
@@ -939,8 +943,24 @@ function getKnowledgeToolContext() {
 function getCausalToolContext() {
     return { causalMemory, logger };
 }
+/** Capture the knowledge graph state so integration tests can restore it. */
+function snapshotKnowledgeGraph() {
+    return knowledgeGraph.exportAll();
+}
+/** Replace the knowledge graph entries with the provided snapshots. */
+function restoreKnowledgeGraph(snapshots) {
+    knowledgeGraph.restore(snapshots);
+}
 function getValueToolContext() {
     return { valueGraph, logger };
+}
+/** Capture the value guard configuration to keep end-to-end tests isolated. */
+function snapshotValueGraphConfiguration() {
+    return valueGraph.exportConfiguration();
+}
+/** Restore the value guard configuration captured before a scenario. */
+function restoreValueGraphConfiguration(config) {
+    valueGraph.restoreConfiguration(config);
 }
 class CancellationFeatureDisabledError extends Error {
     code = "E-CANCEL-DISABLED";
@@ -949,219 +969,6 @@ class CancellationFeatureDisabledError extends Error {
         super("cancellation feature disabled");
         this.name = "CancellationFeatureDisabledError";
     }
-}
-function normaliseToolError(error, defaultCode) {
-    const message = error instanceof Error ? error.message : String(error);
-    let code = defaultCode;
-    let hint;
-    let details;
-    if (error instanceof z.ZodError) {
-        code = defaultCode;
-        hint = "invalid_input";
-        details = { issues: error.issues };
-    }
-    else if (typeof error.code === "string") {
-        code = error.code;
-        if (typeof error.hint === "string") {
-            hint = error.hint;
-        }
-        if (Object.prototype.hasOwnProperty.call(error, "details")) {
-            details = error.details;
-        }
-    }
-    else if (Object.prototype.hasOwnProperty.call(error, "details")) {
-        details = error.details;
-    }
-    return { code, message, hint, details };
-}
-function childToolError(toolName, error, context = {}) {
-    const defaultCode = error instanceof UnknownChildError ? "NOT_FOUND" : "CHILD_TOOL_ERROR";
-    const normalised = normaliseToolError(error, defaultCode);
-    logger.error(`${toolName}_failed`, { ...context, message: normalised.message, code: normalised.code, details: normalised.details });
-    const payload = {
-        error: normalised.code,
-        tool: toolName,
-        message: normalised.message,
-    };
-    if (normalised.hint) {
-        payload.hint = normalised.hint;
-    }
-    if (normalised.details !== undefined) {
-        payload.details = normalised.details;
-    }
-    return {
-        isError: true,
-        content: [{ type: "text", text: j(payload) }],
-    };
-}
-function planToolError(toolName, error, context = {}, defaultCode = "PLAN_TOOL_ERROR") {
-    const normalised = normaliseToolError(error, defaultCode);
-    logger.error(`${toolName}_failed`, { ...context, message: normalised.message, code: normalised.code, details: normalised.details });
-    const payload = {
-        error: normalised.code,
-        tool: toolName,
-        message: normalised.message,
-    };
-    if (normalised.hint) {
-        payload.hint = normalised.hint;
-    }
-    if (normalised.details !== undefined) {
-        payload.details = normalised.details;
-    }
-    return {
-        isError: true,
-        content: [{ type: "text", text: j(payload) }],
-    };
-}
-function graphToolError(toolName, error, context = {}, defaultCode = "GRAPH_TOOL_ERROR") {
-    const normalised = normaliseToolError(error, defaultCode);
-    logger.error(`${toolName}_failed`, { ...context, message: normalised.message, code: normalised.code, details: normalised.details });
-    const payload = {
-        error: normalised.code,
-        tool: toolName,
-        message: normalised.message,
-    };
-    if (normalised.hint) {
-        payload.hint = normalised.hint;
-    }
-    if (normalised.details !== undefined) {
-        payload.details = normalised.details;
-    }
-    return {
-        isError: true,
-        content: [{ type: "text", text: j(payload) }],
-    };
-}
-function transactionToolError(toolName, error, context = {}) {
-    const normalised = normaliseToolError(error, "E-TX-UNEXPECTED");
-    logger.error(`${toolName}_failed`, {
-        ...context,
-        message: normalised.message,
-        code: normalised.code,
-        details: normalised.details,
-    });
-    const payload = {
-        error: normalised.code,
-        tool: toolName,
-        message: normalised.message,
-    };
-    if (normalised.hint) {
-        payload.hint = normalised.hint;
-    }
-    if (normalised.details !== undefined) {
-        payload.details = normalised.details;
-    }
-    return {
-        isError: true,
-        content: [{ type: "text", text: j(payload) }],
-    };
-}
-function coordinationToolError(toolName, error, context = {}, defaultCode = "COORD_TOOL_ERROR") {
-    const normalised = normaliseToolError(error, defaultCode);
-    logger.error(`${toolName}_failed`, { ...context, message: normalised.message, code: normalised.code, details: normalised.details });
-    const payload = {
-        error: normalised.code,
-        tool: toolName,
-        message: normalised.message,
-    };
-    if (normalised.hint) {
-        payload.hint = normalised.hint;
-    }
-    if (normalised.details !== undefined) {
-        payload.details = normalised.details;
-    }
-    return {
-        isError: true,
-        content: [{ type: "text", text: j(payload) }],
-    };
-}
-function knowledgeToolError(toolName, error, context = {}, defaultCode = "KNOWLEDGE_TOOL_ERROR") {
-    const normalised = normaliseToolError(error, defaultCode);
-    logger.error(`${toolName}_failed`, { ...context, message: normalised.message, code: normalised.code, details: normalised.details });
-    const payload = {
-        error: normalised.code,
-        tool: toolName,
-        message: normalised.message,
-    };
-    if (normalised.hint) {
-        payload.hint = normalised.hint;
-    }
-    if (normalised.details !== undefined) {
-        payload.details = normalised.details;
-    }
-    return {
-        isError: true,
-        content: [{ type: "text", text: j(payload) }],
-    };
-}
-function causalToolError(toolName, error, context = {}, defaultCode = "CAUSAL_TOOL_ERROR") {
-    const normalised = normaliseToolError(error, defaultCode);
-    logger.error(`${toolName}_failed`, { ...context, message: normalised.message, code: normalised.code, details: normalised.details });
-    const payload = {
-        error: normalised.code,
-        tool: toolName,
-        message: normalised.message,
-    };
-    if (normalised.hint) {
-        payload.hint = normalised.hint;
-    }
-    if (normalised.details !== undefined) {
-        payload.details = normalised.details;
-    }
-    return {
-        isError: true,
-        content: [{ type: "text", text: j(payload) }],
-    };
-}
-function valueToolError(toolName, error, context = {}, defaultCode = "VALUE_TOOL_ERROR") {
-    const normalised = normaliseToolError(error, defaultCode);
-    logger.error(`${toolName}_failed`, { ...context, message: normalised.message, code: normalised.code, details: normalised.details });
-    const payload = {
-        error: normalised.code,
-        tool: toolName,
-        message: normalised.message,
-    };
-    if (normalised.hint) {
-        payload.hint = normalised.hint;
-    }
-    if (normalised.details !== undefined) {
-        payload.details = normalised.details;
-    }
-    return {
-        isError: true,
-        content: [{ type: "text", text: j(payload) }],
-    };
-}
-function resourceToolError(toolName, error, context = {}) {
-    const normalised = error instanceof ResourceRegistryError
-        ? {
-            code: error.code,
-            message: error.message,
-            hint: error.hint,
-            details: error.details,
-        }
-        : normaliseToolError(error, "E-RES-UNEXPECTED");
-    logger.error(`${toolName}_failed`, {
-        ...context,
-        message: normalised.message,
-        code: normalised.code,
-        details: normalised.details,
-    });
-    const payload = {
-        error: normalised.code,
-        tool: toolName,
-        message: normalised.message,
-    };
-    if (normalised.hint) {
-        payload.hint = normalised.hint;
-    }
-    if (normalised.details !== undefined) {
-        payload.details = normalised.details;
-    }
-    return {
-        isError: true,
-        content: [{ type: "text", text: j(payload) }],
-    };
 }
 function ensureKnowledgeEnabled(toolName) {
     if (!runtimeFeatures.enableKnowledge) {
@@ -1177,6 +984,21 @@ function ensureKnowledgeEnabled(toolName) {
         };
     }
     return null;
+}
+function ensureAssistEnabled(toolName) {
+    if (!runtimeFeatures.enableAssist) {
+        logger.warn(`${toolName}_disabled`, { tool: toolName });
+        return {
+            isError: true,
+            content: [
+                {
+                    type: "text",
+                    text: j({ error: "ASSIST_DISABLED", tool: toolName, message: "assist module disabled" }),
+                },
+            ],
+        };
+    }
+    return ensureKnowledgeEnabled(toolName);
 }
 function ensureCausalMemoryEnabled(toolName) {
     if (!runtimeFeatures.enableCausalMemory) {
@@ -1507,6 +1329,17 @@ function buildLiveEvents(input) {
 }
 // Heartbeat
 let HEARTBEAT_TIMER = null;
+function resolveHeartbeatIntervalMs() {
+    const raw = runtimeTimings.heartbeatIntervalMs ?? DEFAULT_RUNTIME_TIMINGS.heartbeatIntervalMs;
+    return Math.max(MIN_HEARTBEAT_INTERVAL_MS, raw);
+}
+function refreshHeartbeatTimer() {
+    if (!HEARTBEAT_TIMER) {
+        return;
+    }
+    stopHeartbeat();
+    startHeartbeat();
+}
 /**
  * Publish a heartbeat event for every job currently marked as running. The helper keeps the
  * correlation logic reusable so deterministic tests can trigger heartbeats without waiting for
@@ -1530,9 +1363,11 @@ function emitHeartbeatTick() {
 function startHeartbeat() {
     if (HEARTBEAT_TIMER)
         return;
+    const interval = resolveHeartbeatIntervalMs();
     HEARTBEAT_TIMER = setInterval(() => {
         emitHeartbeatTick();
-    }, 2000);
+    }, interval);
+    HEARTBEAT_TIMER.unref?.();
 }
 /** Stop the heartbeat interval to avoid leaking timers when shutting down tests or transports. */
 function stopHeartbeat() {
@@ -1975,7 +1810,7 @@ server.registerTool("resources_list", {
         const prefix = input && typeof input === "object" && input !== null
             ? input.prefix ?? null
             : null;
-        return resourceToolError("resources_list", error, { prefix });
+        return resourceToolError(logger, "resources_list", error, { prefix });
     }
 });
 server.registerTool("resources_read", {
@@ -1995,7 +1830,7 @@ server.registerTool("resources_read", {
         const uri = input && typeof input === "object" && input !== null
             ? input.uri ?? null
             : null;
-        return resourceToolError("resources_read", error, { uri });
+        return resourceToolError(logger, "resources_read", error, { uri });
     }
 });
 server.registerTool("resources_watch", {
@@ -2037,7 +1872,7 @@ server.registerTool("resources_watch", {
         const uri = input && typeof input === "object" && input !== null
             ? input.uri ?? null
             : null;
-        return resourceToolError("resources_watch", error, { uri });
+        return resourceToolError(logger, "resources_watch", error, { uri });
     }
 });
 server.registerTool("events_subscribe", {
@@ -2085,7 +1920,14 @@ server.registerTool("events_subscribe", {
         const format = parsed.format ?? "jsonlines";
         const stream = format === "sse"
             ? serialised
-                .map((evt) => [`id: ${evt.seq}`, `event: ${evt.cat}`, `data: ${serialiseForSse(evt)}`, ``].join("\n"))
+                .map((evt) => [
+                `id: ${evt.seq}`,
+                // Use the upper-cased `kind` value so SSE consumers observe the same
+                // event type identifiers exposed via the JSON Lines payload.
+                `event: ${evt.kind}`,
+                `data: ${serialiseForSse(evt)}`,
+                ``,
+            ].join("\n"))
                 .join("\n")
             : serialised.map((evt) => JSON.stringify(evt)).join("\n");
         const nextSeq = events.length ? events[events.length - 1].seq : parsed.from_seq ?? null;
@@ -2325,7 +2167,7 @@ server.registerTool("graph_export", { title: "Graph export", description: "Expor
         };
     }
     catch (error) {
-        return graphToolError("graph_export", error);
+        return graphToolError(logger, "graph_export", error);
     }
 });
 // graph_state_save
@@ -2814,7 +2656,7 @@ server.registerTool("graph_generate", {
         };
     }
     catch (error) {
-        return graphToolError("graph_generate", error);
+        return graphToolError(logger, "graph_generate", error);
     }
 });
 server.registerTool("graph_mutate", {
@@ -2924,12 +2766,12 @@ server.registerTool("graph_mutate", {
     }
     catch (error) {
         if (error instanceof GraphVersionConflictError) {
-            return graphToolError("graph_mutate", error, {
+            return graphToolError(logger, "graph_mutate", error, {
                 graph_id: graphIdForError,
                 version: graphVersionForError,
             });
         }
-        return graphToolError("graph_mutate", error, {
+        return graphToolError(logger, "graph_mutate", error, {
             graph_id: graphIdForError,
             version: graphVersionForError ?? undefined,
         });
@@ -2977,12 +2819,12 @@ server.registerTool("graph_batch_mutate", {
     }
     catch (error) {
         if (error instanceof GraphVersionConflictError) {
-            return graphToolError("graph_batch_mutate", error, { graph_id: graphIdForError });
+            return graphToolError(logger, "graph_batch_mutate", error, { graph_id: graphIdForError });
         }
         if (error instanceof GraphTransactionError) {
-            return graphToolError("graph_batch_mutate", error, { graph_id: graphIdForError });
+            return graphToolError(logger, "graph_batch_mutate", error, { graph_id: graphIdForError });
         }
-        return graphToolError("graph_batch_mutate", error, {
+        return graphToolError(logger, "graph_batch_mutate", error, {
             graph_id: graphIdForError ?? undefined,
         });
     }
@@ -3011,7 +2853,10 @@ server.registerTool("graph_diff", {
         };
     }
     catch (error) {
-        return graphToolError("graph_diff", error);
+        return graphToolError(logger, "graph_diff", error, {}, {
+            defaultCode: "E-PATCH-DIFF",
+            invalidInputCode: "E-PATCH-INVALID",
+        });
     }
 });
 server.registerTool("graph_patch", {
@@ -3043,8 +2888,9 @@ server.registerTool("graph_patch", {
         };
     }
     catch (error) {
-        return graphToolError("graph_patch", error, {
-            graph_id: graphIdForError,
+        return graphToolError(logger, "graph_patch", error, { graph_id: graphIdForError }, {
+            defaultCode: "E-PATCH-APPLY",
+            invalidInputCode: "E-PATCH-INVALID",
         });
     }
 });
@@ -3073,7 +2919,10 @@ server.registerTool("graph_lock", {
         };
     }
     catch (error) {
-        return graphToolError("graph_lock", error);
+        return graphToolError(logger, "graph_lock", error, {}, {
+            defaultCode: "E-LOCK-ACQUIRE",
+            invalidInputCode: "E-LOCK-INVALID-INPUT",
+        });
     }
 });
 server.registerTool("graph_unlock", {
@@ -3100,7 +2949,10 @@ server.registerTool("graph_unlock", {
         };
     }
     catch (error) {
-        return graphToolError("graph_unlock", error, { lock_id: lockIdForError });
+        return graphToolError(logger, "graph_unlock", error, { lock_id: lockIdForError }, {
+            defaultCode: "E-LOCK-RELEASE",
+            invalidInputCode: "E-LOCK-INVALID-INPUT",
+        });
     }
 });
 server.registerTool("graph_subgraph_extract", {
@@ -3154,7 +3006,7 @@ server.registerTool("graph_subgraph_extract", {
         };
     }
     catch (error) {
-        return graphToolError("graph_subgraph_extract", error, {
+        return graphToolError(logger, "graph_subgraph_extract", error, {
             node_id: parsed?.node_id,
             run_id: parsed?.run_id,
         });
@@ -3187,7 +3039,7 @@ server.registerTool("graph_hyper_export", {
         };
     }
     catch (error) {
-        return graphToolError("graph_hyper_export", error);
+        return graphToolError(logger, "graph_hyper_export", error);
     }
 });
 server.registerTool("kg_insert", {
@@ -3208,7 +3060,7 @@ server.registerTool("kg_insert", {
         };
     }
     catch (error) {
-        return knowledgeToolError("kg_insert", error);
+        return knowledgeToolError(logger, "kg_insert", error);
     }
 });
 server.registerTool("kg_query", {
@@ -3229,7 +3081,7 @@ server.registerTool("kg_query", {
         };
     }
     catch (error) {
-        return knowledgeToolError("kg_query", error);
+        return knowledgeToolError(logger, "kg_query", error);
     }
 });
 server.registerTool("kg_export", {
@@ -3250,7 +3102,28 @@ server.registerTool("kg_export", {
         };
     }
     catch (error) {
-        return knowledgeToolError("kg_export", error);
+        return knowledgeToolError(logger, "kg_export", error);
+    }
+});
+server.registerTool("kg_suggest_plan", {
+    title: "Knowledge suggest plan",
+    description: "Propose des fragments hiérarchiques issus du graphe de connaissances (sources, dépendances, couverture).",
+    inputSchema: KgSuggestPlanInputShape,
+}, async (input) => {
+    const disabled = ensureAssistEnabled("kg_suggest_plan");
+    if (disabled) {
+        return disabled;
+    }
+    try {
+        const parsed = KgSuggestPlanInputSchema.parse(input);
+        const result = handleKgSuggestPlan(getKnowledgeToolContext(), parsed);
+        return {
+            content: [{ type: "text", text: j({ tool: "kg_suggest_plan", result }) }],
+            structuredContent: result,
+        };
+    }
+    catch (error) {
+        return knowledgeToolError(logger, "kg_suggest_plan", error);
     }
 });
 server.registerTool("values_set", {
@@ -3271,7 +3144,7 @@ server.registerTool("values_set", {
         };
     }
     catch (error) {
-        return valueToolError("values_set", error);
+        return valueToolError(logger, "values_set", error);
     }
 });
 server.registerTool("values_score", {
@@ -3292,7 +3165,7 @@ server.registerTool("values_score", {
         };
     }
     catch (error) {
-        return valueToolError("values_score", error);
+        return valueToolError(logger, "values_score", error);
     }
 });
 server.registerTool("values_filter", {
@@ -3313,7 +3186,7 @@ server.registerTool("values_filter", {
         };
     }
     catch (error) {
-        return valueToolError("values_filter", error);
+        return valueToolError(logger, "values_filter", error);
     }
 });
 server.registerTool("values_explain", {
@@ -3334,7 +3207,7 @@ server.registerTool("values_explain", {
         };
     }
     catch (error) {
-        return valueToolError("values_explain", error);
+        return valueToolError(logger, "values_explain", error);
     }
 });
 server.registerTool("causal_export", {
@@ -3355,7 +3228,7 @@ server.registerTool("causal_export", {
         };
     }
     catch (error) {
-        return causalToolError("causal_export", error);
+        return causalToolError(logger, "causal_export", error);
     }
 });
 server.registerTool("causal_explain", {
@@ -3377,7 +3250,7 @@ server.registerTool("causal_explain", {
         };
     }
     catch (error) {
-        return causalToolError("causal_explain", error, parsed ? { outcome_id: parsed.outcome_id } : {});
+        return causalToolError(logger, "causal_explain", error, parsed ? { outcome_id: parsed.outcome_id } : {});
     }
 });
 server.registerTool("graph_rewrite_apply", {
@@ -3493,13 +3366,13 @@ server.registerTool("graph_rewrite_apply", {
     }
     catch (error) {
         if (error instanceof GraphVersionConflictError) {
-            return graphToolError("graph_rewrite_apply", error, {
+            return graphToolError(logger, "graph_rewrite_apply", error, {
                 graph_id: graphIdForError ?? undefined,
                 version: graphVersionForError ?? undefined,
                 mode: parsed?.mode,
             });
         }
-        return graphToolError("graph_rewrite_apply", error, {
+        return graphToolError(logger, "graph_rewrite_apply", error, {
             graph_id: graphIdForError ?? undefined,
             version: graphVersionForError ?? undefined,
             mode: parsed?.mode,
@@ -3553,7 +3426,7 @@ server.registerTool("tx_begin", {
         };
     }
     catch (error) {
-        return transactionToolError("tx_begin", error, { graph_id: graphIdForError ?? undefined });
+        return transactionToolError(logger, "tx_begin", error, { graph_id: graphIdForError ?? undefined });
     }
 });
 server.registerTool("tx_apply", {
@@ -3587,7 +3460,7 @@ server.registerTool("tx_apply", {
         };
     }
     catch (error) {
-        return transactionToolError("tx_apply", error, { tx_id: txIdForError ?? undefined });
+        return transactionToolError(logger, "tx_apply", error, { tx_id: txIdForError ?? undefined });
     }
 });
 server.registerTool("tx_commit", {
@@ -3617,7 +3490,7 @@ server.registerTool("tx_commit", {
         };
     }
     catch (error) {
-        return transactionToolError("tx_commit", error, { tx_id: txIdForError ?? undefined });
+        return transactionToolError(logger, "tx_commit", error, { tx_id: txIdForError ?? undefined });
     }
 });
 server.registerTool("tx_rollback", {
@@ -3647,7 +3520,7 @@ server.registerTool("tx_rollback", {
         };
     }
     catch (error) {
-        return transactionToolError("tx_rollback", error, { tx_id: txIdForError ?? undefined });
+        return transactionToolError(logger, "tx_rollback", error, { tx_id: txIdForError ?? undefined });
     }
 });
 server.registerTool("graph_validate", {
@@ -3673,7 +3546,7 @@ server.registerTool("graph_validate", {
         };
     }
     catch (error) {
-        return graphToolError("graph_validate", error);
+        return graphToolError(logger, "graph_validate", error);
     }
 });
 server.registerTool("graph_summarize", {
@@ -3697,7 +3570,7 @@ server.registerTool("graph_summarize", {
         };
     }
     catch (error) {
-        return graphToolError("graph_summarize", error);
+        return graphToolError(logger, "graph_summarize", error);
     }
 });
 server.registerTool("graph_paths_k_shortest", {
@@ -3724,7 +3597,7 @@ server.registerTool("graph_paths_k_shortest", {
         };
     }
     catch (error) {
-        return graphToolError("graph_paths_k_shortest", error);
+        return graphToolError(logger, "graph_paths_k_shortest", error);
     }
 });
 server.registerTool("graph_paths_constrained", {
@@ -3753,7 +3626,7 @@ server.registerTool("graph_paths_constrained", {
         };
     }
     catch (error) {
-        return graphToolError("graph_paths_constrained", error);
+        return graphToolError(logger, "graph_paths_constrained", error);
     }
 });
 server.registerTool("graph_centrality_betweenness", {
@@ -3778,7 +3651,7 @@ server.registerTool("graph_centrality_betweenness", {
         };
     }
     catch (error) {
-        return graphToolError("graph_centrality_betweenness", error);
+        return graphToolError(logger, "graph_centrality_betweenness", error);
     }
 });
 server.registerTool("graph_partition", {
@@ -3804,7 +3677,7 @@ server.registerTool("graph_partition", {
         };
     }
     catch (error) {
-        return graphToolError("graph_partition", error);
+        return graphToolError(logger, "graph_partition", error);
     }
 });
 server.registerTool("graph_critical_path", {
@@ -3829,7 +3702,7 @@ server.registerTool("graph_critical_path", {
         };
     }
     catch (error) {
-        return graphToolError("graph_critical_path", error);
+        return graphToolError(logger, "graph_critical_path", error);
     }
 });
 server.registerTool("graph_simulate", {
@@ -3854,7 +3727,7 @@ server.registerTool("graph_simulate", {
         };
     }
     catch (error) {
-        return graphToolError("graph_simulate", error);
+        return graphToolError(logger, "graph_simulate", error);
     }
 });
 server.registerTool("graph_optimize", {
@@ -3881,7 +3754,7 @@ server.registerTool("graph_optimize", {
         };
     }
     catch (error) {
-        return graphToolError("graph_optimize", error);
+        return graphToolError(logger, "graph_optimize", error);
     }
 });
 server.registerTool("graph_optimize_moo", {
@@ -3906,7 +3779,7 @@ server.registerTool("graph_optimize_moo", {
         };
     }
     catch (error) {
-        return graphToolError("graph_optimize_moo", error);
+        return graphToolError(logger, "graph_optimize_moo", error);
     }
 });
 server.registerTool("graph_causal_analyze", {
@@ -3932,7 +3805,7 @@ server.registerTool("graph_causal_analyze", {
         };
     }
     catch (error) {
-        return graphToolError("graph_causal_analyze", error);
+        return graphToolError(logger, "graph_causal_analyze", error);
     }
 });
 // plan_fanout
@@ -3954,6 +3827,27 @@ server.registerTool("plan_fanout", {
         };
     }
     catch (error) {
+        if (error instanceof ValueGuardRequiredError) {
+            logger.warn("plan_fanout_value_guard_required", {
+                children: error.children.length,
+                names: error.children,
+            });
+            return {
+                isError: true,
+                content: [
+                    {
+                        type: "text",
+                        text: j({
+                            error: error.code,
+                            tool: "plan_fanout",
+                            message: error.message,
+                            hint: error.hint,
+                            children: error.children,
+                        }),
+                    },
+                ],
+            };
+        }
         if (error instanceof ValueGuardRejectionError) {
             logger.error("plan_fanout_rejected_by_value_guard", {
                 rejected: error.rejections.length,
@@ -3983,7 +3877,7 @@ server.registerTool("plan_fanout", {
                 ],
             };
         }
-        return planToolError("plan_fanout", error);
+        return planToolError(logger, "plan_fanout", error);
     }
 });
 server.registerTool("plan_join", {
@@ -4001,7 +3895,7 @@ server.registerTool("plan_join", {
         };
     }
     catch (error) {
-        return planToolError("plan_join", error);
+        return planToolError(logger, "plan_join", error);
     }
 });
 server.registerTool("plan_reduce", {
@@ -4018,7 +3912,7 @@ server.registerTool("plan_reduce", {
         };
     }
     catch (error) {
-        return planToolError("plan_reduce", error);
+        return planToolError(logger, "plan_reduce", error);
     }
 });
 server.registerTool("plan_compile_bt", {
@@ -4035,7 +3929,10 @@ server.registerTool("plan_compile_bt", {
         };
     }
     catch (error) {
-        return planToolError("plan_compile_bt", error, {}, "E-BT-INVALID");
+        return planToolError(logger, "plan_compile_bt", error, {}, {
+            defaultCode: "E-BT-INVALID",
+            invalidInputCode: "E-BT-INVALID",
+        });
     }
 });
 server.registerTool("plan_run_bt", {
@@ -4052,7 +3949,10 @@ server.registerTool("plan_run_bt", {
         };
     }
     catch (error) {
-        return planToolError("plan_run_bt", error, {}, "E-BT-INVALID");
+        return planToolError(logger, "plan_run_bt", error, {}, {
+            defaultCode: "E-BT-INVALID",
+            invalidInputCode: "E-BT-INVALID",
+        });
     }
 });
 server.registerTool("plan_run_reactive", {
@@ -4069,7 +3969,10 @@ server.registerTool("plan_run_reactive", {
         };
     }
     catch (error) {
-        return planToolError("plan_run_reactive", error, {}, "E-BT-INVALID");
+        return planToolError(logger, "plan_run_reactive", error, {}, {
+            defaultCode: "E-BT-INVALID",
+            invalidInputCode: "E-BT-INVALID",
+        });
     }
 });
 server.registerTool("plan_dry_run", {
@@ -4086,7 +3989,10 @@ server.registerTool("plan_dry_run", {
         };
     }
     catch (error) {
-        return planToolError("plan_dry_run", error, {}, "E-PLAN-DRY-RUN");
+        return planToolError(logger, "plan_dry_run", error, {}, {
+            defaultCode: "E-PLAN-DRY-RUN",
+            invalidInputCode: "E-PLAN-INVALID-INPUT",
+        });
     }
 });
 server.registerTool("plan_status", {
@@ -4109,7 +4015,10 @@ server.registerTool("plan_status", {
         };
     }
     catch (error) {
-        return planToolError("plan_status", error, {}, "E-PLAN-STATUS");
+        return planToolError(logger, "plan_status", error, {}, {
+            defaultCode: "E-PLAN-STATUS",
+            invalidInputCode: "E-PLAN-INVALID-INPUT",
+        });
     }
 });
 server.registerTool("plan_pause", {
@@ -4128,7 +4037,10 @@ server.registerTool("plan_pause", {
         };
     }
     catch (error) {
-        return planToolError("plan_pause", error, {}, "E-PLAN-PAUSE");
+        return planToolError(logger, "plan_pause", error, {}, {
+            defaultCode: "E-PLAN-PAUSE",
+            invalidInputCode: "E-PLAN-INVALID-INPUT",
+        });
     }
 });
 server.registerTool("plan_resume", {
@@ -4147,7 +4059,10 @@ server.registerTool("plan_resume", {
         };
     }
     catch (error) {
-        return planToolError("plan_resume", error, {}, "E-PLAN-RESUME");
+        return planToolError(logger, "plan_resume", error, {}, {
+            defaultCode: "E-PLAN-RESUME",
+            invalidInputCode: "E-PLAN-INVALID-INPUT",
+        });
     }
 });
 server.registerTool("op_cancel", {
@@ -4187,7 +4102,10 @@ server.registerTool("op_cancel", {
         };
     }
     catch (error) {
-        return planToolError("op_cancel", error, {}, "E-CANCEL-OP");
+        return planToolError(logger, "op_cancel", error, {}, {
+            defaultCode: "E-CANCEL-OP",
+            invalidInputCode: "E-CANCEL-INVALID-INPUT",
+        });
     }
 });
 server.registerTool("plan_cancel", {
@@ -4237,7 +4155,10 @@ server.registerTool("plan_cancel", {
         };
     }
     catch (error) {
-        return planToolError("plan_cancel", error, {}, "E-CANCEL-PLAN");
+        return planToolError(logger, "plan_cancel", error, {}, {
+            defaultCode: "E-CANCEL-PLAN",
+            invalidInputCode: "E-CANCEL-INVALID-INPUT",
+        });
     }
 });
 server.registerTool("bb_batch_set", {
@@ -4255,7 +4176,7 @@ server.registerTool("bb_batch_set", {
         };
     }
     catch (error) {
-        return coordinationToolError("bb_batch_set", error);
+        return coordinationToolError(logger, "bb_batch_set", error);
     }
 });
 server.registerTool("bb_set", {
@@ -4273,7 +4194,7 @@ server.registerTool("bb_set", {
         };
     }
     catch (error) {
-        return coordinationToolError("bb_set", error);
+        return coordinationToolError(logger, "bb_set", error);
     }
 });
 server.registerTool("bb_get", {
@@ -4291,7 +4212,7 @@ server.registerTool("bb_get", {
         };
     }
     catch (error) {
-        return coordinationToolError("bb_get", error);
+        return coordinationToolError(logger, "bb_get", error);
     }
 });
 server.registerTool("bb_query", {
@@ -4309,7 +4230,7 @@ server.registerTool("bb_query", {
         };
     }
     catch (error) {
-        return coordinationToolError("bb_query", error);
+        return coordinationToolError(logger, "bb_query", error);
     }
 });
 server.registerTool("bb_watch", {
@@ -4327,7 +4248,7 @@ server.registerTool("bb_watch", {
         };
     }
     catch (error) {
-        return coordinationToolError("bb_watch", error);
+        return coordinationToolError(logger, "bb_watch", error);
     }
 });
 server.registerTool("stig_mark", {
@@ -4345,7 +4266,7 @@ server.registerTool("stig_mark", {
         };
     }
     catch (error) {
-        return coordinationToolError("stig_mark", error);
+        return coordinationToolError(logger, "stig_mark", error);
     }
 });
 server.registerTool("stig_batch", {
@@ -4363,7 +4284,7 @@ server.registerTool("stig_batch", {
         };
     }
     catch (error) {
-        return coordinationToolError("stig_batch", error);
+        return coordinationToolError(logger, "stig_batch", error);
     }
 });
 server.registerTool("stig_decay", {
@@ -4381,7 +4302,7 @@ server.registerTool("stig_decay", {
         };
     }
     catch (error) {
-        return coordinationToolError("stig_decay", error);
+        return coordinationToolError(logger, "stig_decay", error);
     }
 });
 server.registerTool("stig_snapshot", {
@@ -4399,7 +4320,7 @@ server.registerTool("stig_snapshot", {
         };
     }
     catch (error) {
-        return coordinationToolError("stig_snapshot", error);
+        return coordinationToolError(logger, "stig_snapshot", error);
     }
 });
 server.registerTool("cnp_announce", {
@@ -4417,7 +4338,7 @@ server.registerTool("cnp_announce", {
         };
     }
     catch (error) {
-        return coordinationToolError("cnp_announce", error);
+        return coordinationToolError(logger, "cnp_announce", error);
     }
 });
 server.registerTool("cnp_refresh_bounds", {
@@ -4435,7 +4356,7 @@ server.registerTool("cnp_refresh_bounds", {
         };
     }
     catch (error) {
-        return coordinationToolError("cnp_refresh_bounds", error);
+        return coordinationToolError(logger, "cnp_refresh_bounds", error);
     }
 });
 server.registerTool("cnp_watcher_telemetry", {
@@ -4452,7 +4373,7 @@ server.registerTool("cnp_watcher_telemetry", {
         };
     }
     catch (error) {
-        return coordinationToolError("cnp_watcher_telemetry", error);
+        return coordinationToolError(logger, "cnp_watcher_telemetry", error);
     }
 });
 server.registerTool("consensus_vote", {
@@ -4480,7 +4401,7 @@ server.registerTool("consensus_vote", {
         };
     }
     catch (error) {
-        return coordinationToolError("consensus_vote", error);
+        return coordinationToolError(logger, "consensus_vote", error);
     }
 });
 server.registerTool("agent_autoscale_set", {
@@ -4568,7 +4489,7 @@ server.registerTool("child_batch_create", {
         };
     }
     catch (error) {
-        return childToolError("child_batch_create", error, { child_id: null });
+        return childToolError(logger, "child_batch_create", error, { child_id: null });
     }
 });
 server.registerTool("child_spawn_codex", {
@@ -4594,7 +4515,7 @@ server.registerTool("child_spawn_codex", {
         };
     }
     catch (error) {
-        return childToolError("child_spawn_codex", error, { child_id: null });
+        return childToolError(logger, "child_spawn_codex", error, { child_id: null });
     }
 });
 server.registerTool("child_attach", {
@@ -4613,7 +4534,7 @@ server.registerTool("child_attach", {
         };
     }
     catch (error) {
-        return childToolError("child_attach", error, { child_id: input?.child_id ?? null });
+        return childToolError(logger, "child_attach", error, { child_id: input?.child_id ?? null });
     }
 });
 server.registerTool("child_set_role", {
@@ -4632,7 +4553,7 @@ server.registerTool("child_set_role", {
         };
     }
     catch (error) {
-        return childToolError("child_set_role", error, { child_id: input?.child_id ?? null });
+        return childToolError(logger, "child_set_role", error, { child_id: input?.child_id ?? null });
     }
 });
 server.registerTool("child_set_limits", {
@@ -4651,7 +4572,7 @@ server.registerTool("child_set_limits", {
         };
     }
     catch (error) {
-        return childToolError("child_set_limits", error, { child_id: input?.child_id ?? null });
+        return childToolError(logger, "child_set_limits", error, { child_id: input?.child_id ?? null });
     }
 });
 server.registerTool("child_create", {
@@ -4702,7 +4623,7 @@ server.registerTool("child_create", {
         };
     }
     catch (error) {
-        return childToolError("child_create", error, { child_id: input.child_id ?? null });
+        return childToolError(logger, "child_create", error, { child_id: input.child_id ?? null });
     }
 });
 server.registerTool("child_send", {
@@ -4719,7 +4640,7 @@ server.registerTool("child_send", {
         };
     }
     catch (error) {
-        return childToolError("child_send", error, { child_id: input.child_id });
+        return childToolError(logger, "child_send", error, { child_id: input.child_id });
     }
 });
 server.registerTool("child_status", {
@@ -4737,7 +4658,7 @@ server.registerTool("child_status", {
         };
     }
     catch (error) {
-        return childToolError("child_status", error, { child_id: input.child_id });
+        return childToolError(logger, "child_status", error, { child_id: input.child_id });
     }
 });
 server.registerTool("child_collect", {
@@ -4908,7 +4829,7 @@ server.registerTool("child_collect", {
         };
     }
     catch (error) {
-        return childToolError("child_collect", error, { child_id: input.child_id });
+        return childToolError(logger, "child_collect", error, { child_id: input.child_id });
     }
 });
 server.registerTool("child_stream", {
@@ -4925,7 +4846,7 @@ server.registerTool("child_stream", {
         };
     }
     catch (error) {
-        return childToolError("child_stream", error, {
+        return childToolError(logger, "child_stream", error, {
             child_id: input.child_id,
             after_sequence: input.after_sequence ?? null,
         });
@@ -4945,7 +4866,7 @@ server.registerTool("child_cancel", {
         };
     }
     catch (error) {
-        return childToolError("child_cancel", error, { child_id: input.child_id });
+        return childToolError(logger, "child_cancel", error, { child_id: input.child_id });
     }
 });
 server.registerTool("child_kill", {
@@ -4962,7 +4883,7 @@ server.registerTool("child_kill", {
         };
     }
     catch (error) {
-        return childToolError("child_kill", error, { child_id: input.child_id });
+        return childToolError(logger, "child_kill", error, { child_id: input.child_id });
     }
 });
 server.registerTool("child_gc", {
@@ -4979,7 +4900,7 @@ server.registerTool("child_gc", {
         };
     }
     catch (error) {
-        return childToolError("child_gc", error, { child_id: input.child_id });
+        return childToolError(logger, "child_gc", error, { child_id: input.child_id });
     }
 });
 // child_prompt
@@ -5487,7 +5408,13 @@ if (isMain) {
         process.exit(0);
     });
 }
-export { server, graphState, childSupervisor, resources, logJournal, DEFAULT_CHILD_RUNTIME, buildLiveEvents, setDefaultChildRuntime, GraphSubgraphExtractInputSchema, GraphSubgraphExtractInputShape, emitHeartbeatTick, stopHeartbeat, };
+/**
+ * Expose the shared Contract-Net coordinator for integration tests that
+ * manipulate agents and calls while exercising the MCP interface end to end.
+ * Tests rely on this handle to cleanly seed and restore coordinator state
+ * without reaching into private supervisor internals.
+ */
+export { server, graphState, childSupervisor, resources, logJournal, DEFAULT_CHILD_RUNTIME, buildLiveEvents, setDefaultChildRuntime, GraphSubgraphExtractInputSchema, GraphSubgraphExtractInputShape, emitHeartbeatTick, startHeartbeat, stopHeartbeat, contractNet, snapshotKnowledgeGraph, restoreKnowledgeGraph, snapshotValueGraphConfiguration, restoreValueGraphConfiguration, };
 /**
  * Helper returning the latest lifecycle snapshot associated with the provided run identifier.
  * The lookup is guarded by the feature toggle so cancellation tools can call the helper without

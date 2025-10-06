@@ -46,6 +46,11 @@ interface McpInfoResult {
 }
 ```
 
+Le champ `timings.heartbeatIntervalMs` reflète l'intervalle configuré (en
+millisecondes) entre deux événements `HEARTBEAT`. Le serveur applique une borne
+minimale de `250ms` afin d'éviter qu'une cadence trop agressive ne sature le bus
+d'événements.
+
 ### Tool `mcp_capabilities`
 
 ```ts
@@ -246,7 +251,7 @@ Les flags suivants contrôlent l'exposition des outils facultatifs :
 | `--enable-plan-lifecycle` | `enablePlanLifecycle` | Contrôle plan_pause/plan_resume (à venir). |
 | `--enable-child-ops-fine` | `enableChildOpsFine` | Active les outils de réglage fin des enfants (à venir). |
 | `--enable-values-explain` | `enableValuesExplain` | Publie `values_explain` (à venir). |
-| `--enable-assist` | `enableAssist` | Débloque `kg_suggest_plan` et assistance causale (à venir). |
+| `--enable-assist` | `enableAssist` | Active `kg_suggest_plan` (fragments issus du graphe de connaissances). |
 
 Les modules marqués « à venir » seront ajoutés progressivement : cette référence
 sera enrichie au fur et à mesure (bus d'événements, cancellations uniformes,
@@ -337,6 +342,78 @@ interface StigBatchResult {
   contenant des `rows` déjà formatées (`Min/Max/Ceiling`) et `heatmap.bounds_tooltip`
   pour alimenter directement les dashboards/autoscalers.
 
+### Graphe de connaissances (`kg_*`)
+
+Le registre de connaissances accepte des triplets via `kg_insert`, peut être
+interrogé avec `kg_query` et exporté entièrement avec `kg_export`. Lorsque le
+flag `--enable-assist` est actif, l'outil `kg_suggest_plan` synthétise des
+fragments hiérarchiques prêts à être injectés dans les workflows de planification.
+
+```ts
+const KgSuggestPlanInput = z
+  .object({
+    goal: z.string().min(1),
+    context: z
+      .object({
+        preferred_sources: z.array(z.string().min(1).max(120)).max(16).optional(),
+        exclude_tasks: z.array(z.string().min(1).max(120)).max(256).optional(),
+        max_fragments: z.number().int().min(1).max(5).optional(),
+      })
+      .strict()
+      .optional(),
+  })
+  .strict();
+
+interface KgSuggestPlanResult {
+  goal: string;
+  fragments: HierGraph[]; // nodes avec kg_goal, kg_source, kg_seed, kg_group
+  rationale: string[];
+  coverage: {
+    total_tasks: number;
+    suggested_tasks: string[];
+    excluded_tasks: string[];
+    missing_dependencies: Array<{ task: string; dependencies: string[] }>;
+    unknown_dependencies: Array<{ task: string; dependencies: string[] }>;
+  };
+  sources: Array<{ source: string; tasks: number }>;
+  preferred_sources_applied: string[];
+  preferred_sources_ignored: string[];
+}
+```
+
+Les fragments sont des `HierGraph` standards : chaque nœud encode `kg_goal`
+(identifiant du plan), `kg_source` (provenance), `kg_seed` (tâche cœur ou
+dépendance), `kg_group` (groupe de suggestion) ainsi que `kg_confidence`,
+`kg_duration`/`kg_weight` lorsque ces métadonnées sont présentes dans les
+triplets. Les arêtes portent `label = "depends_on"` et `attributes.kg_dependency = true`.
+
+* `preferred_sources` permet de prioriser certains playbooks (ordre conservé,
+  sensible à la casse uniquement pour l'affichage).
+* `exclude_tasks` filtre des identifiants spécifiques ; les dépendances
+  manquantes apparaissent dans `coverage.missing_dependencies`.
+* `max_fragments` limite le nombre de suggestions retournées (de 1 à 5).
+* `rationale` détaille la couverture (`Plan '...' : X/Y tâches`), les exclusions
+  et la présence éventuelle de dépendances inconnues.
+
+```json
+{
+  "tool": "kg_suggest_plan",
+  "input": {
+    "goal": "launch",
+    "context": {
+      "preferred_sources": ["playbook"],
+      "exclude_tasks": ["legacy_audit"],
+      "max_fragments": 2
+    }
+  }
+}
+```
+
+La réponse inclut `fragments` (hiérarchie prête à compiler), `rationale`, les
+compteurs `coverage` ainsi qu'un résumé des sources utilisées. Combine ce
+résultat avec `values_explain` et `graph_patch` pour proposer des correctifs
+guidés par le graphe de connaissances.
+
 #### Contract-Net (`cnp_announce`)
 
 * La réponse inclut `auto_bid_enabled` pour signaler si des enchères heuristiques
@@ -364,7 +441,22 @@ interface StigBatchResult {
   devoir sonder `/metrics`. Le format `format: "sse"` de `events_subscribe`
   échappe les retours chariot, sauts de ligne et séparateurs Unicode afin que
   chaque bloc `data:` reste monoligne tout en conservant les raisons
-  multi-lignes après `JSON.parse`.
+  multi-lignes après `JSON.parse`. Le champ `event:` de la trame SSE reprend la
+  valeur `kind` en majuscules exposée dans la version JSON Lines, garantissant
+  que les consommateurs temps réel observent des identifiants cohérents.
+* Les événements `SCHEDULER` publient `event_type`, `msg`, `pending_before`,
+  `pending`, `pending_after`, `base_priority`, `duration_ms`, `batch_index`,
+  `ticks_in_batch`, `sequence`, `priority` (pour les ticks) ainsi que la
+  projection normalisée de l'événement sous-jacent (`event_payload`). Le champ
+  `msg` vaut toujours `scheduler_event_enqueued` ou `scheduler_tick_result`
+  afin de permettre aux clients SSE/JSON Lines de filtrer sans décoder la
+  charge utile complète. Les champs de corrélation `run_id`, `op_id`, `job_id`,
+  `graph_id`, `node_id` et `child_id` sont toujours présents pour lier la
+  télémétrie scheduler aux runs réactifs et aux superviseurs.
+  Les profondeurs de file pré/post-enqueue sont directement exposées par le
+  planificateur afin d'éviter tout calcul implicite côté consommateurs.
+* Les charges JSON Lines et SSE sont strictement alignées champ par champ ; un
+  écart détecté par un client doit être considéré comme un bug et signalé.
 
 ```ts
 const GraphBatchMutateInput = z

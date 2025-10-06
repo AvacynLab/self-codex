@@ -175,11 +175,18 @@ function isSerializedChildRecord(value: unknown): value is SerializedChildRecord
  */
 export class UnknownChildError extends Error {
   public readonly childId: string;
+  /** Machine readable error code surfaced to MCP clients. */
+  public readonly code = "E-CHILD-NOT-FOUND";
+  /** Hint describing how the caller can recover from the failure. */
+  public readonly hint = "unknown_child";
+  /** Structured details automatically serialised by the server error helpers. */
+  public readonly details: { child_id: string };
 
   constructor(childId: string) {
     super(`Unknown child identifier: ${childId}`);
     this.name = "UnknownChildError";
     this.childId = childId;
+    this.details = { child_id: childId };
   }
 }
 
@@ -188,11 +195,18 @@ export class UnknownChildError extends Error {
  */
 export class DuplicateChildError extends Error {
   public readonly childId: string;
+  /** Error code signalling that the requested child already exists. */
+  public readonly code = "E-CHILD-DUPLICATE";
+  /** Hint guiding clients towards idempotent create operations. */
+  public readonly hint = "duplicate_child";
+  /** Contextual metadata included in structured tool errors. */
+  public readonly details: { child_id: string };
 
   constructor(childId: string) {
     super(`Child already registered: ${childId}`);
     this.name = "DuplicateChildError";
     this.childId = childId;
+    this.details = { child_id: childId };
   }
 }
 

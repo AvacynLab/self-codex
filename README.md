@@ -78,11 +78,16 @@ Réponse condensée :
     "enableValuesExplain": false,
     "enableAssist": false
   },
-  "timings": { "btTickMs": 50, "stigHalfLifeMs": 30000, "supervisorStallTicks": 6, "defaultTimeoutMs": 60000, "autoscaleCooldownMs": 10000 },
+  "timings": { "btTickMs": 50, "stigHalfLifeMs": 30000, "supervisorStallTicks": 6, "defaultTimeoutMs": 60000, "autoscaleCooldownMs": 10000, "heartbeatIntervalMs": 2000 },
   "safety": { "maxChildren": 16, "memoryLimitMb": 512, "cpuPercent": 100 },
   "limits": { "maxInputBytes": 524288, "defaultTimeoutMs": 60000, "maxEventHistory": 1000 }
 }
 ```
+
+Le flag `--heartbeat-interval-ms` permet désormais d'ajuster la cadence des
+événements `HEARTBEAT` côté orchestrateur. Les valeurs inférieures à `250ms`
+sont automatiquement remontées à ce seuil afin de protéger les consommateurs du
+bus d'événements contre les surcharges.
 
 > Les toggles désactivés (`enableEventsBus`, `enableTx`, `enableBulk`, etc.) correspondent aux modules en cours d'implémentation.
 > Consultez `docs/mcp-api.md` pour suivre leur statut et leurs schémas attendus.
@@ -741,6 +746,41 @@ résultats `plan_fanout`/`plan_reduce`.
 Les résultats incluent les révisions, timestamps et ordinal pour permettre des
 replays déterministes.
 
+### Suggérer un plan depuis le graphe de connaissances
+
+Avec `--enable-knowledge` et `--enable-assist` actifs, tu peux demander au
+registre de synthétiser un fragment hiérarchique prêt à être compilé :
+
+```json
+{
+  "tool": "kg_suggest_plan",
+  "input": {
+    "goal": "launch",
+    "context": {
+      "preferred_sources": ["playbook"],
+      "exclude_tasks": ["legacy_audit"],
+      "max_fragments": 2
+    }
+  }
+}
+```
+
+La réponse fournit :
+
+* `fragments` – un tableau de `HierGraph` dont chaque nœud encode `kg_goal`,
+  `kg_source`, `kg_confidence`, `kg_seed` (tâche cœur/dépendance) et `kg_group`
+  (ex: `source playbook`). Les arêtes conservent les dépendances (`depends_on`).
+* `rationale` – phrases prêtes à l'emploi résumant la couverture (`Plan '...' :
+  X/Y tâches`), les exclusions et les dépendances inconnues.
+* `coverage` – compteurs détaillés (`suggested_tasks`, `excluded_tasks`,
+  `missing_dependencies`, `unknown_dependencies`).
+* `sources` – répartition par playbook, ainsi que
+  `preferred_sources_applied` / `preferred_sources_ignored` pour savoir si les
+  préférences ont matché.
+
+Enchaîne avec `values_explain` pour vérifier les contraintes puis `graph_patch`
+afin d'intégrer le fragment proposé au graphe principal.
+
 ### Mémoire causale
 
 ```json
@@ -1208,6 +1248,14 @@ sur disque dans le workspace.
 Les tests sont 100 % hors ligne et déterministes.
 
 ```bash
+./scripts/retry-flaky.sh npm run test:unit -- --exit tests/plan.run-reactive.test.ts
+# RETRY_FLAKY_ATTEMPTS=5 ./scripts/retry-flaky.sh
+```
+
+Le script `retry-flaky.sh` relance une commande sensible plusieurs fois afin de
+débusquer les instabilités en local sans saturer la CI.
+
+```bash
 npm run lint   # tsc noEmit sur src/ et graph-forge/
 npm test       # build + mocha (ts-node ESM)
 npm run build  # compilation dist/
@@ -1231,7 +1279,8 @@ npm run bench:scheduler
 ```
 
 Le rapport affiche une table (scénario, ticks exécutés, latence totale,
-latence moyenne et traces collectées) pour suivre l'impact des optimisations.
+latence moyenne et traces collectées) suivie d'un delta quantifiant le gain ou
+la régression moyenne apporté(e) par la stigmergie.
 
 Installez les dépendances (`npm ci`) avant l'exécution pour disposer de `tsx`.
 

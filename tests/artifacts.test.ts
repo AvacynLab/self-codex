@@ -1,6 +1,6 @@
 import { describe, it } from "mocha";
 import { expect } from "chai";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { createHash } from "node:crypto";
@@ -173,6 +173,41 @@ describe("artifacts", () => {
       const digest = await hashFile(targetFile);
       const expected = createHash("sha256").update(payload).digest("hex");
       expect(digest).to.equal(expected);
+    } finally {
+      await rm(childrenRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("ignores symbolic links when scanning artifacts", async function () {
+    if (process.platform === "win32") {
+      // Creating symbolic links on Windows requires elevated privileges. Skipping avoids
+      // spurious failures on developer workstations.
+      this.skip();
+    }
+
+    const childrenRoot = await mkdtemp(path.join(tmpdir(), "artifacts-"));
+
+    try {
+      await writeArtifact({
+        childrenRoot,
+        childId: "child-a",
+        relativePath: "reports/a.txt",
+        data: "ok",
+        mimeType: "text/plain",
+      });
+
+      const outsideFile = path.join(childrenRoot, "outside.txt");
+      await writeFile(outsideFile, "external");
+
+      const outboxDir = path.join(childrenRoot, "child-a", "outbox");
+      await mkdir(path.join(outboxDir, "links"), { recursive: true });
+      await symlink(outsideFile, path.join(outboxDir, "links", "external.txt"));
+
+      const manifests = await scanArtifacts(childrenRoot, "child-a");
+      const paths = manifests.map((entry) => entry.path);
+
+      expect(paths).to.include(path.join("reports", "a.txt"));
+      expect(paths).to.not.include(path.join("links", "external.txt"));
     } finally {
       await rm(childrenRoot, { recursive: true, force: true });
     }
