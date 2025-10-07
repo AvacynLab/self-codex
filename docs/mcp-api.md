@@ -191,6 +191,84 @@ flux complet, bouclez tant que `events.length > 0` en rappelant
 > `serialiseForSse` afin de neutraliser `\r`, `\n`, `U+2028`, `U+2029` tout en
 > conservant la possibilité de décoder avec `JSON.parse`.
 
+## Observabilité
+
+### Tool `logs_tail`
+
+```ts
+const LogsTailInput = z
+  .object({
+    stream: z.enum(["server", "run", "child"]).default("server"),
+    id: z.string().trim().min(1).optional(),
+    from_seq: z.number().int().min(0).optional(),
+    limit: z.number().int().positive().max(500).optional(),
+    levels: z.array(z.string().trim().min(1)).max(4).optional(),
+    filters: z
+      .object({
+        run_ids: z.array(z.string().trim().min(1)).max(10).optional(),
+        job_ids: z.array(z.string().trim().min(1)).max(10).optional(),
+    op_ids: z.array(z.string().trim().min(1)).max(10).optional(),
+    graph_ids: z.array(z.string().trim().min(1)).max(10).optional(),
+    node_ids: z.array(z.string().trim().min(1)).max(10).optional(),
+    child_ids: z.array(z.string().trim().min(1)).max(10).optional(),
+    message_contains: z.array(z.string().trim().min(1)).max(5).optional(),
+    since_ts: z.number().int().min(0).optional(),
+    until_ts: z.number().int().min(0).optional(),
+  })
+  .strict()
+  .optional(),
+  })
+  .strict();
+
+interface LogsTailResult {
+  stream: "server" | "run" | "child";
+  bucket_id: string; // "orchestrator" par défaut pour le flux serveur
+  entries: Array<{
+    seq: number;
+    ts: number;
+    stream: "server" | "run" | "child";
+    bucket_id: string;
+    level: "debug" | "info" | "warn" | "error";
+    message: string;
+    data: unknown;
+    job_id: string | null;
+    run_id: string | null;
+    op_id: string | null;
+    graph_id: string | null;
+    node_id: string | null;
+    child_id: string | null;
+  }>;
+  next_seq: number;
+  levels: string[] | null; // niveaux normalisés (lowercase, dédupliqués)
+  filters:
+    | {
+        run_ids: string[] | null;
+        job_ids: string[] | null;
+        op_ids: string[] | null;
+        graph_ids: string[] | null;
+        node_ids: string[] | null;
+        child_ids: string[] | null;
+        message_contains: string[] | null;
+        since_ts: number | null;
+        until_ts: number | null;
+      }
+    | null;
+}
+```
+
+* `stream` sélectionne le seau logique (`server` agrège l'orchestrateur).
+* `id` est requis pour `run` et `child` (identifiant du run/enfant ciblé).
+* `levels` accepte jusqu'à quatre sévérités, sans distinction de casse. Les
+  doublons sont éliminés avant comparaison et reflétés normalisés en sortie.
+* `filters` autorise des filtres croisés (`run_ids`, `job_ids`, etc.) ainsi que
+  une recherche plein texte simple (`message_contains`) et une fenêtre
+  temporelle inclusive (`since_ts`, `until_ts`). Un filtre vide est rejeté
+  (`empty_filters`).
+
+Pour paginer, rappelez l'outil avec `from_seq = next_seq`. Les entrées sont
+retournées ordonnées (seq croissant) et déjà normalisées côté serveur afin que
+le client puisse directement sérialiser ou afficher les journaux sans post-traitement.
+
 ## Contrôles fins du runtime enfant
 
 Lorsque `enableChildOpsFine` est actif, quatre outils MCP complètent `child_create`

@@ -75,6 +75,38 @@ export interface LogTailResult {
   nextSeq: number;
 }
 
+/**
+ * Optional correlated filters restricting the set of identifiers and
+ * timestamps that must be matched for an entry to be included in a tail
+ * request.
+ */
+export interface LogTailFilters {
+  readonly runIds?: readonly string[];
+  readonly jobIds?: readonly string[];
+  readonly opIds?: readonly string[];
+  readonly graphIds?: readonly string[];
+  readonly nodeIds?: readonly string[];
+  readonly childIds?: readonly string[];
+  /** Case-insensitive substrings that must be present in the log message. */
+  readonly messageIncludes?: readonly string[];
+  /** Inclusive lower bound applied to entry timestamps. */
+  readonly sinceTs?: number;
+  /** Inclusive upper bound applied to entry timestamps. */
+  readonly untilTs?: number;
+}
+
+interface NormalisedTailFilters {
+  readonly runIds?: Set<string>;
+  readonly jobIds?: Set<string>;
+  readonly opIds?: Set<string>;
+  readonly graphIds?: Set<string>;
+  readonly nodeIds?: Set<string>;
+  readonly childIds?: Set<string>;
+  readonly messageIncludes?: readonly string[];
+  readonly sinceTs?: number;
+  readonly untilTs?: number;
+}
+
 /** Error raised when a log operation fails. */
 export class LogJournalError extends Error {
   constructor(message: string, readonly code: string = "E-LOG-JOURNAL") {
@@ -197,8 +229,23 @@ export class LogJournal {
     return entry;
   }
 
-  /** Retrieves a slice of log entries ordered by their sequence number. */
-  tail(input: { stream: LogStream; bucketId?: string | null; fromSeq?: number; limit?: number }): LogTailResult {
+  /**
+   * Retrieves a slice of log entries ordered by their sequence number.
+   *
+   * The helper also supports optional severity and correlation filters so
+   * callers can focus on the most relevant entries without having to
+   * post-process the entire page. Filters include timestamp windows that are
+   * applied in-memory before pagination to keep slices deterministic. Severity
+   * comparisons remain case-insensitive to align with the structured logger.
+   */
+  tail(input: {
+    stream: LogStream;
+    bucketId?: string | null;
+    fromSeq?: number;
+    limit?: number;
+    levels?: readonly string[] | null;
+    filters?: LogTailFilters | null;
+  }): LogTailResult {
     const bucketId = input.bucketId?.trim() && input.bucketId.trim().length > 0 ? input.bucketId.trim() : "orchestrator";
     const key = this.buildBucketKey(input.stream, bucketId);
     const state = this.buckets.get(key);
@@ -209,7 +256,53 @@ export class LogJournal {
     const fromSeq = typeof input.fromSeq === "number" && input.fromSeq >= 0 ? input.fromSeq : 0;
     const limit = typeof input.limit === "number" && input.limit > 0 ? Math.min(Math.floor(input.limit), this.maxEntries) : this.maxEntries;
 
-    const filtered = state.entries.filter((entry) => entry.seq > fromSeq);
+    const levelSet = Array.isArray(input.levels) && input.levels.length > 0
+      ? new Set(input.levels.map((level) => level.toLowerCase()))
+      : null;
+
+    const filterSets = this.normaliseTailFilters(input.filters);
+
+    const filtered = state.entries.filter((entry) => {
+      if (entry.seq <= fromSeq) {
+        return false;
+      }
+      if (levelSet && !levelSet.has(entry.level.toLowerCase())) {
+        return false;
+      }
+      if (filterSets?.messageIncludes && filterSets.messageIncludes.length > 0) {
+        const message = entry.message.toLowerCase();
+        for (const needle of filterSets.messageIncludes) {
+          if (!message.includes(needle)) {
+            return false;
+          }
+        }
+      }
+      if (filterSets?.sinceTs !== undefined && entry.ts < filterSets.sinceTs) {
+        return false;
+      }
+      if (filterSets?.untilTs !== undefined && entry.ts > filterSets.untilTs) {
+        return false;
+      }
+      if (filterSets?.runIds && (!entry.runId || !filterSets.runIds.has(entry.runId))) {
+        return false;
+      }
+      if (filterSets?.jobIds && (!entry.jobId || !filterSets.jobIds.has(entry.jobId))) {
+        return false;
+      }
+      if (filterSets?.opIds && (!entry.opId || !filterSets.opIds.has(entry.opId))) {
+        return false;
+      }
+      if (filterSets?.graphIds && (!entry.graphId || !filterSets.graphIds.has(entry.graphId))) {
+        return false;
+      }
+      if (filterSets?.nodeIds && (!entry.nodeId || !filterSets.nodeIds.has(entry.nodeId))) {
+        return false;
+      }
+      if (filterSets?.childIds && (!entry.childId || !filterSets.childIds.has(entry.childId))) {
+        return false;
+      }
+      return true;
+    });
     const ordered = filtered.sort((a, b) => a.seq - b.seq).slice(0, limit);
     const nextSeq = ordered.length ? ordered[ordered.length - 1].seq : state.lastSeq;
     return { entries: ordered, nextSeq };
@@ -218,6 +311,92 @@ export class LogJournal {
   /** Waits for all pending file writes to complete. */
   async flush(): Promise<void> {
     await Promise.all(Array.from(this.buckets.values(), (bucket) => bucket.writeQueue));
+  }
+
+  /**
+   * Normalises identifier filters so membership checks remain efficient while
+   * ignoring empty or whitespace-only entries supplied by callers.
+   */
+  private normaliseTailFilters(filters?: LogTailFilters | null): NormalisedTailFilters | null {
+    if (!filters) {
+      return null;
+    }
+    const toSet = (values?: readonly string[]) => {
+      if (!values || values.length === 0) {
+        return null;
+      }
+      const collected = new Set<string>();
+      for (const value of values) {
+        const trimmed = value.trim();
+        if (trimmed.length > 0) {
+          collected.add(trimmed);
+        }
+      }
+      return collected.size > 0 ? collected : null;
+    };
+
+    const runIds = toSet(filters.runIds);
+    const jobIds = toSet(filters.jobIds);
+    const opIds = toSet(filters.opIds);
+    const graphIds = toSet(filters.graphIds);
+    const nodeIds = toSet(filters.nodeIds);
+    const childIds = toSet(filters.childIds);
+    const messageIncludes = this.normaliseMessageNeedles(filters.messageIncludes);
+    const sinceTs =
+      typeof filters.sinceTs === "number" && Number.isFinite(filters.sinceTs) && filters.sinceTs >= 0
+        ? Math.floor(filters.sinceTs)
+        : undefined;
+    const untilTs =
+      typeof filters.untilTs === "number" && Number.isFinite(filters.untilTs) && filters.untilTs >= 0
+        ? Math.floor(filters.untilTs)
+        : undefined;
+
+    if (
+      !runIds &&
+      !jobIds &&
+      !opIds &&
+      !graphIds &&
+      !nodeIds &&
+      !childIds &&
+      !messageIncludes &&
+      sinceTs === undefined &&
+      untilTs === undefined
+    ) {
+      return null;
+    }
+
+    return {
+      ...(runIds ? { runIds } : null),
+      ...(jobIds ? { jobIds } : null),
+      ...(opIds ? { opIds } : null),
+      ...(graphIds ? { graphIds } : null),
+      ...(nodeIds ? { nodeIds } : null),
+      ...(childIds ? { childIds } : null),
+      ...(messageIncludes ? { messageIncludes } : null),
+      ...(sinceTs !== undefined ? { sinceTs } : null),
+      ...(untilTs !== undefined ? { untilTs } : null),
+    };
+  }
+
+  /**
+   * Normalises message substring filters so comparisons stay case-insensitive
+   * while preserving caller intent order for deterministic assertions.
+   */
+  private normaliseMessageNeedles(values?: readonly string[] | null): readonly string[] | null {
+    if (!values || values.length === 0) {
+      return null;
+    }
+    const seen = new Set<string>();
+    const needles: string[] = [];
+    for (const value of values) {
+      const trimmed = value.trim().toLowerCase();
+      if (trimmed.length === 0 || seen.has(trimmed)) {
+        continue;
+      }
+      seen.add(trimmed);
+      needles.push(trimmed);
+    }
+    return needles.length > 0 ? needles : null;
   }
 
   private buildBucketKey(stream: LogStream, bucketId: string): string {

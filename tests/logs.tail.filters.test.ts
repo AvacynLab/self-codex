@@ -122,6 +122,447 @@ describe("logs tail tool", () => {
     }
   });
 
+  it("filters entries by severity levels", async function () {
+    this.timeout(5000);
+
+    // Prime the journal with a mix of informational and error level entries so the
+    // tool has to apply the severity filter before pagination trims the results.
+    logJournal.record({
+      stream: "server",
+      bucketId: "orchestrator",
+      seq: 21,
+      ts: Date.now() - 20,
+      level: "info",
+      message: "scheduler_tick",
+    });
+    logJournal.record({
+      stream: "server",
+      bucketId: "orchestrator",
+      seq: 22,
+      ts: Date.now() - 10,
+      level: "error",
+      message: "scheduler_failed",
+      data: { reason: "timeout" },
+    });
+    logJournal.record({
+      stream: "server",
+      bucketId: "orchestrator",
+      seq: 23,
+      ts: Date.now(),
+      level: "warn",
+      message: "scheduler_recovered",
+    });
+    await logJournal.flush();
+
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    const client = new Client({ name: "logs-tail-level", version: "1.0.0-test" });
+
+    await server.close().catch(() => {});
+    await server.connect(serverTransport);
+    await client.connect(clientTransport);
+
+    try {
+      const response = await client.callTool({
+        name: "logs_tail",
+        arguments: { levels: ["error"] },
+      });
+      expect(response.isError ?? false).to.equal(false);
+
+      const structured = response.structuredContent as {
+        entries: Array<{ seq: number; level: string; message: string }>;
+        levels: string[] | null;
+      };
+
+      expect(structured.levels).to.deep.equal(["error"]);
+      expect(structured.entries.length).to.equal(1);
+      expect(structured.entries[0].seq).to.equal(22);
+      expect(structured.entries[0].level).to.equal("error");
+      expect(structured.entries[0].message).to.equal("scheduler_failed");
+    } finally {
+      await client.close();
+      await server.close().catch(() => {});
+    }
+  });
+
+  it("deduplicates normalised severity filters", async function () {
+    this.timeout(5000);
+
+    logJournal.record({
+      stream: "server",
+      bucketId: "orchestrator",
+      seq: 31,
+      ts: Date.now() - 30,
+      level: "debug",
+      message: "prelude",
+    });
+    logJournal.record({
+      stream: "server",
+      bucketId: "orchestrator",
+      seq: 32,
+      ts: Date.now() - 20,
+      level: "warn",
+      message: "scheduler_warning",
+    });
+    logJournal.record({
+      stream: "server",
+      bucketId: "orchestrator",
+      seq: 33,
+      ts: Date.now() - 10,
+      level: "error",
+      message: "scheduler_failure",
+    });
+    await logJournal.flush();
+
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    const client = new Client({ name: "logs-tail-level-dedupe", version: "1.0.0-test" });
+
+    await server.close().catch(() => {});
+    await server.connect(serverTransport);
+    await client.connect(clientTransport);
+
+    try {
+      const response = await client.callTool({
+        name: "logs_tail",
+        arguments: { levels: ["ERROR", "warn", "ERROR"] },
+      });
+      expect(response.isError ?? false).to.equal(false);
+
+      const structured = response.structuredContent as {
+        entries: Array<{ seq: number; level: string }>;
+        levels: string[] | null;
+      };
+
+      expect(structured.levels).to.deep.equal(["error", "warn"]);
+      expect(structured.entries.map((entry) => entry.level)).to.deep.equal(["warn", "error"]);
+      expect(structured.entries.map((entry) => entry.seq)).to.deep.equal([32, 33]);
+    } finally {
+      await client.close();
+      await server.close().catch(() => {});
+    }
+  });
+
+  it("filters entries by message substrings", async function () {
+    this.timeout(5000);
+
+    logJournal.record({
+      stream: "server",
+      bucketId: "orchestrator",
+      seq: 51,
+      ts: Date.now() - 40,
+      level: "info",
+      message: "scheduler_tick_completed",
+    });
+    logJournal.record({
+      stream: "server",
+      bucketId: "orchestrator",
+      seq: 52,
+      ts: Date.now() - 30,
+      level: "warn",
+      message: "child failure timed out", // contains both search substrings.
+    });
+    logJournal.record({
+      stream: "server",
+      bucketId: "orchestrator",
+      seq: 53,
+      ts: Date.now(),
+      level: "error",
+      message: "CHILD FAILURE TIMED OUT - escalation", // uppercase variant.
+    });
+    await logJournal.flush();
+
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    const client = new Client({ name: "logs-tail-message", version: "1.0.0-test" });
+
+    await server.close().catch(() => {});
+    await server.connect(serverTransport);
+    await client.connect(clientTransport);
+
+    try {
+      const response = await client.callTool({
+        name: "logs_tail",
+        arguments: { filters: { message_contains: [" Failure", "timed"] } },
+      });
+      expect(response.isError ?? false).to.equal(false);
+
+      const structured = response.structuredContent as {
+        entries: Array<{ seq: number; message: string }>;
+        filters: { message_contains: string[] | null } | null;
+      };
+
+      expect(structured.filters?.message_contains).to.deep.equal(["failure", "timed"]);
+      expect(structured.entries.length).to.equal(2);
+      expect(structured.entries[0].seq).to.equal(52);
+      expect(structured.entries[0].message).to.equal("child failure timed out");
+      expect(structured.entries[1].seq).to.equal(53);
+      expect(structured.entries[1].message).to.equal("CHILD FAILURE TIMED OUT - escalation");
+    } finally {
+      await client.close();
+      await server.close().catch(() => {});
+    }
+  });
+
+  it("filters entries by correlated identifiers", async function () {
+    this.timeout(5000);
+
+    // Insert entries sharing a bucket but exposing distinct correlated
+    // identifiers so the tool can exercise every filter predicate at once.
+    logJournal.record({
+      stream: "server",
+      bucketId: "orchestrator",
+      seq: 41,
+      ts: Date.now() - 40,
+      level: "info",
+      message: "alpha_start",
+      runId: "run-alpha",
+      jobId: "job-42",
+      opId: "op-alpha-1",
+      graphId: "graph-shared",
+      nodeId: "node-root",
+      childId: "child-1",
+    });
+    logJournal.record({
+      stream: "server",
+      bucketId: "orchestrator",
+      seq: 42,
+      ts: Date.now() - 30,
+      level: "info",
+      message: "alpha_progress",
+      runId: "run-alpha",
+      jobId: "job-99",
+      opId: "op-alpha-2",
+      graphId: "graph-shared",
+      nodeId: "node-root",
+      childId: "child-1",
+    });
+    logJournal.record({
+      stream: "server",
+      bucketId: "orchestrator",
+      seq: 43,
+      ts: Date.now(),
+      level: "info",
+      message: "beta_start",
+      runId: "run-beta",
+      jobId: "job-42",
+      opId: "op-beta-1",
+      graphId: "graph-alt",
+      nodeId: "node-alt",
+      childId: "child-2",
+    });
+    await logJournal.flush();
+
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    const client = new Client({ name: "logs-tail-correlated", version: "1.0.0-test" });
+
+    await server.close().catch(() => {});
+    await server.connect(serverTransport);
+    await client.connect(clientTransport);
+
+    try {
+      const response = await client.callTool({
+        name: "logs_tail",
+        arguments: {
+          filters: {
+            run_ids: ["run-alpha"],
+            job_ids: ["job-42"],
+            op_ids: ["op-alpha-1"],
+            graph_ids: ["graph-shared"],
+            node_ids: ["node-root"],
+            child_ids: ["child-1"],
+          },
+        },
+      });
+      expect(response.isError ?? false).to.equal(false);
+
+      const structured = response.structuredContent as {
+        entries: Array<{ seq: number; message: string; run_id: string | null }>;
+        filters: {
+          run_ids: string[] | null;
+          job_ids: string[] | null;
+          op_ids: string[] | null;
+          graph_ids: string[] | null;
+          node_ids: string[] | null;
+          child_ids: string[] | null;
+          message_contains: string[] | null;
+          since_ts: number | null;
+          until_ts: number | null;
+        } | null;
+      };
+
+      expect(structured.entries.length).to.equal(1);
+      expect(structured.entries[0].seq).to.equal(41);
+      expect(structured.entries[0].message).to.equal("alpha_start");
+      expect(structured.entries[0].run_id).to.equal("run-alpha");
+      expect(structured.filters).to.deep.equal({
+        run_ids: ["run-alpha"],
+        job_ids: ["job-42"],
+        op_ids: ["op-alpha-1"],
+        graph_ids: ["graph-shared"],
+        node_ids: ["node-root"],
+        child_ids: ["child-1"],
+        message_contains: null,
+        since_ts: null,
+        until_ts: null,
+      });
+    } finally {
+      await client.close();
+      await server.close().catch(() => {});
+    }
+  });
+
+  it("limits entries to the requested timestamp window", async function () {
+    this.timeout(5000);
+
+    const baseTs = 1_000_000;
+
+    logJournal.record({
+      stream: "server",
+      bucketId: "orchestrator",
+      seq: 51,
+      ts: baseTs - 50,
+      level: "info",
+      message: "before_window",
+    });
+    logJournal.record({
+      stream: "server",
+      bucketId: "orchestrator",
+      seq: 52,
+      ts: baseTs + 10,
+      level: "warn",
+      message: "within_window_start",
+    });
+    logJournal.record({
+      stream: "server",
+      bucketId: "orchestrator",
+      seq: 53,
+      ts: baseTs + 30,
+      level: "error",
+      message: "within_window_end",
+    });
+    logJournal.record({
+      stream: "server",
+      bucketId: "orchestrator",
+      seq: 54,
+      ts: baseTs + 60,
+      level: "info",
+      message: "after_window",
+    });
+    await logJournal.flush();
+
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    const client = new Client({ name: "logs-tail-time", version: "1.0.0-test" });
+
+    await server.close().catch(() => {});
+    await server.connect(serverTransport);
+    await client.connect(clientTransport);
+
+    try {
+      const response = await client.callTool({
+        name: "logs_tail",
+        arguments: {
+          filters: {
+            since_ts: baseTs,
+            until_ts: baseTs + 40,
+          },
+        },
+      });
+      expect(response.isError ?? false).to.equal(false);
+
+      const structured = response.structuredContent as {
+        entries: Array<{ seq: number; message: string; ts: number }>;
+        filters: {
+          run_ids: string[] | null;
+          job_ids: string[] | null;
+          op_ids: string[] | null;
+          graph_ids: string[] | null;
+          node_ids: string[] | null;
+          child_ids: string[] | null;
+          message_contains: string[] | null;
+          since_ts: number | null;
+          until_ts: number | null;
+        } | null;
+      };
+
+      expect(structured.entries.map((entry) => entry.seq)).to.deep.equal([52, 53]);
+      expect(structured.entries.map((entry) => entry.message)).to.deep.equal([
+        "within_window_start",
+        "within_window_end",
+      ]);
+      expect(structured.filters).to.deep.equal({
+        run_ids: null,
+        job_ids: null,
+        op_ids: null,
+        graph_ids: null,
+        node_ids: null,
+        child_ids: null,
+        message_contains: null,
+        since_ts: baseTs,
+        until_ts: baseTs + 40,
+      });
+    } finally {
+      await client.close();
+      await server.close().catch(() => {});
+    }
+  });
+
+  it("accepts case-insensitive level filters", async function () {
+    this.timeout(5000);
+
+    // Inject entries spanning multiple severity levels so the tool can prove it
+    // normalises the requested filters before delegating to the journal.
+    logJournal.record({
+      stream: "server",
+      bucketId: "orchestrator",
+      seq: 31,
+      ts: Date.now() - 30,
+      level: "info",
+      message: "dispatcher_idle",
+    });
+    logJournal.record({
+      stream: "server",
+      bucketId: "orchestrator",
+      seq: 32,
+      ts: Date.now() - 20,
+      level: "warn",
+      message: "dispatcher_queue_growth",
+    });
+    logJournal.record({
+      stream: "server",
+      bucketId: "orchestrator",
+      seq: 33,
+      ts: Date.now(),
+      level: "error",
+      message: "dispatcher_overloaded",
+    });
+    await logJournal.flush();
+
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    const client = new Client({ name: "logs-tail-level-case", version: "1.0.0-test" });
+
+    await server.close().catch(() => {});
+    await server.connect(serverTransport);
+    await client.connect(clientTransport);
+
+    try {
+      const response = await client.callTool({
+        name: "logs_tail",
+        arguments: { levels: ["ERROR", "Warn"] },
+      });
+      expect(response.isError ?? false).to.equal(false);
+
+      const structured = response.structuredContent as {
+        entries: Array<{ seq: number; level: string; message: string }>;
+        levels: string[] | null;
+      };
+
+      expect(structured.levels).to.deep.equal(["error", "warn"]);
+      expect(structured.entries.map((entry) => entry.seq)).to.deep.equal([32, 33]);
+      expect(structured.entries.map((entry) => entry.level)).to.deep.equal(["warn", "error"]);
+    } finally {
+      await client.close();
+      await server.close().catch(() => {});
+    }
+  });
+
   it("rejects run streams without an identifier", async function () {
     this.timeout(5000);
 

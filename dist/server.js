@@ -1180,6 +1180,7 @@ const ResourceWatchBlackboardFilterSchema = z
     .object({
     keys: z.array(z.string().trim().min(1).max(200)).max(20).optional(),
     kinds: z.array(z.enum(["set", "delete", "expire"])).max(3).optional(),
+    tags: z.array(z.string().trim().min(1).max(200)).max(20).optional(),
     since_ts: z.number().int().min(0).optional(),
     until_ts: z.number().int().min(0).optional(),
 })
@@ -1214,12 +1215,77 @@ const EventSubscribeInputSchema = z
 })
     .strict();
 const EventSubscribeInputShape = EventSubscribeInputSchema.shape;
+/** Set of severity levels supported by the structured logger. */
+const LOG_TAIL_LEVELS = new Set(["debug", "info", "warn", "error"]);
+/**
+ * Filters accepted by the `logs_tail` tool so callers can restrict correlated
+ * entries to a subset of identifiers without downloading the full stream.
+ */
+const LogsTailFilterSchema = z
+    .object({
+    run_ids: z.array(z.string().trim().min(1)).max(10).optional(),
+    job_ids: z.array(z.string().trim().min(1)).max(10).optional(),
+    op_ids: z.array(z.string().trim().min(1)).max(10).optional(),
+    graph_ids: z.array(z.string().trim().min(1)).max(10).optional(),
+    node_ids: z.array(z.string().trim().min(1)).max(10).optional(),
+    child_ids: z.array(z.string().trim().min(1)).max(10).optional(),
+    message_contains: z.array(z.string().trim().min(1)).max(5).optional(),
+    since_ts: z.number().int().min(0).optional(),
+    until_ts: z.number().int().min(0).optional(),
+})
+    .strict()
+    .superRefine((filters, ctx) => {
+    const hasAtLeastOne = (filters.run_ids?.length ?? 0) > 0 ||
+        (filters.job_ids?.length ?? 0) > 0 ||
+        (filters.op_ids?.length ?? 0) > 0 ||
+        (filters.graph_ids?.length ?? 0) > 0 ||
+        (filters.node_ids?.length ?? 0) > 0 ||
+        (filters.child_ids?.length ?? 0) > 0 ||
+        (filters.message_contains?.length ?? 0) > 0 ||
+        filters.since_ts !== undefined ||
+        filters.until_ts !== undefined;
+    if (!hasAtLeastOne) {
+        ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: "empty_filters",
+        });
+    }
+    if (filters.since_ts !== undefined &&
+        filters.until_ts !== undefined &&
+        filters.since_ts > filters.until_ts) {
+        ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: "invalid_window",
+            path: ["until_ts"],
+        });
+    }
+});
 const LogsTailInputSchema = z
     .object({
     stream: z.enum(["server", "run", "child"]).default("server"),
     id: z.string().trim().min(1).optional(),
     from_seq: z.number().int().min(0).optional(),
     limit: z.number().int().positive().max(500).optional(),
+    levels: z
+        .array(z.string().trim().min(1))
+        .max(4)
+        .optional()
+        .superRefine((levels, ctx) => {
+        if (!levels) {
+            return;
+        }
+        levels.forEach((level, index) => {
+            const normalised = level.toLowerCase();
+            if (!LOG_TAIL_LEVELS.has(normalised)) {
+                ctx.addIssue({
+                    code: z.ZodIssueCode.custom,
+                    message: "invalid_level",
+                    path: [index],
+                });
+            }
+        });
+    }),
+    filters: LogsTailFilterSchema.optional(),
 })
     .strict();
 const LogsTailInputShape = LogsTailInputSchema.shape;
@@ -1904,6 +1970,7 @@ server.registerTool("resources_watch", {
                 ? {
                     keys: parsed.blackboard.keys,
                     kinds: parsed.blackboard.kinds,
+                    tags: parsed.blackboard.tags,
                     sinceTs: parsed.blackboard.since_ts,
                     untilTs: parsed.blackboard.until_ts,
                 }
@@ -2082,11 +2149,83 @@ server.registerTool("logs_tail", {
             };
         }
         const targetBucket = bucketId ?? "orchestrator";
+        // Normalise requested levels to lowercase and de-duplicate them so the
+        // journal performs a single case-insensitive comparison per unique
+        // severity requested by the caller.
+        const requestedLevels = parsed.levels
+            ? Array.from(new Set(parsed.levels.map((level) => level.toLowerCase())))
+            : undefined;
+        const normaliseIdList = (values) => {
+            if (!values || values.length === 0) {
+                return undefined;
+            }
+            const deduped = Array.from(new Set(values.map((value) => value.trim()).filter((value) => value.length > 0)));
+            return deduped.length > 0 ? deduped : undefined;
+        };
+        // Ensure timestamp filters remain deterministic by clamping negative values
+        // and rounding to integers so the journal can perform direct comparisons.
+        const normaliseTimestamp = (value) => {
+            if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+                return undefined;
+            }
+            return Math.floor(value);
+        };
+        // Ensure substring filters remain predictable by normalising them to
+        // lowercase, trimming whitespace and de-duplicating while preserving
+        // caller-provided order for deterministic echoes.
+        const normaliseSubstringList = (values) => {
+            if (!values || values.length === 0) {
+                return undefined;
+            }
+            const seen = new Set();
+            const collected = [];
+            for (const value of values) {
+                const trimmed = value.trim().toLowerCase();
+                if (trimmed.length === 0 || seen.has(trimmed)) {
+                    continue;
+                }
+                seen.add(trimmed);
+                collected.push(trimmed);
+            }
+            return collected.length > 0 ? collected : undefined;
+        };
+        const runIds = normaliseIdList(parsed.filters?.run_ids);
+        const jobIds = normaliseIdList(parsed.filters?.job_ids);
+        const opIds = normaliseIdList(parsed.filters?.op_ids);
+        const graphIds = normaliseIdList(parsed.filters?.graph_ids);
+        const nodeIds = normaliseIdList(parsed.filters?.node_ids);
+        const childIds = normaliseIdList(parsed.filters?.child_ids);
+        const messageContains = normaliseSubstringList(parsed.filters?.message_contains);
+        const sinceTs = normaliseTimestamp(parsed.filters?.since_ts);
+        const untilTs = normaliseTimestamp(parsed.filters?.until_ts);
+        const hasFilters = !!runIds ||
+            !!jobIds ||
+            !!opIds ||
+            !!graphIds ||
+            !!nodeIds ||
+            !!childIds ||
+            !!messageContains ||
+            sinceTs !== undefined ||
+            untilTs !== undefined;
         const result = logJournal.tail({
             stream,
             bucketId: targetBucket,
             fromSeq: parsed.from_seq,
             limit: parsed.limit,
+            levels: requestedLevels,
+            filters: hasFilters
+                ? {
+                    runIds,
+                    jobIds,
+                    opIds,
+                    graphIds,
+                    nodeIds,
+                    childIds,
+                    messageIncludes: messageContains,
+                    sinceTs,
+                    untilTs,
+                }
+                : undefined,
         });
         const entries = result.entries.map((entry) => ({
             seq: entry.seq,
@@ -2108,6 +2247,20 @@ server.registerTool("logs_tail", {
             bucket_id: targetBucket,
             entries,
             next_seq: result.nextSeq,
+            levels: requestedLevels ?? null,
+            filters: hasFilters
+                ? {
+                    run_ids: runIds ?? null,
+                    job_ids: jobIds ?? null,
+                    op_ids: opIds ?? null,
+                    graph_ids: graphIds ?? null,
+                    node_ids: nodeIds ?? null,
+                    child_ids: childIds ?? null,
+                    message_contains: messageContains ?? null,
+                    since_ts: sinceTs ?? null,
+                    until_ts: untilTs ?? null,
+                }
+                : null,
         };
         return {
             content: [{ type: "text", text: j({ tool: "logs_tail", result: structured }) }],
