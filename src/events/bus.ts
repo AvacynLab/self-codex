@@ -18,6 +18,8 @@ export interface EventEnvelope {
   ts: number;
   /** High level category ("plan", "child", ...). */
   cat: string;
+  /** Optional semantic kind exposed by producers (STATUS, BT_RUN, ...). */
+  kind: string | null;
   /** Severity level attached to the event. */
   level: EventLevel;
   /** Optional job identifier retained for backward compatibility with legacy tooling. */
@@ -45,6 +47,7 @@ export interface EventEnvelope {
  */
 export interface EventInput {
   cat: string;
+  kind?: string | null;
   level?: EventLevel;
   jobId?: string | null;
   runId?: string | null;
@@ -93,6 +96,15 @@ function normaliseCategory(cat: string): string {
 function normaliseMessage(msg: string): string {
   const trimmed = msg.trim();
   return trimmed.length > 0 ? trimmed : "event";
+}
+
+/** Utility normalising the optional event kind into a stable representation. */
+function normaliseKind(kind: string | null | undefined): string | null {
+  if (typeof kind !== "string") {
+    return null;
+  }
+  const trimmed = kind.trim();
+  return trimmed.length > 0 ? trimmed : null;
 }
 
 /**
@@ -230,6 +242,7 @@ export class EventBus {
       seq: ++this.seq,
       ts: input.ts ?? this.now(),
       cat: normaliseCategory(input.cat),
+      kind: normaliseKind(input.kind),
       level: input.level ?? "info",
       jobId: input.jobId ?? null,
       runId: input.runId ?? null,

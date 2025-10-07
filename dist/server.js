@@ -60,7 +60,7 @@ import { snapshotToGraphDescriptor } from "./viz/snapshot.js";
 import { childToolError, planToolError, graphToolError, transactionToolError, coordinationToolError, knowledgeToolError, causalToolError, valueToolError, resourceToolError, } from "./server/toolErrors.js";
 import { SUBGRAPH_REGISTRY_KEY, collectMissingSubgraphDescriptors, collectSubgraphReferences, } from "./graph/subgraphRegistry.js";
 import { extractSubgraphToFile } from "./graph/subgraphExtract.js";
-import { getMcpCapabilities, getMcpInfo, updateMcpRuntimeSnapshot, } from "./mcp/info.js";
+import { getMcpCapabilities, getMcpInfo, bindToolIntrospectionProvider, updateMcpRuntimeSnapshot, } from "./mcp/info.js";
 // ---------------------------
 // Stores en memoire
 // ---------------------------
@@ -1148,12 +1148,53 @@ const ResourceListInputShape = ResourceListInputSchema.shape;
 const ResourceReadInputSchema = z.object({ uri: z.string().min(1) }).strict();
 const ResourceReadInputShape = ResourceReadInputSchema.shape;
 /** Input schema guarding the `resources_watch` tool. */
+const ResourceWatchRunFilterSchema = z
+    .object({
+    levels: z.array(z.enum(["debug", "info", "warn", "error"])).max(4).optional(),
+    kinds: z.array(z.string().trim().min(1).max(100)).max(20).optional(),
+    job_ids: z.array(z.string().trim().min(1).max(200)).max(20).optional(),
+    op_ids: z.array(z.string().trim().min(1).max(200)).max(20).optional(),
+    graph_ids: z.array(z.string().trim().min(1).max(200)).max(20).optional(),
+    node_ids: z.array(z.string().trim().min(1).max(200)).max(20).optional(),
+    child_ids: z.array(z.string().trim().min(1).max(200)).max(20).optional(),
+    run_ids: z.array(z.string().trim().min(1).max(200)).max(20).optional(),
+    since_ts: z.number().int().min(0).optional(),
+    until_ts: z.number().int().min(0).optional(),
+})
+    .partial()
+    .strict();
+const ResourceWatchChildFilterSchema = z
+    .object({
+    streams: z.array(z.enum(["stdout", "stderr", "meta"])).max(3).optional(),
+    job_ids: z.array(z.string().trim().min(1).max(200)).max(20).optional(),
+    run_ids: z.array(z.string().trim().min(1).max(200)).max(20).optional(),
+    op_ids: z.array(z.string().trim().min(1).max(200)).max(20).optional(),
+    graph_ids: z.array(z.string().trim().min(1).max(200)).max(20).optional(),
+    node_ids: z.array(z.string().trim().min(1).max(200)).max(20).optional(),
+    since_ts: z.number().int().min(0).optional(),
+    until_ts: z.number().int().min(0).optional(),
+})
+    .partial()
+    .strict();
+const ResourceWatchBlackboardFilterSchema = z
+    .object({
+    keys: z.array(z.string().trim().min(1).max(200)).max(20).optional(),
+    kinds: z.array(z.enum(["set", "delete", "expire"])).max(3).optional(),
+    since_ts: z.number().int().min(0).optional(),
+    until_ts: z.number().int().min(0).optional(),
+})
+    .partial()
+    .strict();
 const ResourceWatchInputSchema = z
     .object({
     uri: z.string().min(1),
     from_seq: z.number().int().min(0).optional(),
     limit: z.number().int().positive().max(500).optional(),
     format: z.enum(["json", "sse"]).optional(),
+    keys: z.array(z.string().trim().min(1).max(200)).max(20).optional(),
+    run: ResourceWatchRunFilterSchema.optional(),
+    child: ResourceWatchChildFilterSchema.optional(),
+    blackboard: ResourceWatchBlackboardFilterSchema.optional(),
 })
     .strict();
 const ResourceWatchInputShape = ResourceWatchInputSchema.shape;
@@ -1247,6 +1288,7 @@ function pushEvent(event) {
     const message = deriveEventMessage(event.kind, event.payload);
     eventBus.publish({
         cat: event.kind,
+        kind: event.kind,
         level: (event.level ?? emitted.level),
         jobId,
         runId,
@@ -1764,9 +1806,23 @@ const SERVER_NAME = "mcp-self-fork-orchestrator";
 const SERVER_VERSION = "1.3.0";
 const MCP_PROTOCOL_VERSION = "1.0";
 updateMcpRuntimeSnapshot({
-    server: { name: SERVER_NAME, version: SERVER_VERSION, mcpVersion: MCP_PROTOCOL_VERSION },
+    server: { name: SERVER_NAME, version: SERVER_VERSION, protocol: MCP_PROTOCOL_VERSION },
 });
 const server = new McpServer({ name: SERVER_NAME, version: SERVER_VERSION });
+// Keep the MCP capabilities export in sync with the tools registered on the
+// underlying `McpServer` instance. The SDK stores registrations in a private
+// field therefore we rely on a defensive cast to access the internal map.
+bindToolIntrospectionProvider(() => {
+    const registry = server._registeredTools;
+    if (!registry) {
+        return [];
+    }
+    return Object.entries(registry).map(([name, tool]) => ({
+        name,
+        inputSchema: tool.inputSchema,
+        enabled: tool.enabled !== false,
+    }));
+});
 /**
  * Tool exposing the runtime metadata so MCP clients can negotiate transports
  * and limits before issuing heavier requests.
@@ -1843,8 +1899,46 @@ server.registerTool("resources_watch", {
         const result = resources.watch(parsed.uri, {
             fromSeq: parsed.from_seq,
             limit: parsed.limit,
+            keys: parsed.keys,
+            blackboard: parsed.blackboard
+                ? {
+                    keys: parsed.blackboard.keys,
+                    kinds: parsed.blackboard.kinds,
+                    sinceTs: parsed.blackboard.since_ts,
+                    untilTs: parsed.blackboard.until_ts,
+                }
+                : undefined,
+            run: parsed.run
+                ? {
+                    levels: parsed.run.levels,
+                    kinds: parsed.run.kinds,
+                    jobIds: parsed.run.job_ids,
+                    opIds: parsed.run.op_ids,
+                    graphIds: parsed.run.graph_ids,
+                    nodeIds: parsed.run.node_ids,
+                    childIds: parsed.run.child_ids,
+                    runIds: parsed.run.run_ids,
+                    sinceTs: parsed.run.since_ts,
+                    untilTs: parsed.run.until_ts,
+                }
+                : undefined,
+            child: parsed.child
+                ? {
+                    streams: parsed.child.streams,
+                    jobIds: parsed.child.job_ids,
+                    runIds: parsed.child.run_ids,
+                    opIds: parsed.child.op_ids,
+                    graphIds: parsed.child.graph_ids,
+                    nodeIds: parsed.child.node_ids,
+                    sinceTs: parsed.child.since_ts,
+                    untilTs: parsed.child.until_ts,
+                }
+                : undefined,
         });
         const format = parsed.format ?? "json";
+        const filtersSnapshot = result.filters
+            ? structuredClone(result.filters)
+            : undefined;
         const baseStructured = {
             uri: result.uri,
             kind: result.kind,
@@ -1852,6 +1946,9 @@ server.registerTool("resources_watch", {
             next_seq: result.nextSeq,
             format,
         };
+        if (filtersSnapshot) {
+            baseStructured.filters = filtersSnapshot;
+        }
         if (format === "sse") {
             // Convert each record to a single-line SSE payload so streaming transports remain
             // resilient when cancellation reasons or log lines contain control characters.
@@ -1902,21 +1999,24 @@ server.registerTool("events_subscribe", {
             limit,
         };
         const events = eventBus.list(filter).sort((a, b) => a.seq - b.seq);
-        const serialised = events.map((evt) => ({
-            seq: evt.seq,
-            ts: evt.ts,
-            cat: evt.cat,
-            kind: evt.cat.toUpperCase(),
-            level: evt.level,
-            job_id: evt.jobId ?? null,
-            run_id: evt.runId ?? null,
-            op_id: evt.opId ?? null,
-            graph_id: evt.graphId ?? null,
-            node_id: evt.nodeId ?? null,
-            child_id: evt.childId ?? null,
-            msg: evt.msg,
-            data: evt.data ?? null,
-        }));
+        const serialised = events.map((evt) => {
+            const eventKind = (evt.kind ?? evt.cat).toUpperCase();
+            return {
+                seq: evt.seq,
+                ts: evt.ts,
+                cat: evt.cat,
+                kind: eventKind,
+                level: evt.level,
+                job_id: evt.jobId ?? null,
+                run_id: evt.runId ?? null,
+                op_id: evt.opId ?? null,
+                graph_id: evt.graphId ?? null,
+                node_id: evt.nodeId ?? null,
+                child_id: evt.childId ?? null,
+                msg: evt.msg,
+                data: evt.data ?? null,
+            };
+        });
         const format = parsed.format ?? "jsonlines";
         const stream = format === "sse"
             ? serialised

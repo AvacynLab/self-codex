@@ -76,7 +76,7 @@ describe("mcp introspection helpers", () => {
     configureChildSafetyLimits(safety);
 
     updateMcpRuntimeSnapshot({
-      server: { name: "introspection-test", version: "9.9.9", mcpVersion: "1.1" },
+      server: { name: "introspection-test", version: "9.9.9", protocol: "1.1" },
       transports: {
         stdio: { enabled: false },
         http: {
@@ -97,23 +97,33 @@ describe("mcp introspection helpers", () => {
 
     const info = getMcpInfo();
 
-    expect(info.server).to.deep.equal({ name: "introspection-test", version: "9.9.9", mcpVersion: "1.1" });
-    expect(info.transports.stdio.enabled).to.equal(false);
-    expect(info.transports.http).to.deep.equal({
-      enabled: true,
-      host: "127.0.0.1",
-      port: 8081,
-      path: "/mcp-test",
-      enableJson: true,
-      stateless: true,
+    expect(info.server).to.deep.equal({ name: "introspection-test", version: "9.9.9" });
+    expect(info.mcp).to.deep.equal({
+      protocol: "1.1",
+      transports: [
+        { kind: "stdio", enabled: false },
+        {
+          kind: "http",
+          enabled: true,
+          host: "127.0.0.1",
+          port: 8081,
+          path: "/mcp-test",
+          modes: { json: true, stateless: true },
+        },
+      ],
     });
-    expect(info.features).to.deep.equal(toggles);
-    expect(info.timings).to.deep.equal(timings);
-    expect(info.safety).to.deep.equal(safety);
+    expect(info.features).to.include.members([
+      "core",
+      "plan-bt",
+      "coord-blackboard",
+      "memory-knowledge",
+      "values-guard",
+    ]);
+    expect(info.features).to.not.include("resources");
+    expect(info.flags).to.deep.equal(toggles);
     expect(info.limits).to.deep.equal({
       maxInputBytes: 64 * 1024,
-      defaultTimeoutMs: 12_000,
-      maxEventHistory: 42,
+      defaultTimeoutMs: timings.defaultTimeoutMs,
     });
   });
 
@@ -136,7 +146,7 @@ describe("mcp introspection helpers", () => {
     updateMcpRuntimeSnapshot({ limits: { maxEventHistory: 128 } });
 
     const capabilities = getMcpCapabilities();
-    const namespaces = capabilities.namespaces.map((entry) => entry.name);
+    const namespaces = capabilities.namespaces;
 
     expect(namespaces).to.include("core.jobs");
     expect(namespaces).to.include("graph.core");
@@ -153,14 +163,12 @@ describe("mcp introspection helpers", () => {
     expect(namespaces).to.not.include("agents.supervisor");
     expect(namespaces).to.not.include("memory.causal");
 
-    for (const entry of capabilities.namespaces) {
-      expect(entry.description).to.be.a("string").and.to.have.length.greaterThan(0);
-      expect(capabilities.schemas[entry.name]).to.deep.equal({
-        namespace: entry.name,
-        summary: entry.description,
-      });
-    }
-
-    expect(capabilities.limits).to.deep.equal({ maxEventHistory: 128 });
+    const toolSummaries = new Map(capabilities.tools.map((entry) => [entry.name, entry.inputSchemaSummary]));
+    expect(toolSummaries.get("graph_mutate")).to.be.a("string").and.to.have.length.greaterThan(0);
+    expect(toolSummaries.has("resources_list")).to.equal(false);
+    expect(toolSummaries.has("plan_run_bt")).to.equal(true);
+    expect(toolSummaries.has("plan_run_reactive")).to.equal(false);
+    expect(toolSummaries.has("kg_insert")).to.equal(true);
+    expect(toolSummaries.get("kg_insert")).to.be.a("string").and.to.have.length.greaterThan(0);
   });
 });

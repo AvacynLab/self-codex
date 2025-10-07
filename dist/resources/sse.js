@@ -42,18 +42,53 @@ function normaliseChildLog(entry) {
         parsed: entry.parsed ?? null,
     };
 }
+/** Normalises a blackboard event for SSE transport. */
+function normaliseBlackboardEvent(event) {
+    return {
+        type: "blackboard_event",
+        seq: event.seq,
+        version: event.version,
+        ts: event.ts,
+        kind: event.kind,
+        namespace: event.namespace,
+        key: event.key,
+        entry: event.entry ?? null,
+        previous: event.previous ?? null,
+        reason: event.reason ?? null,
+    };
+}
 /**
  * Builds the JSON payload transported on the SSE `data:` line. The payload
  * includes the resource URI and `next_seq` pointer so reconnecting clients can
  * resume a watch operation without additional bookkeeping.
  */
 function buildPayload(result, record) {
-    return {
+    const payload = {
         uri: result.uri,
         kind: result.kind,
         next_seq: result.nextSeq,
         record,
     };
+    const filters = result.filters;
+    if (filters) {
+        const snapshot = {};
+        if (filters.keys && filters.keys.length > 0) {
+            snapshot.keys = filters.keys.map((key) => key);
+        }
+        if (filters.blackboard) {
+            snapshot.blackboard = structuredClone(filters.blackboard);
+        }
+        if (filters.run) {
+            snapshot.run = structuredClone(filters.run);
+        }
+        if (filters.child) {
+            snapshot.child = structuredClone(filters.child);
+        }
+        if (Object.keys(snapshot).length > 0) {
+            payload.filters = snapshot;
+        }
+    }
+    return payload;
 }
 /**
  * Serialises a `resources_watch` page into SSE records. Run events and child log
@@ -77,6 +112,14 @@ export function serialiseResourceWatchResultForSse(result) {
             return {
                 id: `${result.uri}:${event.seq}`,
                 event: "resource_run_event",
+                data: serialiseForSse(payload),
+            };
+        }
+        if (result.kind === "blackboard_namespace") {
+            const payload = buildPayload(result, normaliseBlackboardEvent(event));
+            return {
+                id: `${result.uri}:${event.seq}`,
+                event: "resource_blackboard_event",
                 data: serialiseForSse(payload),
             };
         }
