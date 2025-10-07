@@ -1,5 +1,9 @@
+import { mkdirSync } from 'node:fs';
 import { mkdir } from 'node:fs/promises';
 import path from 'node:path';
+
+/** Maximum number of characters preserved in a sanitised filename. */
+const MAX_FILENAME_LENGTH = 120;
 
 /** Absolute path (resolved against the current working directory) hosting run artefacts. */
 function getRunsRoot(): string {
@@ -28,14 +32,26 @@ function getChildrenRoot(): string {
  * guarantee it cannot escape the sandbox, and create the needed folders.
  */
 export class PathResolutionError extends Error {
+  /** Stable error code surfaced to MCP clients when a path escapes its sandbox. */
+  public readonly code = 'E-PATHS-ESCAPE';
+  /**
+   * Hint guiding callers towards remediation. The message is intentionally
+   * action-oriented so tool wrappers can surface it directly in diagnostics.
+   */
+  public readonly hint = 'keep paths within the configured base directory';
+  /** Absolute path that the caller attempted to access. */
   public readonly attemptedPath: string;
+  /** Base directory configured for the operation. */
   public readonly rootDirectory: string;
+  /** Structured metadata exposed to loggers and MCP clients. */
+  public readonly details: { attemptedPath: string; rootDirectory: string; segment?: string; relative?: string };
 
-  constructor(message: string, attemptedPath: string, rootDirectory: string) {
+  constructor(message: string, attemptedPath: string, rootDirectory: string, extras: { segment?: string; relative?: string } = {}) {
     super(message);
     this.name = 'PathResolutionError';
     this.attemptedPath = attemptedPath;
     this.rootDirectory = rootDirectory;
+    this.details = { attemptedPath, rootDirectory, ...extras };
   }
 }
 
@@ -53,11 +69,7 @@ export function resolveWithin(rootDir: string, ...segments: string[]): string {
   const relative = path.relative(absoluteRoot, targetPath);
 
   if (relative.startsWith('..') || path.isAbsolute(relative)) {
-    throw new PathResolutionError(
-      `Resolved path escapes the child workspace: ${relative}`,
-      targetPath,
-      absoluteRoot,
-    );
+    throw new PathResolutionError('path escapes base directory', targetPath, absoluteRoot, { relative });
   }
 
   return targetPath;
@@ -119,14 +131,26 @@ export function sanitizeFilename(name: string): string {
     return 'unnamed';
   }
 
-  const sanitized = trimmed
-    .replace(/[\0-\x1F\x7F]/g, '')
+  const normalizedInput = trimmed.normalize('NFC');
+  const removedControlCharacters = normalizedInput.replace(/[\0-\x1F\x7F]/g, '');
+
+  const withoutTraversal = removedControlCharacters.replace(/\.\./g, '');
+
+  const basicSanitised = withoutTraversal
     .replace(/[\\/]/g, '_')
     .replace(/[:*?"<>|]/g, '_')
-    .replace(/\s+/g, '_');
+    .replace(/\s+/g, '_')
+    .replace(/[^\p{L}\p{N}._-]+/gu, '_');
 
-  const normalized = sanitized.replace(/[^a-zA-Z0-9._-]/g, '_');
-  return normalized.length > 0 ? normalized : 'unnamed';
+  const collapsedUnderscores = basicSanitised.replace(/_+/g, '_');
+  const trimmedUnderscores = collapsedUnderscores.replace(/^_+|_+$/g, '');
+
+  const limited =
+    trimmedUnderscores.length > MAX_FILENAME_LENGTH
+      ? trimmedUnderscores.slice(0, MAX_FILENAME_LENGTH)
+      : trimmedUnderscores;
+
+  return limited.length > 0 ? limited : 'unnamed';
 }
 
 /**
@@ -144,11 +168,9 @@ export function safeJoin(base: string, ...parts: string[]): string {
         continue;
       }
       if (candidate === '..') {
-        throw new PathResolutionError(
-          'Directory traversal is not permitted',
-          rawPart,
-          path.resolve(base),
-        );
+        throw new PathResolutionError('path escapes base directory', path.resolve(base, rawPart), path.resolve(base), {
+          segment: candidate,
+        });
       }
       segments.push(sanitizeFilename(candidate));
     }
@@ -158,12 +180,38 @@ export function safeJoin(base: string, ...parts: string[]): string {
 }
 
 /**
+ * Resolves a path located within the current workspace directory while enforcing sandbox rules.
+ *
+ * The helper is tailored for tools that accept operator provided file paths. It trims the input,
+ * rejects empty payloads and relies on {@link safeJoin} so directory traversal attempts surface a
+ * {@link PathResolutionError}. Consumers can optionally override the workspace base directory
+ * (useful for tests) via {@link WorkspacePathOptions.baseDir}.
+ */
+export interface WorkspacePathOptions {
+  /** Optional base directory overriding {@link process.cwd}. */
+  readonly baseDir?: string;
+}
+
+export function resolveWorkspacePath(requestedPath: string, options: WorkspacePathOptions = {}): string {
+  const baseDir = options.baseDir ? path.resolve(options.baseDir) : process.cwd();
+  const trimmed = requestedPath.trim();
+
+  if (!trimmed) {
+    throw new PathResolutionError('path must not be empty', baseDir, baseDir);
+  }
+
+  return safeJoin(baseDir, trimmed);
+}
+
+/**
  * Returns the canonical directory dedicated to the provided run identifier. The
  * directory is resolved inside `MCP_RUNS_ROOT` (or `./runs` by default) to keep
  * artefacts grouped per execution.
  */
 export function resolveRunDir(runId: string): string {
-  return safeJoin(getRunsRoot(), sanitizeFilename(runId));
+  const resolved = safeJoin(getRunsRoot(), sanitizeFilename(runId));
+  mkdirSync(resolved, { recursive: true });
+  return resolved;
 }
 
 /**
@@ -172,5 +220,7 @@ export function resolveRunDir(runId: string): string {
  * on fast storage.
  */
 export function resolveChildDir(childId: string): string {
-  return safeJoin(getChildrenRoot(), sanitizeFilename(childId));
+  const resolved = safeJoin(getChildrenRoot(), sanitizeFilename(childId));
+  mkdirSync(resolved, { recursive: true });
+  return resolved;
 }

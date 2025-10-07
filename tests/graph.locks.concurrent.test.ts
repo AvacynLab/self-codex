@@ -62,7 +62,15 @@ describe("graph locks", () => {
     now = 1_000;
     locks.acquire("g1", "owner_a", { ttlMs: 2_000 });
 
-    expect(() => locks.acquire("g1", "owner_b", { ttlMs: 2_000 })).to.throw(GraphLockHeldError);
+    try {
+      locks.acquire("g1", "owner_b", { ttlMs: 2_000 });
+      expect.fail("expected GraphLockHeldError to be thrown");
+    } catch (error) {
+      expect(error).to.be.instanceOf(GraphLockHeldError);
+      const held = error as GraphLockHeldError;
+      expect(held.code).to.equal("E-LOCK-HELD");
+      expect(held.hint).to.equal("wait for the active holder to release or retry after expiry");
+    }
 
     now = 3_100;
     const second = locks.acquire("g1", "owner_b", { ttlMs: 2_000 });
@@ -72,7 +80,15 @@ describe("graph locks", () => {
     const release = locks.release(second.lockId);
     expect(release.expired).to.equal(false);
 
-    expect(() => locks.release(second.lockId)).to.throw(GraphLockUnknownError);
+    try {
+      locks.release(second.lockId);
+      expect.fail("expected GraphLockUnknownError to be thrown");
+    } catch (error) {
+      expect(error).to.be.instanceOf(GraphLockUnknownError);
+      const unknown = error as GraphLockUnknownError;
+      expect(unknown.code).to.equal("E-LOCK-NOTFOUND");
+      expect(unknown.hint).to.equal("refresh the lock catalogue before retrying");
+    }
   });
 
   it("blocks transactions once a new holder acquires the graph", () => {
@@ -110,13 +126,38 @@ describe("graph locks", () => {
     now = 3_500;
     locks.acquire(baseGraph.graphId, "owner_b", { ttlMs: 2_000 });
 
-    expect(() =>
+    try {
       handleTxCommit(
         txContext,
         TxCommitInputSchema.parse({
           tx_id: begin.tx_id,
         }),
-      ),
-    ).to.throw(GraphMutationLockedError);
+      );
+      expect.fail("expected GraphMutationLockedError to be thrown");
+    } catch (error) {
+      expect(error).to.be.instanceOf(GraphMutationLockedError);
+      const conflict = error as GraphMutationLockedError;
+      expect(conflict.code).to.equal("E-LOCK-HELD");
+      expect(conflict.hint).to.equal("acquire the lock with the same holder or wait for expiry");
+    }
+  });
+
+  it("refreshes an existing lock by identifier without changing the holder", () => {
+    now = 500;
+    const acquired = locks.acquire("g2", "owner_a", { ttlMs: 2_000 });
+    expect(acquired.expiresAt).to.equal(2_500);
+
+    now = 1_000;
+    const refreshed = locks.refresh(acquired.lockId, { ttlMs: 3_000 });
+    expect(refreshed.lockId).to.equal(acquired.lockId);
+    expect(refreshed.graphId).to.equal("g2");
+    expect(refreshed.holder).to.equal("owner_a");
+    expect(refreshed.refreshedAt).to.equal(1_000);
+    expect(refreshed.expiresAt).to.equal(4_000);
+
+    // If no TTL override is provided, the previous TTL is reused.
+    now = 1_500;
+    const reused = locks.refresh(acquired.lockId, {});
+    expect(reused.expiresAt).to.equal(4_500);
   });
 });

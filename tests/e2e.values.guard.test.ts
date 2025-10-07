@@ -137,6 +137,7 @@ describe("end-to-end value guard enforcement", function () {
         }),
       );
 
+      expect(joinResult.op_id).to.be.a("string");
       expect(joinResult.satisfied).to.equal(true);
       expect(joinResult.winning_child_id).to.equal(survivingChild);
       expect(joinResult.results).to.have.length(1);
@@ -150,6 +151,7 @@ describe("end-to-end value guard enforcement", function () {
         }),
       );
 
+      expect(reduceResult.op_id).to.be.a("string");
       expect(reduceResult.reducer).to.equal("concat");
       expect(reduceResult.aggregate).to.contain("SAFE_PLAN_READY");
       expect(reduceResult.trace.per_child).to.have.length(1);

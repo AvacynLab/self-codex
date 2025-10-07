@@ -89,6 +89,40 @@ export interface FeatureToggles {
   enableAssist: boolean;
 }
 
+/**
+ * Immutable defaults applied to every feature flag. Exported so tests and
+ * introspection helpers can share a single source of truth when reporting the
+ * orchestrator capabilities.
+ */
+export const FEATURE_FLAG_DEFAULTS: Readonly<FeatureToggles> = Object.freeze(
+  {
+    enableBT: false,
+    enableReactiveScheduler: false,
+    enableBlackboard: false,
+    enableStigmergy: false,
+    enableCNP: false,
+    enableConsensus: false,
+    enableAutoscaler: false,
+    enableSupervisor: false,
+    enableKnowledge: false,
+    enableCausalMemory: false,
+    enableValueGuard: false,
+    enableMcpIntrospection: false,
+    enableResources: false,
+    enableEventsBus: false,
+    enableCancellation: false,
+    enableTx: false,
+    enableBulk: false,
+    enableIdempotency: false,
+    enableLocks: false,
+    enableDiffPatch: false,
+    enablePlanLifecycle: false,
+    enableChildOpsFine: false,
+    enableValuesExplain: false,
+    enableAssist: false,
+  } satisfies FeatureToggles,
+);
+
 /** Tunable delays exposed so operators can adjust runtime pacing. */
 export interface RuntimeTimingOptions {
   /** Target tick pacing for Behaviour Tree execution (milliseconds). */
@@ -104,6 +138,20 @@ export interface RuntimeTimingOptions {
   /** Interval (milliseconds) between orchestrator heartbeat emissions. */
   heartbeatIntervalMs: number;
 }
+
+/**
+ * Immutable defaults for timing related configuration. Shared with tests to
+ * guarantee that adjustments preserve the documented baseline pacing.
+ */
+export const RUNTIME_TIMING_DEFAULTS: Readonly<RuntimeTimingOptions> =
+  Object.freeze({
+    btTickMs: 50,
+    stigHalfLifeMs: 30_000,
+    supervisorStallTicks: 6,
+    defaultTimeoutMs: 60_000,
+    autoscaleCooldownMs: 10_000,
+    heartbeatIntervalMs: 2_000,
+  } satisfies RuntimeTimingOptions);
 
 export interface OrchestratorRuntimeOptions {
   /** Controls whether the legacy stdio transport must be enabled. */
@@ -283,40 +331,8 @@ const DEFAULT_STATE: ParseState = {
   enableReflection: true,
   qualityGateEnabled: true,
   qualityThreshold: 70,
-  featureToggles: {
-    enableBT: false,
-    enableReactiveScheduler: false,
-    enableBlackboard: false,
-    enableStigmergy: false,
-    enableCNP: false,
-    enableConsensus: false,
-    enableAutoscaler: false,
-    enableSupervisor: false,
-    enableKnowledge: false,
-    enableCausalMemory: false,
-    enableValueGuard: false,
-    enableMcpIntrospection: false,
-    enableResources: false,
-    enableEventsBus: false,
-    enableCancellation: false,
-    enableTx: false,
-    enableBulk: false,
-    enableIdempotency: false,
-    enableLocks: false,
-    enableDiffPatch: false,
-    enablePlanLifecycle: false,
-    enableChildOpsFine: false,
-    enableValuesExplain: false,
-    enableAssist: false,
-  },
-  timings: {
-    btTickMs: 50,
-    stigHalfLifeMs: 30_000,
-    supervisorStallTicks: 6,
-    defaultTimeoutMs: 60_000,
-    autoscaleCooldownMs: 10_000,
-    heartbeatIntervalMs: 2_000,
-  },
+  featureToggles: { ...FEATURE_FLAG_DEFAULTS },
+  timings: { ...RUNTIME_TIMING_DEFAULTS },
   safety: {
     maxChildren: 16,
     memoryLimitMb: 512,

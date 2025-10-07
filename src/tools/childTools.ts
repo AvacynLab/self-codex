@@ -21,6 +21,8 @@ import { LoopAlert, LoopDetector } from "../guard/loopDetector.js";
 import { OrchestratorSupervisor } from "../agents/supervisor.js";
 import { ContractNetAwardDecision, ContractNetCoordinator, RegisterAgentOptions } from "../coord/contractNet.js";
 import { IdempotencyRegistry } from "../infra/idempotency.js";
+import { BulkOperationError, buildBulkFailureDetail } from "./bulkError.js";
+import { resolveOperationId } from "./operationIds.js";
 
 /**
  * Dependencies required by the child tool handlers. The orchestrator injects
@@ -42,6 +44,15 @@ export interface ChildToolContext {
   idempotency?: IdempotencyRegistry;
 }
 
+/**
+ * Determine the operation identifier attached to a child tool invocation.
+ *
+ * Child-facing tools historically omitted the `op_id`, which made correlating
+ * cancellation requests or audit logs significantly harder. The helper accepts
+ * an optional identifier provided by the caller and falls back to a stable
+ * prefix paired with a UUID so every invocation receives a deterministic
+ * correlation handle.
+ */
 /**
  * Schema describing the payload accepted by the `child_create` tool.
  *
@@ -91,6 +102,11 @@ const BudgetSchema = z
   });
 
 export const ChildCreateInputSchema = z.object({
+  op_id: z
+    .string()
+    .trim()
+    .min(1, "op_id must be a non-empty string")
+    .optional(),
   child_id: z
     .string()
     .min(1, "child_id must be a non-empty string")
@@ -123,6 +139,11 @@ const ChildRuntimeLimitsValueSchema = z.union([
 ]);
 
 export const ChildSpawnCodexInputSchema = z.object({
+  op_id: z
+    .string()
+    .trim()
+    .min(1, "op_id must be a non-empty string")
+    .optional(),
   role: z
     .string()
     .min(1, "role must be a non-empty string")
@@ -143,6 +164,17 @@ export const ChildSpawnCodexInputSchema = z.object({
 export const ChildSpawnCodexInputShape = ChildSpawnCodexInputSchema.shape;
 
 const ChildBatchCreateEntrySchema = ChildSpawnCodexInputSchema.strict();
+type ChildBatchCreateEntry = z.infer<typeof ChildSpawnCodexInputSchema>;
+
+function summariseChildBatchEntry(entry: ChildBatchCreateEntry): Record<string, unknown> {
+  const prompt = (entry as { prompt?: Record<string, unknown> }).prompt;
+  const promptKeys = prompt && typeof prompt === "object" ? Object.keys(prompt) : [];
+  return {
+    role: typeof entry.role === "string" ? entry.role : null,
+    idempotency_key: typeof entry.idempotency_key === "string" ? entry.idempotency_key : null,
+    prompt_keys: promptKeys,
+  };
+}
 
 export const ChildBatchCreateInputSchema = z
   .object({
@@ -181,6 +213,8 @@ export const ChildSetLimitsInputShape = ChildSetLimitsInputSchema.shape;
 
 /** Shape returned by {@link handleChildCreate}. */
 export interface ChildCreateResult extends Record<string, unknown> {
+  /** Operation identifier correlating logs, events, and cancellation handles. */
+  op_id: string;
   child_id: string;
   runtime_status: ChildRuntimeStatus;
   index_snapshot: ChildRecordSnapshot;
@@ -197,6 +231,8 @@ export interface ChildCreateResult extends Record<string, unknown> {
 type ChildCreateSnapshot = Omit<ChildCreateResult, "idempotent" | "idempotency_key">;
 
 export interface ChildSpawnCodexResult extends Record<string, unknown> {
+  /** Operation identifier correlating logs, events, and cancellation handles. */
+  op_id: string;
   child_id: string;
   runtime_status: ChildRuntimeStatus;
   index_snapshot: ChildRecordSnapshot;
@@ -247,6 +283,7 @@ export async function handleChildCreate(
   context: ChildToolContext,
   input: z.infer<typeof ChildCreateInputSchema>,
 ): Promise<ChildCreateResult> {
+  const opId = resolveOperationId(input.op_id, "child_create_op");
   const execute = async (): Promise<ChildCreateSnapshot> => {
     const options: CreateChildOptions = {
       childId: input.child_id,
@@ -262,6 +299,7 @@ export async function handleChildCreate(
     };
 
     context.logger.info("child_create_requested", {
+      op_id: opId,
       child_id: options.childId ?? null,
       command: options.command ?? null,
       args: options.args?.length ?? 0,
@@ -279,6 +317,7 @@ export async function handleChildCreate(
     }
 
     context.logger.info("child_create_succeeded", {
+      op_id: opId,
       child_id: created.childId,
       pid: runtimeStatus.pid,
       workdir: runtimeStatus.workdir,
@@ -289,6 +328,7 @@ export async function handleChildCreate(
       const profile = deriveContractNetProfile(input);
       const snapshot = context.contractNet.registerAgent(created.childId, profile);
       context.logger.info("contract_net_agent_registered", {
+        op_id: opId,
         agent_id: snapshot.agentId,
         base_cost: snapshot.baseCost,
         reliability: snapshot.reliability,
@@ -297,6 +337,7 @@ export async function handleChildCreate(
     }
 
     return {
+      op_id: opId,
       child_id: created.childId,
       runtime_status: runtimeStatus,
       index_snapshot: created.index,
@@ -317,14 +358,20 @@ export async function handleChildCreate(
       context.logger.info("child_create_replayed", {
         idempotency_key: key,
         child_id: snapshot.child_id,
+        op_id: snapshot.op_id,
       });
     }
     const snapshot = hit.value as ChildCreateSnapshot;
-    return { ...snapshot, idempotent: hit.idempotent, idempotency_key: key } as ChildCreateResult;
+    return {
+      ...snapshot,
+      op_id: snapshot.op_id ?? opId,
+      idempotent: hit.idempotent,
+      idempotency_key: key,
+    } as ChildCreateResult;
   }
 
   const result = await execute();
-  return { ...result, idempotent: false, idempotency_key: key } as ChildCreateResult;
+  return { ...result, op_id: opId, idempotent: false, idempotency_key: key } as ChildCreateResult;
 }
 
 /** Spawns a Codex child with a structured prompt and optional limits. */
@@ -332,10 +379,12 @@ export async function handleChildSpawnCodex(
   context: ChildToolContext,
   input: z.infer<typeof ChildSpawnCodexInputSchema>,
 ): Promise<ChildSpawnCodexResult> {
+  const opId = resolveOperationId(input.op_id, "child_spawn_op");
   const execute = async (): Promise<ChildSpawnCodexSnapshot> => {
     const manifestExtras = buildSpawnCodexManifestExtras(input);
     const metadata: Record<string, unknown> = structuredClone(input.metadata ?? {});
 
+    metadata.op_id = opId;
     if (input.role) {
       metadata.role = input.role;
     }
@@ -350,6 +399,7 @@ export async function handleChildSpawnCodex(
     }
 
     context.logger.info("child_spawn_codex_requested", {
+      op_id: opId,
       role: input.role ?? null,
       limit_keys: input.limits ? Object.keys(input.limits).length : 0,
       idempotency_key: input.idempotency_key ?? null,
@@ -368,6 +418,7 @@ export async function handleChildSpawnCodex(
     const readyMessage = created.readyMessage ? created.readyMessage.parsed ?? created.readyMessage.raw : null;
 
     context.logger.info("child_spawn_codex_ready", {
+      op_id: opId,
       child_id: created.childId,
       pid: runtimeStatus.pid,
       workdir: runtimeStatus.workdir,
@@ -375,6 +426,7 @@ export async function handleChildSpawnCodex(
     });
 
     return {
+      op_id: opId,
       child_id: created.childId,
       runtime_status: runtimeStatus,
       index_snapshot: created.index,
@@ -397,14 +449,15 @@ export async function handleChildSpawnCodex(
       context.logger.info("child_spawn_codex_replayed", {
         idempotency_key: key,
         child_id: snapshot.child_id,
+        op_id: snapshot.op_id,
       });
     }
     const snapshot = hit.value as ChildSpawnCodexSnapshot;
-    return { ...snapshot, idempotent: hit.idempotent } as ChildSpawnCodexResult;
+    return { ...snapshot, op_id: snapshot.op_id ?? opId, idempotent: hit.idempotent } as ChildSpawnCodexResult;
   }
 
   const result = await execute();
-  return { ...result, idempotent: false } as ChildSpawnCodexResult;
+  return { ...result, op_id: opId, idempotent: false } as ChildSpawnCodexResult;
 }
 
 /**
@@ -420,13 +473,22 @@ export async function handleChildBatchCreate(
 
   const results: ChildSpawnCodexResult[] = [];
   const createdChildIds: string[] = [];
+  let failingIndex: number | null = null;
+  let failingSummary: Record<string, unknown> | null = null;
 
   try {
-    for (const entry of input.entries) {
-      const snapshot = await handleChildSpawnCodex(context, entry);
-      results.push(snapshot);
-      if (!snapshot.idempotent) {
-        createdChildIds.push(snapshot.child_id);
+    for (let index = 0; index < input.entries.length; index += 1) {
+      const entry: ChildBatchCreateEntry = input.entries[index]!;
+      try {
+        const snapshot = await handleChildSpawnCodex(context, entry);
+        results.push(snapshot);
+        if (!snapshot.idempotent) {
+          createdChildIds.push(snapshot.child_id);
+        }
+      } catch (error) {
+        failingIndex = index;
+        failingSummary = summariseChildBatchEntry(entry);
+        throw error;
       }
     }
   } catch (error) {
@@ -450,7 +512,21 @@ export async function handleChildBatchCreate(
         clearLoopSignature(childId);
       }
     }
-    throw error;
+    const entrySummary = failingSummary;
+    throw new BulkOperationError("child batch aborted", {
+      failures: [
+        buildBulkFailureDetail({
+          index: failingIndex ?? 0,
+          entry: entrySummary,
+          error,
+          stage: "spawn",
+        }),
+      ],
+      rolled_back: true,
+      metadata: {
+        rollback_child_ids: [...createdChildIds].reverse(),
+      },
+    });
   }
 
   const idempotentCount = results.filter((entry) => entry.idempotent).length;

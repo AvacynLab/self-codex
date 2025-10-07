@@ -595,12 +595,14 @@ describe("plan lifecycle", () => {
       });
       expect(cancelResponse.isError ?? false).to.equal(false);
       const cancelContent = cancelResponse.structuredContent as {
+        ok: boolean;
         op_id: string;
         outcome: string;
         run_id: string | null;
         progress: number | null;
         lifecycle: { state: string; progress: number; failure: { reason: string | null } | null } | null;
       };
+      expect(cancelContent.ok).to.equal(true);
       expect(cancelContent.op_id).to.equal(planArguments.op_id);
       expect(cancelContent.run_id).to.equal(planArguments.run_id);
       expect(cancelContent.progress).to.equal(100);
@@ -624,6 +626,50 @@ describe("plan lifecycle", () => {
       if (runPromise) {
         await runPromise.catch(() => {});
       }
+    }
+  });
+
+  it("surfaces E-CANCEL-NOTFOUND when op_cancel targets an unknown operation", async function () {
+    this.timeout(5000);
+
+    const baselineGraphSnapshot = graphState.serialize();
+    const baselineChildrenIndex = childSupervisor.childrenIndex.serialize();
+    const baselineFeatures = getRuntimeFeatures();
+
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    const client = new Client({ name: "op-cancel-notfound-client", version: "1.0.0-test" });
+
+    await server.close().catch(() => {});
+    await server.connect(serverTransport);
+    await client.connect(clientTransport);
+
+    try {
+      configureRuntimeFeatures({
+        ...baselineFeatures,
+        enableCancellation: true,
+      });
+      graphState.resetFromSnapshot({ nodes: [], edges: [], directives: { graph: "op-cancel-notfound" } });
+      childSupervisor.childrenIndex.restore({});
+
+      const response = await client.callTool({
+        name: "op_cancel",
+        arguments: { op_id: "missing-op", reason: "verif" },
+      });
+
+      expect(response.isError ?? false).to.equal(true);
+      const payload = JSON.parse(response.content?.[0]?.text ?? "{}");
+      // Ensure the error payload mirrors the documented `{ ok:false }` contract for MCP clients.
+      expect(payload.ok).to.equal(false);
+      expect(payload.error).to.equal("E-CANCEL-NOTFOUND");
+      expect(payload.message).to.equal("unknown opId");
+      expect(payload.hint).to.equal("verify opId via events_subscribe");
+      expect(payload.details).to.deep.equal({ opId: "missing-op" });
+    } finally {
+      configureRuntimeFeatures(baselineFeatures);
+      graphState.resetFromSnapshot(baselineGraphSnapshot);
+      childSupervisor.childrenIndex.restore(baselineChildrenIndex);
+      await client.close().catch(() => {});
+      await server.close().catch(() => {});
     }
   });
 

@@ -1,34 +1,33 @@
 {
-    "compilerOptions": {
-      "target": "ES2022",
-      "lib": ["ES2022"],
-      "module": "ES2022",
-      "moduleResolution": "node",
-      "outDir": "dist",
-      "rootDir": "src",
-      "baseUrl": "src",
-      "paths": {
-        "agents/*": ["agents/*"],
-        "coord/*": ["coord/*"],
-        "events/*": ["events/*"],
-        "executor/*": ["executor/*"],
-        "graph/*": ["graph/*"],
-        "infra/*": ["infra/*"],
-        "knowledge/*": ["knowledge/*"],
-        "mcp/*": ["mcp/*"],
-        "monitor/*": ["monitor/*"],
-        "resources/*": ["resources/*"],
-        "state/*": ["state/*"],
-        "values/*": ["values/*"],
-        "viz/*": ["viz/*"]
-      },
-      "strict": true,
-      "esModuleInterop": true,
-      "forceConsistentCasingInFileNames": true,
-      "skipLibCheck": true,
-      "types": ["node"]
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022"],
+    "module": "ES2022",
+    "moduleResolution": "node",
+    "outDir": "dist",
+    "rootDir": "src",
+    "baseUrl": ".",
+    "paths": {
+      "graph/*": ["src/graph/*"],
+      "executor/*": ["src/executor/*"],
+      "coord/*": ["src/coord/*"],
+      "agents/*": ["src/agents/*"],
+      "knowledge/*": ["src/knowledge/*"],
+      "values/*": ["src/values/*"],
+      "monitor/*": ["src/monitor/*"],
+      "events/*": ["src/events/*"],
+      "mcp/*": ["src/mcp/*"],
+      "resources/*": ["src/resources/*"],
+      "infra/*": ["src/infra/*"],
+      "state/*": ["src/state/*"],
+      "viz/*": ["src/viz/*"]
     },
-    "include": ["src"],
-    "exclude": ["dist", "node_modules", "tests"]
-  }
-  
+    "strict": true,
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "skipLibCheck": true,
+    "types": ["node"]
+  },
+  "include": ["src"],
+  "exclude": ["dist", "node_modules", "tests"]
+}

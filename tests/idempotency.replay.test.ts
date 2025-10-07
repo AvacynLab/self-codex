@@ -114,12 +114,15 @@ describe("idempotency cache integrations", () => {
     expect(first.idempotent).to.equal(false);
     expect(second.idempotent).to.equal(true);
     expect(second.child_id).to.equal(first.child_id);
+    expect(first.op_id).to.be.a("string");
+    expect(second.op_id).to.equal(first.op_id);
     expect(createChild.calledOnce).to.equal(true);
 
     clock.tick(1_001);
     const third = await handleChildCreate(context, input);
     expect(third.idempotent).to.equal(false);
     expect(createChild.callCount).to.equal(2);
+    expect(third.op_id).to.not.equal(first.op_id);
   });
 
   it("returns cached plan_run_bt results on retries", async () => {

@@ -2,31 +2,34 @@ import { describe, it } from "mocha";
 import { expect } from "chai";
 import sinon from "sinon";
 
-import type { PlanToolContext } from "../src/tools/planTools.js";
-import { handlePlanDryRun } from "../src/tools/planTools.js";
+import { handlePlanDryRun, type PlanToolContext } from "../src/tools/planTools.js";
 import { StigmergyField } from "../src/coord/stigmergy.js";
+import { ValueGraph } from "../src/values/valueGraph.js";
 
 /**
  * Unit coverage for the plan dry-run helper to ensure rewrite previews are produced alongside
  * value guard projections when hierarchical graphs are supplied.
  */
 describe("plan dry-run", () => {
-  function buildContext(): PlanToolContext {
-    const logger = {
-      info: sinon.spy(),
-      warn: sinon.spy(),
-      error: sinon.spy(),
-    } as unknown as PlanToolContext["logger"];
+  function buildContext(overrides: Partial<PlanToolContext> = {}): PlanToolContext {
+    const logger =
+      overrides.logger ??
+      ({
+        info: sinon.spy(),
+        warn: sinon.spy(),
+        error: sinon.spy(),
+      } as unknown as PlanToolContext["logger"]);
 
     return {
-      supervisor: {} as PlanToolContext["supervisor"],
-      graphState: {} as PlanToolContext["graphState"],
+      supervisor: overrides.supervisor ?? ({} as PlanToolContext["supervisor"]),
+      graphState: overrides.graphState ?? ({} as PlanToolContext["graphState"]),
       logger,
-      childrenRoot: "/tmp",
-      defaultChildRuntime: "codex",
-      emitEvent: sinon.spy(),
-      stigmergy: new StigmergyField(),
-    } satisfies PlanToolContext;
+      childrenRoot: overrides.childrenRoot ?? "/tmp",
+      defaultChildRuntime: overrides.defaultChildRuntime ?? "codex",
+      emitEvent: overrides.emitEvent ?? sinon.spy(),
+      stigmergy: overrides.stigmergy ?? new StigmergyField(),
+      ...overrides,
+    } as PlanToolContext;
   }
 
   it("returns a rewrite preview when a parallel edge is present", () => {
@@ -194,5 +197,86 @@ describe("plan dry-run", () => {
     expect(result.reroute_avoid).to.not.equal(null);
     expect(result.reroute_avoid?.node_ids).to.deep.equal(["manual-risk"]);
     expect(result.reroute_avoid?.labels).to.deep.equal(["Risky"]);
+  });
+
+  // Ensure aggregated impacts trigger the value guard so dry-run payloads include
+  // a structured explanation with actionable hints tied to the originating node.
+  it("explains value guard violations with actionable hints", () => {
+    const logger = {
+      info: sinon.spy(),
+      warn: sinon.spy(),
+      error: sinon.spy(),
+    } as unknown as PlanToolContext["logger"];
+
+    const valueGraph = new ValueGraph({ now: () => 123_456 });
+    valueGraph.set({
+      values: [
+        {
+          id: "safety",
+          label: "Safety",
+          weight: 1,
+          tolerance: 0.2,
+        },
+      ],
+    });
+
+    const context = buildContext({
+      logger,
+      valueGuard: { graph: valueGraph, registry: new Map() },
+    });
+
+    const result = handlePlanDryRun(context, {
+      plan_id: "plan-guard",
+      plan_label: "Guarded Plan",
+      threshold: 0.9,
+      nodes: [
+        {
+          id: "risk-node",
+          label: "Risk Node",
+          value_impacts: [
+            {
+              value: "safety",
+              impact: "risk",
+              severity: 1,
+              rationale: "Introduces a safety risk",
+              source: "analysis",
+            },
+          ],
+        },
+      ],
+    });
+
+    expect(result.value_guard).to.not.equal(null);
+    const guard = result.value_guard!;
+    expect(guard.decision.allowed).to.equal(false);
+    expect(guard.decision.threshold).to.equal(0.9);
+    expect(guard.decision.violations).to.have.lengthOf(1);
+    const violation = guard.violations[0]!;
+    expect(violation.value).to.equal("safety");
+    expect(violation.hint).to.be.a("string").that.is.not.empty;
+    expect(violation.primaryContributor).to.not.equal(null);
+    expect(violation.primaryContributor?.impact.nodeId).to.equal("risk-node");
+    expect(result.impacts).to.deep.include({
+      value: "safety",
+      impact: "risk",
+      severity: 1,
+      rationale: "Introduces a safety risk",
+      source: "analysis",
+      nodeId: "risk-node",
+    });
+    expect(result.nodes).to.deep.include({
+      id: "risk-node",
+      label: "Risk Node",
+      impacts: [
+        {
+          value: "safety",
+          impact: "risk",
+          severity: 1,
+          rationale: "Introduces a safety risk",
+          source: "analysis",
+          nodeId: "risk-node",
+        },
+      ],
+    });
   });
 });

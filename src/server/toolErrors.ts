@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import type { StructuredLogger } from "../logger.js";
+import { normaliseErrorHint, normaliseErrorMessage } from "../types.js";
 import { ResourceRegistryError } from "../resources/registry.js";
 import { UnknownChildError } from "../state/childrenIndex.js";
 
@@ -70,7 +71,12 @@ export function normaliseToolError(error: unknown, codes: ToolErrorCodes): Norma
     details = (error as { details?: unknown }).details;
   }
 
-  return { code, message, hint, details };
+  return {
+    code,
+    message: normaliseErrorMessage(message),
+    hint: normaliseErrorHint(hint),
+    details,
+  };
 }
 
 /** Writes the structured error into the shared logger and returns the response. */
@@ -88,6 +94,9 @@ function logAndWrap(
   });
 
   const payload: Record<string, unknown> = {
+    // Attach the explicit `{ ok:false }` marker requested by the checklist so
+    // clients can branch on success/error uniformly without inspecting codes.
+    ok: false,
     error: normalised.code,
     tool: toolName,
     message: normalised.message,
@@ -123,7 +132,7 @@ export function childToolError(
   context: Record<string, unknown> = {},
 ): ToolErrorResponse {
   if (error instanceof UnknownChildError) {
-    const normalised = normaliseToolError(error, { defaultCode: "E-CHILD-NOT-FOUND" });
+    const normalised = normaliseToolError(error, { defaultCode: "E-CHILD-NOTFOUND" });
     if (!normalised.hint) {
       normalised.hint = "unknown_child";
     }

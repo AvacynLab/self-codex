@@ -1,5 +1,7 @@
 import { appendFile, mkdir, rename, rm, stat } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { dirname, resolve } from "node:path";
+
+import { resolveWithin } from "../paths.js";
 
 /** Streams supported by the log journal. */
 export type LogStream = "server" | "run" | "child";
@@ -144,21 +146,25 @@ function sanitiseBucketId(raw: string): string {
 function resolveStreamDir(rootDir: string, stream: LogStream): string {
   switch (stream) {
     case "server":
-      return join(rootDir, "server");
+      return resolveWithin(rootDir, "server");
     case "run":
-      return join(rootDir, "runs");
+      return resolveWithin(rootDir, "runs");
     case "child":
-      return join(rootDir, "children");
+      return resolveWithin(rootDir, "children");
     default:
-      return rootDir;
+      return resolveWithin(rootDir, stream);
   }
 }
 
-/** Creates the JSONL file path for a bucket. */
+/**
+ * Creates the JSONL file path for a bucket while delegating sandbox enforcement to
+ * {@link resolveWithin}. This guarantees that even crafted bucket identifiers remain
+ * confined to the configured journal root and cannot traverse upwards.
+ */
 function resolveBucketPath(rootDir: string, stream: LogStream, bucketId: string): string {
   const baseDir = resolveStreamDir(rootDir, stream);
   const safeId = sanitiseBucketId(bucketId);
-  return join(baseDir, `${safeId}.jsonl`);
+  return resolveWithin(baseDir, `${safeId}.jsonl`);
 }
 
 /**

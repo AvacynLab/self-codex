@@ -2,11 +2,8 @@ import { describe, it } from "mocha";
 import { expect } from "chai";
 
 import type { NormalisedGraph } from "../src/graph/types.js";
-import {
-  assertGraphInvariants,
-  evaluateGraphInvariants,
-  GraphInvariantError,
-} from "../src/graph/invariants.js";
+import { assertGraphInvariants, evaluateGraphInvariants, GraphInvariantError } from "../src/graph/invariants.js";
+import { ERROR_CODES } from "../src/types.js";
 
 function createGraph(partial?: Partial<NormalisedGraph>): NormalisedGraph {
   return {
@@ -40,7 +37,8 @@ describe("graph invariants", () => {
 
     expect(() => assertGraphInvariants(graph)).to.throw(GraphInvariantError).that.satisfies((error: unknown) => {
       const invariantError = error as GraphInvariantError;
-      expect(invariantError.violations.some((violation) => violation.code === "E-GRAPH-CYCLE")).to.equal(true);
+      expect(invariantError.code).to.equal(ERROR_CODES.PATCH_CYCLE);
+      expect(invariantError.violations.some((violation) => violation.code === ERROR_CODES.PATCH_CYCLE)).to.equal(true);
       return true;
     });
   });
@@ -51,9 +49,10 @@ describe("graph invariants", () => {
 
     const report = evaluateGraphInvariants(graph);
     expect(report.ok).to.equal(false);
-    const violation = report.violations.find((entry) => entry.code === "E-NODE-LABEL");
+    const violation = report.ok ? null : report.violations.find((entry) => entry.code === ERROR_CODES.PATCH_PORTS);
     expect(violation).to.not.be.undefined;
-    expect(violation?.nodes).to.deep.equal(["beta"]);
+    expect(violation?.path).to.equal("/nodes/1");
+    expect(violation?.hint).to.contain("label");
   });
 
   it("requires port attributes when enabled", () => {
@@ -62,7 +61,7 @@ describe("graph invariants", () => {
 
     expect(() => assertGraphInvariants(graph)).to.throw(GraphInvariantError).that.satisfies((error: unknown) => {
       const invariantError = error as GraphInvariantError;
-      expect(invariantError.violations.some((violation) => violation.code === "E-EDGE-PORT")).to.equal(true);
+      expect(invariantError.violations.some((violation) => violation.code === ERROR_CODES.PATCH_PORTS)).to.equal(true);
       return true;
     });
   });
@@ -78,7 +77,8 @@ describe("graph invariants", () => {
 
     const report = evaluateGraphInvariants(graph);
     expect(report.ok).to.equal(false);
-    expect(report.violations.some((violation) => violation.code === "E-IN-DEGREE")).to.equal(true);
+    expect(report.ok).to.equal(false);
+    expect(report.violations.some((violation) => violation.code === ERROR_CODES.PATCH_CARD)).to.equal(true);
   });
 
   it("accepts a graph respecting every declared invariant", () => {

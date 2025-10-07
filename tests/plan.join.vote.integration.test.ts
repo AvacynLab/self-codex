@@ -113,6 +113,7 @@ describe("plan_join consensus integration", () => {
     });
 
     const joinResult = await handlePlanJoin(context, joinInput);
+    expect(joinResult.op_id).to.match(/^plan_join_op_/);
     expect(joinResult.satisfied).to.equal(true);
     expect(joinResult.quorum_threshold).to.equal(3);
     expect(joinResult.consensus?.outcome).to.equal("success");
@@ -133,6 +134,7 @@ describe("plan_join consensus integration", () => {
     });
 
     const reduceResult = await handlePlanReduce(context, reduceInput);
+    expect(reduceResult.op_id).to.match(/^plan_reduce_op_/);
     expect(reduceResult.aggregate).to.deep.equal({
       mode: "weighted",
       value: "approve",

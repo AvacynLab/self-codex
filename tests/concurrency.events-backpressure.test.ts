@@ -32,7 +32,7 @@ describe("stream pagination backpressure", () => {
       for (let offset = 0; offset < burstSize; offset += 1) {
         published += 1;
         bus.publish({
-          cat: burstIndex % 2 === 0 ? "plan" : "child",
+          cat: burstIndex % 2 === 0 ? "graph" : "child",
           runId: `run-${burstIndex + 1}`,
           msg: `event-${published}`,
         });
@@ -55,7 +55,7 @@ describe("stream pagination backpressure", () => {
     const keepAlive = bus.list({ afterSeq: cursor, limit });
     expect(keepAlive).to.have.length(0);
 
-    const resumed = bus.publish({ cat: "plan", runId: "run-keepalive", msg: "resume" });
+    const resumed = bus.publish({ cat: "graph", runId: "run-keepalive", msg: "resume" });
     const replay = bus.list({ afterSeq: cursor, limit });
     expect(replay.map((event) => event.seq)).to.deep.equal([resumed.seq]);
   });

@@ -66,7 +66,7 @@ describe("events subscribe SSE escaping", () => {
         name: "events_subscribe",
         arguments: {
           from_seq: cursor,
-          cats: ["cancel"],
+          cats: ["scheduler"],
           format: "sse",
         },
       });

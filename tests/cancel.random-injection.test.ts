@@ -147,6 +147,15 @@ describe("random cancellation injection", () => {
       });
 
       const execution = handlePlanRunReactive(harness.context, input);
+      // Convert the execution promise into an always-fulfilled outcome so Node does not
+      // warn about late rejection handlers while the fake timer advances deterministically.
+      type ExecutionOutcome =
+        | { type: "fulfilled"; value: Awaited<ReturnType<typeof handlePlanRunReactive>> }
+        | { type: "rejected"; reason: unknown };
+      const outcomePromise: Promise<ExecutionOutcome> = execution.then(
+        (value) => ({ type: "fulfilled", value }),
+        (reason) => ({ type: "rejected", reason }),
+      );
       const start = await harness.waitForStart();
       expect(start.opId).to.have.length.greaterThan(0);
 
@@ -166,12 +175,11 @@ describe("random cancellation injection", () => {
       await clock.tickAsync(500);
 
       let caught: unknown;
-      try {
-        await execution;
+      const outcome = await outcomePromise;
+      if (outcome.type === "fulfilled") {
         expect.fail("plan_run_reactive should surface OperationCancelledError");
-      } catch (error) {
-        caught = error;
       }
+      caught = outcome.reason;
 
       expect(caught).to.be.instanceOf(OperationCancelledError);
       const cancellationError = caught as OperationCancelledError;

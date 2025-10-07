@@ -63,6 +63,7 @@ describe("child tool handlers", () => {
       });
       const created = await handleChildCreate(context, createInput);
 
+      expect(created.op_id).to.be.a("string");
       expect(created.child_id).to.match(/^child-\d{13}-[a-f0-9]{6}$/);
       expect(created.runtime_status.lifecycle).to.equal("running");
       expect(created.index_snapshot.state).to.equal("starting");
@@ -181,13 +182,15 @@ describe("child tool handlers", () => {
         .split(/\n+/)
         .map((line) => line.trim())
         .filter((line) => line.length > 0)
-        .map((line) => JSON.parse(line) as { message: string });
+        .map((line) => JSON.parse(line) as { message: string; payload?: Record<string, unknown> });
       const messages = entries.map((entry) => entry.message);
       expect(messages).to.include("child_create_requested");
       expect(messages).to.include("child_send");
       expect(messages).to.include("child_collect");
       expect(messages).to.include("child_cancel");
       expect(messages).to.include("child_gc");
+      const createEntry = entries.find((entry) => entry.message === "child_create_requested");
+      expect(createEntry?.payload?.op_id).to.be.a("string");
     } finally {
       await logger.flush();
       await supervisor.disposeAll();

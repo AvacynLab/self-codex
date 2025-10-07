@@ -28,6 +28,24 @@ export interface BlackboardBatchSetInput {
   ttlMs?: number;
 }
 
+/**
+ * Error raised when a specific entry inside {@link BlackboardStore.batchSet}
+ * cannot be processed. The class records the failing index so callers can build
+ * actionable diagnostics while the store restores its previous state.
+ */
+export class BlackboardBatchSetEntryError extends Error {
+  constructor(
+    public readonly index: number,
+    public readonly entry: BlackboardBatchSetInput,
+    cause: unknown,
+  ) {
+    super(`failed to apply blackboard entry at index ${index}`, {
+      cause: cause instanceof Error ? cause : undefined,
+    });
+    this.name = "BlackboardBatchSetEntryError";
+  }
+}
+
 /** Filtering options consumed by {@link BlackboardStore.query}. */
 export interface BlackboardQueryOptions {
   /** Restrict the result set to the provided keys. */
@@ -152,8 +170,10 @@ export class BlackboardStore {
     const eventsToEmit: BlackboardEvent[] = [];
     let nextVersion = startingVersion;
 
+    let currentIndex = -1;
     try {
-      for (const payload of entries) {
+      for (const [index, payload] of entries.entries()) {
+        currentIndex = index;
         const timestamp = this.now();
         const tags = normaliseTags(payload.tags ?? []);
         const ttl = payload.ttlMs !== undefined ? Math.max(1, Math.floor(payload.ttlMs)) : null;
@@ -162,9 +182,15 @@ export class BlackboardStore {
         const previousSnapshot = previousInternal ? this.cloneEntry(previousInternal) : undefined;
 
         const createdAt = previousInternal?.createdAt ?? timestamp;
+        let clonedValue: unknown;
+        try {
+          clonedValue = structuredClone(payload.value);
+        } catch (cloneError) {
+          throw new BlackboardBatchSetEntryError(index, payload, cloneError);
+        }
         const entry: BlackboardEntryInternal = {
           key: payload.key,
-          value: structuredClone(payload.value),
+          value: clonedValue,
           tags,
           createdAt,
           updatedAt: timestamp,
@@ -193,7 +219,11 @@ export class BlackboardStore {
         this.entries.set(key, entry);
       }
       this.version = startingVersion;
-      throw error;
+      if (error instanceof BlackboardBatchSetEntryError) {
+        throw error;
+      }
+      const entry = currentIndex >= 0 ? entries[currentIndex]! : entries[0]!;
+      throw new BlackboardBatchSetEntryError(currentIndex >= 0 ? currentIndex : 0, entry, error);
     }
 
     this.version = nextVersion;

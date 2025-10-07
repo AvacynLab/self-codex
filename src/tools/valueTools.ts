@@ -11,6 +11,7 @@ import type {
   ValueGraphCorrelationHints,
 } from "../values/valueGraph.js";
 import { StructuredLogger } from "../logger.js";
+import { resolveOperationId } from "./operationIds.js";
 
 /** Context injected by the server when invoking value guard tools. */
 export interface ValueToolContext {
@@ -57,7 +58,7 @@ export const ValueImpactSchema = z
 const ValuePlanCorrelationSchema = z
   .object({
     run_id: z.string().min(1).optional(),
-    op_id: z.string().min(1).optional(),
+    op_id: z.string().trim().min(1).optional(),
     job_id: z.string().min(1).optional(),
     graph_id: z.string().min(1).optional(),
     node_id: z.string().min(1).optional(),
@@ -70,6 +71,8 @@ export const ValuesSetInputSchema = z
     values: z.array(ValueNodeSchema).min(1).max(128),
     relationships: z.array(ValueRelationshipSchema).max(512).optional(),
     default_threshold: z.number().min(0).max(1).optional(),
+    // Optional correlation identifier propagated through events/logs.
+    op_id: z.string().trim().min(1).optional(),
   })
   .strict();
 export const ValuesSetInputShape = ValuesSetInputSchema.shape;
@@ -105,32 +108,38 @@ type ValuePlanCorrelationInput = z.infer<typeof ValuePlanCorrelationSchema>;
  * Normalises optional correlation metadata supplied alongside value guard
  * inputs. Returning `null` keeps downstream logging and event emission tidy.
  */
-function extractCorrelationHints(input: ValuePlanCorrelationInput): ValueGraphCorrelationHints | null {
-  const hints: ValueGraphCorrelationHints = {};
+function extractCorrelationHints(
+  input: ValuePlanCorrelationInput,
+  resolvedOpId: string,
+): ValueGraphCorrelationHints | null {
+  const hints: ValueGraphCorrelationHints = { opId: resolvedOpId };
   if (input.run_id !== undefined) hints.runId = input.run_id;
-  if (input.op_id !== undefined) hints.opId = input.op_id;
   if (input.job_id !== undefined) hints.jobId = input.job_id;
   if (input.graph_id !== undefined) hints.graphId = input.graph_id;
   if (input.node_id !== undefined) hints.nodeId = input.node_id;
 
-  return Object.keys(hints).length > 0 ? hints : null;
+  return hints;
 }
 
 /** Result returned after configuring the value graph. */
 export interface ValuesSetResult extends Record<string, unknown> {
+  /** Correlation identifier propagated back to clients. */
+  op_id: string;
   summary: ValueGraphSummary;
 }
 
 /** Result returned when scoring a plan. */
 export interface ValuesScoreResult extends Record<string, unknown> {
+  /** Correlation identifier propagated back to clients. */
+  op_id: string;
   decision: ValueFilterDecision;
 }
 
 /** Result returned when filtering a plan against the guard. */
-export type ValuesFilterResult = ValueFilterDecision;
+export type ValuesFilterResult = ValueFilterDecision & { op_id: string };
 
 /** Result returned when explaining a plan decision. */
-export type ValuesExplainResult = ValueExplanationResult;
+export type ValuesExplainResult = ValueExplanationResult & { op_id: string };
 
 /**
  * Replace the value graph configuration with the provided specification.
@@ -143,6 +152,7 @@ export function handleValuesSet(
   context: ValueToolContext,
   input: z.infer<typeof ValuesSetInputSchema>,
 ): ValuesSetResult {
+  const opId = resolveOperationId(input.op_id, "values_set_op");
   const config: ValueGraphConfig = {
     values: input.values.map((value) => ({
       id: value.id,
@@ -165,8 +175,9 @@ export function handleValuesSet(
     relationships: summary.relationships,
     default_threshold: summary.default_threshold,
     version: summary.version,
+    op_id: opId,
   });
-  return { summary };
+  return { op_id: opId, summary };
 }
 
 /**
@@ -178,7 +189,8 @@ export function handleValuesScore(
   context: ValueToolContext,
   input: z.infer<typeof ValuesScoreInputSchema>,
 ): ValuesScoreResult {
-  const correlation = extractCorrelationHints(input);
+  const opId = resolveOperationId(input.op_id, "values_score_op");
+  const correlation = extractCorrelationHints(input, opId);
   const score = context.valueGraph.score({
     id: input.id,
     label: input.label,
@@ -192,9 +204,9 @@ export function handleValuesScore(
     score: score.score,
     total: score.total,
     run_id: correlation?.runId ?? null,
-    op_id: correlation?.opId ?? null,
+    op_id: opId,
   });
-  return { decision: { ...score, allowed, threshold } };
+  return { op_id: opId, decision: { ...score, allowed, threshold } };
 }
 
 /**
@@ -205,7 +217,8 @@ export function handleValuesFilter(
   context: ValueToolContext,
   input: z.infer<typeof ValuesFilterInputSchema>,
 ): ValuesFilterResult {
-  const correlation = extractCorrelationHints(input);
+  const opId = resolveOperationId(input.op_id, "values_filter_op");
+  const correlation = extractCorrelationHints(input, opId);
   const decision = context.valueGraph.filter({
     id: input.id,
     label: input.label,
@@ -220,9 +233,9 @@ export function handleValuesFilter(
     allowed: decision.allowed,
     violations: decision.violations.length,
     run_id: correlation?.runId ?? null,
-    op_id: correlation?.opId ?? null,
+    op_id: opId,
   });
-  return decision;
+  return { ...decision, op_id: opId };
 }
 
 /**
@@ -235,7 +248,8 @@ export function handleValuesExplain(
   input: z.infer<typeof ValuesExplainInputSchema>,
 ): ValuesExplainResult {
   const plan = input.plan;
-  const correlation = extractCorrelationHints(plan);
+  const opId = resolveOperationId(plan.op_id, "values_explain_op");
+  const correlation = extractCorrelationHints(plan, opId);
   const explanation = context.valueGraph.explain({
     id: plan.id,
     label: plan.label,
@@ -250,9 +264,9 @@ export function handleValuesExplain(
     allowed: explanation.decision.allowed,
     violations: explanation.violations.length,
     run_id: correlation?.runId ?? null,
-    op_id: correlation?.opId ?? null,
+    op_id: opId,
   });
-  return explanation;
+  return { ...explanation, op_id: opId };
 }
 
 /** Normalises impacts to match the {@link ValueImpactInput} contract. */

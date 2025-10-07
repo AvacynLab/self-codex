@@ -5,6 +5,7 @@ import {
   GraphTransactionManager,
   GraphVersionConflictError,
 } from "../src/graph/tx.js";
+import { ERROR_CODES } from "../src/types.js";
 import type { NormalisedGraph } from "../src/graph/types.js";
 
 /** Build a graph fixture with the provided identifier and version. */
@@ -48,7 +49,15 @@ describe("graph transactions - concurrency control", () => {
       expect(secondCommit.version).to.equal(3);
 
       third.workingCopy.metadata.stage = "third";
-      expect(() => manager.commit(third.txId, third.workingCopy)).to.throw(GraphVersionConflictError);
+      try {
+        manager.commit(third.txId, third.workingCopy);
+        expect.fail("expected GraphVersionConflictError");
+      } catch (error) {
+        expect(error).to.be.instanceOf(GraphVersionConflictError);
+        const conflict = error as GraphVersionConflictError;
+        expect(conflict.code).to.equal(ERROR_CODES.TX_CONFLICT);
+        expect(conflict.hint).to.equal("reload latest committed graph before retrying");
+      }
 
       // Conflict should leave the transaction active so callers can roll back
       // to the pristine snapshot and release the optimistic lock cleanly.

@@ -6,7 +6,9 @@ import {
   cancelRun,
   getCancellation,
   isCancelled,
+  requestCancellation,
   resetCancellationRegistry,
+  CancellationNotFoundError,
 } from "../src/executor/cancel.js";
 
 describe("plan cancellation registry", () => {
@@ -69,5 +71,18 @@ describe("plan cancellation registry", () => {
   it("returns an empty array when no operations are registered for the run", () => {
     const outcomes = cancelRun("unknown-run", { reason: "noop" });
     expect(outcomes).to.deep.equal([]);
+  });
+
+  it("throws a structured not-found error when cancelling an unknown op", () => {
+    try {
+      requestCancellation("missing-op", { reason: "noop" });
+      expect.fail("requestCancellation should throw for unknown operations");
+    } catch (error) {
+      expect(error).to.be.instanceOf(CancellationNotFoundError);
+      expect((error as CancellationNotFoundError).code).to.equal("E-CANCEL-NOTFOUND");
+      expect((error as CancellationNotFoundError).message).to.equal("unknown opId");
+      expect((error as CancellationNotFoundError).hint).to.equal("verify opId via events_subscribe");
+      expect((error as CancellationNotFoundError).details).to.deep.equal({ opId: "missing-op" });
+    }
   });
 });

@@ -46,6 +46,7 @@ describe("child spawn/attach/limits tools", () => {
 
       const spawned = await handleChildSpawnCodex(context, spawnInput);
 
+      expect(spawned.op_id).to.be.a("string");
       expect(spawned.child_id).to.match(/^child-\d{13}-[a-f0-9]{6}$/);
       expect(spawned.role).to.equal("planner");
       expect(spawned.limits).to.deep.equal({ tokens: 2048, wallclock_ms: 30_000 });
@@ -55,6 +56,9 @@ describe("child spawn/attach/limits tools", () => {
 
       const manifestRaw = await readFile(spawned.manifest_path, "utf8");
       const manifest = JSON.parse(manifestRaw) as Record<string, unknown>;
+      const manifestMetadata = manifest.metadata as { op_id?: unknown } | undefined;
+      const manifestOpId = (manifestMetadata?.op_id ?? (manifest as { op_id?: unknown }).op_id) as string | undefined;
+      expect(manifestOpId).to.equal(spawned.op_id);
       expect(manifest.role).to.equal("planner");
       expect(manifest.limits).to.deep.equal({ tokens: 2048, wallclock_ms: 30_000 });
       expect(manifest.prompt).to.deep.equal(spawnInput.prompt);

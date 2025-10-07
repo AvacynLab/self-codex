@@ -71,7 +71,7 @@ describe("event bridges", () => {
     const expired = store.evictExpired();
     expect(expired).to.have.lengthOf(1);
 
-    const events = bus.list({ cats: ["blackboard"] });
+    const events = bus.list({ cats: ["bb"] });
     expect(events.map((event) => event.msg)).to.deep.equal([
       "bb_set",
       "bb_set",
@@ -109,7 +109,7 @@ describe("event bridges", () => {
     const changes = field.evaporate(2);
     expect(changes).to.have.length.greaterThan(0);
 
-    const events = bus.list({ cats: ["stigmergy"] });
+    const events = bus.list({ cats: ["stig"] });
     expect(events).to.have.lengthOf(2);
     const [markEvent, evaporateEvent] = events;
     expect(markEvent.nodeId).to.equal("node-1");
@@ -148,7 +148,7 @@ describe("event bridges", () => {
     expect(firstOutcome).to.equal("requested");
     expect(secondOutcome).to.equal("already_cancelled");
 
-    const events = bus.list({ cats: ["cancel"] });
+    const events = bus.list({ cats: ["scheduler"] });
     expect(events).to.have.lengthOf(2);
 
     const [requested, repeated] = events;
@@ -206,7 +206,7 @@ describe("event bridges", () => {
     requestCancellation(handle.opId, { at: now(), reason: null });
     requestCancellation(handle.opId, { at: now() });
 
-    const events = bus.list({ cats: ["cancel"] });
+    const events = bus.list({ cats: ["scheduler"] });
     expect(events).to.have.lengthOf(2);
 
     const [requested, repeated] = events;
@@ -254,7 +254,7 @@ describe("event bridges", () => {
     const removed = coordinator.unregisterAgent(agent.agentId);
     expect(removed).to.equal(true);
 
-    const events = bus.list({ cats: ["contract_net"] });
+    const events = bus.list({ cats: ["cnp"] });
     expect(events.map((event) => event.msg)).to.deep.equal([
       "cnp_agent_registered",
       "cnp_bid_recorded",
@@ -313,7 +313,7 @@ describe("event bridges", () => {
     dispose();
 
     coordinator.announce({ taskId: "task-ignored", autoBid: false });
-    const afterDisposeEvents = bus.list({ cats: ["contract_net"] });
+    const afterDisposeEvents = bus.list({ cats: ["cnp"] });
     expect(afterDisposeEvents).to.have.lengthOf(7);
   });
 
@@ -813,7 +813,7 @@ describe("event bridges", () => {
       },
     });
 
-    const events = bus.list({ cats: ["contract_net"] });
+    const events = bus.list({ cats: ["cnp"] });
     expect(events).to.have.lengthOf(1);
     const [telemetryEvent] = events;
     expect(telemetryEvent.msg).to.equal("cnp_watcher_telemetry");

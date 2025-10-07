@@ -176,7 +176,7 @@ function isSerializedChildRecord(value: unknown): value is SerializedChildRecord
 export class UnknownChildError extends Error {
   public readonly childId: string;
   /** Machine readable error code surfaced to MCP clients. */
-  public readonly code = "E-CHILD-NOT-FOUND";
+  public readonly code = "E-CHILD-NOTFOUND";
   /** Hint describing how the caller can recover from the failure. */
   public readonly hint = "unknown_child";
   /** Structured details automatically serialised by the server error helpers. */

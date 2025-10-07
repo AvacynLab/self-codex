@@ -298,7 +298,7 @@ describe("plan tools", () => {
       child_id: "plan-join-reduce-parent",
     } as const;
 
-    await handlePlanJoin(
+    const joinResult = await handlePlanJoin(
       context,
       PlanJoinInputSchema.parse({
         children: ["child-correlation"],
@@ -307,6 +307,7 @@ describe("plan tools", () => {
         ...hints,
       }),
     );
+    expect(joinResult.op_id).to.equal(hints.op_id);
 
     const statusEvent = events.find((event) => event.kind === "STATUS");
     expect(statusEvent, "status event should be recorded").to.not.equal(undefined);
@@ -326,7 +327,7 @@ describe("plan tools", () => {
     expect(statusPayload.node_id).to.equal(hints.node_id);
     expect(statusPayload.child_id).to.equal(hints.child_id);
 
-    await handlePlanReduce(
+    const reduceResult = await handlePlanReduce(
       context,
       PlanReduceInputSchema.parse({
         children: ["child-correlation"],
@@ -335,6 +336,7 @@ describe("plan tools", () => {
         ...hints,
       }),
     );
+    expect(reduceResult.op_id).to.equal(hints.op_id);
 
     const aggregateEvent = events.find((event) => event.kind === "AGGREGATE");
     expect(aggregateEvent, "aggregate event should be recorded").to.not.equal(undefined);
@@ -402,6 +404,8 @@ describe("plan tools", () => {
           timeout_sec: 2,
         }),
       );
+      expect(joinAll.op_id).to.be.a("string");
+      expect(joinAll.op_id).to.match(/^plan_join_op_/);
       expect(joinAll.satisfied, JSON.stringify(joinAll)).to.equal(true);
       expect(joinAll.success_count).to.equal(3);
       for (const entry of joinAll.results) {
@@ -451,6 +455,7 @@ describe("plan tools", () => {
           timeout_sec: 2,
         }),
       );
+      expect(joinFirst.op_id).to.be.a("string");
       expect(joinFirst.satisfied, JSON.stringify(joinFirst)).to.equal(true);
       expect(joinFirst.winning_child_id).to.be.a("string");
       expect(fanout.child_ids).to.include(joinFirst.winning_child_id);
@@ -499,6 +504,7 @@ describe("plan tools", () => {
           reducer: "concat",
         }),
       );
+      expect(reduceConcat.op_id).to.be.a("string");
       expect(reduceConcat.aggregate).to.be.a("string");
       expect(reduceConcat.trace.per_child).to.have.length(3);
 
@@ -509,6 +515,7 @@ describe("plan tools", () => {
           reducer: "merge_json",
         }),
       );
+      expect(reduceMerge.op_id).to.be.a("string");
       expect(reduceMerge.reducer).to.equal("merge_json");
       expect(reduceMerge.aggregate).to.have.property("vote");
       expect(reduceMerge.trace.per_child).to.have.length(3);
@@ -520,6 +527,7 @@ describe("plan tools", () => {
           reducer: "vote",
         }),
       );
+      expect(reduceVote.op_id).to.be.a("string");
       expect(reduceVote.reducer).to.equal("vote");
       expect(reduceVote.trace.details).to.have.property("consensus");
       const consensusDetails = reduceVote.trace.details?.consensus as
@@ -618,6 +626,7 @@ describe("plan tools", () => {
           timeout_sec: 1,
         }),
       );
+      expect(join.op_id).to.be.a("string");
 
       expect(join.policy).to.equal("quorum");
       expect(join.quorum_threshold).to.equal(2);

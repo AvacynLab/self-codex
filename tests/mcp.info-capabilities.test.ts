@@ -14,6 +14,7 @@ import {
   getChildSafetyLimits,
   getRuntimeFeatures,
   getRuntimeTimings,
+  server,
 } from "../src/server.js";
 import {
   getMcpCapabilities,
@@ -27,6 +28,21 @@ import type {
   FeatureToggles,
   RuntimeTimingOptions,
 } from "../src/serverOptions.js";
+
+type McpToolResponse = { content?: Array<{ text: string }>; isError?: boolean };
+
+type RegisteredToolMap = Record<string, { callback: (args: unknown) => Promise<McpToolResponse> | McpToolResponse }>;
+
+/**
+ * Retrieves the internal tool callback so the test suite can trigger handlers without wiring a client transport.
+ */
+function getRegisteredToolCallback(name: string) {
+  const registry = (server as unknown as { _registeredTools?: RegisteredToolMap })._registeredTools;
+  expect(registry, "registered tools map").to.be.an("object");
+  const tool = registry?.[name];
+  expect(tool, `tool ${name} should be registered`).to.exist;
+  return tool!.callback;
+}
 
 describe("mcp introspection helpers", () => {
   let originalFeatures: FeatureToggles;
@@ -170,5 +186,74 @@ describe("mcp introspection helpers", () => {
     expect(toolSummaries.has("plan_run_reactive")).to.equal(false);
     expect(toolSummaries.has("kg_insert")).to.equal(true);
     expect(toolSummaries.get("kg_insert")).to.be.a("string").and.to.have.length.greaterThan(0);
+  });
+
+  it("garde l'accès aux outils MCP derrière le flag enableMcpIntrospection", async () => {
+    configureRuntimeFeatures({ ...originalFeatures, enableMcpIntrospection: false });
+
+    const mcpInfoCallback = getRegisteredToolCallback("mcp_info");
+    const mcpCapabilitiesCallback = getRegisteredToolCallback("mcp_capabilities");
+
+    const disabledInfoResponse = await mcpInfoCallback({});
+    expect(disabledInfoResponse).to.have.property("isError", true);
+    const disabledInfoPayload = JSON.parse(disabledInfoResponse.content?.[0]?.text ?? "{}");
+    expect(disabledInfoPayload).to.include({ error: "MCP_INTROSPECTION_DISABLED", tool: "mcp_info" });
+
+    const disabledCapabilitiesResponse = await mcpCapabilitiesCallback({});
+    expect(disabledCapabilitiesResponse).to.have.property("isError", true);
+    const disabledCapabilitiesPayload = JSON.parse(disabledCapabilitiesResponse.content?.[0]?.text ?? "{}");
+    expect(disabledCapabilitiesPayload).to.include({ error: "MCP_INTROSPECTION_DISABLED", tool: "mcp_capabilities" });
+
+    const toggles: FeatureToggles = { ...originalFeatures, enableMcpIntrospection: true };
+    configureRuntimeFeatures(toggles);
+
+    const infoResponse = await mcpInfoCallback({});
+    expect(infoResponse).to.not.have.property("isError", true);
+    const infoPayload = JSON.parse(infoResponse.content?.[0]?.text ?? "{}");
+    expect(infoPayload).to.have.nested.property("info.flags.enableMcpIntrospection", true);
+    expect(infoPayload).to.have.nested.property("info.features").that.includes("mcp-introspection");
+
+    const capabilitiesResponse = await mcpCapabilitiesCallback({});
+    expect(capabilitiesResponse).to.not.have.property("isError", true);
+    const capabilitiesPayload = JSON.parse(capabilitiesResponse.content?.[0]?.text ?? "{}");
+    expect(capabilitiesPayload)
+      .to.have.nested.property("capabilities.namespaces")
+      .that.is.an("array")
+      .and.includes("core.jobs");
+  });
+
+  it("protège les outils de gestion fine des enfants derrière le flag dédié", async () => {
+    configureRuntimeFeatures({ ...originalFeatures, enableChildOpsFine: false });
+
+    const childSpawnCallback = getRegisteredToolCallback("child_spawn_codex");
+    const disabledResponse = await childSpawnCallback({});
+    expect(disabledResponse).to.have.property("isError", true);
+    const disabledPayload = JSON.parse(disabledResponse.content?.[0]?.text ?? "{}");
+    expect(disabledPayload).to.include({
+      error: "CHILD_OPS_FINE_DISABLED",
+      tool: "child_spawn_codex",
+    });
+
+    const disabledCapabilities = getMcpCapabilities();
+    const disabledToolNames = disabledCapabilities.tools.map((entry) => entry.name);
+    expect(disabledToolNames).to.not.include("child_spawn_codex");
+    expect(disabledToolNames).to.not.include("child_status");
+
+    const toggles: FeatureToggles = { ...originalFeatures, enableChildOpsFine: true };
+    configureRuntimeFeatures(toggles);
+
+    const info = getMcpInfo();
+    expect(info.flags.enableChildOpsFine).to.equal(true);
+    expect(info.features).to.include("child-ops-fine");
+
+    const capabilities = getMcpCapabilities();
+    const enabledToolNames = capabilities.tools.map((entry) => entry.name);
+    expect(enabledToolNames).to.include.members([
+      "child_spawn_codex",
+      "child_attach",
+      "child_set_role",
+      "child_set_limits",
+      "child_status",
+    ]);
   });
 });

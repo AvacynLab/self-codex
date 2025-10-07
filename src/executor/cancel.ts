@@ -5,7 +5,7 @@ import { EventEmitter } from "node:events";
  * allows callers to differentiate between successful requests and idempotent
  * retries without resorting to exceptions.
  */
-export type CancellationRequestOutcome = "requested" | "already_cancelled" | "not_found";
+export type CancellationRequestOutcome = "requested" | "already_cancelled";
 
 /**
  * Internal representation for every tracked operation. The entry stores
@@ -96,6 +96,23 @@ export class OperationCancelledError extends Error {
     );
     this.name = "OperationCancelledError";
     this.details = details;
+  }
+}
+
+/**
+ * Error thrown when a caller attempts to cancel an unknown operation. The
+ * message and hint intentionally mirror the specification excerpt used in the
+ * checklist so automated clients can pattern-match the guidance.
+ */
+export class CancellationNotFoundError extends Error {
+  public readonly code = "E-CANCEL-NOTFOUND";
+  public readonly hint = "verify opId via events_subscribe";
+  public readonly details: { opId: string };
+
+  constructor(opId: string) {
+    super("unknown opId");
+    this.name = "CancellationNotFoundError";
+    this.details = { opId };
   }
 }
 
@@ -281,7 +298,9 @@ export function isCancelled(opId: string): boolean {
 }
 
 /**
- * Request the cancellation of a specific operation.
+ * Request the cancellation of a specific operation. Throws
+ * {@link CancellationNotFoundError} when the identifier was never registered or
+ * already cleaned up from the registry.
  */
 export function requestCancellation(
   opId: string,
@@ -289,7 +308,7 @@ export function requestCancellation(
 ): CancellationRequestOutcome {
   const entry = operations.get(opId);
   if (!entry) {
-    return "not_found";
+    throw new CancellationNotFoundError(opId);
   }
 
   const alreadyCancelled = entry.controller.signal.aborted;
@@ -328,6 +347,18 @@ export function requestCancellation(
     outcome: "already_cancelled",
   } satisfies CancellationEventPayload);
   return "already_cancelled";
+}
+
+/**
+ * Alias maintained for parity with earlier checklist wording. The
+ * implementation defers to {@link requestCancellation} so callers benefit from
+ * the stricter error handling.
+ */
+export function requestCancel(
+  opId: string,
+  options: { reason?: string | null; at?: number } = {},
+): CancellationRequestOutcome {
+  return requestCancellation(opId, options);
 }
 
 /** Structured result describing the cancellation status of an operation. */
