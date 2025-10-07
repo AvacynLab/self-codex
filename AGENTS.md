@@ -349,6 +349,16 @@ Voici une **liste de tâches à cocher** ultra-précise, **fichier par fichier**
 
 ---
 
+## 19) Observabilité : filtres avancés journal
+
+* [x] Étendre `logs_tail` pour accepter un filtre `levels` (normalisation, sortie écho).
+* [x] Étendre `logs_tail` pour accepter un filtrage temporel (`since_ts`/`until_ts`) appliqué avant la pagination.
+* [x] Couvrir le filtrage par sévérité via `tests/logs.tail.filters.test.ts`.
+
+**Accept.** : les opérateurs peuvent cibler les entrées critiques sans bruit.
+
+---
+
 ## 16) Nettoyage, sécurité applicative, erreurs
 
 * [x] Repasser tous les `fs` → via `paths.ts` ; supprimer code mort, TODO obsolètes
@@ -430,3 +440,33 @@ Si tu veux, je peux te fournir au prochain message les **squelettes TypeScript**
 ### 2025-10-07 – Agent `gpt-5-codex` (iteration 15)
 - ✅ Ajouté un filtrage par tags (`blackboard.tags`) aux pages/streams `resources_watch` en vérifiant les mutations via `entry`/`previous` et en normalisant les valeurs en minuscules.
 - ✅ Étendu le schéma MCP, la sérialisation SSE et les suites de tests (`resources.list-read-watch`, `resources.watch.stream`, `resources.watch.sse`) pour couvrir les filtres par tags y compris un scénario d’intégration serveur.
+
+### 2025-10-07 – Agent `gpt-5-codex` (iteration 16)
+- ✅ Ajouté un filtrage `levels` au tool `logs_tail` (normalisation côté serveur, passage au journal et echo dans la réponse structurée).
+- ✅ Étendu `tests/logs.tail.filters.test.ts` pour vérifier que la sévérité `error` est isolée lorsque le filtre est utilisé.
+
+### 2025-10-07 – Agent `gpt-5-codex` (iteration 17)
+- ♻️ Rendu le schéma d'entrée de `logs_tail` tolérant à la casse sur `levels` tout en conservant une validation stricte sur les valeurs supportées.
+- ✅ Ajouté un scénario d'intégration garantissant que les filtres de sévérité acceptent des valeurs mixtes/majuscule et renvoient les niveaux normalisés.
+
+### 2025-10-07 – Agent `gpt-5-codex` (iteration 18)
+- ♻️ Nettoyé le dépôt en supprimant les dossiers obsolètes `playground_codex_demo` et `projet_mcp_test` ainsi que leurs artefacts générés.
+- 🧹 Vérifié qu'aucun fichier utile ne restait orphelin et mis à jour cette note pour informer les prochains contributeurs du nettoyage effectué.
+
+### 2025-10-07 – Agent `gpt-5-codex` (iteration 19)
+- ✅ Ajouté des filtres corrélés (`run/job/op/graph/node/child`) au tool `logs_tail` avec normalisation côté serveur et journal afin de limiter les extraits aux identifiants demandés.
+- ✅ Dédupliqué/assaini les identifiants fournis, exposé les filtres actifs dans la réponse structurée et complété la suite `logs.tail.filters` avec un scénario couvrant la sélection croisée.
+
+### 2025-10-07 – Agent `gpt-5-codex` (iteration 20)
+- ✅ Ajouté un filtrage temporel (`since_ts`/`until_ts`) au journal et au tool `logs_tail`, normalisé côté serveur et appliqué avant la pagination.
+- ✅ Étendu la réponse structurée pour refléter les bornes temporelles actives et ajouté un scénario d'intégration garantissant l'exclusion des entrées hors fenêtre.
+
+### 2025-10-07 – Agent `gpt-5-codex` (iteration 21)
+- ♻️ Dédupliqué la normalisation des sévérités côté serveur afin d'éviter les comparaisons redondantes tout en conservant la casse normalisée.
+- ✅ Ajouté un scénario d'intégration couvrant les doublons `levels` et vérifiant que seuls les journaux WARN/ERROR sont retournés.
+- 📝 Documenté l'outil `logs_tail` dans `docs/mcp-api.md` (contrat, filtres croisés, fenêtre temporelle) pour faciliter l'intégration MCP.
+
+### 2025-10-07 – Agent `gpt-5-codex` (iteration 22)
+- ✅ Ajouté un filtre `message_contains` côté journal/serveur pour isoler les entrées dont le message contient toutes les sous-chaînes demandées (insensible à la casse).
+- ✅ Complété `tests/logs.tail.filters.test.ts` avec un scénario couvrant la normalisation, le cumul des sous-chaînes et la pagination déterministe.
+- 📝 Mis à jour `docs/mcp-api.md` pour décrire le nouveau filtre et refléter les réponses structurées.

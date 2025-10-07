@@ -82,6 +82,26 @@ function normaliseStringArray(values, options = {}) {
     }
     return result;
 }
+/**
+ * Ensures that a collection of tags contains every required value. Tags are
+ * compared case-insensitively to match the normalisation performed by the
+ * blackboard store.
+ */
+function containsAllTags(tags, required) {
+    if (!tags || tags.length === 0) {
+        return false;
+    }
+    if (required.size === 0) {
+        return true;
+    }
+    const haystack = new Set(tags.map((tag) => tag.toLowerCase()));
+    for (const candidate of required) {
+        if (!haystack.has(candidate)) {
+            return false;
+        }
+    }
+    return true;
+}
 function normaliseRunEventFilter(filters) {
     if (!filters) {
         return null;
@@ -294,6 +314,12 @@ function matchBlackboardEvent(filter, event) {
     if (filter.keyMatcher && !filter.keyMatcher(event.key)) {
         return false;
     }
+    if (filter.tagSet) {
+        const tags = event.entry?.tags ?? event.previous?.tags ?? null;
+        if (!containsAllTags(tags, filter.tagSet)) {
+            return false;
+        }
+    }
     return true;
 }
 function cloneRunFilterDescriptor(filter) {
@@ -404,6 +430,7 @@ function cloneWatchFilters(filters) {
         snapshot.blackboard = {
             ...(filters.blackboard.keys ? { keys: filters.blackboard.keys.map((key) => key) } : {}),
             ...(filters.blackboard.kinds ? { kinds: filters.blackboard.kinds.map((kind) => kind) } : {}),
+            ...(filters.blackboard.tags ? { tags: filters.blackboard.tags.map((tag) => tag) } : {}),
             ...(typeof filters.blackboard.sinceTs === "number" ? { sinceTs: filters.blackboard.sinceTs } : {}),
             ...(typeof filters.blackboard.untilTs === "number" ? { untilTs: filters.blackboard.untilTs } : {}),
         };
@@ -510,6 +537,10 @@ function normaliseBlackboardFilter(namespace, keys, filters) {
         transform: (kind) => kind.toLowerCase(),
         limit: BLACKBOARD_EVENT_KINDS.size,
     });
+    const tagValues = normaliseStringArray(filters?.tags ?? [], {
+        transform: (tag) => tag.toLowerCase(),
+        limit: 50,
+    });
     const validKinds = [];
     for (const candidate of kindValues) {
         if (BLACKBOARD_EVENT_KINDS.has(candidate)) {
@@ -528,6 +559,9 @@ function normaliseBlackboardFilter(namespace, keys, filters) {
     if (validKinds.length > 0) {
         descriptor.kinds = validKinds.map((kind) => kind);
     }
+    if (tagValues.length > 0) {
+        descriptor.tags = tagValues.map((tag) => tag);
+    }
     if (sinceTs !== null) {
         descriptor.sinceTs = sinceTs;
     }
@@ -541,6 +575,7 @@ function normaliseBlackboardFilter(namespace, keys, filters) {
         descriptor,
         keyMatcher: keyFilter?.matcher,
         kindSet: validKinds.length > 0 ? new Set(validKinds) : undefined,
+        tagSet: tagValues.length > 0 ? new Set(tagValues) : undefined,
         sinceTs,
         untilTs,
     };
@@ -557,6 +592,9 @@ function cloneBlackboardFilterDescriptor(filter) {
     }
     if (descriptor.kinds && descriptor.kinds.length > 0) {
         snapshot.kinds = descriptor.kinds.map((kind) => kind);
+    }
+    if (descriptor.tags && descriptor.tags.length > 0) {
+        snapshot.tags = descriptor.tags.map((tag) => tag);
     }
     if (typeof descriptor.sinceTs === "number") {
         snapshot.sinceTs = descriptor.sinceTs;
