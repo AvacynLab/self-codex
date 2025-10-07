@@ -7,7 +7,11 @@ import { expect } from "chai";
 
 import { getMcpInfo } from "../src/mcp/info.js";
 import { configureRuntimeFeatures, getRuntimeFeatures } from "../src/server.js";
-import { parseOrchestratorRuntimeOptions } from "../src/serverOptions.js";
+import {
+  FEATURE_FLAG_DEFAULTS,
+  RUNTIME_TIMING_DEFAULTS,
+  parseOrchestratorRuntimeOptions,
+} from "../src/serverOptions.js";
 import type { FeatureToggles } from "../src/serverOptions.js";
 
 const originalFeatures = getRuntimeFeatures();
@@ -84,5 +88,60 @@ describe("options runtime wiring", () => {
     const info = getMcpInfo();
     expect(info.flags.enableResources).to.equal(false);
     expect(info.features).to.not.include("resources");
+  });
+});
+
+describe("options defaults snapshot", () => {
+  it("publishes the full flag catalogue with false defaults", () => {
+    const parsed = parseOrchestratorRuntimeOptions([]);
+
+    const expectedFlags = Object.keys(FEATURE_FLAG_DEFAULTS);
+    expect(Object.keys(parsed.features)).to.have.members(expectedFlags);
+
+    for (const [flag, value] of Object.entries(parsed.features)) {
+      expect(value, `flag ${flag} should remain disabled by default`).to.equal(false);
+    }
+  });
+
+  it("accepts CLI overrides without mutating shared defaults", () => {
+    const parsed = parseOrchestratorRuntimeOptions([
+      "--enable-resources",
+      "--enable-events-bus",
+      "--enable-cancellation",
+      "--enable-diff-patch",
+      "--disable-diff-patch",
+      "--enable-tx",
+      "--enable-plan-lifecycle",
+      "--disable-plan-lifecycle",
+      "--enable-values-explain",
+      "--enable-assist",
+      "--bt-tick-ms=75",
+      "--default-timeout-ms",
+      "15000",
+      "--autoscale-cooldown-ms",
+      "5000",
+    ]);
+
+    expect(parsed.features.enableResources).to.equal(true);
+    expect(parsed.features.enableEventsBus).to.equal(true);
+    expect(parsed.features.enableCancellation).to.equal(true);
+    expect(parsed.features.enableDiffPatch).to.equal(false);
+    expect(parsed.features.enableTx).to.equal(true);
+    expect(parsed.features.enablePlanLifecycle).to.equal(false);
+    expect(parsed.features.enableValuesExplain).to.equal(true);
+    expect(parsed.features.enableAssist).to.equal(true);
+
+    expect(parsed.timings.btTickMs).to.equal(75);
+    expect(parsed.timings.defaultTimeoutMs).to.equal(15_000);
+    expect(parsed.timings.autoscaleCooldownMs).to.equal(5_000);
+    expect(parsed.timings.stigHalfLifeMs).to.equal(
+      RUNTIME_TIMING_DEFAULTS.stigHalfLifeMs,
+    );
+
+    const fresh = parseOrchestratorRuntimeOptions([]);
+    for (const value of Object.values(fresh.features)) {
+      expect(value).to.equal(false);
+    }
+    expect(fresh.timings).to.deep.equal(RUNTIME_TIMING_DEFAULTS);
   });
 });

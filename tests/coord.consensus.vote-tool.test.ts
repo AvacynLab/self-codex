@@ -37,6 +37,7 @@ describe("coordination consensus vote tool", () => {
 
     const result = handleConsensusVote(context, input);
 
+    expect(result.op_id).to.be.a("string").and.to.have.length.greaterThan(0);
     expect(result.mode).to.equal("majority");
     expect(result.outcome).to.equal("success");
     expect(result.satisfied).to.equal(true);
@@ -60,6 +61,7 @@ describe("coordination consensus vote tool", () => {
 
     const result = handleConsensusVote(context, input);
 
+    expect(result.op_id).to.be.a("string").and.to.have.length.greaterThan(0);
     expect(result.mode).to.equal("weighted");
     expect(result.outcome).to.equal("success");
     expect(result.satisfied).to.equal(true);

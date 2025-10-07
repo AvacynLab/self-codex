@@ -1,6 +1,16 @@
 import { randomUUID } from "node:crypto";
 
+import { ERROR_CODES } from "../types.js";
 import type { NormalisedGraph } from "./types.js";
+
+/** Narrow union describing transaction specific error codes. */
+type TransactionErrorCode =
+  | typeof ERROR_CODES.TX_NOT_FOUND
+  | typeof ERROR_CODES.TX_CONFLICT
+  | typeof ERROR_CODES.TX_INVALID_OP
+  | typeof ERROR_CODES.TX_UNEXPECTED
+  | typeof ERROR_CODES.TX_INVALID_INPUT
+  | typeof ERROR_CODES.TX_EXPIRED;
 
 /** Metadata key storing the timestamp of the last successful transaction commit. */
 const TX_COMMITTED_AT_METADATA_KEY = "__txCommittedAt";
@@ -10,22 +20,33 @@ const TX_COMMITTED_AT_METADATA_KEY = "__txCommittedAt";
  * situation occurs (unknown transaction, invalid graph id, ...).
  */
 export class GraphTransactionError extends Error {
-  constructor(message: string) {
+  /** Stable transaction error code surfaced to MCP clients. */
+  public readonly code: TransactionErrorCode;
+
+  /** Optional operator hint describing how to recover from the error. */
+  public readonly hint?: string;
+
+  constructor(code: TransactionErrorCode, message: string, hint?: string) {
     super(message);
     this.name = "GraphTransactionError";
+    this.code = code;
+    this.hint = hint;
   }
 }
 
 /** Error thrown when attempting to commit using a stale base version. */
 export class GraphVersionConflictError extends GraphTransactionError {
-  public readonly code = "E-REWRITE-CONFLICT";
+  public readonly code: typeof ERROR_CODES.TX_CONFLICT;
   public readonly details: { graphId: string; expected: number; found: number };
 
   constructor(graphId: string, expected: number, found: number) {
     super(
-      `graph '${graphId}' diverged: expected version ${expected} but received ${found}`,
+      ERROR_CODES.TX_CONFLICT,
+      "graph version conflict",
+      "reload latest committed graph before retrying",
     );
     this.name = "GraphVersionConflictError";
+    this.code = ERROR_CODES.TX_CONFLICT;
     this.details = { graphId, expected, found };
   }
 }
@@ -33,7 +54,7 @@ export class GraphVersionConflictError extends GraphTransactionError {
 /** Error thrown when a caller references a transaction identifier that expired. */
 export class UnknownTransactionError extends GraphTransactionError {
   constructor(txId: string) {
-    super(`transaction '${txId}' is not active`);
+    super(ERROR_CODES.TX_NOT_FOUND, "transaction not found", "open a new transaction");
     this.name = "UnknownTransactionError";
   }
 }
@@ -130,11 +151,10 @@ export interface TransactionMetadata {
 
 /** Error thrown when attempting to interact with an expired transaction. */
 export class GraphTransactionExpiredError extends GraphTransactionError {
-  public readonly code = "E-TX-EXPIRED";
   public readonly details: { txId: string; expiredAt: number; now: number };
 
   constructor(txId: string, expiredAt: number, now: number) {
-    super(`transaction '${txId}' expired at ${new Date(expiredAt).toISOString()}`);
+    super(ERROR_CODES.TX_EXPIRED, "transaction expired", "open a new transaction");
     this.name = "GraphTransactionExpiredError";
     this.details = { txId, expiredAt, now };
   }
@@ -159,7 +179,11 @@ export class GraphTransactionManager {
    */
   begin(graph: NormalisedGraph, options: BeginTransactionOptions = {}): BeginTransactionResult {
     if (!graph.graphId || graph.graphId.trim().length === 0) {
-      throw new GraphTransactionError("graph id must be provided before opening a transaction");
+      throw new GraphTransactionError(
+        ERROR_CODES.TX_INVALID_INPUT,
+        "graph id required",
+        "supply a graph_id before opening transactions",
+      );
     }
 
     const state = this.states.get(graph.graphId);
@@ -222,14 +246,18 @@ export class GraphTransactionManager {
 
     if (updatedGraph.graphId !== record.graphId) {
       throw new GraphTransactionError(
-        `graph id mismatch: expected '${record.graphId}' but received '${updatedGraph.graphId}'`,
+        ERROR_CODES.TX_INVALID_INPUT,
+        "graph id mismatch",
+        "commit using the graph returned by tx_begin",
       );
     }
 
     const state = this.states.get(record.graphId);
     if (!state) {
       throw new GraphTransactionError(
-        `no committed state registered for graph '${record.graphId}'`,
+        ERROR_CODES.TX_NOT_FOUND,
+        "graph state unavailable",
+        "seed the graph via resources before opening transactions",
       );
     }
 

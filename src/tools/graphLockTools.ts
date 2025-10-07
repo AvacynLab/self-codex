@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import type { GraphLockManager, GraphLockSnapshot, GraphLockReleaseResult } from "../graph/locks.js";
+import { resolveOperationId } from "./operationIds.js";
 
 /** Context injected in the graph lock MCP tool handlers. */
 export interface GraphLockToolContext {
@@ -13,6 +14,7 @@ export const GraphLockInputSchema = z
     graph_id: z.string().min(1, "graph_id is required"),
     holder: z.string().trim().min(1, "holder is required").max(120, "holder is too long"),
     ttl_ms: z.number().int().positive().max(86_400_000).optional(),
+    op_id: z.string().trim().min(1).optional(),
   })
   .strict();
 
@@ -20,6 +22,7 @@ export const GraphLockInputSchema = z
 export const GraphUnlockInputSchema = z
   .object({
     lock_id: z.string().uuid(),
+    op_id: z.string().trim().min(1).optional(),
   })
   .strict();
 
@@ -31,6 +34,7 @@ export type GraphUnlockInput = z.infer<typeof GraphUnlockInputSchema>;
 
 /** Result returned when a graph lock is acquired. */
 export interface GraphLockResult extends Record<string, unknown> {
+  op_id: string;
   lock_id: string;
   graph_id: string;
   holder: string;
@@ -41,6 +45,7 @@ export interface GraphLockResult extends Record<string, unknown> {
 
 /** Result returned when a graph lock is released. */
 export interface GraphUnlockResult extends Record<string, unknown> {
+  op_id: string;
   lock_id: string;
   graph_id: string;
   holder: string;
@@ -51,18 +56,21 @@ export interface GraphUnlockResult extends Record<string, unknown> {
 
 /** Acquire or refresh the lock guarding a graph. */
 export function handleGraphLock(context: GraphLockToolContext, input: GraphLockInput): GraphLockResult {
+  const opId = resolveOperationId(input.op_id, "graph_lock_op");
   const snapshot = context.locks.acquire(input.graph_id, input.holder, { ttlMs: input.ttl_ms ?? null });
-  return formatLockSnapshot(snapshot);
+  return formatLockSnapshot(snapshot, opId);
 }
 
 /** Release the lock guarding a graph. */
 export function handleGraphUnlock(context: GraphLockToolContext, input: GraphUnlockInput): GraphUnlockResult {
+  const opId = resolveOperationId(input.op_id, "graph_unlock_op");
   const result = context.locks.release(input.lock_id);
-  return formatLockRelease(result);
+  return formatLockRelease(result, opId);
 }
 
-function formatLockSnapshot(snapshot: GraphLockSnapshot): GraphLockResult {
+function formatLockSnapshot(snapshot: GraphLockSnapshot, opId: string): GraphLockResult {
   return {
+    op_id: opId,
     lock_id: snapshot.lockId,
     graph_id: snapshot.graphId,
     holder: snapshot.holder,
@@ -72,8 +80,9 @@ function formatLockSnapshot(snapshot: GraphLockSnapshot): GraphLockResult {
   };
 }
 
-function formatLockRelease(result: GraphLockReleaseResult): GraphUnlockResult {
+function formatLockRelease(result: GraphLockReleaseResult, opId: string): GraphUnlockResult {
   return {
+    op_id: opId,
     lock_id: result.lockId,
     graph_id: result.graphId,
     holder: result.holder,

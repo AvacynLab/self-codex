@@ -6,6 +6,8 @@ import {
   parseSchedulerBenchConfigFromEnv,
   renderSchedulerBenchmarkTable,
   compareSchedulerBenchmarks,
+  renderSchedulerFairnessSamples,
+  runSchedulerFairnessBench,
 } from "./scheduler.bench.js";
 import {
   DEFAULT_SCHEDULER_BENCH_CONFIG,
@@ -133,6 +135,23 @@ describe("scheduler benchmark utilities", () => {
       expect(comparison.relativeAverageImprovementPct).to.be.closeTo(expectedRelative, 1e-6);
       expect(comparison.baseline.tracesCaptured).to.be.greaterThan(0);
       expect(comparison.stigmergy.tracesCaptured).to.be.greaterThan(0);
+    });
+  });
+
+  describe("runSchedulerFairnessBench", () => {
+    it("produces stable samples under the 8ms threshold", () => {
+      const samples = runSchedulerFairnessBench();
+
+      expect(samples).to.have.lengthOf(2);
+      for (const sample of samples) {
+        expect(sample.averageMs).to.be.a("number");
+        expect(sample.averageMs).to.be.greaterThan(0);
+        expect(sample.averageMs).to.be.lessThan(8);
+      }
+
+      const table = renderSchedulerFairnessSamples(samples);
+      expect(table).to.match(/\| benchmark \| average \(ms\) \| target \(ms\) \|/);
+      expect(table.split("\n")).to.have.lengthOf(4);
     });
   });
 });

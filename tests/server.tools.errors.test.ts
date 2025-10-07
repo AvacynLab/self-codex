@@ -192,13 +192,14 @@ describe("server tool error codes", () => {
     }
     const response = formatPlanToolError(createLogger(), "plan_fanout", result.error);
     const payload = JSON.parse(response.content[0].text);
+    expect(payload.ok).to.equal(false);
     expect(payload.error).to.equal("E-PLAN-INVALID-INPUT");
     expect(payload.hint).to.equal("invalid_input");
     expect(payload.tool).to.equal("plan_fanout");
     expect(payload).to.have.property("details");
   });
 
-  it("wraps missing child errors with E-CHILD-NOT-FOUND", () => {
+  it("wraps missing child errors with E-CHILD-NOTFOUND", () => {
     const response = formatChildToolError(
       createLogger(),
       "child_status",
@@ -206,7 +207,8 @@ describe("server tool error codes", () => {
       { child_id: "ghost" },
     );
     const payload = JSON.parse(response.content[0].text);
-    expect(payload.error).to.equal("E-CHILD-NOT-FOUND");
+    expect(payload.ok).to.equal(false);
+    expect(payload.error).to.equal("E-CHILD-NOTFOUND");
     expect(payload.hint).to.equal("unknown_child");
     expect(payload.details).to.deep.equal({ child_id: "ghost" });
   });
@@ -220,6 +222,7 @@ describe("server tool error codes", () => {
       { defaultCode: "E-PATCH-APPLY", invalidInputCode: "E-PATCH-INVALID" },
     );
     const payload = JSON.parse(response.content[0].text);
+    expect(payload.ok).to.equal(false);
     expect(payload.error).to.equal("E-PATCH-APPLY");
     expect(payload.tool).to.equal("graph_patch");
   });
@@ -227,6 +230,7 @@ describe("server tool error codes", () => {
   it("wraps value guard errors with E-VALUES-UNEXPECTED", () => {
     const response = formatValueToolError(createLogger(), "values_score", new Error("denied"));
     const payload = JSON.parse(response.content[0].text);
+    expect(payload.ok).to.equal(false);
     expect(payload.error).to.equal("E-VALUES-UNEXPECTED");
   });
 
@@ -237,6 +241,7 @@ describe("server tool error codes", () => {
       new z.ZodError([]),
     );
     const payload = JSON.parse(response.content[0].text);
+    expect(payload.ok).to.equal(false);
     expect(payload.error).to.equal("E-RES-INVALID-INPUT");
     expect(payload.hint).to.equal("invalid_input");
   });

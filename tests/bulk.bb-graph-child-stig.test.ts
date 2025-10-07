@@ -35,10 +35,11 @@ import {
   ChildToolContext,
   handleChildBatchCreate,
 } from "../src/tools/childTools.js";
-import { StigmergyInvalidTypeError } from "../src/coord/stigmergy.js";
 import { GraphMutationLockedError } from "../src/graph/locks.js";
 import { GraphVersionConflictError } from "../src/graph/tx.js";
+import { ERROR_CODES } from "../src/types.js";
 import { ChildLimitExceededError } from "../src/childSupervisor.js";
+import { BulkOperationError } from "../src/tools/bulkError.js";
 
 /**
  * Builds a coordination context backed by deterministic clocks so the tests can
@@ -121,6 +122,7 @@ describe("bulk tools", () => {
       });
 
       const result = handleBbBatchSet(context, parsed);
+      expect(result.op_id).to.be.a("string").and.to.have.length.greaterThan(0);
       expect(result.entries).to.have.lengthOf(2);
 
       const alpha = context.blackboard.get("alpha");
@@ -148,7 +150,7 @@ describe("bulk tools", () => {
       const initial = context.blackboard.set("alpha", { status: "seed" });
       expect(initial.version).to.equal(1);
 
-      expect(() =>
+      try {
         handleBbBatchSet(
           context,
           BbBatchSetInputSchema.parse({
@@ -158,8 +160,16 @@ describe("bulk tools", () => {
               { key: "beta", value: () => "boom" },
             ],
           }),
-        ),
-      ).to.throw();
+        );
+        expect.fail("expected BulkOperationError");
+      } catch (error) {
+        expect(error).to.be.instanceOf(BulkOperationError);
+        const failure = (error as BulkOperationError).details.failures[0];
+        expect(failure?.index).to.equal(1);
+        expect(failure?.code).to.equal(ERROR_CODES.BULK_PARTIAL);
+        expect(failure?.entry).to.deep.equal({ key: "beta", tags: null });
+        expect((error as BulkOperationError).details.rolled_back).to.equal(true);
+      }
 
       const after = context.blackboard.get("alpha");
       expect(after?.value).to.deep.equal({ status: "seed" });
@@ -234,6 +244,9 @@ describe("bulk tools", () => {
         .then(() => expect.fail("expected GraphVersionConflictError"))
         .catch((error) => {
           expect(error).to.be.instanceOf(GraphVersionConflictError);
+          const conflict = error as GraphVersionConflictError;
+          expect(conflict.code).to.equal(ERROR_CODES.TX_CONFLICT);
+          expect(conflict.hint).to.equal("reload latest committed graph before retrying");
         });
       const committed = context.transactions.getCommittedState(graphId);
       expect(committed?.version).to.equal(baseVersion);
@@ -287,15 +300,19 @@ describe("bulk tools", () => {
         expect(result.created).to.equal(2);
         expect(result.idempotent_entries).to.equal(0);
         for (const child of result.children) {
+          expect(child.op_id).to.be.a("string");
           expect(child.idempotent).to.equal(false);
           const status = fixture.supervisor.status(child.child_id);
           expect(status.index.childId).to.equal(child.child_id);
         }
 
+        const opIdsByChild = new Map(result.children.map((child) => [child.child_id, child.op_id]));
+
         const replay = await handleChildBatchCreate(context, parsed);
         expect(replay.idempotent_entries).to.equal(2);
         expect(replay.created).to.equal(0);
         replay.children.forEach((child) => {
+          expect(child.op_id).to.equal(opIdsByChild.get(child.child_id));
           expect(child.idempotent).to.equal(true);
         });
 
@@ -342,9 +359,17 @@ describe("bulk tools", () => {
         };
 
         await handleChildBatchCreate(context, parsed)
-          .then(() => expect.fail("expected ChildLimitExceededError"))
-          .catch((error) => {
-            expect(error).to.have.property("name", "ChildLimitExceededError");
+          .then(() => expect.fail("expected BulkOperationError"))
+          .catch((error: unknown) => {
+            expect(error).to.be.instanceOf(BulkOperationError);
+            const failure = (error as BulkOperationError).details.failures[0];
+            expect(failure?.code).to.equal(ERROR_CODES.CHILD_LIMIT_EXCEEDED);
+            expect(failure?.entry).to.deep.equal({
+              role: "executor",
+              idempotency_key: "child-batch-limit-2",
+              prompt_keys: ["system", "user"],
+            });
+            expect((error as BulkOperationError).details.metadata?.rollback_child_ids).to.have.lengthOf(1);
           });
         // Restore the supervisor behaviour for cleanup to avoid masking other scenarios.
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -369,6 +394,7 @@ describe("bulk tools", () => {
       });
 
       const result = handleStigBatch(context, parsed);
+      expect(result.op_id).to.be.a("string").and.to.have.length.greaterThan(0);
       expect(result.changes).to.have.lengthOf(2);
       const total = context.stigmergy.getNodeIntensity("triage");
       expect(total?.intensity).to.be.closeTo(3.75, 1e-6);
@@ -386,7 +412,16 @@ describe("bulk tools", () => {
         ],
       });
 
-      expect(() => handleStigBatch(context, parsed)).to.throw(StigmergyInvalidTypeError);
+      try {
+        handleStigBatch(context, parsed);
+        expect.fail("expected BulkOperationError");
+      } catch (error) {
+        expect(error).to.be.instanceOf(BulkOperationError);
+        const failure = (error as BulkOperationError).details.failures[0];
+        expect(failure?.code).to.equal("E-STIG-TYPE");
+        expect(failure?.entry).to.deep.equal({ node_id: "alpha", type: "   ", intensity: 2 });
+        expect((error as BulkOperationError).details.rolled_back).to.equal(true);
+      }
       expect(context.stigmergy.fieldSnapshot().points).to.have.lengthOf(0);
     });
   });

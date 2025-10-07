@@ -104,6 +104,7 @@ describe("plan_reduce tool", () => {
           reducer: "concat",
         }),
       );
+      expect(reduceResult.op_id).to.match(/^plan_reduce_op_/);
 
       expect(reduceResult.aggregate).to.equal(expected.join("\n\n"));
       expect(reduceResult.trace.per_child).to.have.length(expected.length);
@@ -160,6 +161,7 @@ describe("plan_reduce tool", () => {
           reducer: "merge_json",
         }),
       );
+      expect(reduceResult.op_id).to.match(/^plan_reduce_op_/);
 
       expect(reduceResult.aggregate).to.deep.equal({ feature: "beta", score: 1 });
       expect(reduceResult.trace.per_child).to.have.length(3);
@@ -215,6 +217,7 @@ describe("plan_reduce tool", () => {
           reducer: "vote",
         }),
       );
+      expect(reduceResult.op_id).to.match(/^plan_reduce_op_/);
 
       expect(reduceResult.aggregate).to.deep.equal({
         mode: "majority",

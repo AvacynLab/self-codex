@@ -125,7 +125,7 @@ export class PlanLifecycleInvalidStateError extends PlanLifecycleError {
   constructor(runId: string, expected: PlanLifecycleState, actual: PlanLifecycleState) {
     super(
       `plan run ${runId} is ${actual} but expected ${expected}`,
-      "E-PLAN-INVALID-STATE",
+      "E-PLAN-STATE",
       "plan_status",
       { runId, expected, actual },
     );

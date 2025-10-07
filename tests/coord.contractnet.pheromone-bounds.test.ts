@@ -60,6 +60,7 @@ describe("coordination contract-net pheromone bounds", () => {
       CnpAnnounceInputSchema.parse({ task_id: "survey-1", auto_bid: true }),
     );
 
+    expect(first.op_id).to.be.a("string").and.to.have.length.greaterThan(0);
     expect(first.pheromone_bounds).to.deep.equal({
       min_intensity: 0,
       max_intensity: null,
@@ -77,6 +78,7 @@ describe("coordination contract-net pheromone bounds", () => {
       CnpAnnounceInputSchema.parse({ task_id: "survey-2", auto_bid: true }),
     );
 
+    expect(second.op_id).to.be.a("string").and.to.have.length.greaterThan(0);
     expect(second.pheromone_bounds).to.deep.equal({
       min_intensity: 0,
       max_intensity: null,
@@ -107,6 +109,7 @@ describe("coordination contract-net pheromone bounds", () => {
       CnpAnnounceInputSchema.parse({ task_id: "bounded", auto_bid: true }),
     );
 
+    expect(announcement.op_id).to.be.a("string").and.to.have.length.greaterThan(0);
     expect(announcement.pheromone_bounds).to.deep.equal({
       min_intensity: 0,
       max_intensity: 5,
@@ -352,6 +355,7 @@ describe("coordination contract-net pheromone bounds", () => {
       CnpRefreshBoundsInputSchema.parse({ call_id: call.callId }),
     );
 
+    expect(result.op_id).to.be.a("string").and.to.have.length.greaterThan(0);
     expect(result.auto_bid_refreshed).to.equal(true);
     expect(result.refresh.requested).to.equal(true);
     expect(result.refreshed_agents).to.deep.equal(["alpha"]);
@@ -602,6 +606,7 @@ describe("contract-net watcher telemetry tool", () => {
       CnpWatcherTelemetryInputSchema.parse({}),
     );
 
+    expect(result.op_id).to.be.a("string").and.to.have.length.greaterThan(0);
     expect(result.telemetry_enabled).to.equal(false);
     expect(result.emissions).to.equal(0);
     expect(result.last_snapshot).to.equal(null);
@@ -648,6 +653,7 @@ describe("contract-net watcher telemetry tool", () => {
       CnpWatcherTelemetryInputSchema.parse({}),
     );
 
+    expect(result.op_id).to.be.a("string").and.to.have.length.greaterThan(0);
     expect(result.telemetry_enabled).to.equal(true);
     expect(result.emissions).to.equal(3);
     expect(result.last_emitted_at_ms).to.equal(15);

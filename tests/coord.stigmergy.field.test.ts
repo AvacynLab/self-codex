@@ -155,6 +155,8 @@ describe("coordination stigmergy field", () => {
 
     const result = handleStigSnapshot(context, {});
 
+    expect(result.op_id).to.be.a("string").and.to.have.length.greaterThan(0);
+
     expect(result.pheromone_bounds).to.deep.equal({
       min_intensity: 0.25,
       max_intensity: 5,

@@ -52,7 +52,7 @@ describe("events subscribe kind fallback", () => {
 
       const eventsResponse = await client.callTool({
         name: "events_subscribe",
-        arguments: { cats: ["stigmergy"], from_seq: cursor, format: "jsonlines" },
+        arguments: { cats: ["stig"], from_seq: cursor, format: "jsonlines" },
       });
       expect(eventsResponse.isError ?? false).to.equal(false);
 
@@ -62,7 +62,7 @@ describe("events subscribe kind fallback", () => {
 
       const changeEvent = structured.events.find((event) => event.msg === "stigmergy_change");
       expect(changeEvent, "stigmergy change event should be published").to.not.equal(undefined);
-      expect(changeEvent?.kind).to.equal("STIGMERGY");
+      expect(changeEvent?.kind).to.equal("STIG");
       const payload = (changeEvent?.data ?? {}) as { nodeId?: string | null; type?: string | null };
       expect(payload.nodeId).to.equal("node-kind");
       expect(payload.type).to.equal("load");

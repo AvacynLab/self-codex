@@ -1,10 +1,14 @@
 import { describe, it, beforeEach } from "mocha";
 import { expect } from "chai";
+import path from "node:path";
+import { tmpdir } from "node:os";
+import { mkdtemp, readdir, rm } from "node:fs/promises";
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 
 import { server, logJournal } from "../src/server.js";
+import { LogJournal } from "../src/monitor/log.js";
 
 /**
  * Integration coverage for the `logs_tail` MCP tool. The scenarios prime the journal with
@@ -560,6 +564,36 @@ describe("logs tail tool", () => {
     } finally {
       await client.close();
       await server.close().catch(() => {});
+    }
+  });
+
+  it("persists bucket files within the configured root", async () => {
+    const sandboxRoot = await mkdtemp(path.join(tmpdir(), "log-journal-sandbox-"));
+    const journal = new LogJournal({ rootDir: sandboxRoot, maxEntriesPerBucket: 5 });
+
+    try {
+      journal.record({
+        stream: "run",
+        bucketId: "../escape/..",
+        seq: 1,
+        ts: Date.now(),
+        level: "info",
+        message: "sandboxed",
+      });
+      await journal.flush();
+
+      const runsDirectory = path.join(sandboxRoot, "runs");
+      const bucketFiles = await readdir(runsDirectory);
+      expect(bucketFiles).to.have.lengthOf(1);
+      expect(bucketFiles[0]).to.match(/\.jsonl$/);
+      expect(bucketFiles[0].includes(".."), "bucket filename contains traversal markers").to.equal(false);
+
+      const rootEntries = await readdir(sandboxRoot);
+      expect(rootEntries).to.include("runs");
+      expect(rootEntries.some((entry) => entry.includes(".."))).to.equal(false);
+    } finally {
+      await journal.flush();
+      await rm(sandboxRoot, { recursive: true, force: true });
     }
   });
 

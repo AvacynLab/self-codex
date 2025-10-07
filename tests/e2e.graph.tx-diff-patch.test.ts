@@ -199,9 +199,14 @@ describe("graph transactions with diff/patch integration", function () {
         uri: string;
         kind: string;
         payload: { version: number; graph: { nodes: Array<{ id: string }> } };
+        mime: string;
+        data: { uri: string; kind: string; payload: { version: number } };
       };
+      expect(resourcePayload.mime).to.equal("application/json");
       expect(resourcePayload.uri).to.equal(resourceUri);
       expect(resourcePayload.kind).to.equal("graph_version");
+      expect(resourcePayload.data.uri).to.equal(resourceUri);
+      expect(resourcePayload.data.kind).to.equal("graph_version");
       expect(resourcePayload.payload.version).to.equal(patchResult.committed_version);
       expect(resourcePayload.payload.graph.nodes.some((node) => node.id === "ship")).to.equal(true);
     } finally {

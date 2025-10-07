@@ -1,64 +1,59 @@
-/**
- * Exercises the unified event bus by validating filtering semantics, streaming
- * behaviour and correlation friendly pagination. The tests use a deterministic
- * clock so sequence ordering and timestamps remain predictable.
- */
 import { describe, it } from "mocha";
 import { expect } from "chai";
 
 import { EventBus } from "../src/events/bus.js";
 
-describe("event bus", () => {
-  it("normalises categories and filters by run/op identifiers", () => {
-    const bus = new EventBus({ historyLimit: 10, now: (() => {
-      let tick = 0;
-      return () => ++tick;
-    })() });
+describe("event bus progress", () => {
+  it("filters correlation identifiers within a category", () => {
+    let tick = 0;
+    const bus = new EventBus({ historyLimit: 10, now: () => ++tick });
 
-    bus.publish({ cat: "PLAN", jobId: "job-1", runId: "run-1", opId: "op-alpha", msg: "start" });
-    bus.publish({ cat: "PLAN", jobId: "job-2", runId: "run-2", opId: "op-beta", msg: "progress" });
-    bus.publish({ cat: "CHILD", jobId: "job-1", childId: "child-9", msg: "ready" });
+    bus.publish({ cat: "graph", jobId: "job-1", runId: "run-1", opId: "op-alpha", msg: "plan_started" });
+    bus.publish({ cat: "graph", jobId: "job-2", runId: "run-2", opId: "op-beta", msg: "plan_running" });
+    bus.publish({ cat: "child", jobId: "job-1", childId: "child-9", msg: "child_ready" });
 
-    const filtered = bus.list({ cats: ["plan"], runId: "run-1" });
+    const filtered = bus.list({ cats: ["graph"], runId: "run-1" });
     expect(filtered).to.have.lengthOf(1);
-    expect(filtered[0].runId).to.equal("run-1");
-    expect(filtered[0].opId).to.equal("op-alpha");
-    expect(filtered[0].cat).to.equal("plan");
+    expect(filtered[0]?.runId).to.equal("run-1");
+    expect(filtered[0]?.opId).to.equal("op-alpha");
+    expect(filtered[0]?.cat).to.equal("graph");
+    expect(filtered[0]?.seq).to.equal(1);
 
     const byChild = bus.list({ cats: ["child"], childId: "child-9" });
     expect(byChild).to.have.lengthOf(1);
-    expect(byChild[0].childId).to.equal("child-9");
+    expect(byChild[0]?.childId).to.equal("child-9");
+    expect(byChild[0]?.jobId).to.equal("job-1");
 
-    const ordered = bus.list({});
+    const ordered = bus.list();
     expect(ordered.map((event) => event.seq)).to.deep.equal([1, 2, 3]);
   });
 
-  it("filters across multiple categories while preserving chronological order", () => {
+  it("merges categories while preserving chronological ordering", () => {
     const bus = new EventBus({ historyLimit: 10 });
 
-    const planStart = bus.publish({ cat: "plan", runId: "run-multi", msg: "start" });
-    const childReady = bus.publish({ cat: "child", childId: "child-multi", msg: "ready" });
-    const planFinish = bus.publish({ cat: "plan", runId: "run-multi", msg: "complete" });
+    const planStart = bus.publish({ cat: "graph", runId: "run-multi", msg: "plan_start" });
+    const childReady = bus.publish({ cat: "child", childId: "child-multi", msg: "child_ready" });
+    const planFinish = bus.publish({ cat: "graph", runId: "run-multi", msg: "plan_finish" });
     bus.publish({ cat: "scheduler", msg: "tick" });
 
-    const filtered = bus.list({ cats: ["child", "PLAN"], limit: 10 });
+    const filtered = bus.list({ cats: ["child", "graph"], limit: 10 });
     expect(filtered).to.have.lengthOf(3);
     expect(filtered.map((event) => event.seq)).to.deep.equal([
       planStart.seq,
       childReady.seq,
       planFinish.seq,
     ]);
-    expect(filtered[0]?.cat).to.equal("plan");
+    expect(filtered[0]?.cat).to.equal("graph");
     expect(filtered[1]?.cat).to.equal("child");
-    expect(filtered[2]?.msg).to.equal("complete");
+    expect(filtered[2]?.msg).to.equal("plan_finish");
   });
 
-  it("streams events sequentially when subscribing after a checkpoint", async () => {
+  it("streams sequentially from the requested checkpoint", async () => {
     const bus = new EventBus({ historyLimit: 5 });
 
-    const first = bus.publish({ cat: "plan", runId: "run-42", msg: "queued" });
-    const second = bus.publish({ cat: "plan", runId: "run-42", msg: "executing" });
-    const third = bus.publish({ cat: "plan", runId: "run-42", msg: "done" });
+    const first = bus.publish({ cat: "graph", runId: "run-42", msg: "queued" });
+    const second = bus.publish({ cat: "graph", runId: "run-42", msg: "executing" });
+    const third = bus.publish({ cat: "graph", runId: "run-42", msg: "done" });
 
     const stream = bus.subscribe({ runId: "run-42", afterSeq: first.seq });
     const iterator = stream[Symbol.asyncIterator]();
@@ -79,21 +74,21 @@ describe("event bus", () => {
     expect(closing.done).to.equal(true);
   });
 
-  it("paginates idempotently by leveraging the afterSeq cursor", () => {
+  it("uses the afterSeq cursor for idempotent pagination", () => {
     const bus = new EventBus({ historyLimit: 5 });
 
-    bus.publish({ cat: "plan", runId: "run-9", msg: "start" });
-    const latest = bus.publish({ cat: "plan", runId: "run-9", msg: "finish" });
+    bus.publish({ cat: "graph", runId: "run-9", msg: "start" });
+    const latest = bus.publish({ cat: "graph", runId: "run-9", msg: "finish" });
 
-    const firstPage = bus.list({ cats: ["plan"], runId: "run-9" });
+    const firstPage = bus.list({ cats: ["graph"], runId: "run-9" });
     expect(firstPage).to.have.lengthOf(2);
 
-    const secondPage = bus.list({ cats: ["plan"], runId: "run-9", afterSeq: latest.seq });
+    const secondPage = bus.list({ cats: ["graph"], runId: "run-9", afterSeq: latest.seq });
     expect(secondPage).to.have.lengthOf(0);
 
-    bus.publish({ cat: "plan", runId: "run-9", msg: "cleanup" });
-    const thirdPage = bus.list({ cats: ["plan"], runId: "run-9", afterSeq: latest.seq });
+    bus.publish({ cat: "graph", runId: "run-9", msg: "cleanup" });
+    const thirdPage = bus.list({ cats: ["graph"], runId: "run-9", afterSeq: latest.seq });
     expect(thirdPage).to.have.lengthOf(1);
-    expect(thirdPage[0].msg).to.equal("cleanup");
+    expect(thirdPage[0]?.msg).to.equal("cleanup");
   });
 });

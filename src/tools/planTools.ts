@@ -67,6 +67,7 @@ import {
   renderPromptTemplate,
 } from "../prompts.js";
 import { applyAll, createInlineSubgraphRule, createRerouteAvoidRule, createSplitParallelRule, type RewriteHistoryEntry } from "../graph/rewrite.js";
+import { resolveOperationId } from "./operationIds.js";
 import { flatten } from "../graph/hierarchy.js";
 import type { NormalisedGraph } from "../graph/types.js";
 import { EventKind, EventLevel } from "../eventStore.js";
@@ -661,6 +662,8 @@ export const PlanJoinInputShape = PlanJoinInputSchema.shape;
 
 /** Result returned by {@link handlePlanJoin}. */
 export interface PlanJoinResult extends Record<string, unknown> {
+  /** Stable correlation identifier generated for the join invocation. */
+  op_id: string;
   policy: "all" | "first_success" | "quorum";
   satisfied: boolean;
   timeout_ms: number | null;
@@ -701,6 +704,8 @@ export const PlanReduceInputShape = PlanReduceInputSchema.shape;
 
 /** Result returned by {@link handlePlanReduce}. */
 export interface PlanReduceResult extends Record<string, unknown> {
+  /** Stable correlation identifier generated for the reduction invocation. */
+  op_id: string;
   reducer: "concat" | "merge_json" | "vote" | "custom";
   aggregate: unknown;
   trace: {
@@ -713,6 +718,8 @@ export interface PlanReduceResult extends Record<string, unknown> {
     details?: Record<string, unknown>;
   };
 }
+
+type PlanReduceCoreResult = Pick<PlanReduceResult, "reducer" | "aggregate" | "trace">;
 
 /**
  * Input payload accepted by the `plan_compile_bt` tool.
@@ -1499,9 +1506,19 @@ async function spawnChildWithRetry(
   throw new Error("unreachable retry loop in plan_fanout");
 }
 
+/**
+ * Executes the provided asynchronous tasks with a bounded concurrency level.
+ *
+ * The helper is aware of cancellation handles so long running fan-out
+ * operations periodically observe the abort signal before picking the next
+ * task and immediately after each awaited invocation. This ensures the
+ * checklist requirement "Vérifier isCancelled avant/après chaque await" holds
+ * without duplicating guard statements in every call site.
+ */
 async function runWithConcurrency<T>(
   limit: number,
   tasks: Array<() => Promise<T>>,
+  options: { cancellation?: CancellationHandle } = {},
 ): Promise<T[]> {
   if (tasks.length === 0) {
     return [];
@@ -1510,16 +1527,20 @@ async function runWithConcurrency<T>(
   const safeLimit = Math.max(1, Math.min(limit, tasks.length));
   const results = new Array<T>(tasks.length);
   let index = 0;
+  const cancellation = options.cancellation ?? null;
 
   async function worker() {
     while (true) {
+      cancellation?.throwIfCancelled();
       const current = index;
       if (current >= tasks.length) {
         return;
       }
       index += 1;
       const task = tasks[current];
-      results[current] = await task();
+      const value = await task();
+      cancellation?.throwIfCancelled();
+      results[current] = value;
     }
   }
 
@@ -1554,21 +1575,25 @@ export async function handlePlanFanout(
   const rejectedPlans: Array<{ name: string; decision: ValueFilterDecision }> = [];
 
   const plans: ResolvedChildPlan[] = [];
-  const providedCorrelation = extractPlanCorrelationHints(input) ?? null;
+  const providedCorrelation = extractPlanCorrelationHints(input);
+  const opId = resolveOperationId(input.op_id ?? providedCorrelation?.opId, "plan_fanout_op");
   const runId = providedCorrelation?.runId ?? input.run_label ?? `run-${Date.now()}`;
-  const opId = providedCorrelation?.opId ?? `plan_fanout_op_${randomUUID()}`;
   const jobId = providedCorrelation?.jobId ?? `job_${randomUUID()}`;
   const graphId = providedCorrelation?.graphId ?? null;
   const nodeId = providedCorrelation?.nodeId ?? null;
   const parentChildId = providedCorrelation?.childId ?? null;
-  const correlationLogFields = {
-    run_id: runId,
-    op_id: opId,
-    job_id: jobId,
-    graph_id: graphId ?? null,
-    node_id: nodeId ?? null,
-    child_id: parentChildId ?? null,
+  const mergedCorrelation: ValueGraphCorrelationHints = {
+    ...(providedCorrelation ?? {}),
+    opId,
+    runId,
+    jobId,
+    graphId,
+    nodeId,
+    childId: parentChildId,
   };
+  const eventCorrelation = toEventCorrelationHints(mergedCorrelation);
+  const correlationPayload = serialiseCorrelationForPayload(eventCorrelation);
+  const correlationLogFields = { ...correlationPayload };
   if (context.valueGuard) {
     for (const plan of resolvedPlans) {
       if (!plan.valueImpacts?.length) {
@@ -1655,23 +1680,11 @@ export async function handlePlanFanout(
     jobId,
     childId: parentChildId ?? undefined,
     payload: {
-      run_id: runId,
-      op_id: opId,
-      job_id: jobId,
-      graph_id: graphId,
-      node_id: nodeId,
-      child_id: parentChildId,
+      ...correlationPayload,
       children: plans.map((plan) => ({ name: plan.name, runtime: plan.runtime })),
       rejected: rejectedPlans.map((entry) => entry.name),
     },
-    correlation: {
-      runId,
-      opId,
-      jobId,
-      graphId,
-      nodeId,
-      childId: parentChildId ?? null,
-    },
+    correlation: eventCorrelation,
   });
 
   const sharedVariables: Record<string, string | number | boolean> = {
@@ -1728,7 +1741,7 @@ export async function handlePlanFanout(
     );
 
     const parallelism = input.parallelism ?? Math.min(3, plans.length || 1);
-    const spawned = await runWithConcurrency(parallelism, tasks);
+    const spawned = await runWithConcurrency(parallelism, tasks, { cancellation });
 
     cancellation.throwIfCancelled();
 
@@ -1901,7 +1914,12 @@ export async function handlePlanJoin(
 ): Promise<PlanJoinResult> {
   const timeoutMs = (input.timeout_sec ?? 10) * 1000;
   const providedCorrelation = extractPlanCorrelationHints(input);
-  const correlationHints = toEventCorrelationHints(providedCorrelation);
+  const opId = resolveOperationId(input.op_id ?? providedCorrelation?.opId, "plan_join_op");
+  const correlationSource: ValueGraphCorrelationHints = {
+    ...(providedCorrelation ?? {}),
+    opId,
+  };
+  const correlationHints = toEventCorrelationHints(correlationSource);
   const correlationPayload = serialiseCorrelationForPayload(correlationHints);
   context.logger.info("plan_join", {
     children: input.children.length,
@@ -2061,6 +2079,7 @@ export async function handlePlanJoin(
   });
 
   return {
+    op_id: opId,
     policy: input.join_policy,
     satisfied,
     timeout_ms: timeoutMs,
@@ -2160,7 +2179,12 @@ export async function handlePlanReduce(
   );
 
   const providedCorrelation = extractPlanCorrelationHints(input);
-  const correlationHints = toEventCorrelationHints(providedCorrelation);
+  const opId = resolveOperationId(input.op_id ?? providedCorrelation?.opId, "plan_reduce_op");
+  const correlationSource: ValueGraphCorrelationHints = {
+    ...(providedCorrelation ?? {}),
+    opId,
+  };
+  const correlationHints = toEventCorrelationHints(correlationSource);
   const correlationPayload = serialiseCorrelationForPayload(correlationHints);
 
   const guardDecisions = new Map<string, ValueFilterDecision>();
@@ -2202,7 +2226,7 @@ export async function handlePlanReduce(
     correlation: correlationHints,
   });
 
-  let result: PlanReduceResult;
+  let result: PlanReduceCoreResult;
   switch (input.reducer) {
     case "concat": {
       const aggregate = summaries
@@ -2371,7 +2395,8 @@ export async function handlePlanReduce(
     child_count: summaries.length,
   });
 
-  return result;
+  const payload: PlanReduceResult = { ...result, op_id: opId };
+  return payload;
 }
 
 /**
@@ -2404,21 +2429,24 @@ async function executePlanRunBT(
   let reportedError = false;
 
   const dryRun = input.dry_run ?? false;
-  const providedCorrelation = extractPlanCorrelationHints(input) ?? null;
+  const providedCorrelation = extractPlanCorrelationHints(input);
+  const opId = resolveOperationId(input.op_id ?? providedCorrelation?.opId, "bt_op");
   const runId = providedCorrelation?.runId ?? `bt_run_${randomUUID()}`;
-  const opId = providedCorrelation?.opId ?? `bt_op_${randomUUID()}`;
   const jobId = providedCorrelation?.jobId ?? null;
   const graphId = providedCorrelation?.graphId ?? null;
   const nodeId = providedCorrelation?.nodeId ?? null;
   const childId = providedCorrelation?.childId ?? null;
-  const correlationLogFields = {
-    run_id: runId,
-    op_id: opId,
-    job_id: jobId,
-    graph_id: graphId,
-    node_id: nodeId,
-    child_id: childId,
+  const correlationSource: ValueGraphCorrelationHints = {
+    ...(providedCorrelation ?? {}),
+    opId,
+    runId,
+    jobId,
+    graphId,
+    nodeId,
+    childId,
   };
+  const eventCorrelation = toEventCorrelationHints(correlationSource);
+  const correlationLogFields = serialiseCorrelationForPayload(eventCorrelation);
   const baseLogFields = { ...correlationLogFields, tree_id: input.tree.id };
   const estimatedWork = estimateBehaviorTreeWorkload(input.tree.root);
 
@@ -2427,7 +2455,7 @@ async function executePlanRunBT(
     opId,
     mode: "bt",
     dryRun,
-    correlation: providedCorrelation,
+    correlation: correlationSource,
     estimatedWork,
   });
   context.logger.info("plan_run_bt", {
@@ -2457,14 +2485,7 @@ async function executePlanRunBT(
       jobId: jobId ?? undefined,
       childId: childId ?? undefined,
       payload: eventPayload,
-      correlation: {
-        runId,
-        opId,
-        jobId,
-        graphId,
-        nodeId,
-        childId,
-      },
+      correlation: eventCorrelation,
     });
   };
 
@@ -2768,21 +2789,24 @@ async function executePlanRunReactive(
   let lastOutput: unknown = null;
   let lastResultStatus: BTStatus = "running";
 
-  const providedCorrelation = extractPlanCorrelationHints(input) ?? null;
+  const providedCorrelation = extractPlanCorrelationHints(input);
+  const opId = resolveOperationId(input.op_id ?? providedCorrelation?.opId, "bt_reactive_op");
   const runId = providedCorrelation?.runId ?? `bt_reactive_run_${randomUUID()}`;
-  const opId = providedCorrelation?.opId ?? `bt_reactive_op_${randomUUID()}`;
   const jobId = providedCorrelation?.jobId ?? null;
   const graphId = providedCorrelation?.graphId ?? null;
   const nodeId = providedCorrelation?.nodeId ?? null;
   const childId = providedCorrelation?.childId ?? null;
-  const correlationLogFields = {
-    run_id: runId,
-    op_id: opId,
-    job_id: jobId,
-    graph_id: graphId,
-    node_id: nodeId,
-    child_id: childId,
+  const correlationSource: ValueGraphCorrelationHints = {
+    ...(providedCorrelation ?? {}),
+    opId,
+    runId,
+    jobId,
+    graphId,
+    nodeId,
+    childId,
   };
+  const eventCorrelation = toEventCorrelationHints(correlationSource);
+  const correlationLogFields = serialiseCorrelationForPayload(eventCorrelation);
   const baseLogFields = {
     ...correlationLogFields,
     tree_id: input.tree.id,
@@ -2795,7 +2819,7 @@ async function executePlanRunReactive(
     opId,
     mode: "reactive",
     dryRun,
-    correlation: providedCorrelation,
+    correlation: correlationSource,
     estimatedWork,
   });
   context.logger.info("plan_run_reactive", {
@@ -2826,14 +2850,7 @@ async function executePlanRunReactive(
       jobId: jobId ?? undefined,
       childId: childId ?? undefined,
       payload: eventPayload,
-      correlation: {
-        runId,
-        opId,
-        jobId,
-        graphId,
-        nodeId,
-        childId,
-      },
+      correlation: eventCorrelation,
     });
   };
 
@@ -2857,14 +2874,7 @@ async function executePlanRunReactive(
         ...correlationLogFields,
         ...payload,
       },
-      correlation: {
-        runId,
-        opId,
-        jobId,
-        graphId,
-        nodeId,
-        childId,
-      },
+      correlation: eventCorrelation,
     });
   };
 
@@ -3709,3 +3719,8 @@ function serialiseCorrelationForPayload(
     child_id: hints.childId ?? null,
   };
 }
+
+/** @internal Aggregates helper functions that are exclusively used in tests. */
+export const __testing = {
+  runWithConcurrency,
+};

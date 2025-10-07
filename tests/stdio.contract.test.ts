@@ -56,9 +56,11 @@ describe("STDIO JSON-RPC contract", () => {
       expect(response.structuredContent).to.not.be.undefined;
 
       const structured = response.structuredContent as {
+        op_id: string;
         metrics: { makespan: number };
         schedule: Array<{ node_id: string }>;
       };
+      expect(structured.op_id).to.be.a("string").and.to.have.length.greaterThan(0);
       expect(structured.metrics.makespan).to.equal(4);
       expect(structured.schedule.map((entry) => entry.node_id)).to.deep.equal([
         "ingest",

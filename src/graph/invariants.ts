@@ -1,19 +1,24 @@
 import type { NormalisedGraph, GraphAttributeValue } from "./types.js";
+import { ERROR_CODES, type ErrorCode } from "../types.js";
 
 /** Violation reported when a graph breaks one of the enforced invariants. */
 export interface GraphInvariantViolation {
-  code: string;
+  /** Stable error code identifying the violated invariant. */
+  code: ErrorCode;
+  /** Human readable explanation of the issue. */
   message: string;
-  nodes?: string[];
-  edge?: { from: string; to: string };
+  /** JSON pointer to the offending location inside the graph descriptor. */
+  path: string;
+  /** Optional actionable hint describing how to resolve the violation. */
+  hint?: string;
+  /** Optional structured details attached to the violation. */
   details?: Record<string, unknown>;
 }
 
 /** Summary returned when evaluating the invariants for a graph. */
-export interface GraphInvariantReport {
-  ok: boolean;
-  violations: GraphInvariantViolation[];
-}
+export type GraphInvariantReport =
+  | { ok: true }
+  | { ok: false; violations: GraphInvariantViolation[] };
 
 /** Options controlling which invariants must be enforced. */
 export interface GraphInvariantOptions {
@@ -27,13 +32,14 @@ export interface GraphInvariantOptions {
 
 /** Error thrown when invariants are violated. */
 export class GraphInvariantError extends Error {
+  public readonly code: ErrorCode;
+  public readonly details: { violations: GraphInvariantViolation[] };
+
   constructor(readonly violations: GraphInvariantViolation[]) {
-    super(
-      violations
-        .map((violation) => `${violation.code}: ${violation.message}`)
-        .join("; "),
-    );
+    super(violations.map((violation) => `${violation.code}: ${violation.message}`).join("; "));
     this.name = "GraphInvariantError";
+    this.code = violations[0]?.code ?? ERROR_CODES.PATCH_INVARIANT_VIOLATION;
+    this.details = { violations };
   }
 }
 
@@ -51,58 +57,64 @@ export function evaluateGraphInvariants(
   if (options.enforceDag) {
     const cycles = detectCycles(graph);
     if (cycles.length > 0) {
-      violations.push({
-        code: "E-GRAPH-CYCLE",
-        message: `cycles detected (${cycles.length}) in graph '${graph.graphId}'`,
-        details: { cycles },
-      });
+      for (const cycle of cycles) {
+        const cyclePath = cycle.join(" -> ");
+        violations.push({
+          code: ERROR_CODES.PATCH_CYCLE,
+          message: `cycle detected: ${cyclePath}`,
+          path: "/edges",
+          hint: "remove or reroute one of the cycle edges",
+          details: { cycle },
+        });
+      }
     }
   }
 
   if (options.requireNodeLabels) {
-    const missing = graph.nodes.filter((node) => !node.label || node.label.trim().length === 0).map((node) => node.id);
-    if (missing.length > 0) {
-      violations.push({
-        code: "E-NODE-LABEL",
-        message: "node labels are required when 'require_labels' metadata is true",
-        nodes: missing,
-      });
-    }
+    graph.nodes.forEach((node, index) => {
+      if (!node.label || node.label.trim().length === 0) {
+        violations.push({
+          code: ERROR_CODES.PATCH_PORTS,
+          message: `node '${node.id}' is missing a label`,
+          path: `/nodes/${index}`,
+          hint: "provide a non-empty label for the node",
+        });
+      }
+    });
   }
 
   if (options.requireEdgeLabels) {
-    const missing = graph.edges
-      .filter((edge) => !edge.label || edge.label.trim().length === 0)
-      .map((edge) => ({ from: edge.from, to: edge.to }));
-    if (missing.length > 0) {
-      for (const entry of missing) {
+    graph.edges.forEach((edge, index) => {
+      if (!edge.label || edge.label.trim().length === 0) {
         violations.push({
-          code: "E-EDGE-LABEL",
-          message: `edge '${entry.from}' -> '${entry.to}' is missing a label`,
-          edge: entry,
+          code: ERROR_CODES.PATCH_PORTS,
+          message: `edge '${edge.from}' -> '${edge.to}' is missing a label`,
+          path: `/edges/${index}`,
+          hint: "set the 'label' property on the edge",
         });
       }
-    }
+    });
   }
 
   if (options.requirePortAttributes) {
-    for (const edge of graph.edges) {
+    graph.edges.forEach((edge, index) => {
       const fromPort = normalisePort(edge.attributes.from_port);
       const toPort = normalisePort(edge.attributes.to_port);
       if (!fromPort || !toPort) {
         violations.push({
-          code: "E-EDGE-PORT",
+          code: ERROR_CODES.PATCH_PORTS,
           message: `edge '${edge.from}' -> '${edge.to}' must declare 'from_port' and 'to_port' attributes`,
-          edge: { from: edge.from, to: edge.to },
+          path: `/edges/${index}`,
+          hint: "ensure both 'from_port' and 'to_port' attributes are defined",
         });
       }
-    }
+    });
   }
 
   const cardinalityViolations = enforceCardinality(graph, options);
   violations.push(...cardinalityViolations);
 
-  return { ok: violations.length === 0, violations };
+  return violations.length === 0 ? { ok: true } : { ok: false, violations };
 }
 
 /** Assert that the invariants hold, throwing a {@link GraphInvariantError} when they do not. */
@@ -154,26 +166,31 @@ function enforceCardinality(graph: NormalisedGraph, options: GraphInvariantOptio
     outgoing.set(edge.from, (outgoing.get(edge.from) ?? 0) + 1);
   }
 
-  for (const node of graph.nodes) {
+  graph.nodes.forEach((node, index) => {
     const maxIn = parseDegree(node.attributes.max_in_degree) ?? options.defaultMaxInDegree;
     const maxOut = parseDegree(node.attributes.max_out_degree) ?? options.defaultMaxOutDegree;
+    const path = `/nodes/${index}`;
     if (typeof maxIn === "number" && (incoming.get(node.id) ?? 0) > maxIn) {
+      const actual = incoming.get(node.id) ?? 0;
       violations.push({
-        code: "E-IN-DEGREE",
-        message: `node '${node.id}' exceeds max_in_degree (${incoming.get(node.id)} > ${maxIn})`,
-        nodes: [node.id],
-        details: { max: maxIn, actual: incoming.get(node.id) ?? 0 },
+        code: ERROR_CODES.PATCH_CARD,
+        message: `node '${node.id}' exceeds max_in_degree (${actual} > ${maxIn})`,
+        path,
+        hint: "reduce the number of incoming edges or raise the allowed degree",
+        details: { direction: "in", node: node.id, max: maxIn, actual },
       });
     }
     if (typeof maxOut === "number" && (outgoing.get(node.id) ?? 0) > maxOut) {
+      const actual = outgoing.get(node.id) ?? 0;
       violations.push({
-        code: "E-OUT-DEGREE",
-        message: `node '${node.id}' exceeds max_out_degree (${outgoing.get(node.id)} > ${maxOut})`,
-        nodes: [node.id],
-        details: { max: maxOut, actual: outgoing.get(node.id) ?? 0 },
+        code: ERROR_CODES.PATCH_CARD,
+        message: `node '${node.id}' exceeds max_out_degree (${actual} > ${maxOut})`,
+        path,
+        hint: "reduce outgoing edges or adjust max_out_degree",
+        details: { direction: "out", node: node.id, max: maxOut, actual },
       });
     }
-  }
+  });
 
   return violations;
 }

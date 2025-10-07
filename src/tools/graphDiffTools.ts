@@ -12,12 +12,14 @@ import {
 } from "../graph/tx.js";
 import type { NormalisedGraph } from "../graph/types.js";
 import type { ResourceRegistry, ResourceGraphPayload } from "../resources/registry.js";
+import { ERROR_CODES } from "../types.js";
 import {
   GraphDescriptorSchema,
   normaliseGraphPayload,
   serialiseNormalisedGraph,
   type GraphDescriptorPayload,
 } from "./graphTools.js";
+import { resolveOperationId } from "./operationIds.js";
 
 /** Context injected in the diff/patch tool handlers. */
 export interface GraphDiffToolContext {
@@ -48,6 +50,7 @@ export const GraphDiffInputSchema = z
     graph_id: z.string().min(1, "graph_id is required"),
     from: GraphSelectorSchema,
     to: GraphSelectorSchema,
+    op_id: z.string().trim().min(1).optional(),
   })
   .strict();
 
@@ -60,6 +63,7 @@ export const GraphPatchInputSchema = z
     note: z.string().trim().min(1).max(240).optional(),
     enforce_invariants: z.boolean().default(true),
     patch: z.array(GraphPatchOperationSchema).min(1, "at least one patch operation is required"),
+    op_id: z.string().trim().min(1).optional(),
   })
   .strict();
 
@@ -78,6 +82,7 @@ export interface GraphSelectorSummary {
 
 /** Result returned by {@link handleGraphDiff}. */
 export interface GraphDiffResult extends Record<string, unknown> {
+  op_id: string;
   graph_id: string;
   from: GraphSelectorSummary;
   to: GraphSelectorSummary;
@@ -88,6 +93,7 @@ export interface GraphDiffResult extends Record<string, unknown> {
 
 /** Result returned by {@link handleGraphPatch}. */
 export interface GraphPatchResult extends Record<string, unknown> {
+  op_id: string;
   graph_id: string;
   base_version: number;
   committed_version: number;
@@ -99,11 +105,13 @@ export interface GraphPatchResult extends Record<string, unknown> {
 
 /** Compute a diff between two graph selectors. */
 export function handleGraphDiff(context: GraphDiffToolContext, input: GraphDiffInput): GraphDiffResult {
+  const opId = resolveOperationId(input.op_id, "graph_diff_op");
   const resolvedFrom = resolveGraphSelector(context, input.graph_id, input.from);
   const resolvedTo = resolveGraphSelector(context, input.graph_id, input.to);
 
   const diff = diffGraphs(resolvedFrom.graph, resolvedTo.graph);
   return {
+    op_id: opId,
     graph_id: input.graph_id,
     from: resolvedFrom.summary,
     to: resolvedTo.summary,
@@ -115,6 +123,7 @@ export function handleGraphDiff(context: GraphDiffToolContext, input: GraphDiffI
 
 /** Apply a JSON Patch on top of the latest committed graph. */
 export function handleGraphPatch(context: GraphDiffToolContext, input: GraphPatchInput): GraphPatchResult {
+  const opId = resolveOperationId(input.op_id, "graph_patch_op");
   const committed = ensureCommittedState(context, input.graph_id);
   if (input.base_version !== undefined && input.base_version !== committed.version) {
     throw new GraphVersionConflictError(input.graph_id, committed.version, input.base_version);
@@ -172,6 +181,7 @@ export function handleGraphPatch(context: GraphDiffToolContext, input: GraphPatc
     });
 
     return {
+      op_id: opId,
       graph_id: committedResult.graphId,
       base_version: tx.baseVersion,
       committed_version: committedResult.version,
@@ -236,7 +246,11 @@ function ensureCommittedState(
   bootstrapCommittedState(context.transactions, payload.graph);
   const refreshed = context.transactions.getCommittedState(graphId);
   if (!refreshed) {
-    throw new GraphTransactionError(`unable to register committed state for graph '${graphId}'`);
+    throw new GraphTransactionError(
+      ERROR_CODES.TX_UNEXPECTED,
+      "failed to register graph state",
+      "retry once the transaction manager has been initialised",
+    );
   }
   return { graph: refreshed.graph, version: refreshed.version };
 }

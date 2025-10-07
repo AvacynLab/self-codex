@@ -3,7 +3,10 @@ import { randomUUID } from "node:crypto";
 /** Function returning the current epoch milliseconds, injectable for tests. */
 type Clock = () => number;
 
-/** Default TTL upper bound (24h) mirroring transaction guard rails. */
+/**
+ * Default TTL upper bound (24h) mirroring transaction guard rails. This keeps
+ * runaway locks from lingering forever when a caller forgets to refresh them.
+ */
 const MAX_TTL_MS = 86_400_000;
 
 /** Internal snapshot describing an acquired graph lock. */
@@ -27,7 +30,8 @@ export class GraphLockError extends Error {
 
 /** Error thrown when another holder already protects the requested graph. */
 export class GraphLockHeldError extends GraphLockError {
-  public readonly code = "E-GRAPH-LOCK-HELD";
+  public readonly code = "E-LOCK-HELD";
+  public readonly hint = "wait for the active holder to release or retry after expiry";
   public readonly details: { graphId: string; holder: string; lockId: string; expiresAt: number | null };
 
   constructor(graphId: string, holder: string, lockId: string, expiresAt: number | null) {
@@ -39,7 +43,8 @@ export class GraphLockHeldError extends GraphLockError {
 
 /** Error thrown when an operation references an unknown lock identifier. */
 export class GraphLockUnknownError extends GraphLockError {
-  public readonly code = "E-GRAPH-LOCK-NOT-FOUND";
+  public readonly code = "E-LOCK-NOTFOUND";
+  public readonly hint = "refresh the lock catalogue before retrying";
   public readonly details: { lockId: string };
 
   constructor(lockId: string) {
@@ -51,7 +56,8 @@ export class GraphLockUnknownError extends GraphLockError {
 
 /** Error thrown when a mutation is attempted while a conflicting lock exists. */
 export class GraphMutationLockedError extends GraphLockError {
-  public readonly code = "E-GRAPH-MUTATION-LOCKED";
+  public readonly code = "E-LOCK-HELD";
+  public readonly hint = "acquire the lock with the same holder or wait for expiry";
   public readonly details: { graphId: string; holder: string; lockId: string; expiresAt: number | null };
 
   constructor(graphId: string, holder: string, lockId: string, expiresAt: number | null) {
@@ -73,6 +79,7 @@ export interface GraphLockReleaseResult {
 
 /** Options accepted when acquiring a graph lock. */
 export interface AcquireGraphLockOptions {
+  /** Optional time-to-live (milliseconds). When omitted the previous TTL is kept. */
   ttlMs?: number | null;
 }
 
@@ -100,14 +107,8 @@ export class GraphLockManager {
       if (existing.holder !== normalisedHolder) {
         throw new GraphLockHeldError(normalisedGraphId, existing.holder, existing.lockId, existing.expiresAt);
       }
-      const refreshed = {
-        ...existing,
-        refreshedAt: now,
-        ttlMs: ttlMs ?? existing.ttlMs,
-        expiresAt: computeExpiry(now, ttlMs ?? existing.ttlMs),
-      } satisfies GraphLockSnapshot;
-      this.store(refreshed);
-      return { ...refreshed };
+      const effectiveTtl = ttlMs ?? existing.ttlMs ?? null;
+      return this.refreshSnapshot(existing, now, effectiveTtl);
     }
 
     const snapshot: GraphLockSnapshot = {
@@ -144,6 +145,22 @@ export class GraphLockManager {
       expired,
       expiresAt: record.expiresAt,
     };
+  }
+
+  /**
+   * Refresh an existing lock by identifier, optionally overriding the TTL. This
+   * is useful when callers only persisted the `lockId` and want to extend the
+   * lease without re-specifying the original holder/graph pair.
+   */
+  refresh(lockId: string, options: AcquireGraphLockOptions = {}): GraphLockSnapshot {
+    const snapshot = this.locksById.get(lockId);
+    if (!snapshot) {
+      throw new GraphLockUnknownError(lockId);
+    }
+    const now = this.clock();
+    const overrideTtl = normaliseTtl(options.ttlMs);
+    const effectiveTtl = overrideTtl ?? snapshot.ttlMs ?? null;
+    return this.refreshSnapshot(snapshot, now, effectiveTtl);
   }
 
   /**
@@ -185,6 +202,17 @@ export class GraphLockManager {
   private store(snapshot: GraphLockSnapshot): void {
     this.locksByGraphId.set(snapshot.graphId, snapshot);
     this.locksById.set(snapshot.lockId, snapshot);
+  }
+
+  private refreshSnapshot(snapshot: GraphLockSnapshot, now: number, ttlMs: number | null): GraphLockSnapshot {
+    const refreshed: GraphLockSnapshot = {
+      ...snapshot,
+      refreshedAt: now,
+      ttlMs,
+      expiresAt: computeExpiry(now, ttlMs),
+    };
+    this.store(refreshed);
+    return { ...refreshed };
   }
 
   private pruneExpired(graphId: string, now: number): void {

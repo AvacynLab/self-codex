@@ -2,15 +2,21 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z, type ZodTypeAny } from "zod";
 import { randomUUID } from "crypto";
-import { readFile, writeFile, mkdir } from "node:fs/promises";
-import { resolve as resolvePath, dirname as pathDirname, basename as pathBasename } from "node:path";
+import { readFile, writeFile } from "node:fs/promises";
+import { resolve as resolvePath, basename as pathBasename } from "node:path";
 import { pathToFileURL } from "url";
 import { GraphState, type ChildSnapshot, type JobSnapshot } from "./graphState.js";
 import { GraphTransactionManager, GraphTransactionError, GraphVersionConflictError } from "./graph/tx.js";
 import { GraphLockManager } from "./graph/locks.js";
 import { LoggerOptions, StructuredLogger, type LogEntry } from "./logger.js";
-import { EventStore, OrchestratorEvent } from "./eventStore.js";
-import { EventBus, type EventLevel as BusEventLevel } from "./events/bus.js";
+import { EventStore, OrchestratorEvent, type EventKind } from "./eventStore.js";
+import {
+  EventBus,
+  EVENT_CATEGORIES,
+  type EventCategory,
+  type EventFilter,
+  type EventLevel as BusEventLevel,
+} from "./events/bus.js";
 import {
   buildChildCorrelationHints,
   buildJobCorrelationHints,
@@ -63,6 +69,7 @@ import { renderResourceWatchSseMessages, serialiseResourceWatchResultForSse } fr
 import { IdempotencyRegistry } from "./infra/idempotency.js";
 import { PlanLifecycleRegistry, PlanRunNotFoundError } from "./executor/planLifecycle.js";
 import type { PlanLifecycleSnapshot } from "./executor/planLifecycle.js";
+import { ensureParentDirectory, resolveWorkspacePath, PathResolutionError } from "./paths.js";
 import {
   ChildCancelInputShape,
   ChildCancelInputSchema,
@@ -244,6 +251,7 @@ import {
   GraphBatchMutateInputShape,
   GraphBatchToolContext,
   handleGraphBatchMutate,
+  type GraphBatchMutateResult,
 } from "./tools/graphBatchTools.js";
 import {
   GraphLockInputShape,
@@ -263,6 +271,7 @@ import {
   handleGraphPatch,
   type GraphDiffToolContext,
 } from "./tools/graphDiffTools.js";
+import { resolveOperationId } from "./tools/operationIds.js";
 import {
   TxBeginInputSchema,
   TxBeginInputShape,
@@ -1496,6 +1505,60 @@ function ensureEventsBusEnabled(toolName: string) {
   return null;
 }
 
+function ensureLocksEnabled(toolName: string) {
+  if (!runtimeFeatures.enableLocks) {
+    logger.warn(`${toolName}_disabled`, { tool: toolName });
+    return {
+      isError: true,
+      content: [
+        {
+          type: "text" as const,
+          text: j({ error: "LOCKS_DISABLED", tool: toolName, message: "graph locks disabled" }),
+        },
+      ],
+    };
+  }
+  return null;
+}
+
+function ensureBulkEnabled(toolName: string) {
+  if (!runtimeFeatures.enableBulk) {
+    logger.warn(`${toolName}_disabled`, { tool: toolName });
+    return {
+      isError: true,
+      content: [
+        {
+          type: "text" as const,
+          text: j({ error: "BULK_DISABLED", tool: toolName, message: "bulk tools disabled" }),
+        },
+      ],
+    };
+  }
+  return null;
+}
+
+/**
+ * Guards fine-grained child management tools so they can only be exercised when
+ * the corresponding feature flag is enabled. This prevents partially configured
+ * deployments from invoking orchestration helpers that rely on richer child
+ * indexing guarantees.
+ */
+function ensureChildOpsFineEnabled(toolName: string) {
+  if (!runtimeFeatures.enableChildOpsFine) {
+    logger.warn(`${toolName}_disabled`, { tool: toolName });
+    return {
+      isError: true,
+      content: [
+        {
+          type: "text" as const,
+          text: j({ error: "CHILD_OPS_FINE_DISABLED", tool: toolName, message: "child fine operations disabled" }),
+        },
+      ],
+    };
+  }
+  return null;
+}
+
 function ensureTransactionsEnabled(toolName: string) {
   if (!runtimeFeatures.enableTx) {
     logger.warn(`${toolName}_disabled`, { tool: toolName });
@@ -1512,12 +1575,53 @@ function ensureTransactionsEnabled(toolName: string) {
   return null;
 }
 
+/**
+ * Guards MCP discovery tools so they cannot be invoked unless the dedicated flag is enabled.
+ * This keeps the handshake surface minimised while still logging the attempt for operators.
+ */
+function ensureMcpIntrospectionEnabled(toolName: string) {
+  if (!runtimeFeatures.enableMcpIntrospection) {
+    logger.warn(`${toolName}_disabled`, { tool: toolName });
+    return {
+      isError: true,
+      content: [
+        {
+          type: "text" as const,
+          text: j({ error: "MCP_INTROSPECTION_DISABLED", tool: toolName, message: "mcp introspection disabled" }),
+        },
+      ],
+    };
+  }
+  return null;
+}
+
 // ---------------------------
 // Utils
 // ---------------------------
 
 const now = () => Date.now();
 const j = (o: unknown) => JSON.stringify(o, null, 2);
+
+/**
+ * Serialises a {@link PathResolutionError} into the legacy MCP text payload expected by the
+ * historical graph maintenance tools.
+ */
+function formatWorkspacePathError(error: PathResolutionError) {
+  return {
+    isError: true,
+    content: [
+      {
+        type: "text" as const,
+        text: j({
+          error: error.code,
+          message: error.message,
+          hint: error.hint,
+          details: error.details,
+        }),
+      },
+    ],
+  };
+}
 
 function extractStringProperty(payload: unknown, key: string): string | null {
   if (!payload || typeof payload !== "object") {
@@ -1562,6 +1666,50 @@ function deriveEventMessage(kind: string, payload: unknown): string {
     return msg;
   }
   return kind.toLowerCase();
+}
+
+const EVENT_KIND_TO_CATEGORY: Record<EventKind, EventCategory> = {
+  PLAN: "graph",
+  START: "graph",
+  PROMPT: "child",
+  PENDING: "child",
+  REPLY_PART: "child",
+  REPLY: "child",
+  STATUS: "graph",
+  AGGREGATE: "graph",
+  KILL: "scheduler",
+  HEARTBEAT: "scheduler",
+  INFO: "graph",
+  WARN: "graph",
+  ERROR: "graph",
+  BT_RUN: "bt",
+  SCHEDULER: "scheduler",
+  AUTOSCALER: "scheduler",
+  COGNITIVE: "child",
+};
+
+function deriveEventCategory(kind: EventKind): EventCategory {
+  return EVENT_KIND_TO_CATEGORY[kind] ?? "graph";
+}
+
+const EVENT_CATEGORY_SET = new Set<EventCategory>(EVENT_CATEGORIES);
+
+function parseEventCategories(values: readonly string[] | undefined): EventCategory[] | undefined {
+  if (!values || values.length === 0) {
+    return undefined;
+  }
+  const collected: EventCategory[] = [];
+  for (const value of values) {
+    const trimmed = value.trim().toLowerCase();
+    if (!trimmed || !EVENT_CATEGORY_SET.has(trimmed as EventCategory)) {
+      continue;
+    }
+    const category = trimmed as EventCategory;
+    if (!collected.includes(category)) {
+      collected.push(category);
+    }
+  }
+  return collected.length > 0 ? collected : undefined;
 }
 
 function resolveChildLogLevel(stream: "stdout" | "stderr" | "meta"): string {
@@ -1778,6 +1926,7 @@ const GraphSubgraphExtractInputSchema = z
     node_id: z.string().min(1),
     run_id: z.string().min(1),
     directory: z.string().min(1).optional(),
+    op_id: z.string().trim().min(1).optional(),
   })
   .strict();
 
@@ -1790,6 +1939,8 @@ function pushEvent(
     Partial<Pick<OrchestratorEvent, "source" | "level">> & { correlation?: EventCorrelationHints | null }
 ): OrchestratorEvent {
   const emitted = eventStore.emit({
+    // Forward the semantic kind so downstream consumers can latch onto
+    // PROMPT/PENDING/... identifiers without re-deriving them from payloads.
     kind: event.kind,
     level: event.level,
     source: event.source,
@@ -1841,10 +1992,10 @@ function pushEvent(
   const jobId = hints.jobId ?? null;
   const childId = hints.childId ?? null;
   const message = deriveEventMessage(event.kind, event.payload);
+  const category = deriveEventCategory(event.kind);
 
   eventBus.publish({
-    cat: event.kind,
-    kind: event.kind,
+    cat: category,
     level: (event.level ?? emitted.level) as BusEventLevel,
     jobId,
     runId,
@@ -1852,6 +2003,7 @@ function pushEvent(
     graphId,
     nodeId,
     childId,
+    kind: event.kind,
     msg: message,
     data: event.payload,
   });
@@ -1911,10 +2063,15 @@ function buildLiveEvents(input: { job_id?: string; child_id?: string; limit?: nu
     const commandUri = childId
       ? `command:selfForkViewer.openConversation?${encodeURIComponent(JSON.stringify({ child_id: childId }))}`
       : null;
+    const eventKind = evt.kind && evt.kind.trim().length > 0 ? evt.kind : evt.cat.toUpperCase();
     return {
       seq: evt.seq,
       ts: evt.ts,
-      kind: evt.cat.toUpperCase(),
+      // Surface the semantic kind (PROMPT/PENDING/...) when available so the
+      // live event feed mirrors `events_subscribe` and the legacy `EventStore`
+      // API. Falling back to the upper-cased message preserves deterministic
+      // identifiers for bridged events that have not been migrated yet.
+      kind: eventKind,
       level: evt.level,
       jobId: evt.jobId ?? null,
       childId,
@@ -2530,6 +2687,10 @@ server.registerTool(
     inputSchema: McpIntrospectionInputShape,
   },
   async () => {
+    const disabled = ensureMcpIntrospectionEnabled("mcp_info");
+    if (disabled) {
+      return disabled;
+    }
     const info = getMcpInfo();
     return { content: [{ type: "text", text: j({ format: "json", info }) }] };
   },
@@ -2547,6 +2708,10 @@ server.registerTool(
     inputSchema: McpIntrospectionInputShape,
   },
   async () => {
+    const disabled = ensureMcpIntrospectionEnabled("mcp_capabilities");
+    if (disabled) {
+      return disabled;
+    }
     const capabilities = getMcpCapabilities();
     return { content: [{ type: "text", text: j({ format: "json", capabilities }) }] };
   },
@@ -2589,10 +2754,21 @@ server.registerTool(
   async (input: unknown) => {
     try {
       const parsed = ResourceReadInputSchema.parse(input);
-      const result = resources.read(parsed.uri);
+      const registryResult = resources.read(parsed.uri);
+      /**
+       * Normalised payload returned by the `resources_read` tool. The helper
+       * mirrors the checklist example by surfacing both the MIME type and the
+       * decoded data while preserving the historical `{ uri, kind, payload }`
+       * properties expected by existing clients and end-to-end tests.
+       */
+      const structuredResult = {
+        ...registryResult,
+        mime: "application/json" as const,
+        data: registryResult,
+      };
       return {
-        content: [{ type: "text" as const, text: j({ tool: "resources_read", result }) }],
-        structuredContent: result,
+        content: [{ type: "text" as const, text: j({ tool: "resources_read", result: structuredResult }) }],
+        structuredContent: structuredResult,
       };
     } catch (error) {
       const uri =
@@ -2717,9 +2893,8 @@ server.registerTool(
     try {
       const parsed = EventSubscribeInputSchema.parse(input ?? {});
       const limit = parsed.limit ?? 100;
-      const catsRaw = parsed.cats?.map((value) => value.trim().toLowerCase()).filter((value) => value.length > 0);
-      const cats = catsRaw && catsRaw.length > 0 ? catsRaw : undefined;
-      const filter = {
+      const cats = parseEventCategories(parsed.cats);
+      const filter: EventFilter = {
         cats,
         levels: parsed.levels as BusEventLevel[] | undefined,
         jobId: parsed.job_id,
@@ -2733,21 +2908,21 @@ server.registerTool(
       };
       const events = eventBus.list(filter).sort((a, b) => a.seq - b.seq);
       const serialised = events.map((evt) => {
-        const eventKind = (evt.kind ?? evt.cat).toUpperCase();
+        const eventKind = evt.kind && evt.kind.trim().length > 0 ? evt.kind : evt.cat.toUpperCase();
         return {
-        seq: evt.seq,
-        ts: evt.ts,
-        cat: evt.cat,
-        kind: eventKind,
-        level: evt.level,
-        job_id: evt.jobId ?? null,
-        run_id: evt.runId ?? null,
-        op_id: evt.opId ?? null,
-        graph_id: evt.graphId ?? null,
-        node_id: evt.nodeId ?? null,
-        child_id: evt.childId ?? null,
-        msg: evt.msg,
-        data: evt.data ?? null,
+          seq: evt.seq,
+          ts: evt.ts,
+          cat: evt.cat,
+          kind: eventKind,
+          level: evt.level,
+          job_id: evt.jobId ?? null,
+          run_id: evt.runId ?? null,
+          op_id: evt.opId ?? null,
+          graph_id: evt.graphId ?? null,
+          node_id: evt.nodeId ?? null,
+          child_id: evt.childId ?? null,
+          msg: evt.msg,
+          data: evt.data ?? null,
         };
       });
       const format = parsed.format ?? "jsonlines";
@@ -2757,8 +2932,10 @@ server.registerTool(
               .map((evt) =>
                 [
                   `id: ${evt.seq}`,
-                  // Use the upper-cased `kind` value so SSE consumers observe the same
-                  // event type identifiers exposed via the JSON Lines payload.
+                  // Use the semantic `kind` identifier so SSE consumers observe the
+                  // same PROMPT/PENDING/... tokens exposed via the JSON Lines payload.
+                  // When bridges have not supplied a kind yet we fall back to the
+                  // upper-cased message to keep identifiers deterministic.
                   `event: ${evt.kind}`,
                   `data: ${serialiseForSse(evt)}`,
                   ``,
@@ -3062,20 +3239,17 @@ server.registerTool(
 
       let absolutePath: string | null = null;
       if (parsed.path) {
-        const cwd = process.cwd();
-        const absolute = resolvePath(cwd, parsed.path);
-        if (!absolute.toLowerCase().startsWith(cwd.toLowerCase())) {
-          return {
-            isError: true,
-            content: [
-              {
-                type: "text",
-                text: j({ error: "BAD_PATH", message: "Path must be inside workspace" }),
-              },
-            ],
-          };
+        let absolute: string;
+        try {
+          absolute = resolveWorkspacePath(parsed.path);
+        } catch (error) {
+          if (error instanceof PathResolutionError) {
+            return formatWorkspacePathError(error);
+          }
+          throw error;
         }
-        await mkdir(pathDirname(absolute), { recursive: true });
+
+        await ensureParentDirectory(absolute);
         await writeFile(absolute, payloadString, "utf8");
         absolutePath = absolute;
       }
@@ -3128,11 +3302,17 @@ server.registerTool(
   "graph_state_save",
   { title: "Graph save", description: "Sauvegarde l'etat graphe dans un fichier JSON.", inputSchema: GraphSaveShape },
   async (input: GraphSaveInput) => {
-    const cwd = process.cwd();
-    const abs = resolvePath(cwd, input.path);
-    if (!abs.toLowerCase().startsWith(cwd.toLowerCase())) {
-      return { isError: true, content: [{ type: "text", text: j({ error: "BAD_PATH", message: "Path must be inside workspace" }) }] };
+    let abs: string;
+    try {
+      abs = resolveWorkspacePath(input.path);
+    } catch (error) {
+      if (error instanceof PathResolutionError) {
+        return formatWorkspacePathError(error);
+      }
+      throw error;
     }
+
+    await ensureParentDirectory(abs);
     const snap = graphState.serialize();
     await writeFile(abs, JSON.stringify(snap, null, 2), "utf8");
     return { content: [{ type: "text", text: j({ format: "json", ok: true, path: abs }) }] };
@@ -3144,10 +3324,14 @@ server.registerTool(
   "graph_state_load",
   { title: "Graph load", description: "Recharge l'etat graphe depuis un fichier JSON.", inputSchema: GraphLoadShape },
   async (input: GraphLoadInput) => {
-    const cwd = process.cwd();
-    const abs = resolvePath(cwd, input.path);
-    if (!abs.toLowerCase().startsWith(cwd.toLowerCase())) {
-      return { isError: true, content: [{ type: "text", text: j({ error: "BAD_PATH", message: "Path must be inside workspace" }) }] };
+    let abs: string;
+    try {
+      abs = resolveWorkspacePath(input.path);
+    } catch (error) {
+      if (error instanceof PathResolutionError) {
+        return formatWorkspacePathError(error);
+      }
+      throw error;
     }
     const data = await readFile(abs, "utf8");
     const snap = JSON.parse(data);
@@ -3250,14 +3434,19 @@ server.registerTool(
       AUTOSAVE_PATH = null;
       return { content: [{ type: "text", text: j({ format: "json", ok: true, status: "stopped" }) }] };
     }
-    const cwd = process.cwd();
-    const p = input.path ? resolvePath(cwd, input.path) : resolvePath(cwd, "graph-autosave.json");
-    if (!p.toLowerCase().startsWith(cwd.toLowerCase())) {
-      return { isError: true, content: [{ type: "text", text: j({ error: "BAD_PATH", message: "Path must be inside workspace" }) }] };
+    let targetPath: string;
+    try {
+      targetPath = resolveWorkspacePath(input.path ?? "graph-autosave.json");
+    } catch (error) {
+      if (error instanceof PathResolutionError) {
+        return formatWorkspacePathError(error);
+      }
+      throw error;
     }
     const interval = Math.min(Math.max(input.interval_ms ?? 5000, 1000), 600000);
     if (AUTOSAVE_TIMER) clearInterval(AUTOSAVE_TIMER);
-    AUTOSAVE_PATH = p;
+    await ensureParentDirectory(targetPath);
+    AUTOSAVE_PATH = targetPath;
     AUTOSAVE_TIMER = setInterval(async () => {
       try {
         const snap = graphState.serialize();
@@ -3266,6 +3455,7 @@ server.registerTool(
           inactivity_threshold_ms: lastInactivityThresholdMs,
           event_history_limit: eventStore.getMaxHistory()
         };
+        await ensureParentDirectory(AUTOSAVE_PATH!);
         await writeFile(
           AUTOSAVE_PATH!,
           JSON.stringify({ metadata, snapshot: snap }, null, 2),
@@ -3291,7 +3481,7 @@ server.registerTool(
             format: "json",
             ok: true,
             status: "started",
-            path: p,
+            path: targetPath,
             interval_ms: interval,
             inactivity_threshold_ms: lastInactivityThresholdMs,
             event_history_limit: eventStore.getMaxHistory()
@@ -3638,11 +3828,14 @@ server.registerTool(
   async (input: unknown) => {
     try {
       const parsed = GraphGenerateInputSchema.parse(input);
+      const opId = resolveOperationId(parsed.op_id, "graph_generate_op");
+      const enrichedInput = { ...parsed, op_id: opId };
       logger.info("graph_generate_requested", {
         preset: parsed.preset ?? null,
         has_tasks: parsed.tasks !== undefined,
+        op_id: opId,
       });
-      const result = handleGraphGenerate(parsed, {
+      const result = handleGraphGenerate(enrichedInput, {
         knowledgeGraph: runtimeFeatures.enableKnowledge ? knowledgeGraph : undefined,
         knowledgeEnabled: runtimeFeatures.enableKnowledge,
       });
@@ -3651,6 +3844,7 @@ server.registerTool(
         logger.info("graph_generate_subgraphs_detected", {
           references: summary.references.length,
           missing: summary.missing.length,
+          op_id: opId,
         });
       }
       let notes = result.notes;
@@ -3661,6 +3855,7 @@ server.registerTool(
         logger.warn("graph_generate_missing_subgraphs", {
           missing: summary.missing,
           graph_id: result.graph.graph_id ?? null,
+          op_id: opId,
         });
       }
       const enriched = {
@@ -3672,13 +3867,15 @@ server.registerTool(
       logger.info("graph_generate_succeeded", {
         nodes: result.graph.nodes.length,
         edges: result.graph.edges.length,
+        op_id: opId,
       });
       return {
         content: [{ type: "text" as const, text: j({ tool: "graph_generate", result: enriched }) }],
         structuredContent: enriched,
       };
     } catch (error) {
-      return graphToolError(logger, "graph_generate", error);
+      const providedOpId = extractStringProperty(input as Record<string, unknown>, "op_id");
+      return graphToolError(logger, "graph_generate", error, { op_id: providedOpId ?? undefined });
     }
   },
 );
@@ -3697,10 +3894,12 @@ server.registerTool(
       const parsed = GraphMutateInputSchema.parse(input);
       graphIdForError = parsed.graph.graph_id ?? null;
       graphVersionForError = parsed.graph.graph_version ?? null;
+      const opId = resolveOperationId(parsed.op_id, "graph_mutate_op");
       logger.info("graph_mutate_requested", {
         operations: parsed.operations.length,
         graph_id: graphIdForError,
         version: graphVersionForError,
+        op_id: opId,
       });
 
       const baseGraph = normaliseGraphPayload(parsed.graph);
@@ -3718,6 +3917,7 @@ server.registerTool(
         const mutateInput = {
           ...parsed,
           graph: serialiseNormalisedGraph(tx.workingCopy),
+          op_id: opId,
         };
         const intermediate = handleGraphMutate(mutateInput);
         graphLocks.assertCanMutate(baseGraph.graphId, null);
@@ -3743,12 +3943,14 @@ server.registerTool(
             references: summary.references.length,
             missing: summary.missing.length,
             graph_id: committed.graphId,
+            op_id: opId,
           });
         }
         if (summary.missing.length > 0) {
           logger.warn("graph_mutate_missing_subgraphs", {
             missing: summary.missing,
             graph_id: committed.graphId,
+            op_id: opId,
           });
         }
         const enrichedResult = {
@@ -3764,6 +3966,7 @@ server.registerTool(
           graph_id: committed.graphId,
           version: committed.version,
           committed_at: committed.committedAt,
+          op_id: opId,
         });
 
         return {
@@ -3797,11 +4000,13 @@ server.registerTool(
         return graphToolError(logger, "graph_mutate", error, {
           graph_id: graphIdForError,
           version: graphVersionForError,
+          op_id: extractStringProperty(input as Record<string, unknown>, "op_id") ?? undefined,
         });
       }
       return graphToolError(logger, "graph_mutate", error, {
         graph_id: graphIdForError,
         version: graphVersionForError ?? undefined,
+        op_id: extractStringProperty(input as Record<string, unknown>, "op_id") ?? undefined,
       });
     }
   },
@@ -3815,11 +4020,26 @@ server.registerTool(
     inputSchema: GraphBatchMutateInputShape,
   },
   async (input: unknown) => {
+    const disabled = ensureBulkEnabled("graph_batch_mutate");
+    if (disabled) {
+      return disabled;
+    }
     pruneExpired();
     let graphIdForError: string | null = null;
+    let opIdForError: string | null = null;
     try {
       const parsed = GraphBatchMutateInputSchema.parse(input);
       graphIdForError = parsed.graph_id;
+      const existingEntry =
+        runtimeFeatures.enableIdempotency && parsed.idempotency_key
+          ? idempotencyRegistry.peek<GraphBatchMutateResult>(
+              `graph_batch_mutate:${parsed.idempotency_key}`,
+            )
+          : null;
+      const existingOpId = existingEntry?.value?.op_id;
+      const opId = resolveOperationId(parsed.op_id ?? existingOpId, "graph_batch_mutate_op");
+      opIdForError = opId;
+      const enrichedInput = { ...parsed, op_id: opId };
       logger.info("graph_batch_mutate_requested", {
         graph_id: parsed.graph_id,
         operations: parsed.operations.length,
@@ -3827,9 +4047,10 @@ server.registerTool(
         owner: parsed.owner ?? null,
         note: parsed.note ?? null,
         idempotency_key: parsed.idempotency_key ?? null,
+        op_id: opId,
       });
 
-      const result = await handleGraphBatchMutate(getGraphBatchToolContext(), parsed);
+      const result = await handleGraphBatchMutate(getGraphBatchToolContext(), enrichedInput);
       const logPayload = {
         graph_id: result.graph_id,
         base_version: result.base_version,
@@ -3839,6 +4060,7 @@ server.registerTool(
         operations: parsed.operations.length,
         idempotent: result.idempotent,
         idempotency_key: result.idempotency_key,
+        op_id: result.op_id,
       };
       if (result.idempotent) {
         logger.info("graph_batch_mutate_replayed", logPayload);
@@ -3852,13 +4074,20 @@ server.registerTool(
       };
     } catch (error) {
       if (error instanceof GraphVersionConflictError) {
-        return graphToolError(logger, "graph_batch_mutate", error, { graph_id: graphIdForError });
+        return graphToolError(logger, "graph_batch_mutate", error, {
+          graph_id: graphIdForError,
+          op_id: opIdForError ?? extractStringProperty(input as Record<string, unknown>, "op_id") ?? undefined,
+        });
       }
       if (error instanceof GraphTransactionError) {
-        return graphToolError(logger, "graph_batch_mutate", error, { graph_id: graphIdForError });
+        return graphToolError(logger, "graph_batch_mutate", error, {
+          graph_id: graphIdForError,
+          op_id: opIdForError ?? extractStringProperty(input as Record<string, unknown>, "op_id") ?? undefined,
+        });
       }
       return graphToolError(logger, "graph_batch_mutate", error, {
         graph_id: graphIdForError ?? undefined,
+        op_id: opIdForError ?? extractStringProperty(input as Record<string, unknown>, "op_id") ?? undefined,
       });
     }
   },
@@ -3874,23 +4103,27 @@ server.registerTool(
   async (input: unknown) => {
     try {
       const parsed = GraphDiffInputSchema.parse(input);
+      const opId = resolveOperationId(parsed.op_id, "graph_diff_op");
       logger.info("graph_diff_requested", {
         graph_id: parsed.graph_id,
         from: describeSelectorForLog(parsed.from),
         to: describeSelectorForLog(parsed.to),
+        op_id: opId,
       });
-      const result = handleGraphDiff(getGraphDiffToolContext(), parsed);
+      const result = handleGraphDiff(getGraphDiffToolContext(), { ...parsed, op_id: opId });
       logger.info("graph_diff_succeeded", {
         graph_id: result.graph_id,
         changed: result.changed,
         operations: result.operations.length,
+        op_id: result.op_id,
       });
       return {
         content: [{ type: "text" as const, text: j({ tool: "graph_diff", result }) }],
         structuredContent: result,
       };
     } catch (error) {
-      return graphToolError(logger, "graph_diff", error, {}, {
+      const providedOpId = extractStringProperty(input as Record<string, unknown>, "op_id");
+      return graphToolError(logger, "graph_diff", error, { op_id: providedOpId ?? undefined }, {
         defaultCode: "E-PATCH-DIFF",
         invalidInputCode: "E-PATCH-INVALID",
       });
@@ -3911,26 +4144,32 @@ server.registerTool(
     try {
       const parsed = GraphPatchInputSchema.parse(input);
       graphIdForError = parsed.graph_id;
+      const opId = resolveOperationId(parsed.op_id, "graph_patch_op");
       logger.info("graph_patch_requested", {
         graph_id: parsed.graph_id,
         operations: parsed.patch.length,
         base_version: parsed.base_version ?? null,
         enforce_invariants: parsed.enforce_invariants,
+        op_id: opId,
       });
-      const result = handleGraphPatch(getGraphDiffToolContext(), parsed);
+      const result = handleGraphPatch(getGraphDiffToolContext(), { ...parsed, op_id: opId });
       logger.info("graph_patch_succeeded", {
         graph_id: result.graph_id,
         committed_version: result.committed_version,
         changed: result.changed,
         operations: result.operations_applied,
         invariants_ok: result.invariants ? result.invariants.ok : true,
+        op_id: result.op_id,
       });
       return {
         content: [{ type: "text" as const, text: j({ tool: "graph_patch", result }) }],
         structuredContent: result,
       };
     } catch (error) {
-      return graphToolError(logger, "graph_patch", error, { graph_id: graphIdForError }, {
+      return graphToolError(logger, "graph_patch", error, {
+        graph_id: graphIdForError,
+        op_id: extractStringProperty(input as Record<string, unknown>, "op_id") ?? undefined,
+      }, {
         defaultCode: "E-PATCH-APPLY",
         invalidInputCode: "E-PATCH-INVALID",
       });
@@ -3946,26 +4185,35 @@ server.registerTool(
     inputSchema: GraphLockInputShape,
   },
   async (input: unknown) => {
+    const disabled = ensureLocksEnabled("graph_lock");
+    if (disabled) {
+      return disabled;
+    }
     try {
       const parsed = GraphLockInputSchema.parse(input);
+      const opId = resolveOperationId(parsed.op_id, "graph_lock_op");
       logger.info("graph_lock_requested", {
         graph_id: parsed.graph_id,
         holder: parsed.holder,
         ttl_ms: parsed.ttl_ms ?? null,
+        op_id: opId,
       });
-      const result = handleGraphLock(getGraphLockToolContext(), parsed);
+      const result = handleGraphLock(getGraphLockToolContext(), { ...parsed, op_id: opId });
       logger.info("graph_lock_acquired", {
         graph_id: result.graph_id,
         holder: result.holder,
         lock_id: result.lock_id,
         expires_at: result.expires_at ?? null,
+        op_id: result.op_id,
       });
       return {
         content: [{ type: "text" as const, text: j({ tool: "graph_lock", result }) }],
         structuredContent: result,
       };
     } catch (error) {
-      return graphToolError(logger, "graph_lock", error, {}, {
+      return graphToolError(logger, "graph_lock", error, {
+        op_id: extractStringProperty(input as Record<string, unknown>, "op_id") ?? undefined,
+      }, {
         defaultCode: "E-LOCK-ACQUIRE",
         invalidInputCode: "E-LOCK-INVALID-INPUT",
       });
@@ -3981,25 +4229,35 @@ server.registerTool(
     inputSchema: GraphUnlockInputShape,
   },
   async (input: unknown) => {
+    const disabled = ensureLocksEnabled("graph_unlock");
+    if (disabled) {
+      return disabled;
+    }
     let lockIdForError: string | undefined;
     try {
       const parsed = GraphUnlockInputSchema.parse(input);
       lockIdForError = parsed.lock_id;
+      const opId = resolveOperationId(parsed.op_id, "graph_unlock_op");
       logger.info("graph_unlock_requested", {
         lock_id: parsed.lock_id,
+        op_id: opId,
       });
-      const result = handleGraphUnlock(getGraphLockToolContext(), parsed);
+      const result = handleGraphUnlock(getGraphLockToolContext(), { ...parsed, op_id: opId });
       logger.info("graph_unlock_succeeded", {
         lock_id: result.lock_id,
         graph_id: result.graph_id,
         expired: result.expired,
+        op_id: result.op_id,
       });
       return {
         content: [{ type: "text" as const, text: j({ tool: "graph_unlock", result }) }],
         structuredContent: result,
       };
     } catch (error) {
-      return graphToolError(logger, "graph_unlock", error, { lock_id: lockIdForError }, {
+      return graphToolError(logger, "graph_unlock", error, {
+        lock_id: lockIdForError,
+        op_id: extractStringProperty(input as Record<string, unknown>, "op_id") ?? undefined,
+      }, {
         defaultCode: "E-LOCK-RELEASE",
         invalidInputCode: "E-LOCK-INVALID-INPUT",
       });
@@ -4018,9 +4276,11 @@ server.registerTool(
     let parsed: GraphSubgraphExtractInput | undefined;
     try {
       parsed = GraphSubgraphExtractInputSchema.parse(input);
+      const opId = resolveOperationId(parsed.op_id, "graph_subgraph_extract_op");
       logger.info("graph_subgraph_extract_requested", {
         node_id: parsed.node_id,
         run_id: parsed.run_id,
+        op_id: opId,
       });
       const extraction = await extractSubgraphToFile({
         graph: parsed.graph,
@@ -4034,6 +4294,7 @@ server.registerTool(
         run_id: extraction.runId,
         subgraph_ref: extraction.subgraphRef,
         version: extraction.version,
+        op_id: opId,
       });
       const descriptorPayload = {
         run_id: extraction.runId,
@@ -4045,6 +4306,7 @@ server.registerTool(
         relative_path: extraction.relativePath,
         graph_id: extraction.graphId,
         graph_version: extraction.graphVersion,
+        op_id: opId,
       };
       return {
         content: [
@@ -4063,6 +4325,7 @@ server.registerTool(
       return graphToolError(logger, "graph_subgraph_extract", error, {
         node_id: parsed?.node_id,
         run_id: parsed?.run_id,
+        op_id: parsed ? parsed.op_id ?? undefined : undefined,
       });
     }
   },
@@ -4078,17 +4341,20 @@ server.registerTool(
   async (input: unknown) => {
     try {
       const parsed = GraphHyperExportInputSchema.parse(input);
+      const opId = resolveOperationId(parsed.op_id, "graph_hyper_export_op");
       logger.info("graph_hyper_export_requested", {
         graph_id: parsed.id,
         nodes: parsed.nodes.length,
         hyper_edges: parsed.hyper_edges.length,
+        op_id: opId,
       });
-      const result = handleGraphHyperExport(parsed);
+      const result = handleGraphHyperExport({ ...parsed, op_id: opId });
       logger.info("graph_hyper_export_succeeded", {
         graph_id: result.graph.graph_id,
         nodes: result.stats.nodes,
         edges: result.stats.edges,
         hyper_edges: result.stats.hyper_edges,
+        op_id: result.op_id,
       });
       return {
         content: [
@@ -4097,7 +4363,9 @@ server.registerTool(
         structuredContent: result,
       };
     } catch (error) {
-      return graphToolError(logger, "graph_hyper_export", error);
+      return graphToolError(logger, "graph_hyper_export", error, {
+        op_id: extractStringProperty(input as Record<string, unknown>, "op_id") ?? undefined,
+      });
     }
   },
 );
@@ -4369,10 +4637,12 @@ server.registerTool(
       parsed = GraphRewriteApplyInputSchema.parse(input);
       graphIdForError = parsed.graph.graph_id ?? null;
       graphVersionForError = parsed.graph.graph_version ?? null;
+      const opId = resolveOperationId(parsed.op_id, "graph_rewrite_apply_op");
       logger.info("graph_rewrite_apply_requested", {
         mode: parsed.mode,
         graph_id: graphIdForError,
         version: graphVersionForError,
+        op_id: opId,
       });
 
       const baseGraph = normaliseGraphPayload(parsed.graph);
@@ -4389,6 +4659,7 @@ server.registerTool(
         const rewriteInput: GraphRewriteApplyInput = {
           ...parsed,
           graph: serialiseNormalisedGraph(tx.workingCopy),
+          op_id: opId,
         };
         const intermediate = handleGraphRewriteApply(rewriteInput);
         committed = graphTransactions.commit(
@@ -4416,12 +4687,14 @@ server.registerTool(
             graph_id: committed.graphId,
             references: summary.references.length,
             missing: summary.missing.length,
+            op_id: opId,
           });
         }
         if (summary.missing.length > 0) {
           logger.warn("graph_rewrite_apply_missing_subgraphs", {
             graph_id: committed.graphId,
             missing: summary.missing,
+            op_id: opId,
           });
         }
         const enrichedResult = {
@@ -4438,6 +4711,7 @@ server.registerTool(
           graph_id: committed.graphId,
           version: committed.version,
           committed_at: committed.committedAt,
+          op_id: opId,
         });
         return {
           content: [
@@ -4476,12 +4750,14 @@ server.registerTool(
           graph_id: graphIdForError ?? undefined,
           version: graphVersionForError ?? undefined,
           mode: parsed?.mode,
+          op_id: extractStringProperty(input as Record<string, unknown>, "op_id") ?? undefined,
         });
       }
       return graphToolError(logger, "graph_rewrite_apply", error, {
         graph_id: graphIdForError ?? undefined,
         version: graphVersionForError ?? undefined,
         mode: parsed?.mode,
+        op_id: extractStringProperty(input as Record<string, unknown>, "op_id") ?? undefined,
       });
     }
   },
@@ -4500,17 +4776,21 @@ server.registerTool(
       return disabled;
     }
     let graphIdForError: string | null = null;
+    let opIdForError: string | undefined;
     try {
       const parsed = TxBeginInputSchema.parse(input ?? {});
       graphIdForError = parsed.graph_id;
+      opIdForError = parsed.op_id ?? undefined;
+      const result = handleTxBegin(getTxToolContext(), parsed);
+      opIdForError = result.op_id;
       logger.info("tx_begin_requested", {
         graph_id: parsed.graph_id,
         expected_version: parsed.expected_version ?? null,
         owner: parsed.owner ?? null,
         ttl_ms: parsed.ttl_ms ?? null,
         idempotency_key: parsed.idempotency_key ?? null,
+        op_id: result.op_id,
       });
-      const result = handleTxBegin(getTxToolContext(), parsed);
       if (result.idempotent) {
         logger.info("tx_begin_replayed", {
           graph_id: result.graph_id,
@@ -4519,6 +4799,7 @@ server.registerTool(
           owner: result.owner,
           expires_at: result.expires_at,
           idempotency_key: result.idempotency_key,
+          op_id: result.op_id,
         });
       } else {
         logger.info("tx_begin_opened", {
@@ -4528,6 +4809,7 @@ server.registerTool(
           owner: result.owner,
           expires_at: result.expires_at,
           idempotency_key: result.idempotency_key,
+          op_id: result.op_id,
         });
       }
       return {
@@ -4535,7 +4817,10 @@ server.registerTool(
         structuredContent: result as unknown as Record<string, unknown>,
       };
     } catch (error) {
-      return transactionToolError(logger, "tx_begin", error, { graph_id: graphIdForError ?? undefined });
+      return transactionToolError(logger, "tx_begin", error, {
+        graph_id: graphIdForError ?? undefined,
+        op_id: opIdForError,
+      });
     }
   },
 );
@@ -4553,27 +4838,35 @@ server.registerTool(
       return disabled;
     }
     let txIdForError: string | null = null;
+    let opIdForError: string | undefined;
     try {
       const parsed = TxApplyInputSchema.parse(input);
       txIdForError = parsed.tx_id;
+      opIdForError = parsed.op_id ?? undefined;
+      const result = handleTxApply(getTxToolContext(), parsed);
+      opIdForError = result.op_id;
       logger.info("tx_apply_requested", {
         tx_id: parsed.tx_id,
         operations: parsed.operations.length,
+        op_id: result.op_id,
       });
-      const result = handleTxApply(getTxToolContext(), parsed);
       logger.info("tx_apply_mutated", {
         tx_id: result.tx_id,
         graph_id: result.graph_id,
         base_version: result.base_version,
         preview_version: result.preview_version,
         changed: result.changed,
+        op_id: result.op_id,
       });
       return {
         content: [{ type: "text" as const, text: j({ tool: "tx_apply", result }) }],
         structuredContent: result as unknown as Record<string, unknown>,
       };
     } catch (error) {
-      return transactionToolError(logger, "tx_apply", error, { tx_id: txIdForError ?? undefined });
+      return transactionToolError(logger, "tx_apply", error, {
+        tx_id: txIdForError ?? undefined,
+        op_id: opIdForError,
+      });
     }
   },
 );
@@ -4591,23 +4884,30 @@ server.registerTool(
       return disabled;
     }
     let txIdForError: string | null = null;
+    let opIdForError: string | undefined;
     try {
       const parsed = TxCommitInputSchema.parse(input);
       txIdForError = parsed.tx_id;
-      logger.info("tx_commit_requested", { tx_id: parsed.tx_id });
+      opIdForError = parsed.op_id ?? undefined;
       const result = handleTxCommit(getTxToolContext(), parsed);
+      opIdForError = result.op_id;
+      logger.info("tx_commit_requested", { tx_id: parsed.tx_id, op_id: result.op_id });
       logger.info("tx_commit_succeeded", {
         tx_id: result.tx_id,
         graph_id: result.graph_id,
         version: result.version,
         committed_at: result.committed_at,
+        op_id: result.op_id,
       });
       return {
         content: [{ type: "text" as const, text: j({ tool: "tx_commit", result }) }],
         structuredContent: result as unknown as Record<string, unknown>,
       };
     } catch (error) {
-      return transactionToolError(logger, "tx_commit", error, { tx_id: txIdForError ?? undefined });
+      return transactionToolError(logger, "tx_commit", error, {
+        tx_id: txIdForError ?? undefined,
+        op_id: opIdForError,
+      });
     }
   },
 );
@@ -4625,23 +4925,30 @@ server.registerTool(
       return disabled;
     }
     let txIdForError: string | null = null;
+    let opIdForError: string | undefined;
     try {
       const parsed = TxRollbackInputSchema.parse(input);
       txIdForError = parsed.tx_id;
-      logger.info("tx_rollback_requested", { tx_id: parsed.tx_id });
+      opIdForError = parsed.op_id ?? undefined;
       const result = handleTxRollback(getTxToolContext(), parsed);
+      opIdForError = result.op_id;
+      logger.info("tx_rollback_requested", { tx_id: parsed.tx_id, op_id: result.op_id });
       logger.info("tx_rollback_succeeded", {
         tx_id: result.tx_id,
         graph_id: result.graph_id,
         version: result.version,
         rolled_back_at: result.rolled_back_at,
+        op_id: result.op_id,
       });
       return {
         content: [{ type: "text" as const, text: j({ tool: "tx_rollback", result }) }],
         structuredContent: result as unknown as Record<string, unknown>,
       };
     } catch (error) {
-      return transactionToolError(logger, "tx_rollback", error, { tx_id: txIdForError ?? undefined });
+      return transactionToolError(logger, "tx_rollback", error, {
+        tx_id: txIdForError ?? undefined,
+        op_id: opIdForError,
+      });
     }
   },
 );
@@ -4656,22 +4963,27 @@ server.registerTool(
   async (input: unknown) => {
     try {
       const parsed = GraphValidateInputSchema.parse(input);
+      const opId = resolveOperationId(parsed.op_id, "graph_validate_op");
       logger.info("graph_validate_requested", {
         strict_weights: parsed.strict_weights ?? false,
         cycle_limit: parsed.cycle_limit,
+        op_id: opId,
       });
-      const result = handleGraphValidate(parsed);
+      const result = handleGraphValidate({ ...parsed, op_id: opId });
       logger.info("graph_validate_completed", {
         ok: result.ok,
         errors: result.errors.length,
         warnings: result.warnings.length,
+        op_id: result.op_id,
       });
       return {
         content: [{ type: "text" as const, text: j({ tool: "graph_validate", result }) }],
         structuredContent: result,
       };
     } catch (error) {
-      return graphToolError(logger, "graph_validate", error);
+      return graphToolError(logger, "graph_validate", error, {
+        op_id: extractStringProperty(input as Record<string, unknown>, "op_id") ?? undefined,
+      });
     }
   },
 );
@@ -4686,20 +4998,25 @@ server.registerTool(
   async (input: unknown) => {
     try {
       const parsed = GraphSummarizeInputSchema.parse(input);
+      const opId = resolveOperationId(parsed.op_id, "graph_summarize_op");
       logger.info("graph_summarize_requested", {
         include_centrality: parsed.include_centrality,
+        op_id: opId,
       });
-      const result = handleGraphSummarize(parsed);
+      const result = handleGraphSummarize({ ...parsed, op_id: opId });
       logger.info("graph_summarize_succeeded", {
         nodes: result.metrics.node_count,
         edges: result.metrics.edge_count,
+        op_id: result.op_id,
       });
       return {
         content: [{ type: "text" as const, text: j({ tool: "graph_summarize", result }) }],
         structuredContent: result,
       };
     } catch (error) {
-      return graphToolError(logger, "graph_summarize", error);
+      return graphToolError(logger, "graph_summarize", error, {
+        op_id: extractStringProperty(input as Record<string, unknown>, "op_id") ?? undefined,
+      });
     }
   },
 );
@@ -4714,23 +5031,28 @@ server.registerTool(
   async (input: unknown) => {
     try {
       const parsed = GraphPathsKShortestInputSchema.parse(input);
+      const opId = resolveOperationId(parsed.op_id, "graph_paths_k_shortest_op");
       logger.info("graph_paths_k_shortest_requested", {
         from: parsed.from,
         to: parsed.to,
         k: parsed.k,
         weight_attribute: parsed.weight_attribute,
         max_deviation: parsed.max_deviation ?? null,
+        op_id: opId,
       });
-      const result = handleGraphPathsKShortest(parsed);
+      const result = handleGraphPathsKShortest({ ...parsed, op_id: opId });
       logger.info("graph_paths_k_shortest_succeeded", {
         returned_k: result.returned_k,
+        op_id: result.op_id,
       });
       return {
         content: [{ type: "text" as const, text: j({ tool: "graph_paths_k_shortest", result }) }],
         structuredContent: result,
       };
     } catch (error) {
-      return graphToolError(logger, "graph_paths_k_shortest", error);
+      return graphToolError(logger, "graph_paths_k_shortest", error, {
+        op_id: extractStringProperty(input as Record<string, unknown>, "op_id") ?? undefined,
+      });
     }
   },
 );
@@ -4743,27 +5065,35 @@ server.registerTool(
     inputSchema: GraphPathsConstrainedInputShape,
   },
   async (input) => {
+    let opIdForError: string | undefined;
     try {
       const parsed = GraphPathsConstrainedInputSchema.parse(input);
+      const opId = resolveOperationId(parsed.op_id, "graph_paths_constrained_op");
+      opIdForError = opId;
       logger.info("graph_paths_constrained_requested", {
         from: parsed.from,
         to: parsed.to,
         avoid_nodes: parsed.avoid_nodes.length,
         avoid_edges: parsed.avoid_edges.length,
         max_cost: parsed.max_cost ?? null,
+        op_id: opId,
       });
-      const result = handleGraphPathsConstrained(parsed);
+      const result = handleGraphPathsConstrained({ ...parsed, op_id: opId });
+      opIdForError = result.op_id;
       logger.info("graph_paths_constrained_completed", {
         status: result.status,
         reason: result.reason,
         cost: result.cost,
+        op_id: result.op_id,
       });
       return {
         content: [{ type: "text" as const, text: j({ tool: "graph_paths_constrained", result }) }],
         structuredContent: result,
       };
     } catch (error) {
-      return graphToolError(logger, "graph_paths_constrained", error);
+      const providedOpId =
+        opIdForError ?? extractStringProperty(input as Record<string, unknown>, "op_id") ?? undefined;
+      return graphToolError(logger, "graph_paths_constrained", error, { op_id: providedOpId });
     }
   },
 );
@@ -4776,23 +5106,31 @@ server.registerTool(
     inputSchema: GraphCentralityBetweennessInputShape,
   },
   async (input) => {
+    let opIdForError: string | undefined;
     try {
       const parsed = GraphCentralityBetweennessInputSchema.parse(input);
+      const opId = resolveOperationId(parsed.op_id, "graph_centrality_betweenness_op");
+      opIdForError = opId;
       logger.info("graph_centrality_betweenness_requested", {
         weighted: parsed.weighted,
         normalise: parsed.normalise,
         top_k: parsed.top_k,
+        op_id: opId,
       });
-      const result = handleGraphCentralityBetweenness(parsed);
+      const result = handleGraphCentralityBetweenness({ ...parsed, op_id: opId });
+      opIdForError = result.op_id;
       logger.info("graph_centrality_betweenness_succeeded", {
         top_count: result.top.length,
+        op_id: result.op_id,
       });
       return {
         content: [{ type: "text" as const, text: j({ tool: "graph_centrality_betweenness", result }) }],
         structuredContent: result,
       };
     } catch (error) {
-      return graphToolError(logger, "graph_centrality_betweenness", error);
+      const providedOpId =
+        opIdForError ?? extractStringProperty(input as Record<string, unknown>, "op_id") ?? undefined;
+      return graphToolError(logger, "graph_centrality_betweenness", error, { op_id: providedOpId });
     }
   },
 );
@@ -4805,24 +5143,32 @@ server.registerTool(
     inputSchema: GraphPartitionInputShape,
   },
   async (input) => {
+    let opIdForError: string | undefined;
     try {
       const parsed = GraphPartitionInputSchema.parse(input);
+      const opId = resolveOperationId(parsed.op_id, "graph_partition_op");
+      opIdForError = opId;
       logger.info("graph_partition_requested", {
         k: parsed.k,
         objective: parsed.objective,
         seed: parsed.seed ?? null,
+        op_id: opId,
       });
-      const result = handleGraphPartition(parsed);
+      const result = handleGraphPartition({ ...parsed, op_id: opId });
+      opIdForError = result.op_id;
       logger.info("graph_partition_succeeded", {
         partition_count: result.partition_count,
         cut_edges: result.cut_edges,
+        op_id: result.op_id,
       });
       return {
         content: [{ type: "text" as const, text: j({ tool: "graph_partition", result }) }],
         structuredContent: result,
       };
     } catch (error) {
-      return graphToolError(logger, "graph_partition", error);
+      const providedOpId =
+        opIdForError ?? extractStringProperty(input as Record<string, unknown>, "op_id") ?? undefined;
+      return graphToolError(logger, "graph_partition", error, { op_id: providedOpId });
     }
   },
 );
@@ -4835,23 +5181,31 @@ server.registerTool(
     inputSchema: GraphCriticalPathInputShape,
   },
   async (input) => {
+    let opIdForError: string | undefined;
     try {
       const parsed = GraphCriticalPathInputSchema.parse(input);
+      const opId = resolveOperationId(parsed.op_id, "graph_critical_path_op");
+      opIdForError = opId;
       logger.info("graph_critical_path_requested", {
         duration_attribute: parsed.duration_attribute,
         fallback_duration_attribute: parsed.fallback_duration_attribute ?? null,
+        op_id: opId,
       });
-      const result = handleGraphCriticalPath(parsed);
+      const result = handleGraphCriticalPath({ ...parsed, op_id: opId });
+      opIdForError = result.op_id;
       logger.info("graph_critical_path_succeeded", {
         duration: result.duration,
         path_length: result.critical_path.length,
+        op_id: result.op_id,
       });
       return {
         content: [{ type: "text" as const, text: j({ tool: "graph_critical_path", result }) }],
         structuredContent: result,
       };
     } catch (error) {
-      return graphToolError(logger, "graph_critical_path", error);
+      const providedOpId =
+        opIdForError ?? extractStringProperty(input as Record<string, unknown>, "op_id") ?? undefined;
+      return graphToolError(logger, "graph_critical_path", error, { op_id: providedOpId });
     }
   },
 );
@@ -4864,23 +5218,31 @@ server.registerTool(
     inputSchema: GraphSimulateInputShape,
   },
   async (input) => {
+    let opIdForError: string | undefined;
     try {
       const parsed = GraphSimulateInputSchema.parse(input);
+      const opId = resolveOperationId(parsed.op_id, "graph_simulate_op");
+      opIdForError = opId;
       logger.info("graph_simulate_requested", {
         parallelism: parsed.parallelism,
         duration_attribute: parsed.duration_attribute,
+        op_id: opId,
       });
-      const result = handleGraphSimulate(parsed);
+      const result = handleGraphSimulate({ ...parsed, op_id: opId });
+      opIdForError = result.op_id;
       logger.info("graph_simulate_succeeded", {
         makespan: result.metrics.makespan,
         queue_events: result.metrics.queue_events,
+        op_id: result.op_id,
       });
       return {
         content: [{ type: "text" as const, text: j({ tool: "graph_simulate", result }) }],
         structuredContent: result,
       };
     } catch (error) {
-      return graphToolError(logger, "graph_simulate", error);
+      const providedOpId =
+        opIdForError ?? extractStringProperty(input as Record<string, unknown>, "op_id") ?? undefined;
+      return graphToolError(logger, "graph_simulate", error, { op_id: providedOpId });
     }
   },
 );
@@ -4893,14 +5255,19 @@ server.registerTool(
     inputSchema: GraphOptimizeInputShape,
   },
   async (input) => {
+    let opIdForError: string | undefined;
     try {
       const parsed = GraphOptimizeInputSchema.parse(input);
+      const opId = resolveOperationId(parsed.op_id, "graph_optimize_op");
+      opIdForError = opId;
       logger.info("graph_optimize_requested", {
         parallelism: parsed.parallelism,
         max_parallelism: parsed.max_parallelism,
         explore_count: parsed.explore_parallelism?.length ?? 0,
+        op_id: opId,
       });
-      const result = handleGraphOptimize(parsed);
+      const result = handleGraphOptimize({ ...parsed, op_id: opId });
+      opIdForError = result.op_id;
       const bestMakespan = result.projections.reduce(
         (acc, projection) => Math.min(acc, projection.makespan),
         Number.POSITIVE_INFINITY,
@@ -4908,13 +5275,16 @@ server.registerTool(
       logger.info("graph_optimize_completed", {
         suggestions: result.suggestions.length,
         best_makespan: Number.isFinite(bestMakespan) ? bestMakespan : null,
+        op_id: result.op_id,
       });
       return {
         content: [{ type: "text" as const, text: j({ tool: "graph_optimize", result }) }],
         structuredContent: result,
       };
     } catch (error) {
-      return graphToolError(logger, "graph_optimize", error);
+      const providedOpId =
+        opIdForError ?? extractStringProperty(input as Record<string, unknown>, "op_id") ?? undefined;
+      return graphToolError(logger, "graph_optimize", error, { op_id: providedOpId });
     }
   },
 );
@@ -4927,23 +5297,31 @@ server.registerTool(
     inputSchema: GraphOptimizeMooInputShape,
   },
   async (input) => {
+    let opIdForError: string | undefined;
     try {
       const parsed = GraphOptimizeMooInputSchema.parse(input);
+      const opId = resolveOperationId(parsed.op_id, "graph_optimize_moo_op");
+      opIdForError = opId;
       logger.info("graph_optimize_moo_requested", {
         candidates: parsed.parallelism_candidates.length,
         objectives: parsed.objectives.length,
+        op_id: opId,
       });
-      const result = handleGraphOptimizeMoo(parsed);
+      const result = handleGraphOptimizeMoo({ ...parsed, op_id: opId });
+      opIdForError = result.op_id;
       logger.info("graph_optimize_moo_completed", {
         pareto_count: result.pareto_front.length,
         scalarized: result.scalarization ? true : false,
+        op_id: result.op_id,
       });
       return {
         content: [{ type: "text" as const, text: j({ tool: "graph_optimize_moo", result }) }],
         structuredContent: result,
       };
     } catch (error) {
-      return graphToolError(logger, "graph_optimize_moo", error);
+      const providedOpId =
+        opIdForError ?? extractStringProperty(input as Record<string, unknown>, "op_id") ?? undefined;
+      return graphToolError(logger, "graph_optimize_moo", error, { op_id: providedOpId });
     }
   },
 );
@@ -4956,24 +5334,32 @@ server.registerTool(
     inputSchema: GraphCausalAnalyzeInputShape,
   },
   async (input) => {
+    let opIdForError: string | undefined;
     try {
       const parsed = GraphCausalAnalyzeInputSchema.parse(input);
+      const opId = resolveOperationId(parsed.op_id, "graph_causal_analyze_op");
+      opIdForError = opId;
       logger.info("graph_causal_analyze_requested", {
         max_cycles: parsed.max_cycles,
         compute_min_cut: parsed.compute_min_cut,
+        op_id: opId,
       });
-      const result = handleGraphCausalAnalyze(parsed);
+      const result = handleGraphCausalAnalyze({ ...parsed, op_id: opId });
+      opIdForError = result.op_id;
       logger.info("graph_causal_analyze_completed", {
         acyclic: result.acyclic,
         cycles: result.cycles.length,
         min_cut_size: result.min_cut?.size ?? null,
+        op_id: result.op_id,
       });
       return {
         content: [{ type: "text" as const, text: j({ tool: "graph_causal_analyze", result }) }],
         structuredContent: result,
       };
     } catch (error) {
-      return graphToolError(logger, "graph_causal_analyze", error);
+      const providedOpId =
+        opIdForError ?? extractStringProperty(input as Record<string, unknown>, "op_id") ?? undefined;
+      return graphToolError(logger, "graph_causal_analyze", error, { op_id: providedOpId });
     }
   },
 );
@@ -5300,6 +5686,9 @@ server.registerTool(
       // registered so observers can link cancellation requests to plan
       // lifecycle artefacts.
       const result = {
+        // Surface the `{ ok:true }` contract documented in the checklist while
+        // preserving the richer correlation metadata already returned.
+        ok: true as const,
         op_id: parsed.op_id,
         outcome,
         reason: handle?.reason ?? parsed.reason ?? null,
@@ -5394,6 +5783,10 @@ server.registerTool(
     inputSchema: BbBatchSetInputShape,
   },
   async (input) => {
+    const disabled = ensureBulkEnabled("bb_batch_set");
+    if (disabled) {
+      return disabled;
+    }
     try {
       pruneExpired();
       const parsed = BbBatchSetInputSchema.parse(input);
@@ -5526,6 +5919,10 @@ server.registerTool(
     inputSchema: StigBatchInputShape,
   },
   async (input) => {
+    const disabled = ensureBulkEnabled("stig_batch");
+    if (disabled) {
+      return disabled;
+    }
     try {
       pruneExpired();
       const parsed = StigBatchInputSchema.parse(input);
@@ -5788,6 +6185,10 @@ server.registerTool(
     inputSchema: ChildBatchCreateInputShape,
   },
   async (input) => {
+    const disabled = ensureBulkEnabled("child_batch_create");
+    if (disabled) {
+      return disabled;
+    }
     pruneExpired();
     try {
       const parsed = ChildBatchCreateInputSchema.parse(input);
@@ -5822,6 +6223,10 @@ server.registerTool(
     inputSchema: ChildSpawnCodexInputShape,
   },
   async (input) => {
+    const disabled = ensureChildOpsFineEnabled("child_spawn_codex");
+    if (disabled) {
+      return disabled;
+    }
     try {
       const parsed = ChildSpawnCodexInputSchema.parse(input);
       const result = await handleChildSpawnCodex(getChildToolContext(), parsed);
@@ -5852,6 +6257,10 @@ server.registerTool(
     inputSchema: ChildAttachInputShape,
   },
   async (input) => {
+    const disabled = ensureChildOpsFineEnabled("child_attach");
+    if (disabled) {
+      return disabled;
+    }
     try {
       const parsed = ChildAttachInputSchema.parse(input);
       const result = await handleChildAttach(getChildToolContext(), parsed);
@@ -5875,6 +6284,10 @@ server.registerTool(
     inputSchema: ChildSetRoleInputShape,
   },
   async (input) => {
+    const disabled = ensureChildOpsFineEnabled("child_set_role");
+    if (disabled) {
+      return disabled;
+    }
     try {
       const parsed = ChildSetRoleInputSchema.parse(input);
       const result = await handleChildSetRole(getChildToolContext(), parsed);
@@ -5898,6 +6311,10 @@ server.registerTool(
     inputSchema: ChildSetLimitsInputShape,
   },
   async (input) => {
+    const disabled = ensureChildOpsFineEnabled("child_set_limits");
+    if (disabled) {
+      return disabled;
+    }
     try {
       const parsed = ChildSetLimitsInputSchema.parse(input);
       const result = await handleChildSetLimits(getChildToolContext(), parsed);
@@ -6002,6 +6419,10 @@ server.registerTool(
     inputSchema: ChildStatusInputShape,
   },
   (input) => {
+    const disabled = ensureChildOpsFineEnabled("child_status");
+    if (disabled) {
+      return disabled;
+    }
     try {
       const parsed = ChildStatusInputSchema.parse(input);
       const result = handleChildStatus(getChildToolContext(), parsed);
@@ -6806,7 +7227,15 @@ server.registerTool(
       let resolvedPath: string | undefined;
       let source = cfg.source;
       if (!source && cfg.path) {
-        resolvedPath = resolvePath(process.cwd(), cfg.path);
+        try {
+          resolvedPath = resolveWorkspacePath(cfg.path);
+        } catch (error) {
+          if (error instanceof PathResolutionError) {
+            return formatWorkspacePathError(error);
+          }
+          throw error;
+        }
+
         try {
           source = await readFile(resolvedPath, "utf8");
         } catch (fsError) {
