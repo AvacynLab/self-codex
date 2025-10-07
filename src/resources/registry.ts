@@ -1,6 +1,11 @@
 import { EventEmitter } from "node:events";
 
-import type { BlackboardStore, BlackboardEntrySnapshot } from "../coord/blackboard.js";
+import type {
+  BlackboardStore,
+  BlackboardEntrySnapshot,
+  BlackboardEvent,
+  BlackboardEventKind,
+} from "../coord/blackboard.js";
 import type { NormalisedGraph } from "../graph/types.js";
 
 /** Supported resource kinds exposed through the registry. */
@@ -18,6 +23,8 @@ export interface ResourceRegistryOptions {
   runHistoryLimit?: number;
   /** Maximum number of log entries preserved per child (default 500). */
   childLogHistoryLimit?: number;
+  /** Maximum number of blackboard events preserved per namespace (default 500). */
+  blackboardHistoryLimit?: number;
   /** Optional blackboard store used to resolve namespace resources. */
   blackboard?: BlackboardStore | null;
 }
@@ -100,6 +107,28 @@ export interface ResourceChildLogEntry {
   parsed: unknown;
 }
 
+/** Snapshot describing a blackboard mutation event. */
+export interface ResourceBlackboardEvent {
+  /** Monotonic sequence number derived from the blackboard version. */
+  seq: number;
+  /** Original blackboard version associated with the mutation. */
+  version: number;
+  /** Millisecond timestamp recorded by the blackboard store. */
+  ts: number;
+  /** Kind of mutation that occurred (set/delete/expire). */
+  kind: BlackboardEventKind;
+  /** Namespace extracted from the blackboard key. */
+  namespace: string;
+  /** Fully qualified key stored inside the namespace. */
+  key: string;
+  /** Snapshot describing the new state when applicable. */
+  entry: BlackboardEntrySnapshot | null;
+  /** Snapshot describing the previous state when applicable. */
+  previous: BlackboardEntrySnapshot | null;
+  /** Optional reason accompanying expire events (e.g. ttl). */
+  reason: string | null;
+}
+
 /** Result returned when reading a resource. */
 export interface ResourceReadResult extends Record<string, unknown> {
   uri: string;
@@ -118,14 +147,96 @@ export interface ResourceWatchOptions {
   fromSeq?: number;
   /** Maximum number of events returned in a single page. */
   limit?: number;
+  /** Optional set of keys limiting blackboard namespace events to specific entries. */
+  keys?: string[];
+  /** Optional filters applied when paginating blackboard namespaces. */
+  blackboard?: ResourceWatchBlackboardFilters;
+  /** Optional filters applied when paginating run events. */
+  run?: ResourceWatchRunFilters;
+  /** Optional filters applied when paginating child log entries. */
+  child?: ResourceWatchChildFilters;
+}
+
+/**
+ * Extended options accepted when creating an async watch stream. Consumers can
+ * attach an {@link AbortSignal} to cancel pending iterations gracefully.
+ */
+export interface ResourceWatchStreamOptions extends ResourceWatchOptions {
+  /** Optional abort signal cancelling the iterator when triggered. */
+  signal?: AbortSignal | null;
+}
+
+/** Filters applied when collecting run events from the registry. */
+export interface ResourceWatchRunFilters {
+  /** Optional list of event levels to retain (lowercase). */
+  levels?: string[];
+  /** Optional list of event kinds to retain (uppercased for determinism). */
+  kinds?: string[];
+  /** Restrict events to specific job identifiers. */
+  jobIds?: string[];
+  /** Restrict events to specific operation identifiers. */
+  opIds?: string[];
+  /** Restrict events to specific graph identifiers. */
+  graphIds?: string[];
+  /** Restrict events to specific node identifiers. */
+  nodeIds?: string[];
+  /** Restrict events to specific child identifiers. */
+  childIds?: string[];
+  /** Restrict events to specific correlated run identifiers. */
+  runIds?: string[];
+  /** Ignore events that occurred strictly before the provided millisecond timestamp. */
+  sinceTs?: number;
+  /** Ignore events that occurred strictly after the provided millisecond timestamp. */
+  untilTs?: number;
+}
+
+/** Filters applied when collecting child runtime logs from the registry. */
+export interface ResourceWatchChildFilters {
+  /** Restrict log entries to specific streams (stdout/stderr/meta). */
+  streams?: Array<ResourceChildLogEntry["stream"]>;
+  /** Restrict log entries to specific job identifiers. */
+  jobIds?: string[];
+  /** Restrict log entries to specific run identifiers. */
+  runIds?: string[];
+  /** Restrict log entries to specific operation identifiers. */
+  opIds?: string[];
+  /** Restrict log entries to specific graph identifiers. */
+  graphIds?: string[];
+  /** Restrict log entries to specific node identifiers. */
+  nodeIds?: string[];
+  /** Ignore log entries that occurred strictly before the provided millisecond timestamp. */
+  sinceTs?: number;
+  /** Ignore log entries that occurred strictly after the provided millisecond timestamp. */
+  untilTs?: number;
+}
+
+/** Filters applied when collecting blackboard mutations from the registry. */
+export interface ResourceWatchBlackboardFilters {
+  /** Optional set of fully qualified or relative keys to retain. */
+  keys?: string[];
+  /** Optional subset of mutation kinds (`set`/`delete`/`expire`) to surface. */
+  kinds?: BlackboardEventKind[];
+  /** Require matching entries to contain every listed tag (case-insensitive). */
+  tags?: string[];
+  /** Ignore events that occurred strictly before the provided millisecond timestamp. */
+  sinceTs?: number;
+  /** Ignore events that occurred strictly after the provided millisecond timestamp. */
+  untilTs?: number;
 }
 
 /** Result returned by {@link ResourceRegistry.watch}. */
 export interface ResourceWatchResult {
   uri: string;
   kind: ResourceKind;
-  events: Array<ResourceRunEvent | ResourceChildLogEntry>;
+  events: Array<ResourceRunEvent | ResourceChildLogEntry | ResourceBlackboardEvent>;
   nextSeq: number;
+  /** Optional filters applied when collecting the page. */
+  filters?: {
+    keys?: string[];
+    blackboard?: ResourceWatchBlackboardFilters;
+    run?: ResourceWatchRunFilters;
+    child?: ResourceWatchChildFilters;
+  };
 }
 
 /** Base error emitted by the resource registry. */
@@ -154,6 +265,22 @@ export class ResourceWatchUnsupportedError extends ResourceRegistryError {
   constructor(uri: string) {
     super("E-RES-UNSUPPORTED", `resource '${uri}' cannot be watched`, "watch_not_supported");
     this.name = "ResourceWatchUnsupportedError";
+  }
+}
+
+/** Error raised when an async watch stream is aborted via an {@link AbortSignal}. */
+export class ResourceWatchAbortedError extends ResourceRegistryError {
+  constructor(uri: string) {
+    super("E-RES-WATCH_ABORT", `watch for '${uri}' aborted`, "watch_aborted");
+    this.name = "ResourceWatchAbortedError";
+  }
+}
+
+/** Error raised when an async watch stream is disposed via `return()`/`throw()`. */
+export class ResourceWatchDisposedError extends ResourceRegistryError {
+  constructor(uri: string) {
+    super("E-RES-WATCH_DISPOSED", `watch for '${uri}' disposed`);
+    this.name = "ResourceWatchDisposedError";
   }
 }
 
@@ -203,6 +330,28 @@ interface ChildLogHistory {
   emitter: EventEmitter;
 }
 
+/** History tracked for a single blackboard namespace. */
+interface BlackboardNamespaceHistory {
+  events: ResourceBlackboardEvent[];
+  lastSeq: number;
+  emitter: EventEmitter;
+}
+
+/** Internal context passed when creating an async watch stream. */
+interface WatchStreamContext {
+  uri: string;
+  kind: "run_events" | "child_logs" | "blackboard_namespace";
+  emitter: EventEmitter;
+  fromSeq: number;
+  limit: number;
+  signal: AbortSignal | null | undefined;
+  filters?: ResourceWatchResult["filters"];
+  slice: (fromSeq: number, limit: number) => {
+    events: Array<ResourceRunEvent | ResourceChildLogEntry | ResourceBlackboardEvent>;
+    nextSeq: number;
+  };
+}
+
 /** Utility ensuring limits remain sane. */
 function clampPositive(value: number | undefined, fallback: number): number {
   if (!value || !Number.isFinite(value) || value <= 0) {
@@ -214,6 +363,471 @@ function clampPositive(value: number | undefined, fallback: number): number {
 /** Creates a defensive deep clone so callers cannot mutate stored state. */
 function clone<T>(value: T): T {
   return structuredClone(value) as T;
+}
+
+interface NormalisedRunEventFilter {
+  readonly descriptor: ResourceWatchRunFilters;
+  readonly levelSet?: ReadonlySet<string>;
+  readonly kindSet?: ReadonlySet<string>;
+  readonly jobIdSet?: ReadonlySet<string>;
+  readonly opIdSet?: ReadonlySet<string>;
+  readonly graphIdSet?: ReadonlySet<string>;
+  readonly nodeIdSet?: ReadonlySet<string>;
+  readonly childIdSet?: ReadonlySet<string>;
+  readonly runIdSet?: ReadonlySet<string>;
+  readonly sinceTs: number | null;
+  readonly untilTs: number | null;
+}
+
+interface NormalisedChildLogFilter {
+  readonly descriptor: ResourceWatchChildFilters;
+  readonly streamSet?: ReadonlySet<ResourceChildLogEntry["stream"]>;
+  readonly jobIdSet?: ReadonlySet<string>;
+  readonly runIdSet?: ReadonlySet<string>;
+  readonly opIdSet?: ReadonlySet<string>;
+  readonly graphIdSet?: ReadonlySet<string>;
+  readonly nodeIdSet?: ReadonlySet<string>;
+  readonly sinceTs: number | null;
+  readonly untilTs: number | null;
+}
+
+interface NormalisedBlackboardFilter {
+  readonly descriptor: ResourceWatchBlackboardFilters;
+  readonly keyMatcher?: (candidate: string) => boolean;
+  readonly kindSet?: ReadonlySet<BlackboardEventKind>;
+  readonly tagSet?: ReadonlySet<string>;
+  readonly sinceTs: number | null;
+  readonly untilTs: number | null;
+}
+
+/** Permitted event levels captured by the orchestrator. */
+const RUN_EVENT_LEVELS = new Set<ResourceRunEvent["level"]>(["debug", "info", "warn", "error"]);
+
+/** Supported child runtime log streams. */
+const CHILD_LOG_STREAMS = new Set<ResourceChildLogEntry["stream"]>(["stdout", "stderr", "meta"]);
+
+function normaliseStringArray(
+  values: ReadonlyArray<string> | null | undefined,
+  options: { transform?: (value: string) => string; limit?: number } = {},
+): string[] {
+  if (!values || values.length === 0) {
+    return [];
+  }
+  const seen = new Set<string>();
+  const result: string[] = [];
+  const limit = options.limit ?? Number.POSITIVE_INFINITY;
+  for (const raw of values) {
+    if (typeof raw !== "string") {
+      continue;
+    }
+    const trimmed = raw.trim();
+    if (trimmed.length === 0) {
+      continue;
+    }
+    const transformed = options.transform ? options.transform(trimmed) : trimmed;
+    if (transformed.length === 0 || seen.has(transformed)) {
+      continue;
+    }
+    seen.add(transformed);
+    result.push(transformed);
+    if (result.length >= limit) {
+      break;
+    }
+  }
+  return result;
+}
+
+/**
+ * Ensures that a collection of tags contains every required value. Tags are
+ * compared case-insensitively to match the normalisation performed by the
+ * blackboard store.
+ */
+function containsAllTags(
+  tags: ReadonlyArray<string> | null | undefined,
+  required: ReadonlySet<string>,
+): boolean {
+  if (!tags || tags.length === 0) {
+    return false;
+  }
+  if (required.size === 0) {
+    return true;
+  }
+  const haystack = new Set(tags.map((tag) => tag.toLowerCase()));
+  for (const candidate of required) {
+    if (!haystack.has(candidate)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function normaliseRunEventFilter(
+  filters: ResourceWatchRunFilters | null | undefined,
+): NormalisedRunEventFilter | null {
+  if (!filters) {
+    return null;
+  }
+
+  const descriptor: ResourceWatchRunFilters = {};
+  const levelValues = normaliseStringArray(filters.levels, {
+    transform: (value) => value.toLowerCase(),
+    limit: 20,
+  }).filter((value) => RUN_EVENT_LEVELS.has(value as ResourceRunEvent["level"]));
+  const kindValues = normaliseStringArray(filters.kinds, {
+    transform: (value) => value.toUpperCase(),
+    limit: 50,
+  });
+  const jobValues = normaliseStringArray(filters.jobIds, { limit: 50 });
+  const opValues = normaliseStringArray(filters.opIds, { limit: 50 });
+  const graphValues = normaliseStringArray(filters.graphIds, { limit: 50 });
+  const nodeValues = normaliseStringArray(filters.nodeIds, { limit: 50 });
+  const childValues = normaliseStringArray(filters.childIds, { limit: 50 });
+  const runValues = normaliseStringArray(filters.runIds, { limit: 50 });
+  const sinceTs = normaliseOptionalNumber(filters.sinceTs);
+  let untilTs = normaliseOptionalNumber(filters.untilTs);
+
+  if (sinceTs !== null && untilTs !== null && untilTs < sinceTs) {
+    untilTs = sinceTs;
+  }
+
+  if (levelValues.length > 0) {
+    descriptor.levels = levelValues;
+  }
+  if (kindValues.length > 0) {
+    descriptor.kinds = kindValues;
+  }
+  if (jobValues.length > 0) {
+    descriptor.jobIds = jobValues;
+  }
+  if (opValues.length > 0) {
+    descriptor.opIds = opValues;
+  }
+  if (graphValues.length > 0) {
+    descriptor.graphIds = graphValues;
+  }
+  if (nodeValues.length > 0) {
+    descriptor.nodeIds = nodeValues;
+  }
+  if (childValues.length > 0) {
+    descriptor.childIds = childValues;
+  }
+  if (runValues.length > 0) {
+    descriptor.runIds = runValues;
+  }
+  if (sinceTs !== null) {
+    descriptor.sinceTs = sinceTs;
+  }
+  if (untilTs !== null) {
+    descriptor.untilTs = untilTs;
+  }
+
+  if (Object.keys(descriptor).length === 0) {
+    return null;
+  }
+
+  return {
+    descriptor,
+    levelSet: levelValues.length > 0 ? new Set(levelValues) : undefined,
+    kindSet: kindValues.length > 0 ? new Set(kindValues) : undefined,
+    jobIdSet: jobValues.length > 0 ? new Set(jobValues) : undefined,
+    opIdSet: opValues.length > 0 ? new Set(opValues) : undefined,
+    graphIdSet: graphValues.length > 0 ? new Set(graphValues) : undefined,
+    nodeIdSet: nodeValues.length > 0 ? new Set(nodeValues) : undefined,
+    childIdSet: childValues.length > 0 ? new Set(childValues) : undefined,
+    runIdSet: runValues.length > 0 ? new Set(runValues) : undefined,
+    sinceTs,
+    untilTs,
+  };
+}
+
+function normaliseChildLogFilter(
+  filters: ResourceWatchChildFilters | null | undefined,
+): NormalisedChildLogFilter | null {
+  if (!filters) {
+    return null;
+  }
+
+  const descriptor: ResourceWatchChildFilters = {};
+  const streams = (filters.streams ?? [])
+    .map((stream) => (typeof stream === "string" ? stream.trim() : ""))
+    .filter((stream): stream is ResourceChildLogEntry["stream"] =>
+      CHILD_LOG_STREAMS.has(stream as ResourceChildLogEntry["stream"]),
+    );
+  const uniqueStreams = Array.from(new Set(streams));
+  if (uniqueStreams.length > 0) {
+    descriptor.streams = uniqueStreams;
+  }
+
+  const jobValues = normaliseStringArray(filters.jobIds, { limit: 50 });
+  const runValues = normaliseStringArray(filters.runIds, { limit: 50 });
+  const opValues = normaliseStringArray(filters.opIds, { limit: 50 });
+  const graphValues = normaliseStringArray(filters.graphIds, { limit: 50 });
+  const nodeValues = normaliseStringArray(filters.nodeIds, { limit: 50 });
+  const sinceTs = normaliseOptionalNumber(filters.sinceTs);
+  let untilTs = normaliseOptionalNumber(filters.untilTs);
+
+  if (sinceTs !== null && untilTs !== null && untilTs < sinceTs) {
+    untilTs = sinceTs;
+  }
+
+  if (jobValues.length > 0) {
+    descriptor.jobIds = jobValues;
+  }
+  if (runValues.length > 0) {
+    descriptor.runIds = runValues;
+  }
+  if (opValues.length > 0) {
+    descriptor.opIds = opValues;
+  }
+  if (graphValues.length > 0) {
+    descriptor.graphIds = graphValues;
+  }
+  if (nodeValues.length > 0) {
+    descriptor.nodeIds = nodeValues;
+  }
+  if (sinceTs !== null) {
+    descriptor.sinceTs = sinceTs;
+  }
+  if (untilTs !== null) {
+    descriptor.untilTs = untilTs;
+  }
+
+  if (Object.keys(descriptor).length === 0) {
+    return null;
+  }
+
+  return {
+    descriptor,
+    streamSet: uniqueStreams.length > 0 ? new Set(uniqueStreams) : undefined,
+    jobIdSet: jobValues.length > 0 ? new Set(jobValues) : undefined,
+    runIdSet: runValues.length > 0 ? new Set(runValues) : undefined,
+    opIdSet: opValues.length > 0 ? new Set(opValues) : undefined,
+    graphIdSet: graphValues.length > 0 ? new Set(graphValues) : undefined,
+    nodeIdSet: nodeValues.length > 0 ? new Set(nodeValues) : undefined,
+    sinceTs,
+    untilTs,
+  };
+}
+
+function matchRunEvent(filter: NormalisedRunEventFilter | null, event: ResourceRunEvent): boolean {
+  if (!filter) {
+    return true;
+  }
+  if (filter.sinceTs !== null && event.ts < filter.sinceTs) {
+    return false;
+  }
+  if (filter.untilTs !== null && event.ts > filter.untilTs) {
+    return false;
+  }
+  if (filter.levelSet && !filter.levelSet.has(event.level.toLowerCase() as ResourceRunEvent["level"])) {
+    return false;
+  }
+  if (filter.kindSet && !filter.kindSet.has((event.kind ?? "").toUpperCase())) {
+    return false;
+  }
+  if (filter.jobIdSet && (!event.jobId || !filter.jobIdSet.has(event.jobId))) {
+    return false;
+  }
+  if (filter.opIdSet && (!event.opId || !filter.opIdSet.has(event.opId))) {
+    return false;
+  }
+  if (filter.graphIdSet && (!event.graphId || !filter.graphIdSet.has(event.graphId))) {
+    return false;
+  }
+  if (filter.nodeIdSet && (!event.nodeId || !filter.nodeIdSet.has(event.nodeId))) {
+    return false;
+  }
+  if (filter.childIdSet && (!event.childId || !filter.childIdSet.has(event.childId))) {
+    return false;
+  }
+  if (filter.runIdSet && (!event.runId || !filter.runIdSet.has(event.runId))) {
+    return false;
+  }
+  return true;
+}
+
+function matchChildLogEntry(filter: NormalisedChildLogFilter | null, entry: ResourceChildLogEntry): boolean {
+  if (!filter) {
+    return true;
+  }
+  if (filter.sinceTs !== null && entry.ts < filter.sinceTs) {
+    return false;
+  }
+  if (filter.untilTs !== null && entry.ts > filter.untilTs) {
+    return false;
+  }
+  if (filter.streamSet && !filter.streamSet.has(entry.stream)) {
+    return false;
+  }
+  if (filter.jobIdSet && (!entry.jobId || !filter.jobIdSet.has(entry.jobId))) {
+    return false;
+  }
+  if (filter.runIdSet && (!entry.runId || !filter.runIdSet.has(entry.runId))) {
+    return false;
+  }
+  if (filter.opIdSet && (!entry.opId || !filter.opIdSet.has(entry.opId))) {
+    return false;
+  }
+  if (filter.graphIdSet && (!entry.graphId || !filter.graphIdSet.has(entry.graphId))) {
+    return false;
+  }
+  if (filter.nodeIdSet && (!entry.nodeId || !filter.nodeIdSet.has(entry.nodeId))) {
+    return false;
+  }
+  return true;
+}
+
+/** Determines whether a blackboard mutation satisfies the active filters. */
+function matchBlackboardEvent(
+  filter: NormalisedBlackboardFilter | null,
+  event: ResourceBlackboardEvent,
+): boolean {
+  if (!filter) {
+    return true;
+  }
+  if (filter.sinceTs !== null && event.ts < filter.sinceTs) {
+    return false;
+  }
+  if (filter.untilTs !== null && event.ts > filter.untilTs) {
+    return false;
+  }
+  if (filter.kindSet && !filter.kindSet.has(event.kind)) {
+    return false;
+  }
+  if (filter.keyMatcher && !filter.keyMatcher(event.key)) {
+    return false;
+  }
+  if (filter.tagSet) {
+    const tags = event.entry?.tags ?? event.previous?.tags ?? null;
+    if (!containsAllTags(tags, filter.tagSet)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function cloneRunFilterDescriptor(
+  filter: NormalisedRunEventFilter | null | undefined,
+): ResourceWatchRunFilters | undefined {
+  if (!filter) {
+    return undefined;
+  }
+  const snapshot: ResourceWatchRunFilters = {};
+  const descriptor = filter.descriptor;
+  if (descriptor.levels && descriptor.levels.length > 0) {
+    snapshot.levels = descriptor.levels.map((level) => level);
+  }
+  if (descriptor.kinds && descriptor.kinds.length > 0) {
+    snapshot.kinds = descriptor.kinds.map((kind) => kind);
+  }
+  if (descriptor.jobIds && descriptor.jobIds.length > 0) {
+    snapshot.jobIds = descriptor.jobIds.map((jobId) => jobId);
+  }
+  if (descriptor.opIds && descriptor.opIds.length > 0) {
+    snapshot.opIds = descriptor.opIds.map((opId) => opId);
+  }
+  if (descriptor.graphIds && descriptor.graphIds.length > 0) {
+    snapshot.graphIds = descriptor.graphIds.map((graphId) => graphId);
+  }
+  if (descriptor.nodeIds && descriptor.nodeIds.length > 0) {
+    snapshot.nodeIds = descriptor.nodeIds.map((nodeId) => nodeId);
+  }
+  if (descriptor.childIds && descriptor.childIds.length > 0) {
+    snapshot.childIds = descriptor.childIds.map((childId) => childId);
+  }
+  if (descriptor.runIds && descriptor.runIds.length > 0) {
+    snapshot.runIds = descriptor.runIds.map((runId) => runId);
+  }
+  if (typeof descriptor.sinceTs === "number") {
+    snapshot.sinceTs = descriptor.sinceTs;
+  }
+  if (typeof descriptor.untilTs === "number") {
+    snapshot.untilTs = descriptor.untilTs;
+  }
+  return Object.keys(snapshot).length > 0 ? snapshot : undefined;
+}
+
+function cloneChildFilterDescriptor(
+  filter: NormalisedChildLogFilter | null | undefined,
+): ResourceWatchChildFilters | undefined {
+  if (!filter) {
+    return undefined;
+  }
+  const snapshot: ResourceWatchChildFilters = {};
+  const descriptor = filter.descriptor;
+  if (descriptor.streams && descriptor.streams.length > 0) {
+    snapshot.streams = descriptor.streams.map((stream) => stream);
+  }
+  if (descriptor.jobIds && descriptor.jobIds.length > 0) {
+    snapshot.jobIds = descriptor.jobIds.map((jobId) => jobId);
+  }
+  if (descriptor.runIds && descriptor.runIds.length > 0) {
+    snapshot.runIds = descriptor.runIds.map((runId) => runId);
+  }
+  if (descriptor.opIds && descriptor.opIds.length > 0) {
+    snapshot.opIds = descriptor.opIds.map((opId) => opId);
+  }
+  if (descriptor.graphIds && descriptor.graphIds.length > 0) {
+    snapshot.graphIds = descriptor.graphIds.map((graphId) => graphId);
+  }
+  if (descriptor.nodeIds && descriptor.nodeIds.length > 0) {
+    snapshot.nodeIds = descriptor.nodeIds.map((nodeId) => nodeId);
+  }
+  if (typeof descriptor.sinceTs === "number") {
+    snapshot.sinceTs = descriptor.sinceTs;
+  }
+  if (typeof descriptor.untilTs === "number") {
+    snapshot.untilTs = descriptor.untilTs;
+  }
+  return Object.keys(snapshot).length > 0 ? snapshot : undefined;
+}
+
+function cloneWatchFilters(
+  filters: ResourceWatchResult["filters"] | undefined,
+): ResourceWatchResult["filters"] | undefined {
+  if (!filters) {
+    return undefined;
+  }
+  const snapshot: ResourceWatchResult["filters"] = {};
+  if (filters.keys && filters.keys.length > 0) {
+    snapshot.keys = filters.keys.map((key) => key);
+  }
+  if (filters.run) {
+    snapshot.run = {
+      ...(filters.run.levels ? { levels: filters.run.levels.map((level) => level) } : {}),
+      ...(filters.run.kinds ? { kinds: filters.run.kinds.map((kind) => kind) } : {}),
+      ...(filters.run.jobIds ? { jobIds: filters.run.jobIds.map((id) => id) } : {}),
+      ...(filters.run.opIds ? { opIds: filters.run.opIds.map((id) => id) } : {}),
+      ...(filters.run.graphIds ? { graphIds: filters.run.graphIds.map((id) => id) } : {}),
+      ...(filters.run.nodeIds ? { nodeIds: filters.run.nodeIds.map((id) => id) } : {}),
+      ...(filters.run.childIds ? { childIds: filters.run.childIds.map((id) => id) } : {}),
+      ...(filters.run.runIds ? { runIds: filters.run.runIds.map((id) => id) } : {}),
+      ...(typeof filters.run.sinceTs === "number" ? { sinceTs: filters.run.sinceTs } : {}),
+      ...(typeof filters.run.untilTs === "number" ? { untilTs: filters.run.untilTs } : {}),
+    };
+  }
+  if (filters.child) {
+    snapshot.child = {
+      ...(filters.child.streams ? { streams: filters.child.streams.map((stream) => stream) } : {}),
+      ...(filters.child.jobIds ? { jobIds: filters.child.jobIds.map((id) => id) } : {}),
+      ...(filters.child.runIds ? { runIds: filters.child.runIds.map((id) => id) } : {}),
+      ...(filters.child.opIds ? { opIds: filters.child.opIds.map((id) => id) } : {}),
+      ...(filters.child.graphIds ? { graphIds: filters.child.graphIds.map((id) => id) } : {}),
+      ...(filters.child.nodeIds ? { nodeIds: filters.child.nodeIds.map((id) => id) } : {}),
+      ...(typeof filters.child.sinceTs === "number" ? { sinceTs: filters.child.sinceTs } : {}),
+      ...(typeof filters.child.untilTs === "number" ? { untilTs: filters.child.untilTs } : {}),
+    };
+  }
+  if (filters.blackboard) {
+    snapshot.blackboard = {
+      ...(filters.blackboard.keys ? { keys: filters.blackboard.keys.map((key) => key) } : {}),
+      ...(filters.blackboard.kinds ? { kinds: filters.blackboard.kinds.map((kind) => kind) } : {}),
+      ...(filters.blackboard.tags ? { tags: filters.blackboard.tags.map((tag) => tag) } : {}),
+      ...(typeof filters.blackboard.sinceTs === "number" ? { sinceTs: filters.blackboard.sinceTs } : {}),
+      ...(typeof filters.blackboard.untilTs === "number" ? { untilTs: filters.blackboard.untilTs } : {}),
+    };
+  }
+  return Object.keys(snapshot).length > 0 ? snapshot : undefined;
 }
 
 function normaliseOptionalString(value: string | null | undefined): string | null {
@@ -235,15 +849,183 @@ function normaliseOptionalNumber(value: number | null | undefined): number | nul
 }
 
 /** Extract the namespace portion of a blackboard key. */
+const BLACKBOARD_NAMESPACE_SEPARATORS = [":", "/", "|"] as const;
+
+/** Enumerates the mutation kinds a blackboard namespace can emit. */
+const BLACKBOARD_EVENT_KINDS = new Set<BlackboardEventKind>(["set", "delete", "expire"]);
+
 function extractNamespace(key: string): string {
-  const separators = [":", "/", "|"]; // keep flexible to accommodate multiple conventions
-  for (const separator of separators) {
+  for (const separator of BLACKBOARD_NAMESPACE_SEPARATORS) {
     const index = key.indexOf(separator);
     if (index > 0) {
       return key.slice(0, index);
     }
   }
   return key;
+}
+
+interface NormalisedBlackboardKeyFilter {
+  readonly keys: readonly string[];
+  readonly matcher: (key: string) => boolean;
+}
+
+function stripNamespacePrefix(key: string, namespace: string): string | null {
+  if (!key.startsWith(namespace)) {
+    return null;
+  }
+  const remainder = key.slice(namespace.length);
+  if (remainder.length === 0) {
+    return "";
+  }
+  const separator = remainder[0]!;
+  if (!BLACKBOARD_NAMESPACE_SEPARATORS.includes(separator as typeof BLACKBOARD_NAMESPACE_SEPARATORS[number])) {
+    return null;
+  }
+  return remainder.slice(1);
+}
+
+function normaliseBlackboardKeyFilter(
+  namespace: string,
+  keys: ReadonlyArray<string> | null | undefined,
+): NormalisedBlackboardKeyFilter | null {
+  if (!keys || keys.length === 0) {
+    return null;
+  }
+
+  const seen = new Set<string>();
+  const suffixes = new Set<string>();
+  const normalised: string[] = [];
+
+  for (const rawKey of keys) {
+    if (typeof rawKey !== "string") {
+      continue;
+    }
+    const trimmed = rawKey.trim();
+    if (trimmed.length === 0 || seen.has(trimmed)) {
+      continue;
+    }
+    seen.add(trimmed);
+    normalised.push(trimmed);
+
+    const suffix = stripNamespacePrefix(trimmed, namespace);
+    if (suffix !== null) {
+      suffixes.add(suffix);
+    } else {
+      suffixes.add(trimmed);
+    }
+  }
+
+  if (normalised.length === 0) {
+    return null;
+  }
+
+  const fullKeys = new Set(normalised);
+  return {
+    keys: normalised,
+    matcher: (candidate: string) => {
+      if (fullKeys.has(candidate)) {
+        return true;
+      }
+      const suffix = stripNamespacePrefix(candidate, namespace);
+      if (suffix === null) {
+        return false;
+      }
+      return suffixes.has(suffix);
+    },
+  };
+}
+
+/**
+ * Normalises the key/timestamp constraints applied to blackboard watch
+ * operations so pagination logic can consistently filter mutations.
+ */
+function normaliseBlackboardFilter(
+  namespace: string,
+  keys: ReadonlyArray<string> | null | undefined,
+  filters: ResourceWatchBlackboardFilters | null | undefined,
+): NormalisedBlackboardFilter | null {
+  const combinedKeys = [
+    ...(keys ?? []),
+    ...(filters?.keys ?? []),
+  ];
+  const keyFilter = normaliseBlackboardKeyFilter(namespace, combinedKeys);
+  const kindValues = normaliseStringArray(filters?.kinds ?? [], {
+    transform: (kind) => kind.toLowerCase(),
+    limit: BLACKBOARD_EVENT_KINDS.size,
+  });
+  const tagValues = normaliseStringArray(filters?.tags ?? [], {
+    transform: (tag) => tag.toLowerCase(),
+    limit: 50,
+  });
+  const validKinds: BlackboardEventKind[] = [];
+  for (const candidate of kindValues) {
+    if (BLACKBOARD_EVENT_KINDS.has(candidate as BlackboardEventKind)) {
+      validKinds.push(candidate as BlackboardEventKind);
+    }
+  }
+  const sinceTs = normaliseOptionalNumber(filters?.sinceTs);
+  let untilTs = normaliseOptionalNumber(filters?.untilTs);
+
+  if (sinceTs !== null && untilTs !== null && untilTs < sinceTs) {
+    untilTs = sinceTs;
+  }
+
+  const descriptor: ResourceWatchBlackboardFilters = {};
+  if (keyFilter) {
+    descriptor.keys = keyFilter.keys.map((key) => key);
+  }
+  if (validKinds.length > 0) {
+    descriptor.kinds = validKinds.map((kind) => kind);
+  }
+  if (tagValues.length > 0) {
+    descriptor.tags = tagValues.map((tag) => tag);
+  }
+  if (sinceTs !== null) {
+    descriptor.sinceTs = sinceTs;
+  }
+  if (untilTs !== null) {
+    descriptor.untilTs = untilTs;
+  }
+
+  if (Object.keys(descriptor).length === 0) {
+    return null;
+  }
+
+  return {
+    descriptor,
+    keyMatcher: keyFilter?.matcher,
+    kindSet: validKinds.length > 0 ? new Set(validKinds) : undefined,
+    tagSet: tagValues.length > 0 ? new Set(tagValues) : undefined,
+    sinceTs,
+    untilTs,
+  };
+}
+
+/** Clones the user-visible blackboard filter descriptor for metadata echoes. */
+function cloneBlackboardFilterDescriptor(
+  filter: NormalisedBlackboardFilter | null | undefined,
+): ResourceWatchBlackboardFilters | undefined {
+  if (!filter) {
+    return undefined;
+  }
+  const snapshot: ResourceWatchBlackboardFilters = {};
+  const descriptor = filter.descriptor;
+  if (descriptor.keys && descriptor.keys.length > 0) {
+    snapshot.keys = descriptor.keys.map((key) => key);
+  }
+  if (descriptor.kinds && descriptor.kinds.length > 0) {
+    snapshot.kinds = descriptor.kinds.map((kind) => kind);
+  }
+  if (descriptor.tags && descriptor.tags.length > 0) {
+    snapshot.tags = descriptor.tags.map((tag) => tag);
+  }
+  if (typeof descriptor.sinceTs === "number") {
+    snapshot.sinceTs = descriptor.sinceTs;
+  }
+  if (typeof descriptor.untilTs === "number") {
+    snapshot.untilTs = descriptor.untilTs;
+  }
+  return Object.keys(snapshot).length > 0 ? snapshot : undefined;
 }
 
 /** Maintains deterministic MCP resource metadata and snapshots. */
@@ -256,16 +1038,29 @@ export class ResourceRegistry {
 
   private readonly childHistories = new Map<string, ChildLogHistory>();
 
+  private readonly blackboardHistories = new Map<string, BlackboardNamespaceHistory>();
+
   private readonly runHistoryLimit: number;
 
   private readonly childLogHistoryLimit: number;
+
+  private readonly blackboardHistoryLimit: number;
 
   private readonly blackboard: BlackboardStore | null;
 
   constructor(options: ResourceRegistryOptions = {}) {
     this.runHistoryLimit = clampPositive(options.runHistoryLimit, 500);
     this.childLogHistoryLimit = clampPositive(options.childLogHistoryLimit, 500);
+    this.blackboardHistoryLimit = clampPositive(options.blackboardHistoryLimit, 500);
     this.blackboard = options.blackboard ?? null;
+    if (this.blackboard) {
+      this.blackboard.watch({
+        fromVersion: 0,
+        listener: (event) => {
+          this.recordBlackboardEvent(event);
+        },
+      });
+    }
   }
 
   /**
@@ -451,6 +1246,29 @@ export class ResourceRegistry {
     history.emitter.emit("event", record);
   }
 
+  /** Tracks a mutation emitted by the blackboard store. */
+  private recordBlackboardEvent(event: BlackboardEvent): void {
+    const namespace = extractNamespace(event.key);
+    const history = this.getOrCreateBlackboardHistory(namespace);
+    const record: ResourceBlackboardEvent = {
+      seq: event.version,
+      version: event.version,
+      ts: event.timestamp,
+      kind: event.kind,
+      namespace,
+      key: event.key,
+      entry: event.entry ? clone(event.entry) : null,
+      previous: event.previous ? clone(event.previous) : null,
+      reason: normaliseOptionalString(event.reason ?? null),
+    };
+    history.events.push(record);
+    if (history.events.length > this.blackboardHistoryLimit) {
+      history.events.splice(0, history.events.length - this.blackboardHistoryLimit);
+    }
+    history.lastSeq = Math.max(history.lastSeq, record.seq);
+    history.emitter.emit("event", record);
+  }
+
   /**
    * Returns a deterministic list of URIs. The entries are sorted to guarantee a
    * stable contract for clients performing prefix scans.
@@ -498,8 +1316,15 @@ export class ResourceRegistry {
     for (const childId of this.childHistories.keys()) {
       entries.push({ uri: `sc://children/${childId}/logs`, kind: "child_logs" });
     }
-    for (const namespace of this.listBlackboardNamespaces()) {
-      entries.push({ uri: `sc://blackboard/${namespace}`, kind: "blackboard_namespace" });
+    for (const summary of this.summariseBlackboardNamespaces()) {
+      entries.push({
+        uri: `sc://blackboard/${summary.namespace}`,
+        kind: "blackboard_namespace",
+        metadata: {
+          entry_count: summary.entryCount,
+          latest_version: summary.latestVersion,
+        },
+      });
     }
 
     const filtered = prefix ? entries.filter((entry) => entry.uri.startsWith(prefix)) : entries;
@@ -582,20 +1407,32 @@ export class ResourceRegistry {
         };
       }
       case "blackboard_namespace": {
-        if (!this.blackboard) {
+        const namespace = parsed.namespace;
+        if (!namespace) {
           throw new ResourceNotFoundError(uri);
         }
+
+        const history = this.blackboardHistories.get(namespace);
+        if (!this.blackboard) {
+          if (!history) {
+            throw new ResourceNotFoundError(uri);
+          }
+          return { uri, kind: "blackboard_namespace", payload: { namespace, entries: [] } };
+        }
+
         const entries = this.blackboard
           .query()
-          .filter((entry) => extractNamespace(entry.key) === parsed.namespace)
+          .filter((entry) => extractNamespace(entry.key) === namespace)
           .map((entry) => clone(entry));
-        if (entries.length === 0) {
+
+        if (entries.length === 0 && !history) {
           throw new ResourceNotFoundError(uri);
         }
+
         return {
           uri,
           kind: "blackboard_namespace",
-          payload: { namespace: parsed.namespace!, entries },
+          payload: { namespace, entries },
         };
       }
       default:
@@ -613,34 +1450,341 @@ export class ResourceRegistry {
     const parsed = this.parseUri(uri);
     switch (parsed.kind) {
       case "run_events": {
-        const history = this.runHistories.get(parsed.runId ?? "");
-        if (!history) {
-          throw new ResourceNotFoundError(uri);
+        const history = this.getRunHistoryOrThrow(uri, parsed.runId);
+        const runFilter = normaliseRunEventFilter(options.run);
+        const page = this.sliceRunHistory(history, fromSeq, limit, runFilter);
+        const result: ResourceWatchResult = {
+          uri,
+          kind: "run_events",
+          events: page.events,
+          nextSeq: page.nextSeq,
+        };
+        const filters: ResourceWatchResult["filters"] = {};
+        const runDescriptor = cloneRunFilterDescriptor(runFilter);
+        if (runDescriptor) {
+          filters.run = runDescriptor;
         }
-        const events = history.events
-          .filter((event) => event.seq > fromSeq)
-          .sort((a, b) => a.seq - b.seq)
-          .slice(0, limit)
-          .map((event) => clone(event));
-        const nextSeq = events.length > 0 ? events[events.length - 1].seq : Math.max(fromSeq, history.lastSeq);
-        return { uri, kind: "run_events", events, nextSeq };
+        if (filters.run) {
+          result.filters = filters;
+        }
+        return result;
       }
       case "child_logs": {
-        const history = this.childHistories.get(parsed.childId ?? "");
-        if (!history) {
-          throw new ResourceNotFoundError(uri);
+        const history = this.getChildHistoryOrThrow(uri, parsed.childId);
+        const childFilter = normaliseChildLogFilter(options.child);
+        const page = this.sliceChildHistory(history, fromSeq, limit, childFilter);
+        const result: ResourceWatchResult = {
+          uri,
+          kind: "child_logs",
+          events: page.events,
+          nextSeq: page.nextSeq,
+        };
+        const filters: ResourceWatchResult["filters"] = {};
+        const childDescriptor = cloneChildFilterDescriptor(childFilter);
+        if (childDescriptor) {
+          filters.child = childDescriptor;
         }
-        const events = history.entries
-          .filter((entry) => entry.seq > fromSeq)
-          .sort((a, b) => a.seq - b.seq)
-          .slice(0, limit)
-          .map((entry) => clone(entry));
-        const nextSeq = events.length > 0 ? events[events.length - 1].seq : Math.max(fromSeq, history.lastSeq);
-        return { uri, kind: "child_logs", events, nextSeq };
+        if (filters.child) {
+          result.filters = filters;
+        }
+        return result;
+      }
+      case "blackboard_namespace": {
+        const history = this.getBlackboardHistoryOrThrow(uri, parsed.namespace);
+        const filter = normaliseBlackboardFilter(parsed.namespace, options.keys, options.blackboard);
+        const page = this.sliceBlackboardHistory(history, fromSeq, limit, filter);
+        const result: ResourceWatchResult = {
+          uri,
+          kind: "blackboard_namespace",
+          events: page.events,
+          nextSeq: page.nextSeq,
+        };
+        const blackboardDescriptor = cloneBlackboardFilterDescriptor(filter);
+        if (blackboardDescriptor) {
+          result.filters = {};
+          if (blackboardDescriptor.keys && blackboardDescriptor.keys.length > 0) {
+            result.filters.keys = blackboardDescriptor.keys.map((key) => key);
+          }
+          result.filters.blackboard = blackboardDescriptor;
+        }
+        return result;
       }
       default:
         throw new ResourceWatchUnsupportedError(uri);
     }
+  }
+
+  /**
+   * Creates an async iterator that yields watch pages as soon as new events or
+   * log entries become available. Consumers can terminate the iterator by
+   * calling `return()` or by aborting the provided {@link AbortSignal}.
+   */
+  watchStream(uri: string, options: ResourceWatchStreamOptions = {}): AsyncIterable<ResourceWatchResult> {
+    const fromSeq = options.fromSeq ?? 0;
+    const limit = clampPositive(options.limit, 250);
+    const parsed = this.parseUri(uri);
+    switch (parsed.kind) {
+      case "run_events": {
+        const history = this.getRunHistoryOrThrow(uri, parsed.runId);
+        const runFilter = normaliseRunEventFilter(options.run);
+        const runFilters = cloneRunFilterDescriptor(runFilter);
+        return this.createWatchStream({
+          uri,
+          kind: "run_events",
+          emitter: history.emitter,
+          fromSeq,
+          limit,
+          signal: options.signal ?? null,
+          filters: runFilters ? { run: runFilters } : undefined,
+          slice: (cursor, pageLimit) => this.sliceRunHistory(history, cursor, pageLimit, runFilter),
+        });
+      }
+      case "child_logs": {
+        const history = this.getChildHistoryOrThrow(uri, parsed.childId);
+        const childFilter = normaliseChildLogFilter(options.child);
+        const childFilters = cloneChildFilterDescriptor(childFilter);
+        return this.createWatchStream({
+          uri,
+          kind: "child_logs",
+          emitter: history.emitter,
+          fromSeq,
+          limit,
+          signal: options.signal ?? null,
+          filters: childFilters ? { child: childFilters } : undefined,
+          slice: (cursor, pageLimit) => this.sliceChildHistory(history, cursor, pageLimit, childFilter),
+        });
+      }
+      case "blackboard_namespace": {
+        const history = this.getBlackboardHistoryOrThrow(uri, parsed.namespace);
+        const filter = normaliseBlackboardFilter(parsed.namespace, options.keys, options.blackboard);
+        const descriptor = cloneBlackboardFilterDescriptor(filter);
+        return this.createWatchStream({
+          uri,
+          kind: "blackboard_namespace",
+          emitter: history.emitter,
+          fromSeq,
+          limit,
+          signal: options.signal ?? null,
+          filters:
+            descriptor
+              ? {
+                  ...(descriptor.keys && descriptor.keys.length > 0
+                    ? { keys: descriptor.keys.map((key) => key) }
+                    : {}),
+                  blackboard: descriptor,
+                }
+              : undefined,
+          slice: (cursor, pageLimit) => this.sliceBlackboardHistory(history, cursor, pageLimit, filter),
+        });
+      }
+      default:
+        throw new ResourceWatchUnsupportedError(uri);
+    }
+  }
+
+  private getRunHistoryOrThrow(uri: string, runId: string): RunHistory {
+    const history = this.runHistories.get(runId);
+    if (!history) {
+      throw new ResourceNotFoundError(uri);
+    }
+    return history;
+  }
+
+  private getChildHistoryOrThrow(uri: string, childId: string): ChildLogHistory {
+    const history = this.childHistories.get(childId);
+    if (!history) {
+      throw new ResourceNotFoundError(uri);
+    }
+    return history;
+  }
+
+  private sliceRunHistory(
+    history: RunHistory,
+    fromSeq: number,
+    limit: number,
+    filter: NormalisedRunEventFilter | null = null,
+  ) {
+    const sorted = history.events
+      .filter((event) => event.seq > fromSeq)
+      .sort((a, b) => a.seq - b.seq);
+    const events: ResourceRunEvent[] = [];
+    let lastProcessedSeq = fromSeq;
+    let processedAny = false;
+    for (const event of sorted) {
+      processedAny = true;
+      lastProcessedSeq = event.seq;
+      if (matchRunEvent(filter, event)) {
+        events.push(clone(event));
+        if (events.length >= limit) {
+          break;
+        }
+      }
+    }
+    let nextSeq: number;
+    if (events.length > 0) {
+      nextSeq = Math.max(events[events.length - 1]!.seq, fromSeq);
+    } else if (processedAny) {
+      nextSeq = Math.max(lastProcessedSeq, fromSeq, history.lastSeq);
+    } else {
+      nextSeq = Math.max(fromSeq, history.lastSeq);
+    }
+    return { events, nextSeq };
+  }
+
+  private sliceChildHistory(
+    history: ChildLogHistory,
+    fromSeq: number,
+    limit: number,
+    filter: NormalisedChildLogFilter | null = null,
+  ) {
+    const sorted = history.entries
+      .filter((entry) => entry.seq > fromSeq)
+      .sort((a, b) => a.seq - b.seq);
+    const events: ResourceChildLogEntry[] = [];
+    let lastProcessedSeq = fromSeq;
+    let processedAny = false;
+    for (const entry of sorted) {
+      processedAny = true;
+      lastProcessedSeq = entry.seq;
+      if (matchChildLogEntry(filter, entry)) {
+        events.push(clone(entry));
+        if (events.length >= limit) {
+          break;
+        }
+      }
+    }
+    let nextSeq: number;
+    if (events.length > 0) {
+      nextSeq = Math.max(events[events.length - 1]!.seq, fromSeq);
+    } else if (processedAny) {
+      nextSeq = Math.max(lastProcessedSeq, fromSeq, history.lastSeq);
+    } else {
+      nextSeq = Math.max(fromSeq, history.lastSeq);
+    }
+    return { events, nextSeq };
+  }
+
+  private createWatchStream(context: WatchStreamContext): AsyncIterable<ResourceWatchResult> {
+    return {
+      [Symbol.asyncIterator]: () => {
+        let currentSeq = context.fromSeq;
+        let disposed = false;
+        let pendingReject: ((error: Error) => void) | null = null;
+
+        const computePage = () => context.slice(currentSeq, context.limit);
+
+        const waitForUpdate = () =>
+          new Promise<void>((resolve, reject) => {
+            const listener = () => {
+              cleanup();
+              resolve();
+            };
+
+            const cleanup = () => {
+              if (typeof context.emitter.off === "function") {
+                context.emitter.off("event", listener);
+              } else {
+                context.emitter.removeListener("event", listener);
+              }
+              if (context.signal) {
+                context.signal.removeEventListener("abort", onAbort);
+              }
+              pendingReject = null;
+            };
+
+            const onAbort = () => {
+              cleanup();
+              reject(new ResourceWatchAbortedError(context.uri));
+            };
+
+            pendingReject = (error: Error) => {
+              cleanup();
+              reject(error);
+            };
+
+            if (context.signal?.aborted) {
+              cleanup();
+              reject(new ResourceWatchAbortedError(context.uri));
+              return;
+            }
+
+            context.emitter.once("event", listener);
+            if (context.signal) {
+              context.signal.addEventListener("abort", onAbort, { once: true });
+            }
+          });
+
+        const dispose = () => {
+          if (disposed) {
+            return;
+          }
+          disposed = true;
+          const reject = pendingReject;
+          pendingReject = null;
+          if (reject) {
+            reject(new ResourceWatchDisposedError(context.uri));
+          }
+        };
+
+        const buildResult = (
+          page: {
+            events: Array<ResourceRunEvent | ResourceChildLogEntry | ResourceBlackboardEvent>;
+            nextSeq: number;
+          },
+        ): ResourceWatchResult => {
+          const result: ResourceWatchResult = {
+            uri: context.uri,
+            kind: context.kind,
+            events: page.events,
+            nextSeq: page.nextSeq,
+          };
+          const filters = cloneWatchFilters(context.filters);
+          if (filters) {
+            result.filters = filters;
+          }
+          return result;
+        };
+
+        return {
+          next: async () => {
+            if (disposed) {
+              return { value: undefined, done: true };
+            }
+
+            while (true) {
+              const page = computePage();
+              if (page.events.length > 0) {
+                currentSeq = page.nextSeq;
+                return { value: buildResult(page), done: false };
+              }
+
+              try {
+                await waitForUpdate();
+              } catch (error) {
+                if (error instanceof ResourceWatchDisposedError) {
+                  disposed = true;
+                  return { value: undefined, done: true };
+                }
+                disposed = true;
+                throw error;
+              }
+
+              if (disposed) {
+                return { value: undefined, done: true };
+              }
+            }
+          },
+          return: async () => {
+            dispose();
+            return { value: undefined, done: true };
+          },
+          throw: async (error) => {
+            dispose();
+            throw error;
+          },
+        };
+      },
+    };
   }
 
   private getOrCreateGraphHistory(graphId: string): GraphHistory {
@@ -683,15 +1827,113 @@ export class ResourceRegistry {
     return history;
   }
 
-  private listBlackboardNamespaces(): string[] {
+  private getOrCreateBlackboardHistory(namespace: string): BlackboardNamespaceHistory {
+    const existing = this.blackboardHistories.get(namespace);
+    if (existing) {
+      return existing;
+    }
+    const history: BlackboardNamespaceHistory = { events: [], lastSeq: 0, emitter: new EventEmitter() };
+    this.blackboardHistories.set(namespace, history);
+    return history;
+  }
+
+  /**
+   * Summarises the active blackboard namespaces along with basic statistics used when listing
+   * MCP resources. The helper keeps the registry deterministic by pre-computing the number of
+   * live entries and the latest version observed (including history-only mutations such as
+   * deletes). Consumers rely on those figures to seed paginated watches efficiently.
+   */
+  private summariseBlackboardNamespaces(): Array<{
+    namespace: string;
+    entryCount: number;
+    latestVersion: number;
+  }> {
     if (!this.blackboard) {
       return [];
     }
-    const namespaces = new Set<string>();
+
+    const summary = new Map<string, { entryCount: number; latestVersion: number }>();
     for (const entry of this.blackboard.query()) {
-      namespaces.add(extractNamespace(entry.key));
+      const namespace = extractNamespace(entry.key);
+      const stats = summary.get(namespace) ?? { entryCount: 0, latestVersion: 0 };
+      stats.entryCount += 1;
+      stats.latestVersion = Math.max(stats.latestVersion, entry.version);
+      summary.set(namespace, stats);
     }
-    return Array.from(namespaces.values());
+
+    for (const [namespace, history] of this.blackboardHistories.entries()) {
+      const stats = summary.get(namespace) ?? { entryCount: 0, latestVersion: 0 };
+      stats.latestVersion = Math.max(stats.latestVersion, history.lastSeq);
+      summary.set(namespace, stats);
+    }
+
+    return Array.from(summary.entries())
+      .sort((a, b) => a[0].localeCompare(b[0]))
+      .map(([namespace, stats]) => ({
+        namespace,
+        entryCount: stats.entryCount,
+        latestVersion: stats.latestVersion,
+      }));
+  }
+
+  private getBlackboardHistoryOrThrow(uri: string, namespace: string | undefined): BlackboardNamespaceHistory {
+    if (!namespace) {
+      throw new ResourceNotFoundError(uri);
+    }
+    const existing = this.blackboardHistories.get(namespace);
+    if (existing) {
+      return existing;
+    }
+    if (!this.blackboard) {
+      throw new ResourceNotFoundError(uri);
+    }
+    const hasNamespace = this.blackboard
+      .query()
+      .some((entry) => extractNamespace(entry.key) === namespace);
+    if (!hasNamespace) {
+      throw new ResourceNotFoundError(uri);
+    }
+    const history = this.getOrCreateBlackboardHistory(namespace);
+    history.lastSeq = Math.max(history.lastSeq, this.blackboard.getCurrentVersion());
+    return history;
+  }
+
+  private sliceBlackboardHistory(
+    history: BlackboardNamespaceHistory,
+    fromSeq: number,
+    limit: number,
+    filter: NormalisedBlackboardFilter | null = null,
+  ) {
+    const sorted = history.events
+      .filter((event) => event.seq > fromSeq)
+      .sort((a, b) => a.seq - b.seq);
+    const events: ResourceBlackboardEvent[] = [];
+    let lastProcessedSeq = fromSeq;
+    let processedCount = 0;
+    for (const event of sorted) {
+      processedCount += 1;
+      lastProcessedSeq = event.seq;
+      if (matchBlackboardEvent(filter, event)) {
+        events.push(clone(event));
+        if (events.length >= limit) {
+          break;
+        }
+      }
+    }
+    const processedAllEvents = processedCount === sorted.length;
+    let nextSeq: number;
+    if (processedAllEvents) {
+      if (events.length === 0) {
+        nextSeq = Math.max(lastProcessedSeq, fromSeq, history.lastSeq);
+      } else {
+        nextSeq = Math.max(lastProcessedSeq, fromSeq);
+      }
+    } else if (events.length > 0) {
+      nextSeq = Math.max(events[events.length - 1]!.seq, fromSeq);
+    } else {
+      nextSeq = Math.max(lastProcessedSeq, fromSeq);
+    }
+    return { events, nextSeq };
   }
 
   private parseUri(uri: string):

@@ -1,6 +1,24 @@
 import { mkdir } from 'node:fs/promises';
 import path from 'node:path';
 
+/** Absolute path (resolved against the current working directory) hosting run artefacts. */
+function getRunsRoot(): string {
+  const override = process.env.MCP_RUNS_ROOT;
+  const resolvedBase = override
+    ? path.resolve(process.cwd(), override)
+    : path.resolve(process.cwd(), 'runs');
+  return resolvedBase;
+}
+
+/** Absolute path hosting child workspaces (logs, manifests, artefacts). */
+function getChildrenRoot(): string {
+  const override = process.env.MCP_CHILDREN_ROOT;
+  const resolvedBase = override
+    ? path.resolve(process.cwd(), override)
+    : path.resolve(process.cwd(), 'children');
+  return resolvedBase;
+}
+
 /**
  * Utilities dedicated to safe path management for child workspaces.
  *
@@ -85,4 +103,74 @@ export function childWorkspacePath(
   ...segments: string[]
 ): string {
   return resolveWithin(childrenRoot, childId, ...segments);
+}
+
+/**
+ * Sanitises a filename so it can safely be persisted on disk.
+ *
+ * The orchestrator accepts identifiers coming from external systems. This helper
+ * strips path separators, control characters and whitespace while preserving a
+ * deterministic trace for logs/debugging. When the resulting string would be
+ * empty we fall back to a neutral placeholder.
+ */
+export function sanitizeFilename(name: string): string {
+  const trimmed = name.trim();
+  if (!trimmed) {
+    return 'unnamed';
+  }
+
+  const sanitized = trimmed
+    .replace(/[\0-\x1F\x7F]/g, '')
+    .replace(/[\\/]/g, '_')
+    .replace(/[:*?"<>|]/g, '_')
+    .replace(/\s+/g, '_');
+
+  const normalized = sanitized.replace(/[^a-zA-Z0-9._-]/g, '_');
+  return normalized.length > 0 ? normalized : 'unnamed';
+}
+
+/**
+ * Safely joins a base directory with optional segments while forbidding
+ * directory traversal. All segments are sanitised before resolution which keeps
+ * the resulting path deterministic and inside the sandbox.
+ */
+export function safeJoin(base: string, ...parts: string[]): string {
+  const segments: string[] = [];
+
+  for (const rawPart of parts) {
+    const splitParts = rawPart.split(/[\\/]+/);
+    for (const candidate of splitParts) {
+      if (!candidate || candidate === '.') {
+        continue;
+      }
+      if (candidate === '..') {
+        throw new PathResolutionError(
+          'Directory traversal is not permitted',
+          rawPart,
+          path.resolve(base),
+        );
+      }
+      segments.push(sanitizeFilename(candidate));
+    }
+  }
+
+  return resolveWithin(base, ...segments);
+}
+
+/**
+ * Returns the canonical directory dedicated to the provided run identifier. The
+ * directory is resolved inside `MCP_RUNS_ROOT` (or `./runs` by default) to keep
+ * artefacts grouped per execution.
+ */
+export function resolveRunDir(runId: string): string {
+  return safeJoin(getRunsRoot(), sanitizeFilename(runId));
+}
+
+/**
+ * Returns the canonical directory used for a given child runtime. The location
+ * honours `MCP_CHILDREN_ROOT` when provided so operators can isolate workspaces
+ * on fast storage.
+ */
+export function resolveChildDir(childId: string): string {
+  return safeJoin(getChildrenRoot(), sanitizeFilename(childId));
 }

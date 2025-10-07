@@ -33,6 +33,26 @@ describe("event bus", () => {
     expect(ordered.map((event) => event.seq)).to.deep.equal([1, 2, 3]);
   });
 
+  it("filters across multiple categories while preserving chronological order", () => {
+    const bus = new EventBus({ historyLimit: 10 });
+
+    const planStart = bus.publish({ cat: "plan", runId: "run-multi", msg: "start" });
+    const childReady = bus.publish({ cat: "child", childId: "child-multi", msg: "ready" });
+    const planFinish = bus.publish({ cat: "plan", runId: "run-multi", msg: "complete" });
+    bus.publish({ cat: "scheduler", msg: "tick" });
+
+    const filtered = bus.list({ cats: ["child", "PLAN"], limit: 10 });
+    expect(filtered).to.have.lengthOf(3);
+    expect(filtered.map((event) => event.seq)).to.deep.equal([
+      planStart.seq,
+      childReady.seq,
+      planFinish.seq,
+    ]);
+    expect(filtered[0]?.cat).to.equal("plan");
+    expect(filtered[1]?.cat).to.equal("child");
+    expect(filtered[2]?.msg).to.equal("complete");
+  });
+
   it("streams events sequentially when subscribing after a checkpoint", async () => {
     const bus = new EventBus({ historyLimit: 5 });
 

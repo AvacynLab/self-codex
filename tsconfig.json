@@ -8,11 +8,19 @@
       "rootDir": "src",
       "baseUrl": "src",
       "paths": {
-        "executor/*": ["executor/*"],
+        "agents/*": ["agents/*"],
         "coord/*": ["coord/*"],
+        "events/*": ["events/*"],
+        "executor/*": ["executor/*"],
+        "graph/*": ["graph/*"],
+        "infra/*": ["infra/*"],
         "knowledge/*": ["knowledge/*"],
+        "mcp/*": ["mcp/*"],
+        "monitor/*": ["monitor/*"],
+        "resources/*": ["resources/*"],
+        "state/*": ["state/*"],
         "values/*": ["values/*"],
-        "graph/*": ["graph/*"]
+        "viz/*": ["viz/*"]
       },
       "strict": true,
       "esModuleInterop": true,

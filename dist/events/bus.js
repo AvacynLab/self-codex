@@ -10,6 +10,14 @@ function normaliseMessage(msg) {
     const trimmed = msg.trim();
     return trimmed.length > 0 ? trimmed : "event";
 }
+/** Utility normalising the optional event kind into a stable representation. */
+function normaliseKind(kind) {
+    if (typeof kind !== "string") {
+        return null;
+    }
+    const trimmed = kind.trim();
+    return trimmed.length > 0 ? trimmed : null;
+}
 /**
  * Async iterator used to expose live streams. The iterator buffers events until
  * a consumer reads them, mirroring the behaviour of a JSON Lines stream.
@@ -133,6 +141,7 @@ export class EventBus {
             seq: ++this.seq,
             ts: input.ts ?? this.now(),
             cat: normaliseCategory(input.cat),
+            kind: normaliseKind(input.kind),
             level: input.level ?? "info",
             jobId: input.jobId ?? null,
             runId: input.runId ?? null,

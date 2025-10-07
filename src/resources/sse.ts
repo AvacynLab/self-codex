@@ -1,4 +1,12 @@
-import type { ResourceChildLogEntry, ResourceRunEvent, ResourceWatchResult } from "./registry.js";
+import type {
+  ResourceBlackboardEvent,
+  ResourceChildLogEntry,
+  ResourceRunEvent,
+  ResourceWatchResult,
+  ResourceWatchChildFilters,
+  ResourceWatchBlackboardFilters,
+  ResourceWatchRunFilters,
+} from "./registry.js";
 import { serialiseForSse } from "../events/sse.js";
 
 /**
@@ -10,7 +18,7 @@ export interface ResourceWatchSseMessage {
   /** Unique identifier for the SSE record (resource URI + monotonous sequence). */
   id: string;
   /** SSE event name discriminating run events, child logs or keep-alives. */
-  event: "resource_run_event" | "resource_child_log" | "resource_keep_alive";
+  event: "resource_run_event" | "resource_child_log" | "resource_blackboard_event" | "resource_keep_alive";
   /** JSON payload normalised for SSE transport (single `data:` line). */
   data: string;
 }
@@ -60,6 +68,22 @@ function normaliseChildLog(entry: ResourceChildLogEntry) {
   };
 }
 
+/** Normalises a blackboard event for SSE transport. */
+function normaliseBlackboardEvent(event: ResourceBlackboardEvent) {
+  return {
+    type: "blackboard_event" as const,
+    seq: event.seq,
+    version: event.version,
+    ts: event.ts,
+    kind: event.kind,
+    namespace: event.namespace,
+    key: event.key,
+    entry: event.entry ?? null,
+    previous: event.previous ?? null,
+    reason: event.reason ?? null,
+  };
+}
+
 /**
  * Builds the JSON payload transported on the SSE `data:` line. The payload
  * includes the resource URI and `next_seq` pointer so reconnecting clients can
@@ -67,14 +91,53 @@ function normaliseChildLog(entry: ResourceChildLogEntry) {
  */
 function buildPayload(
   result: ResourceWatchResult,
-  record: ReturnType<typeof normaliseRunEvent> | ReturnType<typeof normaliseChildLog> | { type: "keep_alive" },
+  record:
+    | ReturnType<typeof normaliseRunEvent>
+    | ReturnType<typeof normaliseChildLog>
+    | ReturnType<typeof normaliseBlackboardEvent>
+    | { type: "keep_alive" },
 ) {
-  return {
+  const payload: {
+    uri: string;
+    kind: ResourceWatchResult["kind"];
+    next_seq: number;
+    record:
+      | ReturnType<typeof normaliseRunEvent>
+      | ReturnType<typeof normaliseChildLog>
+      | ReturnType<typeof normaliseBlackboardEvent>
+      | { type: "keep_alive" };
+    filters?: {
+      keys?: string[];
+      blackboard?: ResourceWatchBlackboardFilters;
+      run?: ResourceWatchRunFilters;
+      child?: ResourceWatchChildFilters;
+    };
+  } = {
     uri: result.uri,
     kind: result.kind,
     next_seq: result.nextSeq,
     record,
   };
+  const filters = result.filters;
+  if (filters) {
+    const snapshot: NonNullable<typeof payload.filters> = {};
+    if (filters.keys && filters.keys.length > 0) {
+      snapshot.keys = filters.keys.map((key) => key);
+    }
+    if (filters.blackboard) {
+      snapshot.blackboard = structuredClone(filters.blackboard);
+    }
+    if (filters.run) {
+      snapshot.run = structuredClone(filters.run);
+    }
+    if (filters.child) {
+      snapshot.child = structuredClone(filters.child);
+    }
+    if (Object.keys(snapshot).length > 0) {
+      payload.filters = snapshot;
+    }
+  }
+  return payload;
 }
 
 /**
@@ -100,6 +163,15 @@ export function serialiseResourceWatchResultForSse(result: ResourceWatchResult):
       return {
         id: `${result.uri}:${(event as ResourceRunEvent).seq}`,
         event: "resource_run_event" as const,
+        data: serialiseForSse(payload),
+      };
+    }
+
+    if (result.kind === "blackboard_namespace") {
+      const payload = buildPayload(result, normaliseBlackboardEvent(event as ResourceBlackboardEvent));
+      return {
+        id: `${result.uri}:${(event as ResourceBlackboardEvent).seq}`,
+        event: "resource_blackboard_event" as const,
         data: serialiseForSse(payload),
       };
     }

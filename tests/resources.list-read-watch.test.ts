@@ -87,7 +87,8 @@ describe("resources registry", () => {
       opId: "op-1",
     });
 
-    const uris = registry.list().map((entry) => entry.uri);
+    const entries = registry.list();
+    const uris = entries.map((entry) => entry.uri);
     expect(uris).to.deep.equal([
       "sc://blackboard/core",
       "sc://children/child-9/logs",
@@ -97,6 +98,10 @@ describe("resources registry", () => {
       "sc://runs/run-77/events",
       "sc://snapshots/demo/tx-1",
     ]);
+
+    // Ensure the blackboard namespace surfaces deterministic metadata for pagination hints.
+    const blackboardEntry = entries.find((entry) => entry.uri === "sc://blackboard/core");
+    expect(blackboardEntry?.metadata).to.deep.equal({ entry_count: 2, latest_version: 2 });
 
     const graphsOnly = registry.list("sc://graphs/").map((entry) => entry.uri);
     expect(graphsOnly).to.deep.equal(["sc://graphs/demo", "sc://graphs/demo@v1", "sc://graphs/demo@v2"]);
@@ -299,6 +304,390 @@ describe("resources registry", () => {
       },
     ]);
     expect(logPage.nextSeq).to.equal(2);
+  });
+
+  it("filters run event pages using kinds, levels and correlation identifiers", () => {
+    const registry = new ResourceRegistry();
+    const runId = "run-filter";
+
+    registry.recordRunEvent(runId, {
+      seq: 1,
+      ts: 9_000,
+      kind: "STATUS",
+      level: "info",
+      jobId: "job-a",
+      opId: "op-a",
+      graphId: "graph-a",
+      nodeId: "node-a",
+      childId: "child-a",
+      payload: { stage: "bootstrap" },
+    });
+
+    registry.recordRunEvent(runId, {
+      seq: 2,
+      ts: 9_100,
+      kind: "METRIC",
+      level: "debug",
+      jobId: "job-b",
+      opId: "op-b",
+      graphId: "graph-b",
+      nodeId: "node-b",
+      childId: null,
+      payload: { metric: 42 },
+    });
+
+    registry.recordRunEvent(runId, {
+      seq: 3,
+      ts: 9_200,
+      kind: "STATUS",
+      level: "warn",
+      jobId: "job-a",
+      opId: "op-c",
+      graphId: "graph-a",
+      nodeId: "node-a",
+      childId: "child-b",
+      payload: { stage: "completion" },
+    });
+
+    const filtered = registry.watch(`sc://runs/${runId}/events`, {
+      run: {
+        kinds: ["status"],
+        levels: ["warn"],
+        jobIds: ["job-a"],
+        opIds: ["op-c"],
+        graphIds: ["graph-a"],
+        nodeIds: ["node-a"],
+        childIds: ["child-b"],
+      },
+    });
+
+    expect(filtered.events).to.have.length(1);
+    expect(filtered.events[0]).to.deep.include({
+      seq: 3,
+      kind: "STATUS",
+      level: "warn",
+      jobId: "job-a",
+      opId: "op-c",
+      graphId: "graph-a",
+      nodeId: "node-a",
+      childId: "child-b",
+    });
+    expect(filtered.nextSeq).to.equal(3);
+    expect(filtered.filters?.run).to.deep.equal({
+      kinds: ["STATUS"],
+      levels: ["warn"],
+      jobIds: ["job-a"],
+      opIds: ["op-c"],
+      graphIds: ["graph-a"],
+      nodeIds: ["node-a"],
+      childIds: ["child-b"],
+    });
+
+    const empty = registry.watch(`sc://runs/${runId}/events`, {
+      run: {
+        kinds: ["status"],
+        childIds: ["missing-child"],
+      },
+    });
+
+    expect(empty.events).to.have.length(0);
+    expect(empty.nextSeq).to.equal(3);
+    expect(empty.filters?.run).to.deep.equal({ kinds: ["STATUS"], childIds: ["missing-child"] });
+
+    registry.recordChildLogEntry("child-filter", {
+      ts: 9_050,
+      stream: "stdout",
+      message: "ignore",
+      runId: runId,
+      opId: "op-skip",
+    });
+    registry.recordChildLogEntry("child-filter", {
+      ts: 9_060,
+      stream: "stderr",
+      message: "keep",
+      runId: runId,
+      opId: "op-keep",
+      jobId: "job-a",
+    });
+
+    const childFiltered = registry.watch("sc://children/child-filter/logs", {
+      child: { streams: ["stderr"], runIds: [runId], opIds: ["op-keep"], jobIds: ["job-a"] },
+    });
+
+    expect(childFiltered.events).to.have.length(1);
+    expect(childFiltered.events[0]).to.include({
+      stream: "stderr",
+      message: "keep",
+      runId,
+      opId: "op-keep",
+      jobId: "job-a",
+    });
+    expect(childFiltered.filters?.child).to.deep.equal({
+      streams: ["stderr"],
+      runIds: [runId],
+      opIds: ["op-keep"],
+      jobIds: ["job-a"],
+    });
+
+    const childEmpty = registry.watch("sc://children/child-filter/logs", {
+      child: { streams: ["stderr"], runIds: ["other-run"] },
+    });
+
+    expect(childEmpty.events).to.have.length(0);
+    expect(childEmpty.nextSeq).to.equal(2);
+    expect(childEmpty.filters?.child).to.deep.equal({ streams: ["stderr"], runIds: ["other-run"] });
+  });
+
+  it("filters run event pages using timestamp boundaries", () => {
+    const registry = new ResourceRegistry();
+    const runId = "run-ts";
+
+    registry.recordRunEvent(runId, { seq: 1, ts: 1_000, kind: "STATUS", level: "info", payload: { step: 1 } });
+    registry.recordRunEvent(runId, { seq: 2, ts: 2_000, kind: "STATUS", level: "info", payload: { step: 2 } });
+    registry.recordRunEvent(runId, { seq: 3, ts: 3_000, kind: "STATUS", level: "info", payload: { step: 3 } });
+
+    const filtered = registry.watch(`sc://runs/${runId}/events`, {
+      // The range keeps the middle event only, validating strict timestamp gating.
+      run: { sinceTs: 1_500, untilTs: 2_500 },
+    });
+
+    expect(filtered.events.map((event) => event.seq)).to.deep.equal([2]);
+    expect(filtered.filters?.run).to.deep.equal({ sinceTs: 1_500, untilTs: 2_500 });
+    expect(filtered.nextSeq).to.equal(2);
+  });
+
+  it("filters child log pages using timestamp boundaries", () => {
+    const registry = new ResourceRegistry();
+    const childId = "child-ts";
+
+    registry.recordChildLogEntry(childId, { ts: 5_000, stream: "stdout", message: "early" });
+    registry.recordChildLogEntry(childId, { ts: 6_000, stream: "stdout", message: "within" });
+    registry.recordChildLogEntry(childId, { ts: 7_000, stream: "stdout", message: "late" });
+
+    const filtered = registry.watch(`sc://children/${childId}/logs`, {
+      // Timestamp window should retain only the entry within the inclusive bounds.
+      child: { sinceTs: 5_500, untilTs: 6_500 },
+    });
+
+    expect(filtered.events.map((entry) => entry.message)).to.deep.equal(["within"]);
+    expect(filtered.filters?.child).to.deep.equal({ sinceTs: 5_500, untilTs: 6_500 });
+    expect(filtered.nextSeq).to.equal(2);
+  });
+
+  it("watches blackboard namespaces with version-derived cursors", () => {
+    let now = 1_000;
+    const blackboard = new BlackboardStore({ now: () => now });
+    blackboard.set("core:pending", { task: "triage" });
+    now += 100;
+    blackboard.set("core:active", { task: "review" });
+
+    const registry = new ResourceRegistry({ blackboard, blackboardHistoryLimit: 10 });
+
+    // Listing exposes metadata reflecting both the number of live entries and the latest version.
+    const listedNamespaces = registry.list();
+    const listedBlackboard = listedNamespaces.find((entry) => entry.uri === "sc://blackboard/core");
+    expect(listedBlackboard?.metadata).to.deep.equal({ entry_count: 2, latest_version: 2 });
+
+    const firstPage = registry.watch("sc://blackboard/core", { fromSeq: 0 });
+    expect(firstPage.kind).to.equal("blackboard_namespace");
+    expect(firstPage.events.map((event) => event.seq)).to.deep.equal([1, 2]);
+    expect(firstPage.nextSeq).to.equal(2);
+
+    const firstEvent = firstPage.events[0];
+    expect(firstEvent).to.deep.include({
+      seq: 1,
+      version: 1,
+      ts: 1_000,
+      kind: "set",
+      namespace: "core",
+      key: "core:pending",
+      reason: null,
+    });
+    expect(firstEvent.entry).to.deep.include({
+      key: "core:pending",
+      value: { task: "triage" },
+      version: 1,
+    });
+
+    // Mutate the returned snapshot to ensure the registry retains an immutable copy.
+    firstEvent.entry!.value = { mutated: true };
+    const replay = registry.watch("sc://blackboard/core", { fromSeq: 0 });
+    expect(replay.events[0].entry?.value).to.deep.equal({ task: "triage" });
+
+    now += 200;
+    expect(blackboard.delete("core:pending")).to.equal(true);
+
+    const secondPage = registry.watch("sc://blackboard/core", { fromSeq: firstPage.nextSeq });
+    expect(secondPage.events).to.have.length(1);
+    expect(secondPage.events[0]).to.deep.include({
+      seq: 3,
+      version: 3,
+      ts: 1_300,
+      kind: "delete",
+      namespace: "core",
+      key: "core:pending",
+      reason: null,
+    });
+    expect(secondPage.events[0].previous).to.deep.include({ key: "core:pending" });
+    expect(secondPage.nextSeq).to.equal(3);
+
+    // After the deletion the namespace still advertises the highest version observed.
+    const refreshedList = registry.list();
+    const refreshedBlackboard = refreshedList.find((entry) => entry.uri === "sc://blackboard/core");
+    expect(refreshedBlackboard?.metadata).to.deep.equal({ entry_count: 1, latest_version: 3 });
+
+    now += 150;
+    expect(blackboard.delete("core:active")).to.equal(true);
+
+    const drainedList = registry.list();
+    const drainedBlackboard = drainedList.find((entry) => entry.uri === "sc://blackboard/core");
+    expect(drainedBlackboard?.metadata).to.deep.equal({ entry_count: 0, latest_version: 4 });
+
+    const drainedRead = registry.read("sc://blackboard/core");
+    expect(drainedRead.kind).to.equal("blackboard_namespace");
+    expect(drainedRead.payload).to.deep.equal({ namespace: "core", entries: [] });
+
+    const terminalPage = registry.watch("sc://blackboard/core", { fromSeq: secondPage.nextSeq });
+    expect(terminalPage.events).to.have.length(1);
+    expect(terminalPage.events[0]).to.deep.include({
+      seq: 4,
+      version: 4,
+      kind: "delete",
+      key: "core:active",
+      namespace: "core",
+    });
+    expect(terminalPage.nextSeq).to.equal(4);
+  });
+
+  it("filters blackboard namespaces by keys while advancing the cursor", () => {
+    let timestamp = 0;
+    const now = () => {
+      timestamp += 1_000;
+      return timestamp;
+    };
+
+    const blackboard = new BlackboardStore({ now, historyLimit: 10 });
+    const registry = new ResourceRegistry({ blackboard, blackboardHistoryLimit: 10 });
+
+    blackboard.set("tasks:alpha", { note: "bootstrap" });
+    blackboard.set("tasks:beta", { note: "sidequest" });
+    blackboard.delete("tasks:beta");
+
+    const uri = "sc://blackboard/tasks";
+
+    const relative = registry.watch(uri, { keys: ["alpha"] });
+    expect(relative.events.map((event) => event.key)).to.deep.equal(["tasks:alpha"]);
+    expect(relative.nextSeq).to.equal(3);
+    expect(relative.filters).to.deep.equal({
+      keys: ["alpha"],
+      blackboard: { keys: ["alpha"] },
+    });
+
+    const absolute = registry.watch(uri, { keys: ["tasks:beta"] });
+    expect(absolute.events.map((event) => event.kind)).to.deep.equal(["set", "delete"]);
+    expect(absolute.nextSeq).to.equal(3);
+    expect(absolute.filters).to.deep.equal({
+      keys: ["tasks:beta"],
+      blackboard: { keys: ["tasks:beta"] },
+    });
+
+    const unmatched = registry.watch(uri, { keys: ["gamma"] });
+    expect(unmatched.events).to.have.length(0);
+    expect(unmatched.nextSeq).to.equal(3);
+    expect(unmatched.filters).to.deep.equal({
+      keys: ["gamma"],
+      blackboard: { keys: ["gamma"] },
+    });
+  });
+
+  it("filters blackboard namespaces by timestamp windows", () => {
+    let current = 1_000;
+    const blackboard = new BlackboardStore({ now: () => current, historyLimit: 10 });
+    const registry = new ResourceRegistry({ blackboard, blackboardHistoryLimit: 10 });
+
+    blackboard.set("tasks:alpha", { note: "start" });
+    current += 500;
+    blackboard.set("tasks:beta", { note: "mid" });
+    current += 500;
+    blackboard.delete("tasks:alpha");
+
+    const uri = "sc://blackboard/tasks";
+
+    const windowed = registry.watch(uri, {
+      blackboard: { sinceTs: 1_200, untilTs: 1_700 },
+    });
+    expect(windowed.events.map((event) => event.key)).to.deep.equal(["tasks:beta"]);
+    expect(windowed.nextSeq).to.equal(3);
+    expect(windowed.filters?.blackboard).to.deep.equal({ sinceTs: 1_200, untilTs: 1_700 });
+
+    const sinceOnly = registry.watch(uri, { blackboard: { sinceTs: 1_900 } });
+    expect(sinceOnly.events.map((event) => event.kind)).to.deep.equal(["delete"]);
+    expect(sinceOnly.nextSeq).to.equal(3);
+    expect(sinceOnly.filters?.blackboard).to.deep.equal({ sinceTs: 1_900 });
+  });
+
+  it("filters blackboard namespaces by tags", () => {
+    let now = 1_000;
+    const clock = () => now;
+    const blackboard = new BlackboardStore({ now: clock, historyLimit: 10 });
+    const registry = new ResourceRegistry({ blackboard, blackboardHistoryLimit: 10 });
+
+    blackboard.set("tasks:alpha", { note: "seed" }, { tags: ["Urgent", "Focus"] });
+    blackboard.set("tasks:beta", { note: "background" }, { tags: ["backlog"] });
+    blackboard.set("tasks:gamma", { note: "mix" }, { tags: ["urgent"] });
+    blackboard.delete("tasks:beta");
+    now += 400;
+    blackboard.set("tasks:ttl", { note: "ephemeral" }, { tags: ["urgent"], ttlMs: 200 });
+    now += 400;
+    blackboard.evictExpired();
+
+    const uri = "sc://blackboard/tasks";
+
+    const urgentOnly = registry.watch(uri, { blackboard: { tags: ["urgent"] } });
+    expect(urgentOnly.events.map((event) => ({ key: event.key, kind: event.kind }))).to.deep.equal([
+      { key: "tasks:alpha", kind: "set" },
+      { key: "tasks:gamma", kind: "set" },
+      { key: "tasks:ttl", kind: "set" },
+      { key: "tasks:ttl", kind: "expire" },
+    ]);
+    expect(urgentOnly.nextSeq).to.equal(6);
+    expect(urgentOnly.filters?.blackboard).to.deep.equal({ tags: ["urgent"] });
+
+    const focused = registry.watch(uri, { blackboard: { tags: ["Focus", "urgent"] } });
+    expect(focused.events.map((event) => event.key)).to.deep.equal(["tasks:alpha"]);
+    expect(focused.filters?.blackboard).to.deep.equal({ tags: ["focus", "urgent"] });
+
+    const unmatched = registry.watch(uri, { blackboard: { tags: ["unknown"] } });
+    expect(unmatched.events).to.have.length(0);
+    expect(unmatched.nextSeq).to.equal(6);
+    expect(unmatched.filters?.blackboard).to.deep.equal({ tags: ["unknown"] });
+  });
+
+  it("filters blackboard namespaces by mutation kinds", () => {
+    let current = 1_000;
+    const blackboard = new BlackboardStore({ now: () => current, historyLimit: 10 });
+    const registry = new ResourceRegistry({ blackboard, blackboardHistoryLimit: 10 });
+
+    blackboard.set("tasks:alpha", { note: "seed" });
+    blackboard.set("tasks:beta", { note: "keep" });
+    blackboard.delete("tasks:beta");
+    blackboard.set("tasks:ttl", { note: "transient" }, { ttlMs: 150 });
+    current += 200;
+    blackboard.evictExpired();
+
+    const uri = "sc://blackboard/tasks";
+
+    const deletesOnly = registry.watch(uri, { blackboard: { kinds: ["delete"] } });
+    expect(deletesOnly.events.map((event) => event.kind)).to.deep.equal(["delete"]);
+    expect(deletesOnly.filters?.blackboard).to.deep.equal({ kinds: ["delete"] });
+
+    const deleteAndExpire = registry.watch(uri, { blackboard: { kinds: ["delete", "expire"] } });
+    expect(deleteAndExpire.events.map((event) => event.kind)).to.deep.equal(["delete", "expire"]);
+    expect(deleteAndExpire.filters?.blackboard).to.deep.equal({ kinds: ["delete", "expire"] });
+
+    const invalidKinds = registry.watch(uri, { blackboard: { kinds: ["noop", "invalid"] } });
+    expect(invalidKinds.events.map((event) => event.kind)).to.deep.equal(["set", "set", "delete", "set", "expire"]);
+    expect(invalidKinds.filters?.blackboard).to.equal(undefined);
   });
 
   it("raises domain errors for unsupported operations", () => {
