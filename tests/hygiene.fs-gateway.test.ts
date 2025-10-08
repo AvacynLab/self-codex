@@ -52,6 +52,7 @@ describe('gateway hygiene', () => {
         'src/childRuntime.ts',
         'src/server.ts',
         'src/artifacts.ts',
+        'src/bridge/fsBridge.ts',
         'src/tools/planTools.ts',
         'src/graph/subgraphExtract.ts',
       ]),
