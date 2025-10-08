@@ -9,7 +9,9 @@
     "scripts": {
         "build": "tsc && tsc -p graph-forge/tsconfig.json",
         "start": "node dist/server.js",
-        "start:http": "node dist/server.js --http --http-host 0.0.0.0 --http-port 4000 --no-stdio",
+        "start:http": "node dist/server.js --http --http-host 127.0.0.1 --http-port 8765 --http-path /mcp --http-json on --http-stateless yes",
+        "start:stdio": "node dist/server.js",
+        "start:fsbridge": "node dist/bridge/fsBridge.js",
         "start:dashboard": "node scripts/start-dashboard.mjs",
         "dev": "node --loader ts-node/esm src/server.ts",
         "clean": "node scripts/clean.mjs",

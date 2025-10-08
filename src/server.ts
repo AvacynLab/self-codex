@@ -7449,6 +7449,233 @@ server.registerTool(
 
 
 
+/** JSON-RPC request payload accepted by {@link handleJsonRpc}. */
+export interface JsonRpcRequest {
+  /** JSON-RPC protocol version, only "2.0" is supported. */
+  jsonrpc: "2.0";
+  /** Identifier propagated by clients so responses can be correlated. */
+  id: string | number | null;
+  /** Fully qualified method name (tool id or native MCP request). */
+  method: string;
+  /** Optional structured parameters forwarded to the handler. */
+  params?: unknown;
+}
+
+/** Successful or erroneous JSON-RPC response returned by {@link handleJsonRpc}. */
+export interface JsonRpcResponse {
+  /** JSON-RPC protocol version echoed back to the caller. */
+  jsonrpc: "2.0";
+  /** Identifier copied from the request (can be null for notifications). */
+  id: string | number | null;
+  /** Structured result produced by the handler when the call succeeds. */
+  result?: unknown;
+  /** Error payload when the handler throws or rejects. */
+  error?: { code: number; message: string; data?: unknown };
+}
+
+/**
+ * Context propagated when routing JSON-RPC calls through {@link routeJsonRpcRequest}.
+ *
+ * The structure purposely mirrors the headers we need to surface when Codex reuses
+ * the HTTP transport internally (child sessions, idempotency keys, etc.). Tests
+ * currently rely on the headers snapshot to assert FS-Bridge behaviour without
+ * requiring a real HTTP stack.
+ */
+export interface JsonRpcRouteContext {
+  /** Optional HTTP-like headers to expose to downstream handlers. */
+  headers?: Record<string, string>;
+  /** Identifier reused when the upstream caller provided one. */
+  requestId?: string | number | null;
+  /** Logical transport tag (e.g. "http", "fs") for diagnostics. */
+  transport?: string;
+  /** Logical child identifier propagated by self-provider orchestration. */
+  childId?: string;
+  /** Optional limits advertised by the child session. */
+  childLimits?: { cpuMs?: number; memMb?: number; wallMs?: number };
+  /** Idempotency key supplied by HTTP callers. */
+  idempotencyKey?: string;
+}
+
+/** Signature of the internal request handler registered by the MCP SDK. */
+type InternalJsonRpcHandler = (
+  request: { jsonrpc: "2.0"; id: string | number | null; method: string; params?: unknown },
+  extra: {
+    signal: AbortSignal;
+    sessionId?: string;
+    sendNotification: (notification: unknown) => Promise<void>;
+    sendRequest: (req: unknown, schema?: unknown, options?: unknown) => Promise<unknown>;
+    authInfo?: unknown;
+    requestId: string | number | null;
+    requestInfo?: { headers?: Record<string, string> };
+  },
+) => Promise<unknown> | unknown;
+
+/**
+ * Normalises human-friendly method names (e.g. `mcp_info`) into actual MCP
+ * requests understood by the underlying SDK. Tools are exposed via
+ * `tools/call`, therefore we transparently translate direct tool invocations
+ * into the canonical request form.
+ */
+function normaliseJsonRpcInvocation(method: string, params: unknown): {
+  method: string;
+  params?: unknown;
+} {
+  const trimmed = method.trim();
+  if (trimmed.includes("/")) {
+    return { method: trimmed, params };
+  }
+
+  const toolArgs =
+    params && typeof params === "object" && params !== null ? { ...(params as Record<string, unknown>) } : {};
+  return {
+    method: "tools/call",
+    params: { name: trimmed, arguments: toolArgs },
+  };
+}
+
+/**
+ * Delegates the JSON-RPC method to the handler registered on the underlying
+ * MCP server. The helper mirrors the transport layer implemented by the SDK
+ * so tests and the FS-Bridge can issue requests without going through HTTP.
+ */
+export async function routeJsonRpcRequest(
+  method: string,
+  params?: unknown,
+  context: JsonRpcRouteContext = {},
+): Promise<unknown> {
+  const originalMethod = method.trim();
+  const internalServer = server.server as unknown as {
+    _requestHandlers?: Map<string, InternalJsonRpcHandler>;
+  };
+
+  const handlers = internalServer._requestHandlers;
+  if (!handlers) {
+    throw new Error("JSON-RPC handlers not initialised");
+  }
+
+  const invocation = normaliseJsonRpcInvocation(method, params);
+  const handler = handlers.get(invocation.method);
+  if (!handler) {
+    throw new Error(`Unknown method: ${invocation.method}`);
+  }
+
+  const requestId = context.requestId ?? randomUUID();
+  const abort = new AbortController();
+
+  const headersSnapshot = { ...(context.headers ?? {}) };
+  if (context.transport) {
+    headersSnapshot["x-mcp-transport"] = context.transport;
+  }
+  if (context.childId) {
+    headersSnapshot["x-child-id"] = context.childId;
+  }
+  if (context.childLimits) {
+    headersSnapshot["x-child-limits"] = Buffer.from(JSON.stringify(context.childLimits), "utf8").toString("base64");
+  }
+  if (context.idempotencyKey) {
+    headersSnapshot["idempotency-key"] = context.idempotencyKey;
+  }
+
+  const extra = {
+    signal: abort.signal,
+    sessionId: undefined,
+    sendNotification: async () => {
+      // Notifications are not routed when using the in-process adapter. They are
+      // primarily used by streaming transports, therefore we simply swallow them
+      // to keep the call fire-and-forget while documenting the limitation.
+    },
+    sendRequest: async () => {
+      throw new Error("Nested requests are not supported via handleJsonRpc");
+    },
+    requestId,
+    requestInfo: Object.keys(headersSnapshot).length > 0 ? { headers: headersSnapshot } : undefined,
+  };
+
+  try {
+    const rawResult = await handler(
+      { jsonrpc: "2.0", id: requestId, method: invocation.method, params: invocation.params },
+      extra,
+    );
+    if (!originalMethod.includes("/") && invocation.method === "tools/call") {
+      return normaliseToolCallResult(rawResult);
+    }
+    return rawResult;
+  } finally {
+    abort.abort();
+  }
+}
+
+/**
+ * Attempts to extract a structured payload from a tool response by leveraging
+ * the `structuredContent` field or the canonical JSON blob stored in
+ * `content[].text`. The helper keeps backward compatibility with clients that
+ * expect the raw MCP response while presenting a friendlier payload to the
+ * FS-Bridge and its tests.
+ */
+function normaliseToolCallResult(result: unknown): unknown {
+  if (!result || typeof result !== "object") {
+    return result;
+  }
+
+  const payload = result as {
+    structuredContent?: unknown;
+    content?: Array<{ text?: string } | null | undefined>;
+  };
+
+  if (Object.prototype.hasOwnProperty.call(payload, "structuredContent")) {
+    return payload.structuredContent;
+  }
+
+  if (Array.isArray(payload.content)) {
+    for (const entry of payload.content) {
+      if (entry && typeof entry === "object" && typeof entry.text === "string") {
+        try {
+          const parsed = JSON.parse(entry.text);
+          if (parsed && typeof parsed === "object") {
+            const record = parsed as Record<string, unknown>;
+            if (record.result !== undefined) {
+              return record.result;
+            }
+            if (record.info !== undefined) {
+              return record.info;
+            }
+            return parsed;
+          }
+        } catch {
+          // Ignore parse failures and fall back to the raw response.
+        }
+        break;
+      }
+    }
+  }
+
+  return result;
+}
+
+/**
+ * Validates and executes a JSON-RPC request using the in-process router. Errors
+ * are serialised following the JSON-RPC 2.0 specification so callers receive a
+ * deterministic payload whether the failure originates from validation or the
+ * underlying handler.
+ */
+export async function handleJsonRpc(
+  req: JsonRpcRequest,
+  context?: JsonRpcRouteContext,
+): Promise<JsonRpcResponse> {
+  const id = req?.id ?? null;
+  if (!req || req.jsonrpc !== "2.0" || typeof req.method !== "string") {
+    return { jsonrpc: "2.0", id, error: { code: -32600, message: "Invalid Request" } };
+  }
+
+  try {
+    const result = await routeJsonRpcRequest(req.method, req.params, { ...context, requestId: id });
+    return { jsonrpc: "2.0", id, result };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return { jsonrpc: "2.0", id, error: { code: -32000, message } };
+  }
+}
+
 // --- Transports ---
 const isMain = process.argv[1] ? pathToFileURL(process.argv[1]).href === import.meta.url : false;
 
