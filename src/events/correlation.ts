@@ -88,9 +88,12 @@ export function extractCorrelationHints(source: unknown): EventCorrelationHints 
     }
     visited.add(value);
     if (Array.isArray(value)) {
-      const objects = value.filter((entry): entry is Record<string, unknown> => typeof entry === "object" && entry !== null);
-      if (objects.length === 1) {
-        queue.push(objects[0]!);
+      for (const entry of value) {
+        if (entry && typeof entry === "object") {
+          // Arrays occasionally surface multiple partial correlation records;
+          // enqueue each object so hints like run/op identifiers can be merged.
+          enqueue(entry);
+        }
       }
       return;
     }

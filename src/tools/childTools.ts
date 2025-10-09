@@ -243,6 +243,7 @@ export interface ChildSpawnCodexResult extends Record<string, unknown> {
   ready_message: unknown | null;
   role: string | null;
   limits: ChildRuntimeLimits | null;
+  endpoint: { url: string; headers: Record<string, string> } | null;
   idempotency_key: string | null;
   idempotent: boolean;
 }
@@ -383,33 +384,75 @@ export async function handleChildSpawnCodex(
   const execute = async (): Promise<ChildSpawnCodexSnapshot> => {
     const manifestExtras = buildSpawnCodexManifestExtras(input);
     const metadata: Record<string, unknown> = structuredClone(input.metadata ?? {});
+    const limitsCopy: ChildRuntimeLimits | null = input.limits ? structuredClone(input.limits) : null;
+    const role = input.role ?? null;
+    const idempotencyKey = input.idempotency_key ?? null;
 
     metadata.op_id = opId;
-    if (input.role) {
-      metadata.role = input.role;
+    if (role) {
+      metadata.role = role;
     }
     if (input.model_hint) {
       metadata.model_hint = input.model_hint;
     }
-    if (input.idempotency_key) {
-      metadata.idempotency_key = input.idempotency_key;
+    if (idempotencyKey) {
+      metadata.idempotency_key = idempotencyKey;
     }
-    if (input.limits) {
-      metadata.limits = structuredClone(input.limits);
+    if (limitsCopy) {
+      metadata.limits = structuredClone(limitsCopy);
     }
 
     context.logger.info("child_spawn_codex_requested", {
       op_id: opId,
-      role: input.role ?? null,
-      limit_keys: input.limits ? Object.keys(input.limits).length : 0,
-      idempotency_key: input.idempotency_key ?? null,
+      role,
+      limit_keys: limitsCopy ? Object.keys(limitsCopy).length : 0,
+      idempotency_key: idempotencyKey,
     });
 
+    if (isHttpLoopbackEnabled()) {
+      const childId = context.supervisor.createChildId();
+      const endpoint = buildHttpChildEndpoint(childId, limitsCopy);
+      const registration = await context.supervisor.registerHttpChild({
+        childId,
+        endpoint,
+        metadata,
+        limits: limitsCopy,
+        role,
+        manifestExtras,
+      });
+      const statusSnapshot = context.supervisor.status(childId);
+
+      context.logger.info("child_spawn_codex_ready", {
+        op_id: opId,
+        child_id: childId,
+        pid: null,
+        workdir: registration.workdir,
+        endpoint_url: endpoint.url,
+        idempotency_key: idempotencyKey,
+      });
+
+      return {
+        op_id: opId,
+        child_id: childId,
+        runtime_status: statusSnapshot.runtime,
+        index_snapshot: statusSnapshot.index,
+        manifest_path: registration.manifestPath,
+        log_path: registration.logPath,
+        workdir: registration.workdir,
+        started_at: registration.startedAt,
+        ready_message: null,
+        role: statusSnapshot.index.role,
+        limits: statusSnapshot.index.limits,
+        endpoint,
+        idempotency_key: idempotencyKey,
+      } satisfies ChildSpawnCodexSnapshot;
+    }
+
     const created = await context.supervisor.createChild({
-      role: input.role ?? null,
+      role,
       manifestExtras,
       metadata,
-      limits: input.limits ?? null,
+      limits: limitsCopy,
       waitForReady: true,
       readyTimeoutMs: 2000,
     });
@@ -422,7 +465,7 @@ export async function handleChildSpawnCodex(
       child_id: created.childId,
       pid: runtimeStatus.pid,
       workdir: runtimeStatus.workdir,
-      idempotency_key: input.idempotency_key ?? null,
+      idempotency_key: idempotencyKey,
     });
 
     return {
@@ -437,7 +480,8 @@ export async function handleChildSpawnCodex(
       ready_message: readyMessage,
       role: created.index.role,
       limits: created.index.limits,
-      idempotency_key: input.idempotency_key ?? null,
+      endpoint: null,
+      idempotency_key: idempotencyKey,
     };
   };
 
@@ -453,7 +497,12 @@ export async function handleChildSpawnCodex(
       });
     }
     const snapshot = hit.value as ChildSpawnCodexSnapshot;
-    return { ...snapshot, op_id: snapshot.op_id ?? opId, idempotent: hit.idempotent } as ChildSpawnCodexResult;
+    return {
+      ...snapshot,
+      op_id: snapshot.op_id ?? opId,
+      endpoint: snapshot.endpoint ?? null,
+      idempotent: hit.idempotent,
+    } as ChildSpawnCodexResult;
   }
 
   const result = await execute();
@@ -733,6 +782,45 @@ function buildSpawnCodexManifestExtras(
   }
 
   return extras;
+}
+
+/** Detects whether the stateless HTTP bridge should back child orchestration. */
+function isHttpLoopbackEnabled(): boolean {
+  const raw = process.env.MCP_HTTP_STATELESS;
+  return typeof raw === "string" && raw.trim().toLowerCase() === "yes";
+}
+
+/** Normalises the MCP HTTP endpoint so logical children can call the server again. */
+function buildHttpChildEndpoint(
+  childId: string,
+  limits: ChildRuntimeLimits | null,
+): { url: string; headers: Record<string, string> } {
+  const host = (process.env.MCP_HTTP_HOST ?? "127.0.0.1").trim() || "127.0.0.1";
+  const rawPort = process.env.MCP_HTTP_PORT ?? "";
+  const parsedPort = Number.parseInt(rawPort, 10);
+  const port = Number.isFinite(parsedPort) && parsedPort > 0 ? parsedPort : 8765;
+  let path = process.env.MCP_HTTP_PATH ?? "/mcp";
+  if (!path.startsWith("/")) {
+    path = `/${path}`;
+  }
+
+  const url = `http://${host}:${port}${path}`;
+  const headers: Record<string, string> = {
+    "content-type": "application/json",
+    accept: "application/json",
+    "x-child-id": childId,
+  };
+
+  const token = process.env.MCP_HTTP_TOKEN?.trim();
+  if (token) {
+    headers.authorization = `Bearer ${token}`;
+  }
+
+  if (limits && Object.keys(limits).length > 0) {
+    headers["x-child-limits"] = Buffer.from(JSON.stringify(limits), "utf8").toString("base64");
+  }
+
+  return { url, headers };
 }
 
 /** Schema for the `child_send` tool. */

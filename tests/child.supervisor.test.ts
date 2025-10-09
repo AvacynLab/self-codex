@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import { ChildSupervisor, type ChildLogEventSnapshot } from "../src/childSupervisor.js";
 import { EventBus } from "../src/events/bus.js";
 import { writeArtifact } from "../src/artifacts.js";
+import type { FileSystemGateway } from "../src/gateways/fs.js";
 
 const mockRunnerPath = fileURLToPath(new URL("./fixtures/mock-runner.js", import.meta.url));
 const stubbornRunnerPath = fileURLToPath(new URL("./fixtures/stubborn-runner.js", import.meta.url));
@@ -269,6 +270,43 @@ describe("child supervisor", () => {
       expect(responseEvent?.graphId).to.equal("graph-meta");
       expect(responseEvent?.nodeId).to.equal("node-meta");
       expect(responseEvent?.childId).to.equal(created.childId);
+    } finally {
+      await supervisor.disposeAll();
+      await rm(childrenRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("persists logical HTTP manifests through the injected filesystem gateway", async () => {
+    const childrenRoot = await mkdtemp(path.join(tmpdir(), "supervisor-loopback-"));
+    const calls: Array<{ path: string; data: string }> = [];
+    const stubGateway: FileSystemGateway = {
+      async writeFileUtf8(pathName, data) {
+        calls.push({ path: pathName, data });
+      },
+    };
+
+    const supervisor = new ChildSupervisor({
+      childrenRoot,
+      defaultCommand: process.execPath,
+      fileSystem: stubGateway,
+    });
+
+    try {
+      const result = await supervisor.registerHttpChild({
+        endpoint: { url: "http://127.0.0.1:1234/mcp", headers: { authorization: "Bearer stub" } },
+        metadata: { scenario: "fs-gateway" },
+      });
+
+      expect(result.childId).to.be.a("string");
+      expect(calls, "filesystem gateway writes").to.have.lengthOf(1);
+
+      const [manifestWrite] = calls;
+      expect(manifestWrite.path).to.equal(result.manifestPath);
+
+      const manifest = JSON.parse(manifestWrite.data) as { childId?: string; metadata?: Record<string, unknown> };
+      expect(manifest.childId).to.equal(result.childId);
+      expect(manifest.metadata?.transport).to.equal("http");
+      expect(manifest.metadata?.endpoint).to.deep.equal({ url: "http://127.0.0.1:1234/mcp", headers: { authorization: "Bearer stub" } });
     } finally {
       await supervisor.disposeAll();
       await rm(childrenRoot, { recursive: true, force: true });
