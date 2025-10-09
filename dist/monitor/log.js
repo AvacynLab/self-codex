@@ -1,5 +1,6 @@
 import { appendFile, mkdir, rename, rm, stat } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { dirname, resolve } from "node:path";
+import { resolveWithin } from "../paths.js";
 /** Error raised when a log operation fails. */
 export class LogJournalError extends Error {
     code;
@@ -26,20 +27,53 @@ function sanitiseBucketId(raw) {
 function resolveStreamDir(rootDir, stream) {
     switch (stream) {
         case "server":
-            return join(rootDir, "server");
+            return resolveWithin(rootDir, "server");
         case "run":
-            return join(rootDir, "runs");
+            return resolveWithin(rootDir, "runs");
         case "child":
-            return join(rootDir, "children");
+            return resolveWithin(rootDir, "children");
         default:
-            return rootDir;
+            return resolveWithin(rootDir, stream);
     }
 }
-/** Creates the JSONL file path for a bucket. */
+/** Normalises optional textual tags to non-empty strings when possible. */
+function normaliseTag(value) {
+    if (typeof value !== "string") {
+        return null;
+    }
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : null;
+}
+/** Maps log streams to their default orchestrator component identifier. */
+function inferDefaultComponent(stream) {
+    switch (stream) {
+        case "run":
+            return "run";
+        case "child":
+            return "child";
+        default:
+            return "server";
+    }
+}
+/** Normalises optional duration values expressed in milliseconds. */
+function normaliseElapsed(value) {
+    if (typeof value !== "number" || !Number.isFinite(value)) {
+        return null;
+    }
+    if (value < 0) {
+        return 0;
+    }
+    return Math.round(value);
+}
+/**
+ * Creates the JSONL file path for a bucket while delegating sandbox enforcement to
+ * {@link resolveWithin}. This guarantees that even crafted bucket identifiers remain
+ * confined to the configured journal root and cannot traverse upwards.
+ */
 function resolveBucketPath(rootDir, stream, bucketId) {
     const baseDir = resolveStreamDir(rootDir, stream);
     const safeId = sanitiseBucketId(bucketId);
-    return join(baseDir, `${safeId}.jsonl`);
+    return resolveWithin(baseDir, `${safeId}.jsonl`);
 }
 /**
  * Maintains correlated log entries for the orchestrator. Entries are preserved in memory for fast
@@ -72,6 +106,9 @@ export class LogJournal {
         const seq = input.seq && input.seq > state.lastSeq ? input.seq : state.lastSeq + 1;
         state.lastSeq = Math.max(state.lastSeq, seq);
         const ts = typeof input.ts === "number" && Number.isFinite(input.ts) ? Math.floor(input.ts) : Date.now();
+        const component = normaliseTag(input.component ?? null) ?? inferDefaultComponent(input.stream);
+        const stage = normaliseTag(input.stage ?? input.message) ?? input.message;
+        const elapsedMs = normaliseElapsed(input.elapsedMs ?? null);
         const entry = {
             seq,
             ts,
@@ -86,6 +123,9 @@ export class LogJournal {
             graphId: input.graphId ?? null,
             nodeId: input.nodeId ?? null,
             childId: input.childId ?? null,
+            component,
+            stage,
+            elapsedMs,
         };
         state.entries.push(entry);
         if (state.entries.length > this.maxEntries) {
@@ -161,6 +201,24 @@ export class LogJournal {
             if (filterSets?.childIds && (!entry.childId || !filterSets.childIds.has(entry.childId))) {
                 return false;
             }
+            if (filterSets?.components && !filterSets.components.has(entry.component)) {
+                return false;
+            }
+            if (filterSets?.stages && !filterSets.stages.has(entry.stage)) {
+                return false;
+            }
+            if (filterSets?.minElapsedMs !== undefined) {
+                const elapsed = entry.elapsedMs ?? null;
+                if (elapsed === null || elapsed < filterSets.minElapsedMs) {
+                    return false;
+                }
+            }
+            if (filterSets?.maxElapsedMs !== undefined) {
+                const elapsed = entry.elapsedMs ?? null;
+                if (elapsed === null || elapsed > filterSets.maxElapsedMs) {
+                    return false;
+                }
+            }
             return true;
         });
         const ordered = filtered.sort((a, b) => a.seq - b.seq).slice(0, limit);
@@ -198,7 +256,15 @@ export class LogJournal {
         const graphIds = toSet(filters.graphIds);
         const nodeIds = toSet(filters.nodeIds);
         const childIds = toSet(filters.childIds);
+        const components = toSet(filters.components);
+        const stages = toSet(filters.stages);
         const messageIncludes = this.normaliseMessageNeedles(filters.messageIncludes);
+        const minElapsedMs = typeof filters.minElapsedMs === "number" && Number.isFinite(filters.minElapsedMs) && filters.minElapsedMs >= 0
+            ? Math.floor(filters.minElapsedMs)
+            : undefined;
+        const maxElapsedMs = typeof filters.maxElapsedMs === "number" && Number.isFinite(filters.maxElapsedMs) && filters.maxElapsedMs >= 0
+            ? Math.floor(filters.maxElapsedMs)
+            : undefined;
         const sinceTs = typeof filters.sinceTs === "number" && Number.isFinite(filters.sinceTs) && filters.sinceTs >= 0
             ? Math.floor(filters.sinceTs)
             : undefined;
@@ -211,6 +277,10 @@ export class LogJournal {
             !graphIds &&
             !nodeIds &&
             !childIds &&
+            !components &&
+            !stages &&
+            minElapsedMs === undefined &&
+            maxElapsedMs === undefined &&
             !messageIncludes &&
             sinceTs === undefined &&
             untilTs === undefined) {
@@ -223,6 +293,10 @@ export class LogJournal {
             ...(graphIds ? { graphIds } : null),
             ...(nodeIds ? { nodeIds } : null),
             ...(childIds ? { childIds } : null),
+            ...(components ? { components } : null),
+            ...(stages ? { stages } : null),
+            ...(minElapsedMs !== undefined ? { minElapsedMs } : null),
+            ...(maxElapsedMs !== undefined ? { maxElapsedMs } : null),
             ...(messageIncludes ? { messageIncludes } : null),
             ...(sinceTs !== undefined ? { sinceTs } : null),
             ...(untilTs !== undefined ? { untilTs } : null),

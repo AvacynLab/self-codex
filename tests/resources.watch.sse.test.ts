@@ -35,6 +35,9 @@ describe("resources_watch SSE serialisation", () => {
           graphId: "graph-escape",
           nodeId: "node-escape",
           childId: "child-escape",
+          component: "graph",
+          stage: "status",
+          elapsedMs: 12,
           payload: {
             note: "line1\nline2\rline3\u2028line4",
           },
@@ -72,6 +75,9 @@ describe("resources_watch SSE serialisation", () => {
         graph_id: "graph-escape",
         node_id: "node-escape",
         child_id: "child-escape",
+        component: "graph",
+        stage: "status",
+        elapsed_ms: 12,
         payload: {
           note: "line1\nline2\rline3\u2028line4",
         },
@@ -351,6 +357,9 @@ describe("resources_watch tool SSE integration", () => {
       jobId: "job-sse",
       runId,
       childId: null,
+      component: "graph",
+      stage: "status",
+      elapsedMs: null,
       payload: { message: "line1\nline2\rline3\u2028line4" },
     });
 
@@ -404,6 +413,9 @@ describe("resources_watch tool SSE integration", () => {
           graph_id: null,
           node_id: null,
           child_id: null,
+          component: "graph",
+          stage: "status",
+          elapsed_ms: null,
           payload: { message: "line1\nline2\rline3\u2028line4" },
         },
       });
@@ -427,6 +439,9 @@ describe("resources_watch tool SSE integration", () => {
       runId,
       opId: "op-filter",
       childId: null,
+      component: "graph",
+      stage: "status",
+      elapsedMs: null,
       payload: { marker: "filter" },
     });
 
@@ -489,6 +504,9 @@ describe("resources_watch tool SSE integration", () => {
       runId,
       opId: null,
       childId: null,
+      component: "graph",
+      stage: "status",
+      elapsedMs: null,
       payload: { snapshot: "ts" },
     });
 

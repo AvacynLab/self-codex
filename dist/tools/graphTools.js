@@ -6,6 +6,7 @@ import { buildGraphAttributeIndex } from "../graph/index.js";
 import { partitionGraph } from "../graph/partition.js";
 import { projectHyperGraph, } from "../graph/hypergraph.js";
 import { applyAll, createInlineSubgraphRule, createRerouteAvoidRule, createSplitParallelRule, } from "../graph/rewrite.js";
+import { resolveOperationId } from "./operationIds.js";
 const computationCache = new GraphComputationCache(128);
 const graphForgeModuleUrl = new URL("../../graph-forge/dist/index.js", import.meta.url);
 const { GraphModel, betweennessCentrality, kShortestPaths, shortestPath, constrainedShortestPath, } = (await import(graphForgeModuleUrl.href));
@@ -46,6 +47,8 @@ export const GraphDescriptorSchema = z.object({
     graph_id: z.string().min(1).optional(),
     graph_version: z.number().int().positive().optional(),
 });
+/** Identifier of rewrite rules that can be triggered via mutation operations. */
+const GraphRewriteRuleIdSchema = z.enum(["split_parallel", "inline_subgraph", "reroute_avoid"]);
 /** Schema describing a hyper-edge before projection. */
 const GraphHyperEdgeSchema = z
     .object({
@@ -67,6 +70,7 @@ export const GraphHyperExportInputSchema = z
         .min(1, "hyper_graph must declare hyper_edges"),
     metadata: GraphAttributeRecordSchema.optional(),
     graph_version: z.number().int().positive().optional(),
+    op_id: z.string().trim().min(1).optional(),
 })
     .strict();
 export const GraphHyperExportInputShape = GraphHyperExportInputSchema.shape;
@@ -113,6 +117,7 @@ export const GraphGenerateInputSchema = z.object({
     preset: PresetSchema.optional(),
     tasks: TaskSourceSchema.optional(),
     default_weight: z.number().finite().positive().optional(),
+    op_id: z.string().trim().min(1).optional(),
 });
 export const GraphGenerateInputShape = GraphGenerateInputSchema.shape;
 const PRESET_LIBRARY = {
@@ -130,6 +135,7 @@ const PRESET_LIBRARY = {
     ],
 };
 export function handleGraphGenerate(input, context) {
+    const opId = resolveOperationId(input.op_id, "graph_generate_op");
     const defaultWeight = input.default_weight ?? 1;
     const { tasks, notes: knowledgeNotes } = deriveTasks(input, context);
     const nodes = new Map();
@@ -232,6 +238,7 @@ export function handleGraphGenerate(input, context) {
         notes.push("synthetic nodes were added for undeclared dependencies");
     }
     return {
+        op_id: opId,
         graph: serialiseDescriptor(descriptor),
         task_count: tasks.filter((task) => !task.synthetic).length,
         edge_count: descriptor.edges.length,
@@ -239,19 +246,45 @@ export function handleGraphGenerate(input, context) {
     };
 }
 /** Input payload accepted by `graph_mutate`. */
+const GraphPatchMetadataOperationSchema = z
+    .object({
+    op: z.literal("patch_metadata"),
+    set: GraphAttributeRecordSchema.optional(),
+    unset: z.array(z.string().min(1)).optional(),
+})
+    .strict();
+const GraphRewriteOperationSchema = z
+    .object({
+    op: z.literal("rewrite"),
+    rule: GraphRewriteRuleIdSchema,
+    params: z
+        .object({
+        split_parallel_targets: z.array(z.string().min(1)).optional(),
+        reroute_avoid_node_ids: z.array(z.string().min(1)).optional(),
+        reroute_avoid_labels: z.array(z.string().min(1)).optional(),
+        stop_on_no_change: z.boolean().optional(),
+    })
+        .strict()
+        .optional(),
+})
+    .strict();
+const GraphMutationOperationSchema = z.discriminatedUnion("op", [
+    z.object({ op: z.literal("add_node"), node: GraphNodeSchema }),
+    z.object({ op: z.literal("remove_node"), id: z.string().min(1) }),
+    z.object({ op: z.literal("rename_node"), id: z.string().min(1), new_id: z.string().min(1) }),
+    z.object({ op: z.literal("add_edge"), edge: GraphEdgeSchema }),
+    z.object({ op: z.literal("remove_edge"), from: z.string().min(1), to: z.string().min(1) }),
+    z.object({ op: z.literal("set_node_attribute"), id: z.string().min(1), key: z.string().min(1), value: GraphAttributeValueSchema.nullable() }),
+    z.object({ op: z.literal("set_edge_attribute"), from: z.string().min(1), to: z.string().min(1), key: z.string().min(1), value: GraphAttributeValueSchema.nullable() }),
+    GraphPatchMetadataOperationSchema,
+    GraphRewriteOperationSchema,
+]);
 export const GraphMutateInputSchema = z.object({
     graph: GraphDescriptorSchema,
     operations: z
-        .array(z.discriminatedUnion("op", [
-        z.object({ op: z.literal("add_node"), node: GraphNodeSchema }),
-        z.object({ op: z.literal("remove_node"), id: z.string().min(1) }),
-        z.object({ op: z.literal("rename_node"), id: z.string().min(1), new_id: z.string().min(1) }),
-        z.object({ op: z.literal("add_edge"), edge: GraphEdgeSchema }),
-        z.object({ op: z.literal("remove_edge"), from: z.string().min(1), to: z.string().min(1) }),
-        z.object({ op: z.literal("set_node_attribute"), id: z.string().min(1), key: z.string().min(1), value: GraphAttributeValueSchema.nullable() }),
-        z.object({ op: z.literal("set_edge_attribute"), from: z.string().min(1), to: z.string().min(1), key: z.string().min(1), value: GraphAttributeValueSchema.nullable() }),
-    ]))
+        .array(GraphMutationOperationSchema)
         .min(1, "at least one operation must be provided"),
+    op_id: z.string().trim().min(1).optional(),
 });
 export const GraphMutateInputShape = GraphMutateInputSchema.shape;
 /**
@@ -277,6 +310,7 @@ export function serialiseNormalisedGraph(descriptor) {
  * and tests so that auditing coverage remains simple.
  */
 export function handleGraphHyperExport(input) {
+    const opId = resolveOperationId(input.op_id, "graph_hyper_export_op");
     const hyperGraph = {
         id: input.id,
         nodes: input.nodes.map((node) => ({
@@ -298,6 +332,7 @@ export function handleGraphHyperExport(input) {
         graphVersion: input.graph_version,
     });
     return {
+        op_id: opId,
         graph: serialiseNormalisedGraph(projected),
         stats: {
             nodes: projected.nodes.length,
@@ -308,6 +343,7 @@ export function handleGraphHyperExport(input) {
 }
 /** Apply idempotent graph operations, returning the mutated graph. */
 export function handleGraphMutate(input) {
+    const opId = resolveOperationId(input.op_id, "graph_mutate_op");
     const descriptor = normaliseDescriptor(input.graph);
     const initialPayload = serialiseDescriptor(descriptor);
     const applied = [];
@@ -334,6 +370,12 @@ export function handleGraphMutate(input) {
             case "set_edge_attribute":
                 applied.push(applySetEdgeAttribute(descriptor, operation.from, operation.to, operation.key, operation.value));
                 break;
+            case "patch_metadata":
+                applied.push(applyPatchMetadata(descriptor, operation.set ?? {}, operation.unset ?? []));
+                break;
+            case "rewrite":
+                applied.push(applyRewriteOperation(descriptor, operation.rule, operation.params));
+                break;
         }
     }
     const mutatedPayloadBeforeIdentity = serialiseDescriptor(descriptor);
@@ -346,10 +388,8 @@ export function handleGraphMutate(input) {
     if (netChanged) {
         computationCache.invalidateGraph(descriptor.graphId);
     }
-    return { graph: serialiseDescriptor(descriptor), applied };
+    return { op_id: opId, graph: serialiseDescriptor(descriptor), applied };
 }
-/** Identifier of rewrite rules that can be triggered via the rewrite tool. */
-const GraphRewriteRuleIdSchema = z.enum(["split_parallel", "inline_subgraph", "reroute_avoid"]);
 const GraphRewriteManualOptionsSchema = z
     .object({
     stop_on_no_change: z.boolean().optional(),
@@ -398,6 +438,7 @@ const GraphRewriteApplyManualSchema = z
     mode: z.literal("manual"),
     rules: z.array(GraphRewriteRuleIdSchema).min(1, "at least one rewrite rule must be selected"),
     options: GraphRewriteManualOptionsSchema.optional(),
+    op_id: z.string().trim().min(1).optional(),
 })
     .strict();
 const GraphRewriteApplyAdaptiveSchema = z
@@ -406,6 +447,7 @@ const GraphRewriteApplyAdaptiveSchema = z
     mode: z.literal("adaptive"),
     evaluation: GraphRewriteAdaptiveEvaluationSchema,
     options: GraphRewriteAdaptiveOptionsSchema.optional(),
+    op_id: z.string().trim().min(1).optional(),
 })
     .strict();
 /** Input payload accepted by `graph_rewrite_apply`. */
@@ -427,6 +469,7 @@ export const GraphRewriteApplyInputShape = {
     })
         .optional(),
     evaluation: GraphRewriteAdaptiveEvaluationSchema.optional(),
+    op_id: z.string().optional(),
 };
 /**
  * Apply graph rewrite rules either manually selected by the caller or derived
@@ -434,6 +477,7 @@ export const GraphRewriteApplyInputShape = {
  * identity so the transaction manager can reason about optimistic concurrency.
  */
 export function handleGraphRewriteApply(input) {
+    const opId = resolveOperationId(input.op_id, "graph_rewrite_apply_op");
     const descriptor = normaliseDescriptor(input.graph);
     const baseVersion = descriptor.graphVersion;
     let rewrittenGraph;
@@ -496,6 +540,7 @@ export function handleGraphRewriteApply(input) {
         computationCache.invalidateGraph(rewrittenGraph.graphId);
     }
     return {
+        op_id: opId,
         graph: serialiseDescriptor(rewrittenGraph),
         history,
         total_applied: totalApplied,
@@ -600,10 +645,12 @@ export const GraphValidateInputSchema = z.object({
     graph: GraphDescriptorSchema,
     strict_weights: z.boolean().optional(),
     cycle_limit: z.number().int().positive().max(100).default(20),
+    op_id: z.string().trim().min(1).optional(),
 });
 export const GraphValidateInputShape = GraphValidateInputSchema.shape;
 /** Validate graph structure and detect common modelling issues. */
 export function handleGraphValidate(input) {
+    const opId = resolveOperationId(input.op_id, "graph_validate_op");
     const descriptor = normaliseDescriptor(input.graph);
     const errors = [];
     const warnings = [];
@@ -711,6 +758,7 @@ export function handleGraphValidate(input) {
         });
     }
     return {
+        op_id: opId,
         ok: errors.length === 0,
         errors,
         warnings,
@@ -726,10 +774,12 @@ export function handleGraphValidate(input) {
 export const GraphSummarizeInputSchema = z.object({
     graph: GraphDescriptorSchema,
     include_centrality: z.boolean().default(true),
+    op_id: z.string().trim().min(1).optional(),
 });
 export const GraphSummarizeInputShape = GraphSummarizeInputSchema.shape;
 /** Provide a human readable summary for the provided graph. */
 export function handleGraphSummarize(input) {
+    const opId = resolveOperationId(input.op_id, "graph_summarize_op");
     const descriptor = normaliseDescriptor(input.graph);
     const attributeIndex = buildGraphAttributeIndex(descriptor);
     const adjacency = attributeIndex.adjacency;
@@ -757,6 +807,7 @@ export function handleGraphSummarize(input) {
         }
     }
     return {
+        op_id: opId,
         graph: serialiseDescriptor(descriptor),
         layers: layers.map((nodes, index) => ({ index, nodes })),
         metrics: {
@@ -820,6 +871,7 @@ export const GraphPathsKShortestInputSchema = z.object({
         .finite("max_deviation must be finite")
         .nonnegative("max_deviation must be non-negative")
         .optional(),
+    op_id: z.string().trim().min(1).optional(),
 });
 export const GraphPathsKShortestInputShape = GraphPathsKShortestInputSchema.shape;
 /**
@@ -828,6 +880,7 @@ export const GraphPathsKShortestInputShape = GraphPathsKShortestInputSchema.shap
  * alongside the baseline cost.
  */
 export function handleGraphPathsKShortest(input) {
+    const opId = resolveOperationId(input.op_id, "graph_paths_k_shortest_op");
     const descriptor = normaliseDescriptor(input.graph);
     assertNodeExists(descriptor, input.from, "start");
     assertNodeExists(descriptor, input.to, "goal");
@@ -863,6 +916,7 @@ export function handleGraphPathsKShortest(input) {
             notes.push("max_deviation_filter_active");
         }
         return {
+            op_id: opId,
             from: input.from,
             to: input.to,
             requested_k: input.k,
@@ -892,6 +946,7 @@ export const GraphPathsConstrainedInputSchema = z.object({
         .finite("max_cost must be finite")
         .nonnegative("max_cost must be non-negative")
         .optional(),
+    op_id: z.string().trim().min(1).optional(),
 });
 export const GraphPathsConstrainedInputShape = GraphPathsConstrainedInputSchema.shape;
 /**
@@ -900,6 +955,7 @@ export const GraphPathsConstrainedInputShape = GraphPathsConstrainedInputSchema.
  * the operator can adjust the constraints.
  */
 export function handleGraphPathsConstrained(input) {
+    const opId = resolveOperationId(input.op_id, "graph_paths_constrained_op");
     const descriptor = normaliseDescriptor(input.graph);
     assertNodeExists(descriptor, input.from, "start");
     assertNodeExists(descriptor, input.to, "goal");
@@ -936,6 +992,7 @@ export function handleGraphPathsConstrained(input) {
         };
         if (constrained.status === "start_or_goal_excluded") {
             return {
+                op_id: opId,
                 status: "unreachable",
                 reason: "START_OR_GOAL_EXCLUDED",
                 path: [],
@@ -946,6 +1003,7 @@ export function handleGraphPathsConstrained(input) {
         }
         if (constrained.status === "unreachable") {
             return {
+                op_id: opId,
                 status: "unreachable",
                 reason: "NO_PATH",
                 path: [],
@@ -957,6 +1015,7 @@ export function handleGraphPathsConstrained(input) {
         if (constrained.status === "max_cost_exceeded") {
             const totalCost = Number.isFinite(constrained.distance) ? Number(constrained.distance.toFixed(6)) : null;
             return {
+                op_id: opId,
                 status: "cost_exceeded",
                 reason: "MAX_COST_EXCEEDED",
                 path: [...constrained.path],
@@ -968,6 +1027,7 @@ export function handleGraphPathsConstrained(input) {
         }
         const totalCost = Number(constrained.distance.toFixed(6));
         return {
+            op_id: opId,
             status: "found",
             reason: null,
             path: [...constrained.path],
@@ -990,6 +1050,7 @@ export const GraphCentralityBetweennessInputSchema = z.object({
         .min(1, "top_k must be at least 1")
         .max(64, "top_k larger than 64 is not supported")
         .default(5),
+    op_id: z.string().trim().min(1).optional(),
 });
 export const GraphCentralityBetweennessInputShape = GraphCentralityBetweennessInputSchema.shape;
 /**
@@ -998,6 +1059,7 @@ export const GraphCentralityBetweennessInputShape = GraphCentralityBetweennessIn
  * generation.
  */
 export function handleGraphCentralityBetweenness(input) {
+    const opId = resolveOperationId(input.op_id, "graph_centrality_betweenness_op");
     const descriptor = normaliseDescriptor(input.graph);
     const variant = {
         weighted: input.weighted,
@@ -1030,6 +1092,7 @@ export function handleGraphCentralityBetweenness(input) {
     const statistics = computeScoreStatistics(sorted);
     const notes = sorted.length === 0 ? ["graph_has_no_nodes"] : [];
     return {
+        op_id: opId,
         weighted: input.weighted,
         normalised: input.normalise,
         weight_attribute: input.weight_attribute,
@@ -1048,10 +1111,12 @@ export const GraphPartitionInputSchema = z.object({
     objective: GraphPartitionObjectiveSchema.default("community"),
     seed: z.number().int().nonnegative().optional(),
     max_iterations: z.number().int().positive().max(100).default(12),
+    op_id: z.string().trim().min(1).optional(),
 });
 export const GraphPartitionInputShape = GraphPartitionInputSchema.shape;
 /** Partition the graph using a heuristic min-cut/community strategy. */
 export function handleGraphPartition(input) {
+    const opId = resolveOperationId(input.op_id, "graph_partition_op");
     const descriptor = normaliseDescriptor(input.graph);
     const attributeIndex = buildGraphAttributeIndex(descriptor);
     const result = partitionGraph(descriptor, attributeIndex, {
@@ -1064,6 +1129,7 @@ export function handleGraphPartition(input) {
         .map(([node, partition]) => ({ node, partition }))
         .sort((a, b) => (a.node < b.node ? -1 : a.node > b.node ? 1 : 0));
     return {
+        op_id: opId,
         graph: serialiseDescriptor(descriptor),
         objective: input.objective,
         requested_k: input.k,
@@ -1594,6 +1660,111 @@ function applySetEdgeAttribute(descriptor, from, to, key, value) {
     }
     return { op: "set_edge_attribute", description: `attribute '${key}' set on edge`, changed: true };
 }
+/**
+ * Apply a metadata patch by merging the provided `set` values and removing the
+ * keys listed in `unset`. The helper keeps track of each adjustment so the
+ * resulting {@link GraphMutationRecord} explains what changed.
+ */
+function applyPatchMetadata(descriptor, set, unset) {
+    const safeSet = filterAttributes(set);
+    const keysToUnset = dedupe(unset
+        .map((key) => key.trim())
+        .filter((key) => key.length > 0));
+    const setSize = Object.keys(safeSet).length;
+    const unsetSize = keysToUnset.length;
+    if (setSize + unsetSize === 0) {
+        throw new Error("patch_metadata requires at least one key to set or unset");
+    }
+    const mutations = [];
+    let changed = false;
+    for (const [key, value] of Object.entries(safeSet)) {
+        const current = descriptor.metadata[key];
+        if (current === value) {
+            continue;
+        }
+        descriptor.metadata[key] = value;
+        mutations.push(`${key}=${JSON.stringify(value)}`);
+        changed = true;
+    }
+    for (const key of keysToUnset) {
+        if (!(key in descriptor.metadata)) {
+            continue;
+        }
+        delete descriptor.metadata[key];
+        mutations.push(`-${key}`);
+        changed = true;
+    }
+    const description = changed
+        ? `metadata patched (${mutations.join(", ")})`
+        : "metadata patch produced no change";
+    return { op: "patch_metadata", description, changed };
+}
+/**
+ * Apply a single rewrite rule directly within the mutation pipeline. The
+ * resulting graph replaces the in-memory descriptor when the rule produces a
+ * change, preserving optimistic version increments for downstream commits.
+ */
+function applyRewriteOperation(descriptor, ruleId, params) {
+    const options = params ?? {};
+    let rule;
+    switch (ruleId) {
+        case "split_parallel": {
+            const targets = normaliseEdgeTargets(options.split_parallel_targets);
+            rule = createSplitParallelRule(targets);
+            break;
+        }
+        case "inline_subgraph":
+            rule = createInlineSubgraphRule();
+            break;
+        case "reroute_avoid": {
+            const avoidNodeIds = normaliseStringSet(options.reroute_avoid_node_ids);
+            const avoidLabels = normaliseStringSet(options.reroute_avoid_labels);
+            rule = createRerouteAvoidRule({ avoidNodeIds, avoidLabels });
+            break;
+        }
+        default:
+            return {
+                op: "rewrite",
+                description: `rewrite '${ruleId}' unsupported`,
+                changed: false,
+            };
+    }
+    const stopOnNoChange = options.stop_on_no_change ?? true;
+    const { graph: rewritten, history } = applyAll(descriptor, [rule], stopOnNoChange);
+    const applied = history.reduce((total, entry) => total + entry.applied, 0);
+    const matches = history.reduce((total, entry) => total + entry.matches, 0);
+    const changed = applied > 0;
+    if (changed) {
+        adoptGraphDescriptor(descriptor, rewritten);
+    }
+    const description = changed
+        ? `rewrite '${rule.name}' applied ${applied} time(s)`
+        : `rewrite '${rule.name}' produced no change (${matches} matches)`;
+    return { op: "rewrite", description, changed };
+}
+/**
+ * Replace the content of {@link descriptor} with {@link source} without
+ * leaking references. The helper preserves identifiers to keep optimistic
+ * concurrency expectations intact.
+ */
+function adoptGraphDescriptor(target, source) {
+    target.name = source.name;
+    target.graphId = source.graphId;
+    target.graphVersion = source.graphVersion;
+    target.nodes = source.nodes.map((node) => ({
+        id: node.id,
+        label: node.label,
+        attributes: { ...node.attributes },
+    }));
+    target.edges = source.edges.map((edge) => ({
+        from: edge.from,
+        to: edge.to,
+        label: edge.label,
+        weight: edge.weight,
+        attributes: { ...edge.attributes },
+    }));
+    target.metadata = { ...source.metadata };
+}
 function computeLayers(adjacency, indegree) {
     const workingIndegree = new Map();
     for (const [key, value] of indegree.entries()) {
@@ -1814,6 +1985,7 @@ const GraphSimulateInputShapeInternal = {
         .finite()
         .positive("default duration must be strictly positive")
         .default(1),
+    op_id: z.string().trim().min(1).optional(),
 };
 /** Input payload accepted by `graph_simulate`. */
 export const GraphSimulateInputSchema = z.object(GraphSimulateInputShapeInternal);
@@ -1823,6 +1995,7 @@ const GraphCriticalPathInputShapeInternal = {
     duration_attribute: GraphSimulateInputShapeInternal.duration_attribute,
     fallback_duration_attribute: GraphSimulateInputShapeInternal.fallback_duration_attribute,
     default_duration: GraphSimulateInputShapeInternal.default_duration,
+    op_id: z.string().trim().min(1).optional(),
 };
 /** Input payload accepted by `graph_critical_path`. */
 export const GraphCriticalPathInputSchema = z.object(GraphCriticalPathInputShapeInternal);
@@ -1833,6 +2006,7 @@ export const GraphCriticalPathInputShape = GraphCriticalPathInputShapeInternal;
  * bottlenecks or parallelisation opportunities quickly.
  */
 export function handleGraphCriticalPath(input) {
+    const opId = resolveOperationId(input.op_id, "graph_critical_path_op");
     const context = buildSimulationContext({
         graph: input.graph,
         duration_attribute: input.duration_attribute,
@@ -1852,6 +2026,7 @@ export function handleGraphCriticalPath(input) {
         slackByNode[node] = Number(value.toFixed(6));
     }
     return {
+        op_id: opId,
         duration: Number(context.critical.duration.toFixed(6)),
         critical_path: [...context.critical.criticalPath],
         earliest_start: earliestStart,
@@ -1922,6 +2097,7 @@ const GraphOptimizeInputShapeInternal = {
         .positive("default duration must be strictly positive")
         .default(1),
     objective: GraphOptimizeObjectiveSchema.default({ type: "makespan" }),
+    op_id: z.string().trim().min(1).optional(),
 };
 export const GraphOptimizeInputSchema = z
     .object(GraphOptimizeInputShapeInternal)
@@ -2331,10 +2507,12 @@ function computeSimulationMetrics(schedule, queue, parallelism) {
 }
 /** Simulate the graph and expose schedule, metrics, and queue events. */
 export function handleGraphSimulate(input) {
+    const opId = resolveOperationId(input.op_id, "graph_simulate_op");
     const context = buildSimulationContext(input);
     const simulation = simulateGraph(context, input.parallelism);
     const warnings = [...context.warnings, ...simulation.warnings];
     return {
+        op_id: opId,
         graph: serialiseDescriptor(context.descriptor),
         schedule: simulation.schedule,
         queue: simulation.queue,
@@ -2366,6 +2544,7 @@ function evaluateOptimizeObjective(objective, context) {
 }
 /** Explore optimisation levers on top of the baseline simulation. */
 export function handleGraphOptimize(input) {
+    const opId = resolveOperationId(input.op_id, "graph_optimize_op");
     const context = buildSimulationContext({
         graph: input.graph,
         duration_attribute: input.duration_attribute,
@@ -2374,7 +2553,9 @@ export function handleGraphOptimize(input) {
     });
     const baselineOutput = simulateGraph(context, input.parallelism);
     const baselineWarnings = [...context.warnings, ...baselineOutput.warnings];
+    const baselineOpId = `${opId}:baseline`;
     const baseline = {
+        op_id: baselineOpId,
         graph: serialiseDescriptor(context.descriptor),
         schedule: baselineOutput.schedule,
         queue: baselineOutput.queue,
@@ -2499,6 +2680,7 @@ export function handleGraphOptimize(input) {
     }
     const warnings = Array.from(new Set([...baseline.warnings]));
     return {
+        op_id: opId,
         objective: {
             type: input.objective.type,
             label: baselineObjective.label,
@@ -2582,6 +2764,7 @@ const GraphOptimizeMooInputShapeInternal = {
         weights: z.record(z.string().min(1), z.number().finite().nonnegative()),
     })
         .optional(),
+    op_id: z.string().trim().min(1).optional(),
 };
 /** Input payload accepted by `graph_optimize_moo`. */
 export const GraphOptimizeMooInputSchema = z
@@ -2619,6 +2802,7 @@ export const GraphOptimizeMooInputShape = GraphOptimizeMooInputShapeInternal;
  * other candidate strictly improves all tracked objectives at once.
  */
 export function handleGraphOptimizeMoo(input) {
+    const opId = resolveOperationId(input.op_id, "graph_optimize_moo_op");
     const context = buildSimulationContext({
         graph: input.graph,
         duration_attribute: input.duration_attribute,
@@ -2692,6 +2876,7 @@ export function handleGraphOptimizeMoo(input) {
         notes.push("no_pareto_candidate");
     }
     return {
+        op_id: opId,
         objective_details: objectives.map((objective) => ({
             key: objective.key,
             type: objective.type,
@@ -2714,6 +2899,7 @@ export const GraphCausalAnalyzeInputSchema = z.object({
         .default(20),
     include_transitive_closure: z.boolean().default(true),
     compute_min_cut: z.boolean().default(true),
+    op_id: z.string().trim().min(1).optional(),
 });
 export const GraphCausalAnalyzeInputShape = GraphCausalAnalyzeInputSchema.shape;
 /**
@@ -2724,6 +2910,7 @@ export const GraphCausalAnalyzeInputShape = GraphCausalAnalyzeInputSchema.shape;
  * order to break the feedback loops.
  */
 export function handleGraphCausalAnalyze(input) {
+    const opId = resolveOperationId(input.op_id, "graph_causal_analyze_op");
     const descriptor = normaliseDescriptor(input.graph);
     const { adjacency, indegree } = buildAdjacencyInfo(descriptor);
     const incoming = buildIncomingMap(descriptor);
@@ -2770,6 +2957,7 @@ export function handleGraphCausalAnalyze(input) {
         notes.push("no_sink_detected");
     }
     return {
+        op_id: opId,
         acyclic: !cycleInfo.hasCycle,
         entrypoints,
         sinks,

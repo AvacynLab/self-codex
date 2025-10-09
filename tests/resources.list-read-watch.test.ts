@@ -32,6 +32,20 @@ function createGraph(graphId: string, version: number): NormalisedGraph {
   };
 }
 
+function recordRun(
+  registry: ResourceRegistry,
+  runId: string,
+  event: Parameters<ResourceRegistry["recordRunEvent"]>[1],
+): void {
+  const component = (event.component ?? null) && typeof event.component === "string" ? event.component : "graph";
+  const stage = event.stage ?? event.kind.toLowerCase();
+  const elapsedMs =
+    typeof event.elapsedMs === "number" && Number.isFinite(event.elapsedMs)
+      ? Math.max(0, Math.round(event.elapsedMs))
+      : null;
+  registry.recordRunEvent(runId, { ...event, component, stage, elapsedMs });
+}
+
 describe("resources registry", () => {
   it("lists and reads committed graphs, snapshots, runs, children and blackboard namespaces", () => {
     const blackboard = new BlackboardStore();
@@ -58,7 +72,7 @@ describe("resources registry", () => {
     registry.recordGraphVersion({ graphId: "demo", version: 1, committedAt: 900, graph: createGraph("demo", 1) });
     registry.recordGraphVersion({ graphId: "demo", version: 2, committedAt: 1_500, graph: createGraph("demo", 2) });
 
-    registry.recordRunEvent("run-77", {
+    recordRun(registry, "run-77", {
       seq: 1,
       ts: 2_000,
       kind: "PLAN",
@@ -67,7 +81,7 @@ describe("resources registry", () => {
       childId: null,
       payload: { run_id: "run-77", note: "start" },
     });
-    registry.recordRunEvent("run-77", {
+    recordRun(registry, "run-77", {
       seq: 2,
       ts: 2_100,
       kind: "STATUS",
@@ -134,6 +148,9 @@ describe("resources registry", () => {
           graphId: null,
           nodeId: null,
           childId: null,
+          component: "graph",
+          stage: "plan",
+          elapsedMs: null,
           payload: { run_id: "run-77", note: "start" },
         },
         {
@@ -147,6 +164,9 @@ describe("resources registry", () => {
           graphId: null,
           nodeId: null,
           childId: "child-9",
+          component: "graph",
+          stage: "status",
+          elapsedMs: null,
           payload: { run_id: "run-77", step: "fanout" },
         },
       ],
@@ -196,7 +216,7 @@ describe("resources registry", () => {
 
   it("paginates watches with monotonic sequence numbers", () => {
     const registry = new ResourceRegistry();
-    registry.recordRunEvent("run-123", {
+    recordRun(registry, "run-123", {
       seq: 10,
       ts: 5_000,
       kind: "PLAN",
@@ -204,7 +224,7 @@ describe("resources registry", () => {
       jobId: "job-xyz",
       payload: { run_id: "run-123" },
     });
-    registry.recordRunEvent("run-123", {
+    recordRun(registry, "run-123", {
       seq: 11,
       ts: 5_100,
       kind: "STATUS",
@@ -212,7 +232,7 @@ describe("resources registry", () => {
       childId: "child-a",
       payload: { run_id: "run-123", state: "running" },
     });
-    registry.recordRunEvent("run-123", {
+    recordRun(registry, "run-123", {
       seq: 12,
       ts: 5_200,
       kind: "REPLY",
@@ -221,7 +241,7 @@ describe("resources registry", () => {
       payload: { run_id: "run-123", reply: "ok" },
     });
 
-    registry.recordRunEvent("run-123", {
+    recordRun(registry, "run-123", {
       seq: 13,
       ts: 5_250,
       kind: "STATUS",
@@ -255,6 +275,9 @@ describe("resources registry", () => {
       graphId: "graph-42",
       nodeId: "node-beta",
       childId: "child-b",
+      component: "graph",
+      stage: "status",
+      elapsedMs: null,
       payload: {
         run_id: "run-123",
         op_id: "op-7",
@@ -310,7 +333,7 @@ describe("resources registry", () => {
     const registry = new ResourceRegistry();
     const runId = "run-filter";
 
-    registry.recordRunEvent(runId, {
+    recordRun(registry, runId, {
       seq: 1,
       ts: 9_000,
       kind: "STATUS",
@@ -323,7 +346,7 @@ describe("resources registry", () => {
       payload: { stage: "bootstrap" },
     });
 
-    registry.recordRunEvent(runId, {
+    recordRun(registry, runId, {
       seq: 2,
       ts: 9_100,
       kind: "METRIC",
@@ -336,7 +359,7 @@ describe("resources registry", () => {
       payload: { metric: 42 },
     });
 
-    registry.recordRunEvent(runId, {
+    recordRun(registry, runId, {
       seq: 3,
       ts: 9_200,
       kind: "STATUS",
@@ -442,9 +465,9 @@ describe("resources registry", () => {
     const registry = new ResourceRegistry();
     const runId = "run-ts";
 
-    registry.recordRunEvent(runId, { seq: 1, ts: 1_000, kind: "STATUS", level: "info", payload: { step: 1 } });
-    registry.recordRunEvent(runId, { seq: 2, ts: 2_000, kind: "STATUS", level: "info", payload: { step: 2 } });
-    registry.recordRunEvent(runId, { seq: 3, ts: 3_000, kind: "STATUS", level: "info", payload: { step: 3 } });
+    recordRun(registry, runId, { seq: 1, ts: 1_000, kind: "STATUS", level: "info", payload: { step: 1 } });
+    recordRun(registry, runId, { seq: 2, ts: 2_000, kind: "STATUS", level: "info", payload: { step: 2 } });
+    recordRun(registry, runId, { seq: 3, ts: 3_000, kind: "STATUS", level: "info", payload: { step: 3 } });
 
     const filtered = registry.watch(`sc://runs/${runId}/events`, {
       // The range keeps the middle event only, validating strict timestamp gating.

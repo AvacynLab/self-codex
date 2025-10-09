@@ -1,6 +1,17 @@
 import { z } from "zod";
 import { getSandboxRegistry } from "../sim/sandbox.js";
 import { PromptTemplateSchema } from "../prompts.js";
+import { BulkOperationError, buildBulkFailureDetail } from "./bulkError.js";
+import { resolveOperationId } from "./operationIds.js";
+/**
+ * Determine the operation identifier attached to a child tool invocation.
+ *
+ * Child-facing tools historically omitted the `op_id`, which made correlating
+ * cancellation requests or audit logs significantly harder. The helper accepts
+ * an optional identifier provided by the caller and falls back to a stable
+ * prefix paired with a UUID so every invocation receives a deterministic
+ * correlation handle.
+ */
 /**
  * Schema describing the payload accepted by the `child_create` tool.
  *
@@ -47,6 +58,11 @@ const BudgetSchema = z
     message: "budget must define at least one field",
 });
 export const ChildCreateInputSchema = z.object({
+    op_id: z
+        .string()
+        .trim()
+        .min(1, "op_id must be a non-empty string")
+        .optional(),
     child_id: z
         .string()
         .min(1, "child_id must be a non-empty string")
@@ -77,6 +93,11 @@ const ChildRuntimeLimitsValueSchema = z.union([
     z.null(),
 ]);
 export const ChildSpawnCodexInputSchema = z.object({
+    op_id: z
+        .string()
+        .trim()
+        .min(1, "op_id must be a non-empty string")
+        .optional(),
     role: z
         .string()
         .min(1, "role must be a non-empty string")
@@ -96,6 +117,15 @@ export const ChildSpawnCodexInputSchema = z.object({
 });
 export const ChildSpawnCodexInputShape = ChildSpawnCodexInputSchema.shape;
 const ChildBatchCreateEntrySchema = ChildSpawnCodexInputSchema.strict();
+function summariseChildBatchEntry(entry) {
+    const prompt = entry.prompt;
+    const promptKeys = prompt && typeof prompt === "object" ? Object.keys(prompt) : [];
+    return {
+        role: typeof entry.role === "string" ? entry.role : null,
+        idempotency_key: typeof entry.idempotency_key === "string" ? entry.idempotency_key : null,
+        prompt_keys: promptKeys,
+    };
+}
 export const ChildBatchCreateInputSchema = z
     .object({
     entries: z
@@ -131,6 +161,7 @@ export const ChildSetLimitsInputShape = ChildSetLimitsInputSchema.shape;
  * Launches a new child runtime and optionally forwards an initial payload.
  */
 export async function handleChildCreate(context, input) {
+    const opId = resolveOperationId(input.op_id, "child_create_op");
     const execute = async () => {
         const options = {
             childId: input.child_id,
@@ -145,6 +176,7 @@ export async function handleChildCreate(context, input) {
             readyTimeoutMs: input.ready_timeout_ms,
         };
         context.logger.info("child_create_requested", {
+            op_id: opId,
             child_id: options.childId ?? null,
             command: options.command ?? null,
             args: options.args?.length ?? 0,
@@ -159,6 +191,7 @@ export async function handleChildCreate(context, input) {
             sentInitialPayload = true;
         }
         context.logger.info("child_create_succeeded", {
+            op_id: opId,
             child_id: created.childId,
             pid: runtimeStatus.pid,
             workdir: runtimeStatus.workdir,
@@ -168,6 +201,7 @@ export async function handleChildCreate(context, input) {
             const profile = deriveContractNetProfile(input);
             const snapshot = context.contractNet.registerAgent(created.childId, profile);
             context.logger.info("contract_net_agent_registered", {
+                op_id: opId,
                 agent_id: snapshot.agentId,
                 base_cost: snapshot.baseCost,
                 reliability: snapshot.reliability,
@@ -175,6 +209,7 @@ export async function handleChildCreate(context, input) {
             });
         }
         return {
+            op_id: opId,
             child_id: created.childId,
             runtime_status: runtimeStatus,
             index_snapshot: created.index,
@@ -194,19 +229,27 @@ export async function handleChildCreate(context, input) {
             context.logger.info("child_create_replayed", {
                 idempotency_key: key,
                 child_id: snapshot.child_id,
+                op_id: snapshot.op_id,
             });
         }
         const snapshot = hit.value;
-        return { ...snapshot, idempotent: hit.idempotent, idempotency_key: key };
+        return {
+            ...snapshot,
+            op_id: snapshot.op_id ?? opId,
+            idempotent: hit.idempotent,
+            idempotency_key: key,
+        };
     }
     const result = await execute();
-    return { ...result, idempotent: false, idempotency_key: key };
+    return { ...result, op_id: opId, idempotent: false, idempotency_key: key };
 }
 /** Spawns a Codex child with a structured prompt and optional limits. */
 export async function handleChildSpawnCodex(context, input) {
+    const opId = resolveOperationId(input.op_id, "child_spawn_op");
     const execute = async () => {
         const manifestExtras = buildSpawnCodexManifestExtras(input);
         const metadata = structuredClone(input.metadata ?? {});
+        metadata.op_id = opId;
         if (input.role) {
             metadata.role = input.role;
         }
@@ -220,6 +263,7 @@ export async function handleChildSpawnCodex(context, input) {
             metadata.limits = structuredClone(input.limits);
         }
         context.logger.info("child_spawn_codex_requested", {
+            op_id: opId,
             role: input.role ?? null,
             limit_keys: input.limits ? Object.keys(input.limits).length : 0,
             idempotency_key: input.idempotency_key ?? null,
@@ -235,12 +279,14 @@ export async function handleChildSpawnCodex(context, input) {
         const runtimeStatus = created.runtime.getStatus();
         const readyMessage = created.readyMessage ? created.readyMessage.parsed ?? created.readyMessage.raw : null;
         context.logger.info("child_spawn_codex_ready", {
+            op_id: opId,
             child_id: created.childId,
             pid: runtimeStatus.pid,
             workdir: runtimeStatus.workdir,
             idempotency_key: input.idempotency_key ?? null,
         });
         return {
+            op_id: opId,
             child_id: created.childId,
             runtime_status: runtimeStatus,
             index_snapshot: created.index,
@@ -262,13 +308,14 @@ export async function handleChildSpawnCodex(context, input) {
             context.logger.info("child_spawn_codex_replayed", {
                 idempotency_key: key,
                 child_id: snapshot.child_id,
+                op_id: snapshot.op_id,
             });
         }
         const snapshot = hit.value;
-        return { ...snapshot, idempotent: hit.idempotent };
+        return { ...snapshot, op_id: snapshot.op_id ?? opId, idempotent: hit.idempotent };
     }
     const result = await execute();
-    return { ...result, idempotent: false };
+    return { ...result, op_id: opId, idempotent: false };
 }
 /**
  * Spawns multiple Codex children in a single atomic batch. When any entry fails
@@ -279,12 +326,22 @@ export async function handleChildBatchCreate(context, input) {
     context.logger.info("child_batch_create_requested", { entries: input.entries.length });
     const results = [];
     const createdChildIds = [];
+    let failingIndex = null;
+    let failingSummary = null;
     try {
-        for (const entry of input.entries) {
-            const snapshot = await handleChildSpawnCodex(context, entry);
-            results.push(snapshot);
-            if (!snapshot.idempotent) {
-                createdChildIds.push(snapshot.child_id);
+        for (let index = 0; index < input.entries.length; index += 1) {
+            const entry = input.entries[index];
+            try {
+                const snapshot = await handleChildSpawnCodex(context, entry);
+                results.push(snapshot);
+                if (!snapshot.idempotent) {
+                    createdChildIds.push(snapshot.child_id);
+                }
+            }
+            catch (error) {
+                failingIndex = index;
+                failingSummary = summariseChildBatchEntry(entry);
+                throw error;
             }
         }
     }
@@ -311,7 +368,21 @@ export async function handleChildBatchCreate(context, input) {
                 clearLoopSignature(childId);
             }
         }
-        throw error;
+        const entrySummary = failingSummary;
+        throw new BulkOperationError("child batch aborted", {
+            failures: [
+                buildBulkFailureDetail({
+                    index: failingIndex ?? 0,
+                    entry: entrySummary,
+                    error,
+                    stage: "spawn",
+                }),
+            ],
+            rolled_back: true,
+            metadata: {
+                rollback_child_ids: [...createdChildIds].reverse(),
+            },
+        });
     }
     const idempotentCount = results.filter((entry) => entry.idempotent).length;
     context.logger.info("child_batch_create_succeeded", {

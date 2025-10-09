@@ -1,5 +1,8 @@
 import { randomUUID } from "node:crypto";
-/** Default TTL upper bound (24h) mirroring transaction guard rails. */
+/**
+ * Default TTL upper bound (24h) mirroring transaction guard rails. This keeps
+ * runaway locks from lingering forever when a caller forgets to refresh them.
+ */
 const MAX_TTL_MS = 86_400_000;
 /** Base error used by the locking subsystem. */
 export class GraphLockError extends Error {
@@ -10,7 +13,8 @@ export class GraphLockError extends Error {
 }
 /** Error thrown when another holder already protects the requested graph. */
 export class GraphLockHeldError extends GraphLockError {
-    code = "E-GRAPH-LOCK-HELD";
+    code = "E-LOCK-HELD";
+    hint = "wait for the active holder to release or retry after expiry";
     details;
     constructor(graphId, holder, lockId, expiresAt) {
         super(`graph '${graphId}' is locked by '${holder}'`);
@@ -20,7 +24,8 @@ export class GraphLockHeldError extends GraphLockError {
 }
 /** Error thrown when an operation references an unknown lock identifier. */
 export class GraphLockUnknownError extends GraphLockError {
-    code = "E-GRAPH-LOCK-NOT-FOUND";
+    code = "E-LOCK-NOTFOUND";
+    hint = "refresh the lock catalogue before retrying";
     details;
     constructor(lockId) {
         super(`graph lock '${lockId}' is not active`);
@@ -30,7 +35,8 @@ export class GraphLockUnknownError extends GraphLockError {
 }
 /** Error thrown when a mutation is attempted while a conflicting lock exists. */
 export class GraphMutationLockedError extends GraphLockError {
-    code = "E-GRAPH-MUTATION-LOCKED";
+    code = "E-LOCK-HELD";
+    hint = "acquire the lock with the same holder or wait for expiry";
     details;
     constructor(graphId, holder, lockId, expiresAt) {
         super(`graph '${graphId}' is locked by '${holder}'`);
@@ -62,14 +68,8 @@ export class GraphLockManager {
             if (existing.holder !== normalisedHolder) {
                 throw new GraphLockHeldError(normalisedGraphId, existing.holder, existing.lockId, existing.expiresAt);
             }
-            const refreshed = {
-                ...existing,
-                refreshedAt: now,
-                ttlMs: ttlMs ?? existing.ttlMs,
-                expiresAt: computeExpiry(now, ttlMs ?? existing.ttlMs),
-            };
-            this.store(refreshed);
-            return { ...refreshed };
+            const effectiveTtl = ttlMs ?? existing.ttlMs ?? null;
+            return this.refreshSnapshot(existing, now, effectiveTtl);
         }
         const snapshot = {
             lockId: randomUUID(),
@@ -104,6 +104,21 @@ export class GraphLockManager {
             expired,
             expiresAt: record.expiresAt,
         };
+    }
+    /**
+     * Refresh an existing lock by identifier, optionally overriding the TTL. This
+     * is useful when callers only persisted the `lockId` and want to extend the
+     * lease without re-specifying the original holder/graph pair.
+     */
+    refresh(lockId, options = {}) {
+        const snapshot = this.locksById.get(lockId);
+        if (!snapshot) {
+            throw new GraphLockUnknownError(lockId);
+        }
+        const now = this.clock();
+        const overrideTtl = normaliseTtl(options.ttlMs);
+        const effectiveTtl = overrideTtl ?? snapshot.ttlMs ?? null;
+        return this.refreshSnapshot(snapshot, now, effectiveTtl);
     }
     /**
      * Ensure the caller can mutate the target graph. Throws when a conflicting
@@ -141,6 +156,16 @@ export class GraphLockManager {
     store(snapshot) {
         this.locksByGraphId.set(snapshot.graphId, snapshot);
         this.locksById.set(snapshot.lockId, snapshot);
+    }
+    refreshSnapshot(snapshot, now, ttlMs) {
+        const refreshed = {
+            ...snapshot,
+            refreshedAt: now,
+            ttlMs,
+            expiresAt: computeExpiry(now, ttlMs),
+        };
+        this.store(refreshed);
+        return { ...refreshed };
     }
     pruneExpired(graphId, now) {
         const existing = this.locksByGraphId.get(graphId);

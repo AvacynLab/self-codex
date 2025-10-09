@@ -31,7 +31,7 @@ export class PlanLifecycleUnsupportedError extends PlanLifecycleError {
 /** Error thrown when lifecycle operations conflict with the current state. */
 export class PlanLifecycleInvalidStateError extends PlanLifecycleError {
     constructor(runId, expected, actual) {
-        super(`plan run ${runId} is ${actual} but expected ${expected}`, "E-PLAN-INVALID-STATE", "plan_status", { runId, expected, actual });
+        super(`plan run ${runId} is ${actual} but expected ${expected}`, "E-PLAN-STATE", "plan_status", { runId, expected, actual });
         this.name = "PlanLifecycleInvalidStateError";
     }
 }

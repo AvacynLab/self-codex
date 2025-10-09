@@ -73,6 +73,9 @@ describe("stream pagination backpressure", () => {
         level: "info",
         runId,
         msg: `payload-${index + 1}`,
+        component: "graph",
+        stage: index % 2 === 0 ? "plan" : "child",
+        elapsedMs: null,
       });
     }
 
@@ -111,6 +114,9 @@ describe("stream pagination backpressure", () => {
       level: "info",
       runId,
       msg: "resume",
+      component: "graph",
+      stage: "plan",
+      elapsedMs: null,
     });
 
     const resumed = registry.watch(uri, { fromSeq: cursor, limit });

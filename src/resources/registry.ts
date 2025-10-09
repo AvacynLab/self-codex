@@ -79,6 +79,9 @@ export interface ResourceRunEvent {
   /** Optional node identifier (behaviour tree node, graph node, …). */
   nodeId: string | null;
   childId: string | null;
+  component: string;
+  stage: string;
+  elapsedMs: number | null;
   payload: unknown;
 }
 
@@ -184,6 +187,14 @@ export interface ResourceWatchRunFilters {
   childIds?: string[];
   /** Restrict events to specific correlated run identifiers. */
   runIds?: string[];
+  /** Restrict events to components that emitted them. */
+  components?: string[];
+  /** Restrict events to specific lifecycle stages. */
+  stages?: string[];
+  /** Ignore events below the provided duration (milliseconds). */
+  minElapsedMs?: number;
+  /** Ignore events above the provided duration (milliseconds). */
+  maxElapsedMs?: number;
   /** Ignore events that occurred strictly before the provided millisecond timestamp. */
   sinceTs?: number;
   /** Ignore events that occurred strictly after the provided millisecond timestamp. */
@@ -375,8 +386,12 @@ interface NormalisedRunEventFilter {
   readonly nodeIdSet?: ReadonlySet<string>;
   readonly childIdSet?: ReadonlySet<string>;
   readonly runIdSet?: ReadonlySet<string>;
+  readonly componentSet?: ReadonlySet<string>;
+  readonly stageSet?: ReadonlySet<string>;
   readonly sinceTs: number | null;
   readonly untilTs: number | null;
+  readonly minElapsedMs: number | null;
+  readonly maxElapsedMs: number | null;
 }
 
 interface NormalisedChildLogFilter {
@@ -483,11 +498,18 @@ function normaliseRunEventFilter(
   const nodeValues = normaliseStringArray(filters.nodeIds, { limit: 50 });
   const childValues = normaliseStringArray(filters.childIds, { limit: 50 });
   const runValues = normaliseStringArray(filters.runIds, { limit: 50 });
+  const componentValues = normaliseStringArray(filters.components, { limit: 50 });
+  const stageValues = normaliseStringArray(filters.stages, { limit: 50 });
   const sinceTs = normaliseOptionalNumber(filters.sinceTs);
   let untilTs = normaliseOptionalNumber(filters.untilTs);
+  const minElapsedMs = normaliseOptionalNumber(filters.minElapsedMs);
+  let maxElapsedMs = normaliseOptionalNumber(filters.maxElapsedMs);
 
   if (sinceTs !== null && untilTs !== null && untilTs < sinceTs) {
     untilTs = sinceTs;
+  }
+  if (minElapsedMs !== null && maxElapsedMs !== null && maxElapsedMs < minElapsedMs) {
+    maxElapsedMs = minElapsedMs;
   }
 
   if (levelValues.length > 0) {
@@ -514,6 +536,18 @@ function normaliseRunEventFilter(
   if (runValues.length > 0) {
     descriptor.runIds = runValues;
   }
+  if (componentValues.length > 0) {
+    descriptor.components = componentValues;
+  }
+  if (stageValues.length > 0) {
+    descriptor.stages = stageValues;
+  }
+  if (minElapsedMs !== null) {
+    descriptor.minElapsedMs = minElapsedMs;
+  }
+  if (maxElapsedMs !== null) {
+    descriptor.maxElapsedMs = maxElapsedMs;
+  }
   if (sinceTs !== null) {
     descriptor.sinceTs = sinceTs;
   }
@@ -535,8 +569,12 @@ function normaliseRunEventFilter(
     nodeIdSet: nodeValues.length > 0 ? new Set(nodeValues) : undefined,
     childIdSet: childValues.length > 0 ? new Set(childValues) : undefined,
     runIdSet: runValues.length > 0 ? new Set(runValues) : undefined,
+    componentSet: componentValues.length > 0 ? new Set(componentValues) : undefined,
+    stageSet: stageValues.length > 0 ? new Set(stageValues) : undefined,
     sinceTs,
     untilTs,
+    minElapsedMs,
+    maxElapsedMs,
   };
 }
 
@@ -643,6 +681,22 @@ function matchRunEvent(filter: NormalisedRunEventFilter | null, event: ResourceR
   if (filter.runIdSet && (!event.runId || !filter.runIdSet.has(event.runId))) {
     return false;
   }
+  if (filter.componentSet && !filter.componentSet.has(event.component)) {
+    return false;
+  }
+  if (filter.stageSet && !filter.stageSet.has(event.stage)) {
+    return false;
+  }
+  if (filter.minElapsedMs !== null) {
+    if (event.elapsedMs === null || event.elapsedMs < filter.minElapsedMs) {
+      return false;
+    }
+  }
+  if (filter.maxElapsedMs !== null) {
+    if (event.elapsedMs === null || event.elapsedMs > filter.maxElapsedMs) {
+      return false;
+    }
+  }
   return true;
 }
 
@@ -738,11 +792,23 @@ function cloneRunFilterDescriptor(
   if (descriptor.runIds && descriptor.runIds.length > 0) {
     snapshot.runIds = descriptor.runIds.map((runId) => runId);
   }
+  if (descriptor.components && descriptor.components.length > 0) {
+    snapshot.components = descriptor.components.map((component) => component);
+  }
+  if (descriptor.stages && descriptor.stages.length > 0) {
+    snapshot.stages = descriptor.stages.map((stage) => stage);
+  }
   if (typeof descriptor.sinceTs === "number") {
     snapshot.sinceTs = descriptor.sinceTs;
   }
   if (typeof descriptor.untilTs === "number") {
     snapshot.untilTs = descriptor.untilTs;
+  }
+  if (typeof descriptor.minElapsedMs === "number") {
+    snapshot.minElapsedMs = descriptor.minElapsedMs;
+  }
+  if (typeof descriptor.maxElapsedMs === "number") {
+    snapshot.maxElapsedMs = descriptor.maxElapsedMs;
   }
   return Object.keys(snapshot).length > 0 ? snapshot : undefined;
 }
@@ -1170,6 +1236,9 @@ export class ResourceRegistry {
     graphId?: string | null;
     nodeId?: string | null;
     childId?: string | null;
+    component?: string | null;
+    stage?: string | null;
+    elapsedMs?: number | null;
     payload?: unknown;
   }): void {
     if (!runId.trim()) {
@@ -1192,6 +1261,13 @@ export class ResourceRegistry {
       graphId: event.graphId ?? null,
       nodeId: event.nodeId ?? null,
       childId: event.childId ?? null,
+      component: (event.component ?? null) && typeof event.component === "string"
+        ? event.component
+        : "run",
+      stage: (event.stage ?? null) && typeof event.stage === "string" ? event.stage : event.kind.toLowerCase(),
+      elapsedMs: typeof event.elapsedMs === "number" && Number.isFinite(event.elapsedMs)
+        ? Math.max(0, Math.round(event.elapsedMs))
+        : null,
       payload: clone(event.payload ?? null),
     };
     history.events.push(payload);

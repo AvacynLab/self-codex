@@ -1,40 +1,89 @@
 import { EventEmitter } from "node:events";
-/** Internal event emitted whenever the bus records a new envelope. */
 const BUS_EVENT = "event";
-/** Utility ensuring categories remain normalised for lookups. */
+const DEFAULT_HISTORY_LIMIT = 1_000;
+const DEFAULT_STREAM_BUFFER = 256;
+export const EVENT_CATEGORIES = [
+    "bt",
+    "scheduler",
+    "child",
+    "graph",
+    "stig",
+    "bb",
+    "cnp",
+    "consensus",
+    "values",
+];
+const ALLOWED_CATEGORIES = new Set(EVENT_CATEGORIES);
 function normaliseCategory(cat) {
-    return cat.trim().toLowerCase();
+    if (!ALLOWED_CATEGORIES.has(cat)) {
+        throw new TypeError(`unknown event category: ${cat}`);
+    }
+    return cat;
 }
-/** Utility ensuring event messages are compact and predictable. */
 function normaliseMessage(msg) {
     const trimmed = msg.trim();
     return trimmed.length > 0 ? trimmed : "event";
 }
-/** Utility normalising the optional event kind into a stable representation. */
+/**
+ * Normalise the optional semantic kind supplied by bridge publishers.
+ *
+ * The bus guarantees that subscribers observe upper-cased identifiers so
+ * dashboards can compare against stable PROMPT/PENDING/etc. tokens regardless
+ * of the original casing provided by upstream emitters.
+ */
 function normaliseKind(kind) {
     if (typeof kind !== "string") {
-        return null;
+        return undefined;
     }
     const trimmed = kind.trim();
+    if (trimmed.length === 0) {
+        return undefined;
+    }
+    // Preserve historical expectations by upper-casing the identifier so
+    // subscribers receive stable PROMPT/PENDING/etc. tokens regardless of the
+    // original casing supplied by publishers.
+    return trimmed.toUpperCase();
+}
+/**
+ * Normalise optional textual tags (component/stage) by trimming whitespace and
+ * rejecting empty strings. The helper keeps casing untouched so downstream
+ * dashboards can render human friendly identifiers while the bus guarantees the
+ * property is either a non-empty string or `null`.
+ */
+function normaliseTag(value) {
+    if (typeof value !== "string") {
+        return null;
+    }
+    const trimmed = value.trim();
     return trimmed.length > 0 ? trimmed : null;
 }
 /**
- * Async iterator used to expose live streams. The iterator buffers events until
- * a consumer reads them, mirroring the behaviour of a JSON Lines stream.
+ * Normalise optional duration values (expressed in milliseconds). The bus
+ * stores `null` instead of `undefined` to preserve deterministic JSON
+ * serialisation for tests.
  */
+function normaliseElapsed(value) {
+    if (typeof value !== "number" || !Number.isFinite(value)) {
+        return null;
+    }
+    if (value < 0) {
+        return 0;
+    }
+    return Math.round(value);
+}
 class EventStream {
     emitter;
     matcher;
+    maxBuffer;
     buffer = [];
     resolve;
     closed = false;
-    constructor(emitter, matcher, seed) {
+    constructor(emitter, matcher, seed, maxBuffer) {
         this.emitter = emitter;
         this.matcher = matcher;
+        this.maxBuffer = maxBuffer;
         for (const event of seed) {
-            if (this.matcher(event)) {
-                this.buffer.push(event);
-            }
+            this.enqueue(event);
         }
         this.emitter.on(BUS_EVENT, this.handleEvent);
     }
@@ -66,6 +115,7 @@ class EventStream {
             this.resolve({ value: undefined, done: true });
             this.resolve = undefined;
         }
+        this.buffer.length = 0;
     }
     handleEvent = (event) => {
         if (this.closed || !this.matcher(event)) {
@@ -76,40 +126,87 @@ class EventStream {
             this.resolve = undefined;
             return;
         }
-        this.buffer.push(event);
+        this.enqueue(event);
     };
+    enqueue(event) {
+        this.buffer.push(event);
+        if (this.buffer.length > this.maxBuffer) {
+            const idx = this.buffer.findIndex((candidate) => candidate.level === "info");
+            if (idx >= 0) {
+                this.buffer.splice(idx, 1);
+            }
+            else {
+                this.buffer.shift();
+            }
+        }
+    }
 }
 /**
  * Unified event bus buffering orchestration events in memory. The bus offers
- * both random access (via {@link list}) and live streaming (via
- * {@link subscribe}) which keeps downstream MCP tools deterministic and easy
- * to test.
+ * both random access (via {@link list}) and streaming (via {@link subscribe}).
  */
 export class EventBus {
     emitter = new EventEmitter();
     history = [];
     historyLimit;
     now;
+    streamBufferSize;
     seq = 0;
     constructor(options = {}) {
-        this.historyLimit = Math.max(1, options.historyLimit ?? 1_000);
+        this.historyLimit = Math.max(1, options.historyLimit ?? DEFAULT_HISTORY_LIMIT);
         this.now = options.now ?? (() => Date.now());
+        this.streamBufferSize = Math.max(1, options.streamBufferSize ?? DEFAULT_STREAM_BUFFER);
     }
-    /** Adjust the history limit at runtime and trim existing entries accordingly. */
     setHistoryLimit(limit) {
         this.historyLimit = Math.max(1, limit);
-        while (this.history.length > this.historyLimit) {
-            this.history.shift();
-        }
+        this.trimHistory();
     }
-    /** Determine whether an event matches the provided filters. */
+    publish(input) {
+        const message = normaliseMessage(input.msg);
+        const component = normaliseTag(input.component ?? input.cat);
+        const stage = normaliseTag(input.stage ?? message);
+        const envelope = {
+            seq: ++this.seq,
+            ts: input.ts ?? this.now(),
+            cat: normaliseCategory(input.cat),
+            level: input.level ?? "info",
+            jobId: input.jobId ?? null,
+            runId: input.runId ?? null,
+            opId: input.opId ?? null,
+            graphId: input.graphId ?? null,
+            nodeId: input.nodeId ?? null,
+            childId: input.childId ?? null,
+            component,
+            stage,
+            elapsedMs: normaliseElapsed(input.elapsedMs ?? null),
+            // Preserve semantic PROMPT/PENDING/... identifiers whenever publishers
+            // provide them while gracefully falling back to legacy category tokens.
+            kind: normaliseKind(input.kind ?? undefined),
+            msg: message,
+            data: input.data,
+        };
+        this.history.push(envelope);
+        if (this.history.length > this.historyLimit) {
+            this.dropFromHistory();
+        }
+        this.emitter.emit(BUS_EVENT, envelope);
+        return envelope;
+    }
+    list(filter = {}) {
+        const filtered = this.history.filter((event) => this.matches(event, filter));
+        const limit = filter.limit && filter.limit > 0 ? Math.min(filter.limit, this.historyLimit) : this.historyLimit;
+        return filtered.slice(-limit);
+    }
+    subscribe(filter = {}) {
+        const matcher = (event) => this.matches(event, filter);
+        const seed = this.list(filter);
+        return new EventStream(this.emitter, matcher, seed, this.streamBufferSize);
+    }
     matches(event, filter) {
-        const normalisedCats = filter.cats?.map(normaliseCategory);
-        const normalisedLevels = filter.levels?.map((level) => level.toLowerCase());
-        if (normalisedCats && normalisedCats.length > 0 && !normalisedCats.includes(event.cat)) {
+        if (filter.cats && filter.cats.length > 0 && !filter.cats.includes(event.cat)) {
             return false;
         }
-        if (normalisedLevels && normalisedLevels.length > 0 && !normalisedLevels.includes(event.level)) {
+        if (filter.levels && filter.levels.length > 0 && !filter.levels.includes(event.level)) {
             return false;
         }
         if (filter.jobId && event.jobId !== filter.jobId) {
@@ -130,51 +227,29 @@ export class EventBus {
         if (filter.nodeId && event.nodeId !== filter.nodeId) {
             return false;
         }
+        if (filter.component && event.component !== filter.component) {
+            return false;
+        }
+        if (filter.stage && event.stage !== filter.stage) {
+            return false;
+        }
         if (typeof filter.afterSeq === "number" && !(event.seq > filter.afterSeq)) {
             return false;
         }
         return true;
     }
-    /** Publish a new event on the bus. */
-    publish(input) {
-        const envelope = {
-            seq: ++this.seq,
-            ts: input.ts ?? this.now(),
-            cat: normaliseCategory(input.cat),
-            kind: normaliseKind(input.kind),
-            level: input.level ?? "info",
-            jobId: input.jobId ?? null,
-            runId: input.runId ?? null,
-            opId: input.opId ?? null,
-            graphId: input.graphId ?? null,
-            nodeId: input.nodeId ?? null,
-            childId: input.childId ?? null,
-            msg: normaliseMessage(input.msg),
-            data: input.data,
-        };
-        this.history.push(envelope);
-        if (this.history.length > this.historyLimit) {
+    dropFromHistory() {
+        const index = this.history.findIndex((event) => event.level === "info");
+        if (index >= 0) {
+            this.history.splice(index, 1);
+        }
+        else {
             this.history.shift();
         }
-        this.emitter.emit(BUS_EVENT, envelope);
-        return envelope;
     }
-    /**
-     * Returns a snapshot of events matching the provided filters. The snapshot is
-     * sorted chronologically and truncated to `limit` when specified.
-     */
-    list(filter = {}) {
-        const sliced = this.history.filter((event) => this.matches(event, filter));
-        const limit = filter.limit && filter.limit > 0 ? Math.min(filter.limit, this.historyLimit) : this.historyLimit;
-        return sliced.slice(-limit);
-    }
-    /**
-     * Creates an async iterator streaming live events. Consumers should call
-     * {@link EventStream.close} once finished to avoid leaking listeners.
-     */
-    subscribe(filter = {}) {
-        const matcher = (event) => this.matches(event, filter);
-        const seed = this.list(filter);
-        return new EventStream(this.emitter, matcher, seed);
+    trimHistory() {
+        while (this.history.length > this.historyLimit) {
+            this.dropFromHistory();
+        }
     }
 }

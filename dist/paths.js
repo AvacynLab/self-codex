@@ -1,5 +1,8 @@
+import { mkdirSync } from 'node:fs';
 import { mkdir } from 'node:fs/promises';
 import path from 'node:path';
+/** Maximum number of characters preserved in a sanitised filename. */
+const MAX_FILENAME_LENGTH = 120;
 /** Absolute path (resolved against the current working directory) hosting run artefacts. */
 function getRunsRoot() {
     const override = process.env.MCP_RUNS_ROOT;
@@ -25,13 +28,25 @@ function getChildrenRoot() {
  * guarantee it cannot escape the sandbox, and create the needed folders.
  */
 export class PathResolutionError extends Error {
+    /** Stable error code surfaced to MCP clients when a path escapes its sandbox. */
+    code = 'E-PATHS-ESCAPE';
+    /**
+     * Hint guiding callers towards remediation. The message is intentionally
+     * action-oriented so tool wrappers can surface it directly in diagnostics.
+     */
+    hint = 'keep paths within the configured base directory';
+    /** Absolute path that the caller attempted to access. */
     attemptedPath;
+    /** Base directory configured for the operation. */
     rootDirectory;
-    constructor(message, attemptedPath, rootDirectory) {
+    /** Structured metadata exposed to loggers and MCP clients. */
+    details;
+    constructor(message, attemptedPath, rootDirectory, extras = {}) {
         super(message);
         this.name = 'PathResolutionError';
         this.attemptedPath = attemptedPath;
         this.rootDirectory = rootDirectory;
+        this.details = { attemptedPath, rootDirectory, ...extras };
     }
 }
 /**
@@ -47,7 +62,7 @@ export function resolveWithin(rootDir, ...segments) {
     const targetPath = path.resolve(absoluteRoot, ...segments);
     const relative = path.relative(absoluteRoot, targetPath);
     if (relative.startsWith('..') || path.isAbsolute(relative)) {
-        throw new PathResolutionError(`Resolved path escapes the child workspace: ${relative}`, targetPath, absoluteRoot);
+        throw new PathResolutionError('path escapes base directory', targetPath, absoluteRoot, { relative });
     }
     return targetPath;
 }
@@ -96,13 +111,20 @@ export function sanitizeFilename(name) {
     if (!trimmed) {
         return 'unnamed';
     }
-    const sanitized = trimmed
-        .replace(/[\0-\x1F\x7F]/g, '')
+    const normalizedInput = trimmed.normalize('NFC');
+    const removedControlCharacters = normalizedInput.replace(/[\0-\x1F\x7F]/g, '');
+    const withoutTraversal = removedControlCharacters.replace(/\.\./g, '');
+    const basicSanitised = withoutTraversal
         .replace(/[\\/]/g, '_')
         .replace(/[:*?"<>|]/g, '_')
-        .replace(/\s+/g, '_');
-    const normalized = sanitized.replace(/[^a-zA-Z0-9._-]/g, '_');
-    return normalized.length > 0 ? normalized : 'unnamed';
+        .replace(/\s+/g, '_')
+        .replace(/[^\p{L}\p{N}._-]+/gu, '_');
+    const collapsedUnderscores = basicSanitised.replace(/_+/g, '_');
+    const trimmedUnderscores = collapsedUnderscores.replace(/^_+|_+$/g, '');
+    const limited = trimmedUnderscores.length > MAX_FILENAME_LENGTH
+        ? trimmedUnderscores.slice(0, MAX_FILENAME_LENGTH)
+        : trimmedUnderscores;
+    return limited.length > 0 ? limited : 'unnamed';
 }
 /**
  * Safely joins a base directory with optional segments while forbidding
@@ -118,12 +140,22 @@ export function safeJoin(base, ...parts) {
                 continue;
             }
             if (candidate === '..') {
-                throw new PathResolutionError('Directory traversal is not permitted', rawPart, path.resolve(base));
+                throw new PathResolutionError('path escapes base directory', path.resolve(base, rawPart), path.resolve(base), {
+                    segment: candidate,
+                });
             }
             segments.push(sanitizeFilename(candidate));
         }
     }
     return resolveWithin(base, ...segments);
+}
+export function resolveWorkspacePath(requestedPath, options = {}) {
+    const baseDir = options.baseDir ? path.resolve(options.baseDir) : process.cwd();
+    const trimmed = requestedPath.trim();
+    if (!trimmed) {
+        throw new PathResolutionError('path must not be empty', baseDir, baseDir);
+    }
+    return safeJoin(baseDir, trimmed);
 }
 /**
  * Returns the canonical directory dedicated to the provided run identifier. The
@@ -131,7 +163,9 @@ export function safeJoin(base, ...parts) {
  * artefacts grouped per execution.
  */
 export function resolveRunDir(runId) {
-    return safeJoin(getRunsRoot(), sanitizeFilename(runId));
+    const resolved = safeJoin(getRunsRoot(), sanitizeFilename(runId));
+    mkdirSync(resolved, { recursive: true });
+    return resolved;
 }
 /**
  * Returns the canonical directory used for a given child runtime. The location
@@ -139,5 +173,7 @@ export function resolveRunDir(runId) {
  * on fast storage.
  */
 export function resolveChildDir(childId) {
-    return safeJoin(getChildrenRoot(), sanitizeFilename(childId));
+    const resolved = safeJoin(getChildrenRoot(), sanitizeFilename(childId));
+    mkdirSync(resolved, { recursive: true });
+    return resolved;
 }

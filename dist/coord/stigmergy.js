@@ -15,6 +15,19 @@ export class StigmergyInvalidTypeError extends Error {
 }
 /** Smallest intensity we keep in the field before considering it evaporated. */
 const EPSILON = 1e-6;
+/** Error raised when one entry of {@link StigmergyField.batchMark} fails. */
+export class StigmergyBatchMarkError extends Error {
+    index;
+    entry;
+    constructor(index, entry, cause) {
+        super(`failed to apply stigmergy batch entry at index ${index}`, {
+            cause: cause instanceof Error ? cause : undefined,
+        });
+        this.index = index;
+        this.entry = entry;
+        this.name = "StigmergyBatchMarkError";
+    }
+}
 /**
  * Converts arbitrary pheromone bounds (either scheduler or stigmergy derived)
  * into a serialisable structure suitable for logs, events, or API responses.
@@ -109,29 +122,39 @@ export class StigmergyField {
         }
         const results = [];
         const events = [];
+        let currentIndex = -1;
         try {
-            for (const payload of entries) {
-                if (!Number.isFinite(payload.intensity) || payload.intensity <= 0) {
-                    throw new Error("intensity must be a positive finite number");
+            for (const [index, payload] of entries.entries()) {
+                currentIndex = index;
+                try {
+                    if (!Number.isFinite(payload.intensity) || payload.intensity <= 0) {
+                        throw new Error("intensity must be a positive finite number");
+                    }
+                    const normalisedType = normaliseType(payload.type);
+                    const timestamp = this.now();
+                    const key = this.makeKey(payload.nodeId, normalisedType);
+                    const { snapshot, total } = this.applyEntryMutation({
+                        nodeId: payload.nodeId,
+                        type: normalisedType,
+                        delta: payload.intensity,
+                        timestamp,
+                        key,
+                    });
+                    results.push({
+                        point: snapshot,
+                        nodeTotal: { nodeId: payload.nodeId, intensity: total.intensity, updatedAt: total.updatedAt },
+                    });
+                    events.push({
+                        nodeId: payload.nodeId,
+                        type: normalisedType,
+                        intensity: snapshot.intensity,
+                        totalIntensity: total.intensity,
+                        updatedAt: snapshot.updatedAt,
+                    });
                 }
-                const normalisedType = normaliseType(payload.type);
-                const timestamp = this.now();
-                const key = this.makeKey(payload.nodeId, normalisedType);
-                const { snapshot, total } = this.applyEntryMutation({
-                    nodeId: payload.nodeId,
-                    type: normalisedType,
-                    delta: payload.intensity,
-                    timestamp,
-                    key,
-                });
-                results.push({ point: snapshot, nodeTotal: { nodeId: payload.nodeId, intensity: total.intensity, updatedAt: total.updatedAt } });
-                events.push({
-                    nodeId: payload.nodeId,
-                    type: normalisedType,
-                    intensity: snapshot.intensity,
-                    totalIntensity: total.intensity,
-                    updatedAt: snapshot.updatedAt,
-                });
+                catch (error) {
+                    throw new StigmergyBatchMarkError(index, payload, error);
+                }
             }
         }
         catch (error) {
@@ -143,7 +166,11 @@ export class StigmergyField {
             for (const [nodeId, total] of originalTotals.entries()) {
                 this.totals.set(nodeId, total);
             }
-            throw error;
+            if (error instanceof StigmergyBatchMarkError) {
+                throw error;
+            }
+            const entry = currentIndex >= 0 ? entries[currentIndex] : entries[0];
+            throw new StigmergyBatchMarkError(currentIndex >= 0 ? currentIndex : 0, entry, error);
         }
         for (const event of events) {
             this.emitChange(event);

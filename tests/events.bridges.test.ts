@@ -79,14 +79,20 @@ describe("event bridges", () => {
       "bb_expire",
     ]);
     const [taskSet, logSet, taskDelete, logExpire] = events;
+    expect(taskSet.component).to.equal("bb");
+    expect(taskSet.stage).to.equal("bb_set");
     expect(taskSet.runId).to.equal("run-77");
     expect(taskSet.opId).to.equal("op-1");
     expect(taskSet.data).to.deep.include({ key: "task", kind: "set" });
     expect(logSet.runId).to.equal(null);
+    expect(logSet.component).to.equal("bb");
+    expect(logSet.stage).to.equal("bb_set");
     expect(taskDelete.msg).to.equal("bb_delete");
+    expect(taskDelete.stage).to.equal("bb_delete");
     expect(taskDelete.runId).to.equal("run-77");
     expect(taskDelete.opId).to.equal("op-3");
     expect(logExpire.level).to.equal("warn");
+    expect(logExpire.stage).to.equal("bb_expire");
     expect(logExpire.data).to.deep.include({ kind: "expire", key: "log", reason: "ttl" });
   });
 
@@ -114,6 +120,8 @@ describe("event bridges", () => {
     const [markEvent, evaporateEvent] = events;
     expect(markEvent.nodeId).to.equal("node-1");
     expect(markEvent.graphId).to.equal("graph-42");
+    expect(markEvent.component).to.equal("stig");
+    expect(markEvent.stage).to.equal("stigmergy_change");
     expect(markEvent.data).to.deep.include({ type: "routing", intensity: 1.5 });
     const markBounds = (markEvent.data as { bounds?: { minIntensity?: number; maxIntensity?: number | null; normalisationCeiling?: number } }).bounds;
     expect(markBounds).to.not.equal(undefined);
@@ -121,6 +129,7 @@ describe("event bridges", () => {
     expect(markBounds?.maxIntensity).to.equal(null);
     expect(markBounds?.normalisationCeiling).to.equal(1.5);
     expect(evaporateEvent.msg).to.equal("stigmergy_change");
+    expect(evaporateEvent.stage).to.equal("stigmergy_change");
     expect(evaporateEvent.data).to.deep.include({ nodeId: "node-1" });
     expect(evaporateEvent.data.totalIntensity).to.be.lessThan(1.5);
     const evaporateBounds = (evaporateEvent.data as { bounds?: { normalisationCeiling?: number } }).bounds;
@@ -154,6 +163,8 @@ describe("event bridges", () => {
     const [requested, repeated] = events;
     expect(requested.msg).to.equal("cancel_requested");
     expect(requested.level).to.equal("info");
+    expect(requested.component).to.equal("scheduler");
+    expect(requested.stage).to.equal("cancel_requested");
     expect(requested.runId).to.equal("run-99");
     expect(requested.opId).to.equal("op-cancel");
     expect(requested.jobId).to.equal("job-77");
@@ -171,6 +182,8 @@ describe("event bridges", () => {
 
     expect(repeated.msg).to.equal("cancel_repeat");
     expect(repeated.level).to.equal("warn");
+    expect(repeated.component).to.equal("scheduler");
+    expect(repeated.stage).to.equal("cancel_repeat");
     expect(repeated.runId).to.equal("run-99");
     expect(repeated.jobId).to.equal("job-77");
     expect(repeated.graphId).to.equal("graph-5");
@@ -214,12 +227,16 @@ describe("event bridges", () => {
     expect(requested.jobId).to.equal("job-native");
     expect(requested.graphId).to.equal("graph-native");
     expect(requested.childId).to.equal("child-native");
+    expect(requested.component).to.equal("scheduler");
+    expect(requested.stage).to.equal("cancel_requested");
 
     expect(repeated.runId).to.equal(null);
     expect(repeated.jobId).to.equal("job-override");
     expect(repeated.graphId).to.equal("graph-native");
     expect(repeated.nodeId).to.equal("node-native");
     expect(repeated.childId).to.equal("child-native");
+    expect(repeated.stage).to.equal("cancel_repeat");
+    expect(repeated.component).to.equal("scheduler");
 
     dispose();
   });

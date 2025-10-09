@@ -25,6 +25,9 @@ function collectRunEvent(seq: number, overrides: Partial<ResourceWatchResult["ev
     graphId: null,
     nodeId: null,
     childId: null,
+    component: "graph",
+    stage: "status",
+    elapsedMs: null,
     payload: { note: `step-${seq}` },
     ...overrides,
   } satisfies ResourceWatchResult["events"][number];

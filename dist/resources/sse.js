@@ -17,6 +17,9 @@ function normaliseRunEvent(event) {
         graph_id: event.graphId ?? null,
         node_id: event.nodeId ?? null,
         child_id: event.childId ?? null,
+        component: event.component,
+        stage: event.stage,
+        elapsed_ms: event.elapsedMs,
         payload: event.payload ?? null,
     };
 }

@@ -23,7 +23,7 @@ export function bridgeBlackboardEvents(options) {
             previous: event.previous ?? null,
         };
         bus.publish({
-            cat: "blackboard",
+            cat: "bb",
             level,
             jobId: correlation.jobId ?? null,
             runId: correlation.runId ?? null,
@@ -31,6 +31,9 @@ export function bridgeBlackboardEvents(options) {
             graphId: correlation.graphId ?? null,
             nodeId: correlation.nodeId ?? null,
             childId: correlation.childId ?? null,
+            // Promote the mutation kind (SET/DELETE/EXPIRE) so event subscribers can
+            // filter with the same tokens exposed by the legacy EventStore feed.
+            kind: `BB_${event.kind.toUpperCase()}`,
             msg: `bb_${event.kind}`,
             data: payload,
         });
@@ -50,7 +53,7 @@ export function bridgeStigmergyEvents(options) {
         const correlation = resolveCorrelation?.(event) ?? {};
         const bounds = field.getIntensityBounds();
         bus.publish({
-            cat: "stigmergy",
+            cat: "stig",
             level: "info",
             jobId: correlation.jobId ?? null,
             runId: correlation.runId ?? null,
@@ -88,7 +91,7 @@ export function createContractNetWatcherTelemetryListener(options) {
         recorder?.record(snapshot);
         const correlation = resolveCorrelation?.(snapshot) ?? {};
         bus.publish({
-            cat: "contract_net",
+            cat: "cnp",
             level: "info",
             jobId: correlation.jobId ?? null,
             runId: correlation.runId ?? null,
@@ -96,6 +99,9 @@ export function createContractNetWatcherTelemetryListener(options) {
             graphId: correlation.graphId ?? null,
             nodeId: correlation.nodeId ?? null,
             childId: correlation.childId ?? null,
+            // Emit a dedicated watcher telemetry token so dashboards can monitor the
+            // contract-net supervisor separate from regular auction lifecycle events.
+            kind: "CNP_WATCHER_TELEMETRY",
             msg: "cnp_watcher_telemetry",
             data: {
                 reason: snapshot.reason,
@@ -139,7 +145,7 @@ export function bridgeCancellationEvents(options) {
         const level = event.outcome === "requested" ? "info" : "warn";
         const message = event.outcome === "requested" ? "cancel_requested" : "cancel_repeat";
         bus.publish({
-            cat: "cancel",
+            cat: "scheduler",
             level,
             jobId: hints.jobId ?? null,
             runId: hints.runId ?? null,
@@ -147,6 +153,9 @@ export function bridgeCancellationEvents(options) {
             graphId: hints.graphId ?? null,
             nodeId: hints.nodeId ?? null,
             childId: hints.childId ?? null,
+            // Reflect the cancellation channel (REQUESTED/CONFIRMED/...) directly in
+            // the kind token so consumers can branch without parsing message bodies.
+            kind: message.toUpperCase(),
             msg: message,
             data: {
                 opId: event.opId,
@@ -222,6 +231,9 @@ export function bridgeChildRuntimeEvents(options) {
             opId: correlation.opId ?? null,
             graphId: correlation.graphId ?? null,
             nodeId: correlation.nodeId ?? null,
+            // Preserve the stream origin to disambiguate stdout vs stderr lines in
+            // the consolidated bus feed.
+            kind: message.stream === "stderr" ? "CHILD_STDERR" : "CHILD_STDOUT",
             msg: message.stream === "stderr" ? "child_stderr" : "child_stdout",
             data: {
                 childId: runtime.childId,
@@ -269,6 +281,9 @@ export function bridgeChildRuntimeEvents(options) {
             opId: correlation.opId ?? null,
             graphId: correlation.graphId ?? null,
             nodeId: correlation.nodeId ?? null,
+            // Promote the lifecycle message (SPAWNED/EXITED/...) so subscribers can
+            // filter specific child runtime transitions without inspecting payloads.
+            kind: msg.toUpperCase(),
             msg,
             data,
         });
@@ -350,7 +365,7 @@ export function bridgeContractNetEvents(options) {
                 break;
         }
         bus.publish({
-            cat: "contract_net",
+            cat: "cnp",
             level,
             jobId: correlation.jobId ?? null,
             runId: correlation.runId ?? null,
@@ -358,6 +373,9 @@ export function bridgeContractNetEvents(options) {
             graphId: correlation.graphId ?? null,
             nodeId: correlation.nodeId ?? null,
             childId: correlation.childId ?? null,
+            // Surface the contract-net lifecycle state (ANNOUNCED/BID/...) for more
+            // granular consumer filtering.
+            kind: msg.toUpperCase(),
             msg,
             data,
         });
@@ -399,6 +417,9 @@ export function bridgeConsensusEvents(options) {
             graphId: correlation.graphId ?? null,
             nodeId: correlation.nodeId ?? null,
             childId: correlation.childId ?? null,
+            // Publish the consensus phase (ROUND_STARTED/DECIDED/...) to keep SSE
+            // identifiers stable across transports.
+            kind: msg.toUpperCase(),
             msg,
             data: {
                 source: event.source,
@@ -498,6 +519,9 @@ export function bridgeValueEvents(options) {
             graphId: hints.graphId ?? null,
             nodeId: hints.nodeId ?? null,
             childId: hints.childId ?? null,
+            // Expose the value guard outcome (VIOLATION/RECOVERED/...) via the kind
+            // token so policy dashboards retain semantic fidelity.
+            kind: msg.toUpperCase(),
             msg,
             data,
             ts: event.at,

@@ -1,5 +1,22 @@
 import { EventEmitter } from "node:events";
 /**
+ * Error raised when a specific entry inside {@link BlackboardStore.batchSet}
+ * cannot be processed. The class records the failing index so callers can build
+ * actionable diagnostics while the store restores its previous state.
+ */
+export class BlackboardBatchSetEntryError extends Error {
+    index;
+    entry;
+    constructor(index, entry, cause) {
+        super(`failed to apply blackboard entry at index ${index}`, {
+            cause: cause instanceof Error ? cause : undefined,
+        });
+        this.index = index;
+        this.entry = entry;
+        this.name = "BlackboardBatchSetEntryError";
+    }
+}
+/**
  * In-memory, fully deterministic key/value blackboard. Entries can be tagged,
  * expire after a configurable TTL and are observable through a bounded history
  * log that powers live watchers. The store purposely keeps mutations
@@ -67,8 +84,10 @@ export class BlackboardStore {
         const committedSnapshots = [];
         const eventsToEmit = [];
         let nextVersion = startingVersion;
+        let currentIndex = -1;
         try {
-            for (const payload of entries) {
+            for (const [index, payload] of entries.entries()) {
+                currentIndex = index;
                 const timestamp = this.now();
                 const tags = normaliseTags(payload.tags ?? []);
                 const ttl = payload.ttlMs !== undefined ? Math.max(1, Math.floor(payload.ttlMs)) : null;
@@ -76,9 +95,16 @@ export class BlackboardStore {
                 const previousInternal = this.entries.get(payload.key);
                 const previousSnapshot = previousInternal ? this.cloneEntry(previousInternal) : undefined;
                 const createdAt = previousInternal?.createdAt ?? timestamp;
+                let clonedValue;
+                try {
+                    clonedValue = structuredClone(payload.value);
+                }
+                catch (cloneError) {
+                    throw new BlackboardBatchSetEntryError(index, payload, cloneError);
+                }
                 const entry = {
                     key: payload.key,
-                    value: structuredClone(payload.value),
+                    value: clonedValue,
                     tags,
                     createdAt,
                     updatedAt: timestamp,
@@ -106,7 +132,11 @@ export class BlackboardStore {
                 this.entries.set(key, entry);
             }
             this.version = startingVersion;
-            throw error;
+            if (error instanceof BlackboardBatchSetEntryError) {
+                throw error;
+            }
+            const entry = currentIndex >= 0 ? entries[currentIndex] : entries[0];
+            throw new BlackboardBatchSetEntryError(currentIndex >= 0 ? currentIndex : 0, entry, error);
         }
         this.version = nextVersion;
         for (const event of eventsToEmit) {
