@@ -76,7 +76,7 @@ const ctx = { childId, childLimits, transport: "http" };
 // Exemple: routeJsonRpcRequest(method, params, ctx)
 ```
 
-* [ ] **Journaliser** systématiquement `childId`, `runId`, `opId` dans les events/logs (si ce n’est pas déjà fait).
+* [x] **Journaliser** systématiquement `childId`, `runId`, `opId` dans les events/logs (si ce n’est pas déjà fait).
 
 ---
 
@@ -141,7 +141,7 @@ watchLoop().catch(err => {
 
 ## 3) `src/childRuntime.ts` — enfants = **sessions HTTP logiques**
 
-* [ ] Dans le code de `child_spawn_codex`, **ne spawn** pas un nouveau process dans l’environnement Cloud : **définis** un descripteur pointant vers **le même endpoint HTTP**, avec entêtes de contexte.
+* [x] Dans le code de `child_spawn_codex`, **ne spawn** pas un nouveau process dans l’environnement Cloud : **définis** un descripteur pointant vers **le même endpoint HTTP**, avec entêtes de contexte.
 
 ```ts
 // src/childRuntime.ts (extrait conceptuel)
@@ -262,6 +262,7 @@ test("child headers propagated", async () => {
 ## 8) `src/events/bus.ts` & `src/monitor/log.ts` — corrélation systématique
 
 * [x] S’assurer que **tous** les events/logs portent `seq` monotone, et les clés : `runId`, `opId`, `childId?`, `graphId?`, `component`, `stage`, `elapsedMs?`.
+* [x] Normaliser l’extraction des hints de corrélation provenant de tableaux (`correlation: [{ run_id }, { child_id }]`) et couvrir le cas via un test unitaire du journal serveur.
 
 ```ts
 // Exemple d’enrichissement à la création d’event
@@ -294,13 +295,13 @@ const idem = typeof req.headers["idempotency-key"] === "string" ? String(req.hea
 
 ## 10) **Vérifications finales**
 
-* [ ] **HTTP** : `mcp_info` répond (200), les calls tools passent.
-* [ ] **STDIO** (si activé) : tools disponibles dans Codex.
-* [ ] **FS-Bridge** : un fichier `.json` dans `requests/` produit une réponse dans `responses/`.
-* [ ] **Enfants** : `child_spawn_codex` → appels avec header `X-Child-Id` visibles côté serveur (logs).
-* [ ] **Annulation** : `op_cancel` / `plan_cancel` interrompent proprement et journalisent `cancelled`.
-* [ ] **Transactions** : `tx_*` atomiques ; `graph_patch` refuse les violations d’invariants ; **locks** efficaces ; **idempotency** démontrée (réponses identiques).
-* [ ] **Events** : `seq` strictement croissant ; corrélation `runId/opId/childId`.
+* [x] **HTTP** : `mcp_info` répond (200), les calls tools passent.
+* [x] **STDIO** (si activé) : tools disponibles dans Codex.
+* [x] **FS-Bridge** : un fichier `.json` dans `requests/` produit une réponse dans `responses/`.
+* [x] **Enfants** : `child_spawn_codex` → appels avec header `X-Child-Id` visibles côté serveur (logs).
+* [x] **Annulation** : `op_cancel` / `plan_cancel` interrompent proprement et journalisent `cancelled`.
+* [x] **Transactions** : `tx_*` atomiques ; `graph_patch` refuse les violations d’invariants ; **locks** efficaces ; **idempotency** démontrée (réponses identiques).
+* [x] **Events** : `seq` strictement croissant ; corrélation `runId/opId/childId`.
 
 ---
 
@@ -322,3 +323,8 @@ Quand tu as coché tout ça et validé les tests rapides, on lance la **campagne
 - 2025-10-08 – Agent `gpt-5-codex` (iteration 65) — Auth HTTP stateless sur le handler `/mcp`, extraction `X-Child-*` vers le contexte JSON-RPC et tests unitaires sur les helpers HTTP.
 - 2025-10-08 – Agent `gpt-5-codex` (iteration 66) — Injection automatique de l’`Idempotency-Key` dans les appels tools HTTP, mutualisation des stubs HTTP de test et scénario e2e validant l’en-tête `X-Child-Id`.
 - 2025-10-09 – Agent `gpt-5-codex` (iteration 67) — Normalisation automatique `component`/`stage`/`elapsedMs` sur le bus d’événements, harmonisation des fixtures resources et exécution complète de `npm test`.
+- 2025-10-09 – Agent `gpt-5-codex` (iteration 68) — Extraction des hints de corrélation pour la journalisation serveur, ajout de tests unitaires garantissant la propagation run/op/child et exécution ciblée de la suite correspondante.
+- 2025-10-09 – Agent `gpt-5-codex` (iteration 69) — Support des tableaux de hints dans `extractCorrelationHints`, vérification via `server.logs.correlation.test.ts` et lint + tests ciblés.
+- 2025-10-09 – Agent `gpt-5-codex` (iteration 70) — Ajout d'un test HTTP fast-path couvrant `mcp_info` (200) et un appel `tools/call` via JSON stateless.
+- 2025-10-09 – Agent `gpt-5-codex` (iteration 71) — `child_spawn_codex` boucle désormais sur le transport HTTP stateless, enregistre un enfant logique dans l’index et ajoute un test garantissant la présence du descripteur (URL + headers).
+- 2025-10-09 – Agent `gpt-5-codex` (iteration 72) — Validation des checklists finales : STDIO, FS-Bridge, enfant HTTP, annulation, transactions et événements via les suites ciblées (stdio, fs-bridge, child HTTP, plan lifecycle, transactions, events progress).

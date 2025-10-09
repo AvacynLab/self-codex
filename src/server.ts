@@ -20,6 +20,7 @@ import {
 import {
   buildChildCorrelationHints,
   buildJobCorrelationHints,
+  extractCorrelationHints,
   mergeCorrelationHints,
   type EventCorrelationHints,
 } from "./events/correlation.js";
@@ -630,12 +631,19 @@ function recordServerLogEntry(entry: LogEntry): void {
     timestamp = Date.now();
   }
   const payload = entry.payload ?? null;
-  const runId = extractRunId(payload);
-  const opId = extractOpId(payload);
-  const graphId = extractGraphId(payload);
-  const nodeId = extractNodeId(payload);
-  const childId = extractChildId(payload);
-  const jobId = extractJobId(payload);
+  // Merge correlation hints emitted by upstream components so nested metadata keeps run/op/child context.
+  const correlationHints = extractCorrelationHints(payload);
+  // Each identifier honours explicit null overrides while falling back to legacy payload shapes when hints are absent.
+  const runId =
+    correlationHints.runId !== undefined ? correlationHints.runId : extractRunId(payload);
+  const opId = correlationHints.opId !== undefined ? correlationHints.opId : extractOpId(payload);
+  const graphId =
+    correlationHints.graphId !== undefined ? correlationHints.graphId : extractGraphId(payload);
+  const nodeId =
+    correlationHints.nodeId !== undefined ? correlationHints.nodeId : extractNodeId(payload);
+  const childId =
+    correlationHints.childId !== undefined ? correlationHints.childId : extractChildId(payload);
+  const jobId = correlationHints.jobId !== undefined ? correlationHints.jobId : extractJobId(payload);
   const component = normaliseTag(extractComponentTag(payload)) ?? "server";
   const stage = normaliseTag(extractStageTag(payload)) ?? entry.message;
   const elapsedMs = resolveEventElapsedMs(extractElapsedMilliseconds(payload));
@@ -669,6 +677,11 @@ function recordServerLogEntry(entry: LogEntry): void {
     }
   }
 }
+
+/** @internal Expose logging helpers so tests can assert journal correlation without mocking the logger. */
+export const __serverLogInternals = {
+  recordServerLogEntry,
+};
 
 function instantiateLogger(options: LoggerOptions): StructuredLogger {
   return new StructuredLogger({ ...options, onEntry: recordServerLogEntry });
