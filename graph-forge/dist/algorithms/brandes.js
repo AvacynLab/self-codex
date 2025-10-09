@@ -119,3 +119,4 @@ function runWeightedSearch(graph, source, evaluator, stack, predecessors, sigma,
         }
     }
 }
+//# sourceMappingURL=brandes.js.map

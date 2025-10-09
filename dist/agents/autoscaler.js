@@ -386,3 +386,4 @@ export class Autoscaler {
         return { minChildren, maxChildren, cooldownMs };
     }
 }
+//# sourceMappingURL=autoscaler.js.map

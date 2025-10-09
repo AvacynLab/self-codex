@@ -125,3 +125,4 @@ function sortRecord(values) {
 function escapePointer(segment) {
     return segment.replace(/~/g, "~0").replace(/\//g, "~1");
 }
+//# sourceMappingURL=diff.js.map

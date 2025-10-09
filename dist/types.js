@@ -135,3 +135,4 @@ export function fail(code, message, hint) {
         ? { ok: false, code, message: normalisedMessage, hint: normalisedHint }
         : { ok: false, code, message: normalisedMessage };
 }
+//# sourceMappingURL=types.js.map

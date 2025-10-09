@@ -36,3 +36,4 @@ export class GraphModel {
         return this.directives.get(name);
     }
 }
+//# sourceMappingURL=model.js.map

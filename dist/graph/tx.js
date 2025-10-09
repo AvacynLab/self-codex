@@ -278,3 +278,4 @@ function normaliseExpiry(startedAt, ttlMs) {
     }
     return startedAt + Math.floor(ttlMs);
 }
+//# sourceMappingURL=tx.js.map

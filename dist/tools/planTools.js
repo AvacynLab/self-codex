@@ -10,6 +10,7 @@ import { ExecutionLoop } from "../executor/loop.js";
 import { PlanLifecycleFeatureDisabledError, } from "../executor/planLifecycle.js";
 import { BbSetInputSchema } from "./coordTools.js";
 import { ConsensusConfigSchema, majority as computeConsensusMajority, normaliseConsensusOptions, publishConsensusEvent, quorum as computeConsensusQuorum, weighted as computeConsensusWeighted, } from "../coord/consensus.js";
+import { buildIdempotencyCacheKey } from "../infra/idempotency.js";
 import { ensureDirectory, resolveWithin } from "../paths.js";
 import { PromptTemplateSchema, PromptVariablesSchema, renderPromptTemplate, } from "../prompts.js";
 import { applyAll, createInlineSubgraphRule, createRerouteAvoidRule, createSplitParallelRule } from "../graph/rewrite.js";
@@ -2047,7 +2048,9 @@ async function executePlanRunBT(context, input) {
 export async function handlePlanRunBT(context, input) {
     const key = input.idempotency_key ?? null;
     if (context.idempotency && key) {
-        const hit = await context.idempotency.remember(`plan_run_bt:${key}`, () => executePlanRunBT(context, input));
+        const { op_id: _omitOpId, idempotency_key: _omitKey, ...fingerprint } = input;
+        const cacheKey = buildIdempotencyCacheKey("plan_run_bt", key, fingerprint);
+        const hit = await context.idempotency.remember(cacheKey, () => executePlanRunBT(context, input));
         if (hit.idempotent) {
             const snapshot = hit.value;
             context.logger.info("plan_run_bt_replayed", {
@@ -2553,7 +2556,9 @@ async function executePlanRunReactive(context, input) {
 export async function handlePlanRunReactive(context, input) {
     const key = input.idempotency_key ?? null;
     if (context.idempotency && key) {
-        const hit = await context.idempotency.remember(`plan_run_reactive:${key}`, () => executePlanRunReactive(context, input));
+        const { op_id: _omitOpId, idempotency_key: _omitKey, ...fingerprint } = input;
+        const cacheKey = buildIdempotencyCacheKey("plan_run_reactive", key, fingerprint);
+        const hit = await context.idempotency.remember(cacheKey, () => executePlanRunReactive(context, input));
         if (hit.idempotent) {
             const snapshot = hit.value;
             context.logger.info("plan_run_reactive_replayed", {
@@ -2887,3 +2892,4 @@ function serialiseCorrelationForPayload(hints) {
 export const __testing = {
     runWithConcurrency,
 };
+//# sourceMappingURL=planTools.js.map

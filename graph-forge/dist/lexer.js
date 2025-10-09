@@ -266,3 +266,4 @@ export class Lexer {
         throw new LexerError(message, line, column);
     }
 }
+//# sourceMappingURL=lexer.js.map

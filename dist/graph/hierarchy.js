@@ -337,3 +337,4 @@ export function flatten(hier) {
         metadata: { hierarchical: true },
     };
 }
+//# sourceMappingURL=hierarchy.js.map

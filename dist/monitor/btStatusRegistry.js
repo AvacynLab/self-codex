@@ -60,3 +60,4 @@ export class BehaviorTreeStatusRegistry {
         });
     }
 }
+//# sourceMappingURL=btStatusRegistry.js.map

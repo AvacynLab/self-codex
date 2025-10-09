@@ -98,3 +98,4 @@ export function compileHierGraphToBehaviorTree(graph) {
         root,
     };
 }
+//# sourceMappingURL=compiler.js.map

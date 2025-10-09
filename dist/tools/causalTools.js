@@ -47,3 +47,4 @@ function serializeEvent(snapshot) {
         ordinal: snapshot.ordinal,
     };
 }
+//# sourceMappingURL=causalTools.js.map

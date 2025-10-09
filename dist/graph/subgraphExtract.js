@@ -99,3 +99,4 @@ export async function extractSubgraphToFile(options) {
         graphVersion: options.graph.graph_version ?? null,
     };
 }
+//# sourceMappingURL=subgraphExtract.js.map

@@ -151,3 +151,4 @@ export async function scanArtifacts(childrenRoot, childId) {
 export async function listArtifacts(childrenRoot, childId) {
     return scanArtifacts(childrenRoot, childId);
 }
+//# sourceMappingURL=artifacts.js.map

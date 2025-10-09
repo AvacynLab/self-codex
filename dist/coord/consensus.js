@@ -184,3 +184,4 @@ export function normaliseConsensusOptions(config) {
         quorum: config.quorum,
     };
 }
+//# sourceMappingURL=consensus.js.map

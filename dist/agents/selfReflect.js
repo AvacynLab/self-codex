@@ -160,3 +160,4 @@ export async function reflect(raw) {
         risks: truncateList(risks, 6),
     };
 }
+//# sourceMappingURL=selfReflect.js.map

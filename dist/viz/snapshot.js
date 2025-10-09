@@ -42,3 +42,4 @@ function filterPrimitiveAttributes(source) {
     }
     return result;
 }
+//# sourceMappingURL=snapshot.js.map

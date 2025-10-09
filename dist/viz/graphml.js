@@ -87,3 +87,4 @@ function escapeXml(value) {
         .replace(/\"/g, "&quot;")
         .replace(/'/g, "&apos;");
 }
+//# sourceMappingURL=graphml.js.map

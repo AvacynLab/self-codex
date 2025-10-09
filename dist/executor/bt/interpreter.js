@@ -120,3 +120,4 @@ export function buildBehaviorTree(definition, options = {}, idPrefix = "root") {
     }
     return instantiate(definition, idPrefix);
 }
+//# sourceMappingURL=interpreter.js.map

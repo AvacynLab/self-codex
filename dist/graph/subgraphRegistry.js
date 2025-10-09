@@ -95,3 +95,4 @@ export function resolveSubgraphDescriptor(graph, ref) {
     }
     return registry.get(ref) ?? null;
 }
+//# sourceMappingURL=subgraphRegistry.js.map

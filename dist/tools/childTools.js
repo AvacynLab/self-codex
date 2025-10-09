@@ -1,6 +1,8 @@
 import { z } from "zod";
 import { getSandboxRegistry } from "../sim/sandbox.js";
 import { PromptTemplateSchema } from "../prompts.js";
+import { buildIdempotencyCacheKey } from "../infra/idempotency.js";
+import { getJsonRpcContext } from "../infra/jsonRpcContext.js";
 import { BulkOperationError, buildBulkFailureDetail } from "./bulkError.js";
 import { resolveOperationId } from "./operationIds.js";
 /**
@@ -223,7 +225,9 @@ export async function handleChildCreate(context, input) {
     };
     const key = input.idempotency_key ?? null;
     if (context.idempotency && key) {
-        const hit = await context.idempotency.remember(`child_create:${key}`, execute);
+        const { op_id: _omitOpId, idempotency_key: _omitKey, ...fingerprint } = input;
+        const cacheKey = buildIdempotencyCacheKey("child_create", key, fingerprint);
+        const hit = await context.idempotency.remember(cacheKey, execute);
         if (hit.idempotent) {
             const snapshot = hit.value;
             context.logger.info("child_create_replayed", {
@@ -249,30 +253,69 @@ export async function handleChildSpawnCodex(context, input) {
     const execute = async () => {
         const manifestExtras = buildSpawnCodexManifestExtras(input);
         const metadata = structuredClone(input.metadata ?? {});
+        const limitsCopy = input.limits ? structuredClone(input.limits) : null;
+        const role = input.role ?? null;
+        const idempotencyKey = input.idempotency_key ?? null;
         metadata.op_id = opId;
-        if (input.role) {
-            metadata.role = input.role;
+        if (role) {
+            metadata.role = role;
         }
         if (input.model_hint) {
             metadata.model_hint = input.model_hint;
         }
-        if (input.idempotency_key) {
-            metadata.idempotency_key = input.idempotency_key;
+        if (idempotencyKey) {
+            metadata.idempotency_key = idempotencyKey;
         }
-        if (input.limits) {
-            metadata.limits = structuredClone(input.limits);
+        if (limitsCopy) {
+            metadata.limits = structuredClone(limitsCopy);
         }
         context.logger.info("child_spawn_codex_requested", {
             op_id: opId,
-            role: input.role ?? null,
-            limit_keys: input.limits ? Object.keys(input.limits).length : 0,
-            idempotency_key: input.idempotency_key ?? null,
+            role,
+            limit_keys: limitsCopy ? Object.keys(limitsCopy).length : 0,
+            idempotency_key: idempotencyKey,
         });
+        if (isHttpLoopbackEnabled()) {
+            const childId = context.supervisor.createChildId();
+            const endpoint = buildHttpChildEndpoint(context, childId, limitsCopy);
+            const registration = await context.supervisor.registerHttpChild({
+                childId,
+                endpoint,
+                metadata,
+                limits: limitsCopy,
+                role,
+                manifestExtras,
+            });
+            const statusSnapshot = context.supervisor.status(childId);
+            context.logger.info("child_spawn_codex_ready", {
+                op_id: opId,
+                child_id: childId,
+                pid: null,
+                workdir: registration.workdir,
+                endpoint_url: endpoint.url,
+                idempotency_key: idempotencyKey,
+            });
+            return {
+                op_id: opId,
+                child_id: childId,
+                runtime_status: statusSnapshot.runtime,
+                index_snapshot: statusSnapshot.index,
+                manifest_path: registration.manifestPath,
+                log_path: registration.logPath,
+                workdir: registration.workdir,
+                started_at: registration.startedAt,
+                ready_message: null,
+                role: statusSnapshot.index.role,
+                limits: statusSnapshot.index.limits,
+                endpoint,
+                idempotency_key: idempotencyKey,
+            };
+        }
         const created = await context.supervisor.createChild({
-            role: input.role ?? null,
+            role,
             manifestExtras,
             metadata,
-            limits: input.limits ?? null,
+            limits: limitsCopy,
             waitForReady: true,
             readyTimeoutMs: 2000,
         });
@@ -283,7 +326,7 @@ export async function handleChildSpawnCodex(context, input) {
             child_id: created.childId,
             pid: runtimeStatus.pid,
             workdir: runtimeStatus.workdir,
-            idempotency_key: input.idempotency_key ?? null,
+            idempotency_key: idempotencyKey,
         });
         return {
             op_id: opId,
@@ -297,12 +340,15 @@ export async function handleChildSpawnCodex(context, input) {
             ready_message: readyMessage,
             role: created.index.role,
             limits: created.index.limits,
-            idempotency_key: input.idempotency_key ?? null,
+            endpoint: null,
+            idempotency_key: idempotencyKey,
         };
     };
     const key = input.idempotency_key ?? null;
     if (context.idempotency && key) {
-        const hit = await context.idempotency.remember(`child_spawn_codex:${key}`, execute);
+        const { op_id: _omitOpId, idempotency_key: _omitKey, ...fingerprint } = input;
+        const cacheKey = buildIdempotencyCacheKey("child_spawn_codex", key, fingerprint);
+        const hit = await context.idempotency.remember(cacheKey, execute);
         if (hit.idempotent) {
             const snapshot = hit.value;
             context.logger.info("child_spawn_codex_replayed", {
@@ -312,7 +358,12 @@ export async function handleChildSpawnCodex(context, input) {
             });
         }
         const snapshot = hit.value;
-        return { ...snapshot, op_id: snapshot.op_id ?? opId, idempotent: hit.idempotent };
+        return {
+            ...snapshot,
+            op_id: snapshot.op_id ?? opId,
+            endpoint: snapshot.endpoint ?? null,
+            idempotent: hit.idempotent,
+        };
     }
     const result = await execute();
     return { ...result, op_id: opId, idempotent: false };
@@ -324,77 +375,117 @@ export async function handleChildSpawnCodex(context, input) {
  */
 export async function handleChildBatchCreate(context, input) {
     context.logger.info("child_batch_create_requested", { entries: input.entries.length });
-    const results = [];
-    const createdChildIds = [];
-    let failingIndex = null;
-    let failingSummary = null;
-    try {
+    const execute = async () => {
+        const results = [];
+        const createdChildIds = [];
+        let failingIndex = null;
+        let failingSummary = null;
+        try {
+            for (let index = 0; index < input.entries.length; index += 1) {
+                const entry = input.entries[index];
+                try {
+                    const snapshot = await handleChildSpawnCodex(context, entry);
+                    results.push(snapshot);
+                    if (!snapshot.idempotent) {
+                        createdChildIds.push(snapshot.child_id);
+                    }
+                }
+                catch (error) {
+                    failingIndex = index;
+                    failingSummary = summariseChildBatchEntry(entry);
+                    throw error;
+                }
+            }
+        }
+        catch (error) {
+            for (const childId of createdChildIds.reverse()) {
+                try {
+                    context.logger.warn("child_batch_create_rollback", { child_id: childId });
+                    await context.supervisor.kill(childId, { timeoutMs: 200 });
+                    await context.supervisor.waitForExit(childId, 1_000);
+                }
+                catch (shutdownError) {
+                    context.logger.error("child_batch_create_rollback_failed", {
+                        child_id: childId,
+                        reason: shutdownError instanceof Error ? shutdownError.message : String(shutdownError),
+                    });
+                }
+                finally {
+                    try {
+                        context.supervisor.gc(childId);
+                    }
+                    catch {
+                        // The child might have already been reclaimed by the supervisor.
+                    }
+                    clearLoopSignature(childId);
+                }
+            }
+            const entrySummary = failingSummary;
+            throw new BulkOperationError("child batch aborted", {
+                failures: [
+                    buildBulkFailureDetail({
+                        index: failingIndex ?? 0,
+                        entry: entrySummary,
+                        error,
+                        stage: "spawn",
+                    }),
+                ],
+                rolled_back: true,
+                metadata: {
+                    rollback_child_ids: [...createdChildIds].reverse(),
+                },
+            });
+        }
+        const idempotentCount = results.filter((entry) => entry.idempotent).length;
+        context.logger.info("child_batch_create_succeeded", {
+            entries: input.entries.length,
+            created: results.length - idempotentCount,
+            replayed: idempotentCount,
+        });
+        return {
+            children: results,
+            created: results.length - idempotentCount,
+            idempotent_entries: idempotentCount,
+        };
+    };
+    const aggregatedKey = (() => {
+        const parts = [];
         for (let index = 0; index < input.entries.length; index += 1) {
             const entry = input.entries[index];
-            try {
-                const snapshot = await handleChildSpawnCodex(context, entry);
-                results.push(snapshot);
-                if (!snapshot.idempotent) {
-                    createdChildIds.push(snapshot.child_id);
-                }
+            if (!entry.idempotency_key) {
+                return null;
             }
-            catch (error) {
-                failingIndex = index;
-                failingSummary = summariseChildBatchEntry(entry);
-                throw error;
-            }
+            parts.push(`${index}:${entry.idempotency_key}`);
         }
-    }
-    catch (error) {
-        for (const childId of createdChildIds.reverse()) {
-            try {
-                context.logger.warn("child_batch_create_rollback", { child_id: childId });
-                await context.supervisor.kill(childId, { timeoutMs: 200 });
-                await context.supervisor.waitForExit(childId, 1_000);
-            }
-            catch (shutdownError) {
-                context.logger.error("child_batch_create_rollback_failed", {
-                    child_id: childId,
-                    reason: shutdownError instanceof Error ? shutdownError.message : String(shutdownError),
-                });
-            }
-            finally {
-                try {
-                    context.supervisor.gc(childId);
-                }
-                catch {
-                    // The child might have already been reclaimed by the supervisor.
-                }
-                clearLoopSignature(childId);
-            }
-        }
-        const entrySummary = failingSummary;
-        throw new BulkOperationError("child batch aborted", {
-            failures: [
-                buildBulkFailureDetail({
-                    index: failingIndex ?? 0,
-                    entry: entrySummary,
-                    error,
-                    stage: "spawn",
-                }),
-            ],
-            rolled_back: true,
-            metadata: {
-                rollback_child_ids: [...createdChildIds].reverse(),
-            },
+        return parts.length > 0 ? parts.join("|") : null;
+    })();
+    if (context.idempotency && aggregatedKey) {
+        const fingerprint = input.entries.map((entry) => {
+            const { op_id: _omitOpId, idempotency_key: _omitKey, ...rest } = entry;
+            return rest;
         });
+        const cacheKey = buildIdempotencyCacheKey("child_batch_create", aggregatedKey, fingerprint);
+        const hit = await context.idempotency.remember(cacheKey, execute);
+        if (hit.idempotent) {
+            const replayedChildren = hit.value.children.map((child) => ({
+                ...child,
+                idempotent: true,
+            }));
+            const replayedResult = {
+                ...hit.value,
+                children: replayedChildren,
+                created: 0,
+                idempotent_entries: replayedChildren.length,
+            };
+            context.logger.info("child_batch_create_replayed", {
+                entries: input.entries.length,
+                idempotent_entries: replayedResult.idempotent_entries,
+            });
+            return replayedResult;
+        }
+        return hit.value;
     }
-    const idempotentCount = results.filter((entry) => entry.idempotent).length;
-    context.logger.info("child_batch_create_succeeded", {
-        entries: input.entries.length,
-        created: results.length - idempotentCount,
-        replayed: idempotentCount,
-    });
-    return {
-        children: results,
-        created: results.length - idempotentCount,
-        idempotent_entries: idempotentCount,
-    };
+    return execute();
 }
 /** Refreshes manifest metadata for an existing child runtime. */
 export async function handleChildAttach(context, input) {
@@ -557,6 +648,60 @@ function buildSpawnCodexManifestExtras(input) {
         extras.role = input.role;
     }
     return extras;
+}
+/** Detects whether the stateless HTTP bridge should back child orchestration. */
+function isHttpLoopbackEnabled() {
+    const raw = process.env.MCP_HTTP_STATELESS;
+    return typeof raw === "string" && raw.trim().toLowerCase() === "yes";
+}
+/** Normalises the MCP HTTP endpoint so logical children can call the server again. */
+function buildHttpChildEndpoint(context, childId, limits) {
+    const inherited = (() => {
+        const routeContext = getJsonRpcContext();
+        if (!routeContext?.childId) {
+            return null;
+        }
+        return context.supervisor.getHttpEndpoint(routeContext.childId) ?? null;
+    })();
+    if (inherited) {
+        const headers = { ...inherited.headers };
+        headers["x-child-id"] = childId;
+        if (limits && Object.keys(limits).length > 0) {
+            headers["x-child-limits"] = Buffer.from(JSON.stringify(limits), "utf8").toString("base64");
+        }
+        else {
+            delete headers["x-child-limits"];
+        }
+        if (!headers["content-type"]) {
+            headers["content-type"] = "application/json";
+        }
+        if (!headers.accept) {
+            headers.accept = "application/json";
+        }
+        return { url: inherited.url, headers };
+    }
+    const host = (process.env.MCP_HTTP_HOST ?? "127.0.0.1").trim() || "127.0.0.1";
+    const rawPort = process.env.MCP_HTTP_PORT ?? "";
+    const parsedPort = Number.parseInt(rawPort, 10);
+    const port = Number.isFinite(parsedPort) && parsedPort > 0 ? parsedPort : 8765;
+    let path = process.env.MCP_HTTP_PATH ?? "/mcp";
+    if (!path.startsWith("/")) {
+        path = `/${path}`;
+    }
+    const url = `http://${host}:${port}${path}`;
+    const headers = {
+        "content-type": "application/json",
+        accept: "application/json",
+        "x-child-id": childId,
+    };
+    const token = process.env.MCP_HTTP_TOKEN?.trim();
+    if (token) {
+        headers.authorization = `Bearer ${token}`;
+    }
+    if (limits && Object.keys(limits).length > 0) {
+        headers["x-child-limits"] = Buffer.from(JSON.stringify(limits), "utf8").toString("base64");
+    }
+    return { url, headers };
 }
 /** Schema for the `child_send` tool. */
 const ChildSendExpectationSchema = z.enum(["stream", "final"]);
@@ -1216,3 +1361,4 @@ export function handleChildGc(context, input) {
     clearLoopSignature(input.child_id);
     return { child_id: input.child_id, removed: true };
 }
+//# sourceMappingURL=childTools.js.map

@@ -2,6 +2,7 @@ import { z } from "zod";
 import { BlackboardBatchSetEntryError, } from "../coord/blackboard.js";
 import { StigmergyBatchMarkError, buildStigmergySummary, formatPheromoneBoundsTooltip, normalisePheromoneBoundsForTelemetry, } from "../coord/stigmergy.js";
 import { ConsensusConfigSchema, majority, publishConsensusEvent, quorum, weighted, } from "../coord/consensus.js";
+import { buildIdempotencyCacheKey } from "../infra/idempotency.js";
 import { BulkOperationError, buildBulkFailureDetail } from "./bulkError.js";
 import { resolveOperationId } from "./operationIds.js";
 /**
@@ -554,7 +555,9 @@ export function handleCnpAnnounce(context, input) {
     };
     const key = input.idempotency_key ?? null;
     if (context.idempotency && key) {
-        const hit = context.idempotency.rememberSync(`cnp_announce:${key}`, execute);
+        const { op_id: _omitOpId, idempotency_key: _omitKey, ...fingerprint } = input;
+        const cacheKey = buildIdempotencyCacheKey("cnp_announce", key, fingerprint);
+        const hit = context.idempotency.rememberSync(cacheKey, execute);
         if (hit.idempotent) {
             const snapshot = hit.value;
             context.logger.info("cnp_announce_replayed", {
@@ -768,3 +771,4 @@ function serialiseContractNetHeuristics(snapshot) {
         preference_bonus: snapshot.heuristics.preferenceBonus,
     };
 }
+//# sourceMappingURL=coordTools.js.map

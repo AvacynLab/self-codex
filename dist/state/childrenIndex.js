@@ -258,10 +258,20 @@ export class ChildrenIndex {
         }
         return cloneRecord(record);
     }
-    /** Marks the child as re-attached and records the timestamp for observability. */
+    /**
+     * Marks the child as re-attached and records the timestamp for observability.
+     *
+     * The helper intentionally behaves idempotently: when called repeatedly
+     * without an explicit timestamp it preserves the original attachment
+     * instant instead of mutating the record on every invocation. This makes the
+     * `child_attach` tool safe to retry from higher level orchestration layers
+     * without generating a flurry of spurious state updates or misleading audit
+     * trails.
+     */
     markAttached(childId, timestamp) {
         const record = this.requireChild(childId);
-        record.attachedAt = timestamp ?? Date.now();
+        const nextAttachedAt = timestamp ?? record.attachedAt ?? Date.now();
+        record.attachedAt = nextAttachedAt;
         return cloneRecord(record);
     }
     /**
@@ -344,3 +354,4 @@ export class ChildrenIndex {
         return inspect(entries, { depth: 4, colors: false });
     }
 }
+//# sourceMappingURL=childrenIndex.js.map

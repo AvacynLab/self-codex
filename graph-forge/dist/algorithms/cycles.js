@@ -39,3 +39,4 @@ export function detectCycles(graph, limit = 20) {
     }
     return { hasCycle: cycles.length > 0, cycles };
 }
+//# sourceMappingURL=cycles.js.map

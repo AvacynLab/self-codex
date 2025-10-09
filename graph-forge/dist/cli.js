@@ -161,3 +161,4 @@ if (import.meta.main) {
         process.exit(1);
     });
 }
+//# sourceMappingURL=cli.js.map

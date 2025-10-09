@@ -232,3 +232,4 @@ function computeDecayFactor(lastUpdatedAt, now, decayMs) {
     const halfLives = elapsed / decayMs;
     return Math.pow(0.5, halfLives);
 }
+//# sourceMappingURL=adaptive.js.map

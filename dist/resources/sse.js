@@ -142,3 +142,4 @@ export function serialiseResourceWatchResultForSse(result) {
 export function renderResourceWatchSseMessages(messages) {
     return messages.map((message) => `id: ${message.id}\nevent: ${message.event}\ndata: ${message.data}\n\n`).join("");
 }
+//# sourceMappingURL=sse.js.map

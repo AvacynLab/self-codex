@@ -373,3 +373,4 @@ export function getMcpCapabilities() {
         .sort((a, b) => a.name.localeCompare(b.name));
     return { namespaces, tools };
 }
+//# sourceMappingURL=info.js.map

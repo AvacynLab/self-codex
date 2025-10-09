@@ -11,7 +11,7 @@ import { GraphLockManager } from "./graph/locks.js";
 import { StructuredLogger } from "./logger.js";
 import { EventStore } from "./eventStore.js";
 import { EventBus, EVENT_CATEGORIES, } from "./events/bus.js";
-import { buildChildCorrelationHints, buildJobCorrelationHints, mergeCorrelationHints, } from "./events/correlation.js";
+import { buildChildCorrelationHints, buildJobCorrelationHints, extractCorrelationHints, mergeCorrelationHints, } from "./events/correlation.js";
 import { buildChildCognitiveEvents } from "./events/cognitive.js";
 import { bridgeBlackboardEvents, bridgeCancellationEvents, bridgeConsensusEvents, bridgeContractNetEvents, bridgeValueEvents, bridgeStigmergyEvents, createContractNetWatcherTelemetryListener, } from "./events/bridges.js";
 import { serialiseForSse } from "./events/sse.js";
@@ -38,7 +38,8 @@ import { CausalMemory } from "./knowledge/causalMemory.js";
 import { ValueGraph } from "./values/valueGraph.js";
 import { ResourceRegistry } from "./resources/registry.js";
 import { renderResourceWatchSseMessages, serialiseResourceWatchResultForSse } from "./resources/sse.js";
-import { IdempotencyRegistry } from "./infra/idempotency.js";
+import { IdempotencyRegistry, buildIdempotencyCacheKey } from "./infra/idempotency.js";
+import { runWithJsonRpcContext } from "./infra/jsonRpcContext.js";
 import { PlanLifecycleRegistry, PlanRunNotFoundError } from "./executor/planLifecycle.js";
 import { ensureParentDirectory, resolveWorkspacePath, PathResolutionError } from "./paths.js";
 import { ChildCancelInputShape, ChildCancelInputSchema, ChildCollectInputShape, ChildCollectInputSchema, ChildCreateInputShape, ChildCreateInputSchema, ChildGcInputShape, ChildGcInputSchema, ChildKillInputShape, ChildKillInputSchema, ChildSendInputShape, ChildSendInputSchema, ChildStreamInputShape, ChildStreamInputSchema, ChildStatusInputShape, ChildStatusInputSchema, ChildSpawnCodexInputShape, ChildSpawnCodexInputSchema, ChildBatchCreateInputShape, ChildBatchCreateInputSchema, ChildAttachInputShape, ChildAttachInputSchema, ChildSetRoleInputShape, ChildSetRoleInputSchema, ChildSetLimitsInputShape, ChildSetLimitsInputSchema, handleChildCancel, handleChildCollect, handleChildCreate, handleChildSpawnCodex, handleChildBatchCreate, handleChildAttach, handleChildSetRole, handleChildSetLimits, handleChildGc, handleChildKill, handleChildSend, handleChildStream, handleChildStatus, } from "./tools/childTools.js";
@@ -84,8 +85,22 @@ const stigmergy = new StigmergyField();
 const contractNet = new ContractNetCoordinator();
 /** Telemetry recorder tracking automatic Contract-Net bounds refreshes. */
 const contractNetWatcherTelemetry = new ContractNetWatcherTelemetryRecorder();
+/** Parses the optional TTL override for the idempotency cache. */
+function resolveIdempotencyTtlFromEnv() {
+    const raw = process.env.IDEMPOTENCY_TTL_MS;
+    if (!raw) {
+        return undefined;
+    }
+    const parsed = Number.parseInt(raw, 10);
+    if (!Number.isFinite(parsed) || parsed <= 0) {
+        return undefined;
+    }
+    return parsed;
+}
 /** Registry replaying cached results for idempotent operations. */
-const idempotencyRegistry = new IdempotencyRegistry();
+const idempotencyRegistry = new IdempotencyRegistry({
+    defaultTtlMs: resolveIdempotencyTtlFromEnv(),
+});
 /** Shared knowledge graph storing reusable plan patterns. */
 const knowledgeGraph = new KnowledgeGraph();
 /** Shared causal memory tracking runtime event relationships. */
@@ -288,12 +303,15 @@ function recordServerLogEntry(entry) {
         timestamp = Date.now();
     }
     const payload = entry.payload ?? null;
-    const runId = extractRunId(payload);
-    const opId = extractOpId(payload);
-    const graphId = extractGraphId(payload);
-    const nodeId = extractNodeId(payload);
-    const childId = extractChildId(payload);
-    const jobId = extractJobId(payload);
+    // Merge correlation hints emitted by upstream components so nested metadata keeps run/op/child context.
+    const correlationHints = extractCorrelationHints(payload);
+    // Each identifier honours explicit null overrides while falling back to legacy payload shapes when hints are absent.
+    const runId = correlationHints.runId !== undefined ? correlationHints.runId : extractRunId(payload);
+    const opId = correlationHints.opId !== undefined ? correlationHints.opId : extractOpId(payload);
+    const graphId = correlationHints.graphId !== undefined ? correlationHints.graphId : extractGraphId(payload);
+    const nodeId = correlationHints.nodeId !== undefined ? correlationHints.nodeId : extractNodeId(payload);
+    const childId = correlationHints.childId !== undefined ? correlationHints.childId : extractChildId(payload);
+    const jobId = correlationHints.jobId !== undefined ? correlationHints.jobId : extractJobId(payload);
     const component = normaliseTag(extractComponentTag(payload)) ?? "server";
     const stage = normaliseTag(extractStageTag(payload)) ?? entry.message;
     const elapsedMs = resolveEventElapsedMs(extractElapsedMilliseconds(payload));
@@ -326,6 +344,10 @@ function recordServerLogEntry(entry) {
         }
     }
 }
+/** @internal Expose logging helpers so tests can assert journal correlation without mocking the logger. */
+export const __serverLogInternals = {
+    recordServerLogEntry,
+};
 function instantiateLogger(options) {
     return new StructuredLogger({ ...options, onEntry: recordServerLogEntry });
 }
@@ -3352,9 +3374,14 @@ server.registerTool("graph_batch_mutate", {
     try {
         const parsed = GraphBatchMutateInputSchema.parse(input);
         graphIdForError = parsed.graph_id;
-        const existingEntry = runtimeFeatures.enableIdempotency && parsed.idempotency_key
-            ? idempotencyRegistry.peek(`graph_batch_mutate:${parsed.idempotency_key}`)
-            : null;
+        const existingEntry = (() => {
+            if (!runtimeFeatures.enableIdempotency || !parsed.idempotency_key) {
+                return null;
+            }
+            const { op_id: _omitOpId, idempotency_key: _omitKey, ...fingerprint } = parsed;
+            const cacheKey = buildIdempotencyCacheKey("graph_batch_mutate", parsed.idempotency_key, fingerprint);
+            return idempotencyRegistry.peek(cacheKey);
+        })();
         const existingOpId = existingEntry?.value?.op_id;
         const opId = resolveOperationId(parsed.op_id ?? existingOpId, "graph_batch_mutate_op");
         opIdForError = opId;
@@ -6171,11 +6198,13 @@ export async function routeJsonRpcRequest(method, params, context = {}) {
         requestInfo: Object.keys(headersSnapshot).length > 0 ? { headers: headersSnapshot } : undefined,
     };
     try {
-        const rawResult = await handler({ jsonrpc: "2.0", id: requestId, method: invocation.method, params: invocation.params }, extra);
-        if (!originalMethod.includes("/") && invocation.method === "tools/call") {
-            return normaliseToolCallResult(rawResult);
-        }
-        return rawResult;
+        return await runWithJsonRpcContext(context, async () => {
+            const rawResult = await handler({ jsonrpc: "2.0", id: requestId, method: invocation.method, params: invocation.params }, extra);
+            if (!originalMethod.includes("/") && invocation.method === "tools/call") {
+                return normaliseToolCallResult(rawResult);
+            }
+            return rawResult;
+        });
     }
     finally {
         abort.abort();
@@ -6227,17 +6256,373 @@ function normaliseToolCallResult(result) {
  * deterministic payload whether the failure originates from validation or the
  * underlying handler.
  */
+/**
+ * Determines whether the incoming JSON-RPC payload targets the `mcp_info`
+ * tool either directly or via the canonical `tools/call` indirection.
+ *
+ * The helper keeps the transport helpers agnostic of how callers choose to
+ * address the introspection tool, which allows tests to exercise both code
+ * paths while sharing the same response normalisation logic.
+ */
+function isMcpInfoInvocation(request) {
+    const method = request?.method?.trim();
+    if (method === "mcp_info") {
+        return true;
+    }
+    if (method === "tools/call") {
+        const params = request?.params;
+        if (params && typeof params === "object" && !Array.isArray(params)) {
+            const name = params.name;
+            if (typeof name === "string" && name.trim() === "mcp_info") {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+/**
+ * Checks whether the fast-path HTTP transport should hydrate the `mcp_info`
+ * response with the latest runtime snapshot. When introspection is disabled we
+ * still serve a minimal descriptor so stateless HTTP clients can negotiate the
+ * transport before toggling feature flags. Other transports (FS bridge, STDIO)
+ * retain the stricter behaviour enforced by {@link ensureMcpIntrospectionEnabled}.
+ */
+function shouldHydrateMcpInfo(request, context, result) {
+    if (!context || context.transport !== "http" || !isMcpInfoInvocation(request)) {
+        return false;
+    }
+    if (!result || typeof result !== "object") {
+        return true;
+    }
+    const payload = result;
+    return typeof payload.server?.name !== "string";
+}
+function normaliseCorrelationValue(value) {
+    if (value === null || value === undefined) {
+        return null;
+    }
+    if (typeof value !== "string") {
+        return null;
+    }
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : null;
+}
+function mergeCorrelationSnapshots(base, next) {
+    const merged = { ...base };
+    for (const key of ["runId", "opId", "childId", "jobId"]) {
+        if (Object.prototype.hasOwnProperty.call(next, key)) {
+            merged[key] = next[key];
+        }
+    }
+    return merged;
+}
+function collectCorrelationFromContext(context) {
+    const snapshot = {};
+    if (context && Object.prototype.hasOwnProperty.call(context, "childId")) {
+        snapshot.childId = context.childId ?? null;
+    }
+    return snapshot;
+}
+function collectCorrelationFromPayload(payload) {
+    if (Array.isArray(payload)) {
+        return payload.reduce((acc, entry) => mergeCorrelationSnapshots(acc, collectCorrelationFromPayload(entry)), {});
+    }
+    if (!payload || typeof payload !== "object") {
+        return {};
+    }
+    const record = payload;
+    let snapshot = {};
+    const assign = (fields, key) => {
+        for (const field of fields) {
+            if (!Object.prototype.hasOwnProperty.call(record, field)) {
+                continue;
+            }
+            snapshot = { ...snapshot, [key]: normaliseCorrelationValue(record[field]) };
+            break;
+        }
+    };
+    assign(["run_id"], "runId");
+    assign(["op_id", "operation_id"], "opId");
+    assign(["child_id"], "childId");
+    assign(["job_id"], "jobId");
+    for (const nestedKey of ["result", "data", "payload"]) {
+        if (Object.prototype.hasOwnProperty.call(record, nestedKey)) {
+            snapshot = mergeCorrelationSnapshots(snapshot, collectCorrelationFromPayload(record[nestedKey]));
+        }
+    }
+    return snapshot;
+}
+function collectCorrelationFromUnknown(value) {
+    if (Array.isArray(value)) {
+        return value.reduce((acc, entry) => mergeCorrelationSnapshots(acc, collectCorrelationFromUnknown(entry)), {});
+    }
+    if (value instanceof Error) {
+        const errorRecord = value;
+        let snapshot = collectCorrelationFromPayload(errorRecord);
+        if (errorRecord.data !== undefined) {
+            snapshot = mergeCorrelationSnapshots(snapshot, collectCorrelationFromUnknown(errorRecord.data));
+        }
+        if (errorRecord.cause !== undefined) {
+            snapshot = mergeCorrelationSnapshots(snapshot, collectCorrelationFromUnknown(errorRecord.cause));
+        }
+        return snapshot;
+    }
+    if (!value || typeof value !== "object") {
+        return {};
+    }
+    return collectCorrelationFromPayload(value);
+}
+function extractInvocationArguments(method, params) {
+    const trimmed = method.trim();
+    if (trimmed === "tools/call" && params && typeof params === "object" && !Array.isArray(params)) {
+        const record = params;
+        if (record.arguments && typeof record.arguments === "object") {
+            return record.arguments;
+        }
+    }
+    return params;
+}
+function resolveJsonRpcToolName(method, params) {
+    const trimmed = method.trim();
+    if (trimmed && trimmed !== "tools/call") {
+        return trimmed;
+    }
+    if (trimmed === "tools/call" && params && typeof params === "object" && !Array.isArray(params)) {
+        const record = params;
+        if (typeof record.name === "string") {
+            const name = record.name.trim();
+            return name.length > 0 ? name : null;
+        }
+    }
+    return null;
+}
+function parseToolErrorPayload(raw) {
+    if (!raw || typeof raw !== "object") {
+        return { message: null, code: null };
+    }
+    let message = null;
+    let code = null;
+    if (typeof raw.message === "string") {
+        message = raw.message;
+    }
+    if (typeof raw.error === "string") {
+        code = raw.error;
+    }
+    if (message && code) {
+        return { message, code };
+    }
+    const details = raw;
+    if (Array.isArray(details.content)) {
+        for (const entry of details.content) {
+            if (!entry || typeof entry !== "object") {
+                continue;
+            }
+            const text = entry.text;
+            if (typeof text !== "string" || text.trim().length === 0) {
+                continue;
+            }
+            try {
+                const parsed = JSON.parse(text);
+                if (parsed && typeof parsed === "object") {
+                    if (!message && typeof parsed.message === "string") {
+                        message = parsed.message;
+                    }
+                    if (!code && typeof parsed.error === "string") {
+                        code = parsed.error;
+                    }
+                }
+            }
+            catch {
+                // Ignore malformed JSON payloads and fall back to the raw message when available.
+            }
+            if (message && code) {
+                break;
+            }
+        }
+    }
+    return { message, code };
+}
+function detectJsonRpcErrorResult(result) {
+    if (!result || typeof result !== "object") {
+        return null;
+    }
+    const record = result;
+    const hasErrorFlag = record.isError === true;
+    const hasExplicitFailure = record.ok === false;
+    if (!hasErrorFlag && !hasExplicitFailure) {
+        return null;
+    }
+    return parseToolErrorPayload(record);
+}
+function recordJsonRpcObservability(input) {
+    const payload = {
+        msg: `jsonrpc_${input.stage}`,
+        method: input.method,
+        tool: input.toolName ?? null,
+        request_id: input.requestId ?? null,
+        transport: input.transport ?? null,
+        status: input.status ?? null,
+        elapsed_ms: typeof input.elapsedMs === "number" && Number.isFinite(input.elapsedMs)
+            ? Math.max(0, Math.round(input.elapsedMs))
+            : null,
+        run_id: input.correlation.runId ?? null,
+        op_id: input.correlation.opId ?? null,
+        child_id: input.correlation.childId ?? null,
+        job_id: input.correlation.jobId ?? null,
+        idempotency_key: input.idempotencyKey ?? null,
+        error_message: input.errorMessage ?? null,
+        error_code: input.errorCode ?? null,
+    };
+    let envelope;
+    try {
+        envelope = eventBus.publish({
+            cat: "scheduler",
+            level: input.stage === "error" ? "error" : "info",
+            runId: input.correlation.runId ?? null,
+            opId: input.correlation.opId ?? null,
+            childId: input.correlation.childId ?? null,
+            component: "jsonrpc",
+            stage: payload.msg,
+            elapsedMs: payload.elapsed_ms ?? undefined,
+            kind: `JSONRPC_${input.stage.toUpperCase()}`,
+            msg: payload.msg,
+            data: payload,
+        });
+    }
+    catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        process.stderr.write(`${JSON.stringify({
+            ts: new Date().toISOString(),
+            level: "error",
+            message: "jsonrpc_event_publish_failed",
+            detail,
+        })}\n`);
+    }
+    const seq = envelope?.seq;
+    const ts = envelope?.ts;
+    try {
+        const level = input.stage === "error" ? "error" : "info";
+        const baseEntry = {
+            level,
+            message: payload.msg,
+            data: payload,
+            jobId: input.correlation.jobId ?? null,
+            runId: input.correlation.runId ?? null,
+            opId: input.correlation.opId ?? null,
+            childId: input.correlation.childId ?? null,
+            component: "jsonrpc",
+            stage: payload.msg,
+            elapsedMs: payload.elapsed_ms ?? null,
+            ts,
+            seq,
+        };
+        logJournal.record({ stream: "server", bucketId: "jsonrpc", ...baseEntry });
+        if (input.correlation.runId) {
+            logJournal.record({ stream: "run", bucketId: input.correlation.runId, ...baseEntry });
+        }
+        if (input.correlation.childId) {
+            logJournal.record({ stream: "child", bucketId: input.correlation.childId, ...baseEntry });
+        }
+    }
+    catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        process.stderr.write(`${JSON.stringify({
+            ts: new Date().toISOString(),
+            level: "error",
+            message: "jsonrpc_log_record_failed",
+            detail,
+        })}\n`);
+    }
+}
 export async function handleJsonRpc(req, context) {
     const id = req?.id ?? null;
+    const rawMethod = typeof req?.method === "string" ? req.method : "";
+    const method = rawMethod.trim() || (rawMethod ? rawMethod : "unknown");
+    const toolName = resolveJsonRpcToolName(rawMethod, req?.params);
+    const invocationArgs = extractInvocationArguments(rawMethod, req?.params);
+    let correlation = mergeCorrelationSnapshots(collectCorrelationFromContext(context), collectCorrelationFromPayload(invocationArgs));
+    recordJsonRpcObservability({
+        stage: "request",
+        method,
+        toolName,
+        requestId: id,
+        transport: context?.transport,
+        idempotencyKey: context?.idempotencyKey ?? null,
+        correlation,
+        status: "pending",
+    });
     if (!req || req.jsonrpc !== "2.0" || typeof req.method !== "string") {
+        recordJsonRpcObservability({
+            stage: "error",
+            method,
+            toolName,
+            requestId: id,
+            transport: context?.transport,
+            idempotencyKey: context?.idempotencyKey ?? null,
+            correlation,
+            status: "error",
+            errorMessage: "Invalid Request",
+            errorCode: -32600,
+        });
         return { jsonrpc: "2.0", id, error: { code: -32600, message: "Invalid Request" } };
     }
+    const startedAt = Date.now();
     try {
-        const result = await routeJsonRpcRequest(req.method, req.params, { ...context, requestId: id });
+        let result = await routeJsonRpcRequest(req.method, req.params, { ...context, requestId: id });
+        correlation = mergeCorrelationSnapshots(correlation, collectCorrelationFromPayload(result));
+        if (shouldHydrateMcpInfo(req, context, result)) {
+            result = getMcpInfo();
+            correlation = mergeCorrelationSnapshots(correlation, collectCorrelationFromPayload(result));
+        }
+        const elapsedMs = Date.now() - startedAt;
+        const errorSnapshot = detectJsonRpcErrorResult(result);
+        if (errorSnapshot) {
+            recordJsonRpcObservability({
+                stage: "error",
+                method,
+                toolName,
+                requestId: id,
+                transport: context?.transport,
+                idempotencyKey: context?.idempotencyKey ?? null,
+                correlation,
+                status: "error",
+                elapsedMs,
+                errorMessage: errorSnapshot.message,
+                errorCode: null,
+            });
+        }
+        else {
+            recordJsonRpcObservability({
+                stage: "response",
+                method,
+                toolName,
+                requestId: id,
+                transport: context?.transport,
+                idempotencyKey: context?.idempotencyKey ?? null,
+                correlation,
+                status: "ok",
+                elapsedMs,
+            });
+        }
         return { jsonrpc: "2.0", id, result };
     }
     catch (error) {
         const message = error instanceof Error ? error.message : String(error);
+        correlation = mergeCorrelationSnapshots(correlation, collectCorrelationFromUnknown(error));
+        const elapsedMs = Date.now() - startedAt;
+        recordJsonRpcObservability({
+            stage: "error",
+            method,
+            toolName,
+            requestId: id,
+            transport: context?.transport,
+            idempotencyKey: context?.idempotencyKey ?? null,
+            correlation,
+            status: "error",
+            elapsedMs,
+            errorMessage: message,
+            errorCode: -32000,
+        });
         return { jsonrpc: "2.0", id, error: { code: -32000, message } };
     }
 }
@@ -6386,3 +6771,4 @@ function tryGetPlanLifecycleSnapshot(runId, logger, logEvent) {
         return null;
     }
 }
+//# sourceMappingURL=server.js.map

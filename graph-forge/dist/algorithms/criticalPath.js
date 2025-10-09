@@ -105,3 +105,4 @@ function resolveDuration(value) {
     }
     throw new Error(`Edge duration must be numeric but received '${String(value)}'`);
 }
+//# sourceMappingURL=criticalPath.js.map

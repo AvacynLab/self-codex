@@ -152,3 +152,4 @@ export function buildEdgeCostEvaluator(graph, fallbackAttribute, input) {
     }
     return (edge) => resolveCostDescriptor(edge, input, fallbackAttribute);
 }
+//# sourceMappingURL=dijkstra.js.map

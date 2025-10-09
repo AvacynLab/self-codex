@@ -12,3 +12,4 @@ export * from "./algorithms/brandes.js";
 export * from "./algorithms/yen.js";
 export * from "./algorithms/kShortestPaths.js";
 export * from "./algorithms/constraints.js";
+//# sourceMappingURL=index.js.map

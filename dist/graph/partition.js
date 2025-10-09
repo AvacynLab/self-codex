@@ -408,3 +408,4 @@ export function partitionGraph(graph, index, options) {
         notes,
     };
 }
+//# sourceMappingURL=partition.js.map

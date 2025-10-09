@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { GraphTransactionError, GraphVersionConflictError, } from "../graph/tx.js";
+import { buildIdempotencyCacheKey } from "../infra/idempotency.js";
 import { normaliseGraphPayload, serialiseNormalisedGraph, GraphDescriptorSchema, GraphMutateInputSchema, handleGraphMutate } from "./graphTools.js";
 import { evaluateGraphInvariants, GraphInvariantError } from "../graph/invariants.js";
 import { diffGraphs } from "../graph/diff.js";
@@ -55,6 +56,11 @@ export function handleTxBegin(context, input) {
     const opId = resolveOperationId(input.op_id, "tx_begin_op");
     const execute = () => {
         const baseGraph = resolveBaseGraph(context, input);
+        // Validate the provided or committed base graph before opening the transaction.
+        const invariants = evaluateGraphInvariants(baseGraph);
+        if (!invariants.ok) {
+            throw new GraphInvariantError(invariants.violations);
+        }
         if (input.expected_version !== undefined && baseGraph.graphVersion !== input.expected_version) {
             throw new GraphVersionConflictError(input.graph_id, baseGraph.graphVersion, input.expected_version);
         }
@@ -78,7 +84,9 @@ export function handleTxBegin(context, input) {
     };
     const key = input.idempotency_key ?? null;
     if (context.idempotency && key) {
-        const hit = context.idempotency.rememberSync(`tx_begin:${key}`, execute);
+        const { op_id: _omitOpId, idempotency_key: _omitKey, ...fingerprint } = input;
+        const cacheKey = buildIdempotencyCacheKey("tx_begin", key, fingerprint);
+        const hit = context.idempotency.rememberSync(cacheKey, execute);
         const snapshot = hit.value;
         return { ...snapshot, idempotent: hit.idempotent, idempotency_key: key };
     }
@@ -214,3 +222,4 @@ function resolveBaseGraph(context, input) {
         throw new GraphTransactionError(ERROR_CODES.TX_UNEXPECTED, error instanceof Error ? error.message : "graph lookup failed", "retry once the registry becomes reachable");
     }
 }
+//# sourceMappingURL=txTools.js.map

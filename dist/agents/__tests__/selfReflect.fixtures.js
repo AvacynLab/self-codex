@@ -42,3 +42,4 @@ export const minimalReflectionFixture = {
     output: "",
     meta: {},
 };
+//# sourceMappingURL=selfReflect.fixtures.js.map

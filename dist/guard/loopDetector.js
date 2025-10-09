@@ -204,3 +204,4 @@ export class LoopDetector {
         }
     }
 }
+//# sourceMappingURL=loopDetector.js.map

@@ -504,6 +504,63 @@ function normaliseOptionalNumber(value) {
     }
     return Math.floor(value);
 }
+const VALIDATION_CATEGORY_KIND_MAP = {
+    inputs: "validation_input",
+    outputs: "validation_output",
+    events: "validation_events",
+    logs: "validation_logs",
+};
+const VALIDATION_KIND_PAYLOAD_TYPE = {
+    validation_input: "input",
+    validation_output: "output",
+    validation_events: "events",
+    validation_logs: "logs",
+};
+function normaliseResourceSegment(value, label) {
+    if (typeof value !== "string") {
+        throw new ResourceRegistryError("E-RES-INVALID", `Invalid ${label}`, "invalid_segment");
+    }
+    const trimmed = value.trim();
+    if (trimmed.length === 0) {
+        throw new ResourceRegistryError("E-RES-INVALID", `Invalid ${label}`, "invalid_segment");
+    }
+    if (trimmed.includes("/")) {
+        throw new ResourceRegistryError("E-RES-INVALID", `Invalid ${label}`, "invalid_segment");
+    }
+    return trimmed;
+}
+function normaliseValidationArtifactCategory(category) {
+    if (category === "inputs" || category === "outputs" || category === "events" || category === "logs") {
+        return category;
+    }
+    throw new ResourceRegistryError("E-RES-INVALID", `Unsupported validation artefact category: ${String(category)}`, "invalid_category");
+}
+function validationCategoryToKind(category) {
+    return VALIDATION_CATEGORY_KIND_MAP[category];
+}
+function validationKindToPayloadType(kind) {
+    return VALIDATION_KIND_PAYLOAD_TYPE[kind];
+}
+function normaliseValidationMime(candidate) {
+    if (typeof candidate !== "string") {
+        return "application/json";
+    }
+    const trimmed = candidate.trim();
+    return trimmed.length > 0 ? trimmed : "application/json";
+}
+function normaliseValidationMetadata(metadata) {
+    if (!metadata || typeof metadata !== "object") {
+        return undefined;
+    }
+    const snapshot = {};
+    for (const [key, value] of Object.entries(metadata)) {
+        if (typeof key !== "string" || key.trim().length === 0) {
+            continue;
+        }
+        snapshot[key] = clone(value);
+    }
+    return Object.keys(snapshot).length > 0 ? snapshot : undefined;
+}
 /** Extract the namespace portion of a blackboard key. */
 const BLACKBOARD_NAMESPACE_SEPARATORS = [":", "/", "|"];
 /** Enumerates the mutation kinds a blackboard namespace can emit. */
@@ -662,6 +719,7 @@ export class ResourceRegistry {
     runHistories = new Map();
     childHistories = new Map();
     blackboardHistories = new Map();
+    validationArtifacts = new Map();
     runHistoryLimit;
     childLogHistoryLimit;
     blackboardHistoryLimit;
@@ -816,6 +874,55 @@ export class ResourceRegistry {
         }
         history.emitter.emit("event", record);
     }
+    /** Registers a validation artefact so campaigns can persist deterministic evidence. */
+    registerValidationArtifact(input) {
+        const sessionId = normaliseResourceSegment(input.sessionId, "sessionId");
+        const category = normaliseValidationArtifactCategory(input.artifactType);
+        const name = normaliseResourceSegment(input.name, "name");
+        const runId = normaliseOptionalString(input.runId ?? null);
+        const phase = normaliseOptionalString(input.phase ?? null);
+        const recordedAt = normaliseOptionalNumber(input.recordedAt ?? Date.now()) ?? Math.floor(Date.now());
+        const mime = normaliseValidationMime(input.mime);
+        const metadata = normaliseValidationMetadata(input.metadata);
+        const kind = validationCategoryToKind(category);
+        const uri = `sc://validation/${sessionId}/${category}/${name}`;
+        const record = {
+            kind,
+            sessionId,
+            runId,
+            phase,
+            artifactType: category,
+            name,
+            recordedAt,
+            mime,
+            data: clone(input.data),
+            metadata,
+        };
+        this.validationArtifacts.set(uri, record);
+        return uri;
+    }
+    /**
+     * Clears validation artefacts tracked by the registry. When a session
+     * identifier is provided only the matching artefacts are removed so test
+     * suites can isolate their state without interfering with concurrent
+     * campaigns.
+     */
+    clearValidationArtifacts(sessionId) {
+        if (!sessionId) {
+            this.validationArtifacts.clear();
+            return;
+        }
+        const normalised = sessionId.trim();
+        if (!normalised) {
+            this.validationArtifacts.clear();
+            return;
+        }
+        for (const [uri, artifact] of this.validationArtifacts.entries()) {
+            if (artifact.sessionId === normalised) {
+                this.validationArtifacts.delete(uri);
+            }
+        }
+    }
     /** Tracks a mutation emitted by the blackboard store. */
     recordBlackboardEvent(event) {
         const namespace = extractNamespace(event.key);
@@ -879,8 +986,16 @@ export class ResourceRegistry {
                 });
             }
         }
-        for (const runId of this.runHistories.keys()) {
-            entries.push({ uri: `sc://runs/${runId}/events`, kind: "run_events" });
+        for (const [runId, history] of this.runHistories.entries()) {
+            entries.push({
+                uri: `sc://runs/${runId}/events`,
+                kind: "run_events",
+                metadata: {
+                    event_count: history.events.length,
+                    latest_seq: history.lastSeq,
+                    available_formats: ["structured", "jsonl"],
+                },
+            });
         }
         for (const childId of this.childHistories.keys()) {
             entries.push({ uri: `sc://children/${childId}/logs`, kind: "child_logs" });
@@ -894,6 +1009,24 @@ export class ResourceRegistry {
                     latest_version: summary.latestVersion,
                 },
             });
+        }
+        for (const [uri, artifact] of this.validationArtifacts.entries()) {
+            const metadata = {
+                session_id: artifact.sessionId,
+                artifact_type: artifact.artifactType,
+                recorded_at: artifact.recordedAt,
+                mime: artifact.mime,
+            };
+            if (artifact.runId) {
+                metadata.run_id = artifact.runId;
+            }
+            if (artifact.phase) {
+                metadata.phase = artifact.phase;
+            }
+            if (artifact.metadata) {
+                Object.assign(metadata, clone(artifact.metadata));
+            }
+            entries.push({ uri, kind: artifact.kind, metadata });
         }
         const filtered = prefix ? entries.filter((entry) => entry.uri.startsWith(prefix)) : entries;
         return filtered.sort((a, b) => a.uri.localeCompare(b.uri));
@@ -956,10 +1089,12 @@ export class ResourceRegistry {
                 if (!history) {
                     throw new ResourceNotFoundError(uri);
                 }
+                const events = history.events.map((evt) => clone(evt));
+                const jsonl = events.length === 0 ? "" : `${events.map((evt) => JSON.stringify(evt)).join("\n")}\n`;
                 return {
                     uri,
                     kind: "run_events",
-                    payload: { runId: parsed.runId, events: history.events.map((evt) => clone(evt)) },
+                    payload: { runId: parsed.runId, events, jsonl },
                 };
             }
             case "child_logs": {
@@ -997,6 +1132,24 @@ export class ResourceRegistry {
                     kind: "blackboard_namespace",
                     payload: { namespace, entries },
                 };
+            }
+            case "validation_input":
+            case "validation_output":
+            case "validation_events":
+            case "validation_logs": {
+                const artifact = this.getValidationArtifactOrThrow(uri, parsed.kind);
+                const payload = {
+                    sessionId: artifact.sessionId,
+                    runId: artifact.runId,
+                    phase: artifact.phase,
+                    artifactType: validationKindToPayloadType(artifact.kind),
+                    name: artifact.name,
+                    recordedAt: artifact.recordedAt,
+                    mime: artifact.mime,
+                    data: clone(artifact.data),
+                    ...(artifact.metadata ? { metadata: clone(artifact.metadata) } : {}),
+                };
+                return { uri, kind: parsed.kind, payload };
             }
             default:
                 throw new ResourceNotFoundError(uri);
@@ -1147,6 +1300,13 @@ export class ResourceRegistry {
             throw new ResourceNotFoundError(uri);
         }
         return history;
+    }
+    getValidationArtifactOrThrow(uri, kind) {
+        const record = this.validationArtifacts.get(uri);
+        if (!record || record.kind !== kind) {
+            throw new ResourceNotFoundError(uri);
+        }
+        return record;
     }
     getChildHistoryOrThrow(uri, childId) {
         const history = this.childHistories.get(childId);
@@ -1499,6 +1659,28 @@ export class ResourceRegistry {
             }
             return { kind: "blackboard_namespace", namespace };
         }
+        if (body.startsWith("validation/")) {
+            const remainder = body.slice("validation/".length);
+            const segments = remainder.split("/");
+            if (segments.length !== 3) {
+                throw new ResourceNotFoundError(uri);
+            }
+            const [sessionId, category, name] = segments;
+            if (!sessionId || !category || !name) {
+                throw new ResourceNotFoundError(uri);
+            }
+            if (category !== "inputs" && category !== "outputs" && category !== "events" && category !== "logs") {
+                throw new ResourceNotFoundError(uri);
+            }
+            const artifactType = category;
+            return {
+                kind: validationCategoryToKind(artifactType),
+                sessionId,
+                artifactType,
+                name,
+            };
+        }
         throw new ResourceNotFoundError(uri);
     }
 }
+//# sourceMappingURL=registry.js.map

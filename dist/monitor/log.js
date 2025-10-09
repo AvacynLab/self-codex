@@ -414,3 +414,4 @@ export class LogJournal {
         }
     }
 }
+//# sourceMappingURL=log.js.map

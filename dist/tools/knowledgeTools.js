@@ -129,3 +129,4 @@ function serializeTriple(snapshot) {
         ordinal: snapshot.ordinal,
     };
 }
+//# sourceMappingURL=knowledgeTools.js.map

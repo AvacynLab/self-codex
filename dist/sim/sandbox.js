@@ -272,3 +272,4 @@ function freezeDeep(value) {
     }
     return Object.freeze(value);
 }
+//# sourceMappingURL=sandbox.js.map

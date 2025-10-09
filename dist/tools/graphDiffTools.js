@@ -189,3 +189,4 @@ function bootstrapCommittedState(transactions, graph) {
         }
     }
 }
+//# sourceMappingURL=graphDiffTools.js.map

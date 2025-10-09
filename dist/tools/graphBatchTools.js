@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { GraphTransactionError, GraphVersionConflictError, } from "../graph/tx.js";
+import { buildIdempotencyCacheKey } from "../infra/idempotency.js";
 import { ERROR_CODES } from "../types.js";
 import { GraphMutateInputSchema, handleGraphMutate, normaliseGraphPayload, serialiseNormalisedGraph, } from "./graphTools.js";
 import { resolveOperationId } from "./operationIds.js";
@@ -106,10 +107,13 @@ export async function handleGraphBatchMutate(context, input) {
         }
     };
     if (context.idempotency && key) {
-        const hit = await context.idempotency.remember(`graph_batch_mutate:${key}`, execute);
+        const { op_id: _omitOpId, idempotency_key: _omitKey, ...fingerprint } = input;
+        const cacheKey = buildIdempotencyCacheKey("graph_batch_mutate", key, fingerprint);
+        const hit = await context.idempotency.remember(cacheKey, execute);
         const snapshot = hit.value;
         return { ...snapshot, idempotent: hit.idempotent, idempotency_key: key };
     }
     const snapshot = await execute();
     return { ...snapshot, idempotent: false, idempotency_key: key };
 }
+//# sourceMappingURL=graphBatchTools.js.map

@@ -83,3 +83,4 @@ export const CompiledBehaviorTreeSchema = z.object({
     id: z.string().min(1),
     root: BehaviorNodeDefinitionSchema,
 });
+//# sourceMappingURL=types.js.map

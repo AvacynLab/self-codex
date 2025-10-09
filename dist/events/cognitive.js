@@ -101,3 +101,4 @@ export function buildChildCognitiveEvents(options) {
     }
     return { review: reviewEvent, reflection: reflectionEvent };
 }
+//# sourceMappingURL=cognitive.js.map

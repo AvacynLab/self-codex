@@ -44,3 +44,4 @@ export function tarjanScc(graph) {
     }
     return components;
 }
+//# sourceMappingURL=tarjan.js.map

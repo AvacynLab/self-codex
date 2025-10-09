@@ -478,3 +478,4 @@ export function buildStigmergySummary(bounds) {
         ],
     };
 }
+//# sourceMappingURL=stigmergy.js.map

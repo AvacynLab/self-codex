@@ -185,3 +185,4 @@ function boundsEqual(a, b) {
 function almostEqual(a, b) {
     return Math.abs(a - b) <= 1e-6;
 }
+//# sourceMappingURL=contractNetWatchers.js.map

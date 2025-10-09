@@ -1,8 +1,10 @@
 import { randomUUID } from "crypto";
+import { defaultFileSystemGateway } from "./gateways/fs.js";
 import { startChildRuntime, } from "./childRuntime.js";
 import { bridgeChildRuntimeEvents } from "./events/bridges.js";
 import { extractCorrelationHints, mergeCorrelationHints } from "./events/correlation.js";
 import { ChildrenIndex } from "./state/childrenIndex.js";
+import { childWorkspacePath, ensureDirectory } from "./paths.js";
 /** Error raised when the caller attempts to exceed the configured child cap. */
 export class ChildLimitExceededError extends Error {
     maxChildren;
@@ -48,12 +50,14 @@ export class ChildSupervisor {
     defaultEnv;
     index;
     runtimes = new Map();
+    logicalChildren = new Map();
     messageCounters = new Map();
     exitEvents = new Map();
     watchdogs = new Map();
     eventBus;
     resolveChildCorrelation;
     recordChildLogEntry;
+    fileSystem;
     childEventBridges = new Map();
     childLogRecorders = new Map();
     idleTimeoutMs;
@@ -71,6 +75,7 @@ export class ChildSupervisor {
         this.eventBus = options.eventBus;
         this.resolveChildCorrelation = options.resolveChildCorrelation;
         this.recordChildLogEntry = options.recordChildLogEntry;
+        this.fileSystem = options.fileSystem ?? defaultFileSystemGateway;
         const configuredIdle = options.idleTimeoutMs ?? 120_000;
         this.idleTimeoutMs = configuredIdle > 0 ? configuredIdle : 0;
         const defaultInterval = Math.max(250, Math.min(5_000, this.idleTimeoutMs || 5_000));
@@ -137,6 +142,81 @@ export class ChildSupervisor {
      */
     get childrenIndex() {
         return this.index;
+    }
+    /**
+     * Allocates a fresh child identifier compatible with the on-disk layout. The helper
+     * guarantees uniqueness across both process-backed and logical children.
+     */
+    createChildId() {
+        while (true) {
+            const candidate = ChildSupervisor.generateChildId();
+            if (this.runtimes.has(candidate) || this.logicalChildren.has(candidate) || this.index.getChild(candidate)) {
+                continue;
+            }
+            return candidate;
+        }
+    }
+    /**
+     * Registers a logical HTTP child that routes work back to the orchestrator instead of spawning a
+     * dedicated process. A manifest is still persisted to keep observability tooling consistent.
+     */
+    async registerHttpChild(options) {
+        const childId = options.childId ?? this.createChildId();
+        if (this.runtimes.has(childId) || this.logicalChildren.has(childId)) {
+            throw new Error(`A child is already registered under identifier ${childId}`);
+        }
+        if (this.maxChildren !== null) {
+            const activeChildren = this.countActiveChildren();
+            if (activeChildren >= this.maxChildren) {
+                throw new ChildLimitExceededError(this.maxChildren, activeChildren);
+            }
+        }
+        const startedAt = options.startedAt ?? Date.now();
+        const limits = options.limits ? { ...options.limits } : null;
+        const role = options.role ?? null;
+        const allowedTools = options.allowedTools ? [...new Set(options.allowedTools)] : [];
+        await ensureDirectory(this.childrenRoot, childId);
+        await ensureDirectory(this.childrenRoot, childId, "logs");
+        await ensureDirectory(this.childrenRoot, childId, "outbox");
+        await ensureDirectory(this.childrenRoot, childId, "inbox");
+        const workdir = childWorkspacePath(this.childrenRoot, childId);
+        const manifestPath = childWorkspacePath(this.childrenRoot, childId, "manifest.json");
+        const logPath = childWorkspacePath(this.childrenRoot, childId, "logs", "child.log");
+        const metadata = { ...(options.metadata ?? {}) };
+        metadata.transport = "http";
+        metadata.endpoint = { ...options.endpoint };
+        const manifestExtras = { ...(options.manifestExtras ?? {}) };
+        delete manifestExtras.role;
+        delete manifestExtras.limits;
+        const indexSnapshot = this.index.registerChild({
+            childId,
+            pid: -1,
+            workdir,
+            state: "ready",
+            startedAt,
+            metadata,
+            role,
+            limits,
+            attachedAt: startedAt,
+        });
+        this.index.updateHeartbeat(childId, startedAt);
+        const session = {
+            childId,
+            startedAt,
+            lastHeartbeatAt: startedAt,
+            endpoint: { url: options.endpoint.url, headers: { ...options.endpoint.headers } },
+            manifestPath,
+            logPath,
+            workdir,
+            metadata,
+            limits,
+            role,
+            manifestExtras,
+            allowedTools,
+        };
+        await this.writeLogicalManifest(session);
+        this.logicalChildren.set(childId, session);
+        return { childId, index: indexSnapshot, manifestPath, logPath, workdir, startedAt };
     }
     /**
      * Registers listeners so heartbeat updates and exit information are
@@ -342,6 +422,10 @@ export class ChildSupervisor {
      * Sends a payload to a child and updates the lifecycle state to `running`.
      */
     async send(childId, payload) {
+        const logical = this.getLogicalChild(childId);
+        if (logical) {
+            throw new Error(`Logical child ${childId} does not support direct send operations`);
+        }
         const runtime = this.requireRuntime(childId);
         await runtime.send(payload);
         this.index.updateState(childId, "running");
@@ -353,6 +437,10 @@ export class ChildSupervisor {
      * runtime helper but keeps the supervisor API cohesive for the tests.
      */
     async waitForMessage(childId, predicate, timeoutMs) {
+        const logical = this.getLogicalChild(childId);
+        if (logical) {
+            throw new Error(`Logical child ${childId} cannot emit process messages`);
+        }
         const runtime = this.requireRuntime(childId);
         return runtime.waitForMessage(predicate, timeoutMs);
     }
@@ -360,6 +448,16 @@ export class ChildSupervisor {
      * Collects the latest outputs generated by the child.
      */
     async collect(childId) {
+        const logical = this.getLogicalChild(childId);
+        if (logical) {
+            return {
+                childId,
+                manifestPath: logical.manifestPath,
+                logPath: logical.logPath,
+                messages: [],
+                artifacts: [],
+            };
+        }
         const runtime = this.requireRuntime(childId);
         return runtime.collectOutputs();
     }
@@ -368,6 +466,22 @@ export class ChildSupervisor {
      * observers can react to the change without restarting the process.
      */
     async setChildRole(childId, role, options = {}) {
+        const logical = this.getLogicalChild(childId);
+        if (logical) {
+            logical.role = role;
+            const metadata = { ...logical.metadata };
+            if (role === null) {
+                delete metadata.role;
+            }
+            else {
+                metadata.role = role;
+            }
+            logical.metadata = metadata;
+            this.mergeLogicalManifestExtras(logical, options.manifestExtras);
+            await this.writeLogicalManifest(logical);
+            const index = this.index.setRole(childId, role);
+            return { runtime: this.buildLogicalRuntimeStatus(logical), index };
+        }
         const runtime = this.requireRuntime(childId);
         await runtime.setRole(role, options.manifestExtras ?? {});
         const index = this.index.setRole(childId, role);
@@ -379,9 +493,45 @@ export class ChildSupervisor {
      */
     async setChildLimits(childId, limits, options = {}) {
         const resolved = this.resolveChildLimits(limits ?? null);
+        const logical = this.getLogicalChild(childId);
+        const publishLimitsEvent = (limitsSnapshot) => {
+            if (!this.eventBus) {
+                return;
+            }
+            // Surface the update on the unified event bus so validation tooling can
+            // assert declarative guardrails were actually refreshed. The message
+            // mirrors the checklist wording while the structured payload retains the
+            // resolved limits for downstream consumers.
+            this.eventBus.publish({
+                cat: "child",
+                level: "info",
+                childId,
+                component: "child_supervisor",
+                stage: "limits",
+                msg: "child.limits.updated",
+                data: { childId, limits: limitsSnapshot },
+            });
+        };
+        if (logical) {
+            logical.limits = resolved ? { ...resolved } : null;
+            const metadata = { ...logical.metadata };
+            if (logical.limits) {
+                metadata.limits = structuredClone(logical.limits);
+            }
+            else {
+                delete metadata.limits;
+            }
+            logical.metadata = metadata;
+            this.mergeLogicalManifestExtras(logical, options.manifestExtras);
+            await this.writeLogicalManifest(logical);
+            const index = this.index.setLimits(childId, resolved);
+            publishLimitsEvent(resolved);
+            return { runtime: this.buildLogicalRuntimeStatus(logical), index, limits: resolved };
+        }
         const runtime = this.requireRuntime(childId);
         await runtime.setLimits(resolved, options.manifestExtras ?? {});
         const index = this.index.setLimits(childId, resolved);
+        publishLimitsEvent(resolved);
         return { runtime: runtime.getStatus(), index, limits: resolved };
     }
     /**
@@ -389,6 +539,17 @@ export class ChildSupervisor {
      * attachment timestamp for observability.
      */
     async attachChild(childId, options = {}) {
+        const logical = this.getLogicalChild(childId);
+        if (logical) {
+            this.mergeLogicalManifestExtras(logical, options.manifestExtras);
+            await this.writeLogicalManifest(logical);
+            const existing = this.index.getChild(childId);
+            const attachTimestamp = existing?.attachedAt ?? Date.now();
+            const index = this.index.markAttached(childId, attachTimestamp);
+            logical.lastHeartbeatAt = Date.now();
+            this.index.updateHeartbeat(childId, logical.lastHeartbeatAt);
+            return { runtime: this.buildLogicalRuntimeStatus(logical), index };
+        }
         const runtime = this.requireRuntime(childId);
         await runtime.attach(options.manifestExtras ?? {});
         const index = this.index.markAttached(childId);
@@ -398,6 +559,17 @@ export class ChildSupervisor {
      * Provides paginated access to the buffered messages emitted by the child.
      */
     stream(childId, options) {
+        const logical = this.getLogicalChild(childId);
+        if (logical) {
+            return {
+                childId,
+                totalMessages: 0,
+                matchedMessages: 0,
+                hasMore: false,
+                nextCursor: null,
+                messages: [],
+            };
+        }
         const runtime = this.requireRuntime(childId);
         return runtime.streamMessages(options);
     }
@@ -405,6 +577,11 @@ export class ChildSupervisor {
      * Retrieves a combined status snapshot from the runtime and the index.
      */
     status(childId) {
+        const logical = this.getLogicalChild(childId);
+        if (logical) {
+            const index = this.requireIndex(childId);
+            return { runtime: this.buildLogicalRuntimeStatus(logical), index };
+        }
         const runtime = this.requireRuntime(childId);
         const index = this.requireIndex(childId);
         return { runtime: runtime.getStatus(), index };
@@ -414,13 +591,37 @@ export class ChildSupervisor {
      * empty array means the child is unrestricted.
      */
     getAllowedTools(childId) {
+        const logical = this.getLogicalChild(childId);
+        if (logical) {
+            return logical.allowedTools;
+        }
         const runtime = this.requireRuntime(childId);
         return runtime.toolsAllow;
+    }
+    /**
+     * Returns a shallow clone of the HTTP endpoint descriptor registered for the
+     * provided logical child. Process-backed runtimes return `null` since they do
+     * not expose an HTTP loopback endpoint.
+     */
+    getHttpEndpoint(childId) {
+        const logical = this.getLogicalChild(childId);
+        if (!logical) {
+            return null;
+        }
+        return {
+            url: logical.endpoint.url,
+            headers: { ...logical.endpoint.headers },
+        };
     }
     /**
      * Requests a graceful shutdown of the child.
      */
     async cancel(childId, options) {
+        const logical = this.getLogicalChild(childId);
+        if (logical) {
+            this.index.updateState(childId, "stopping");
+            return this.finalizeLogicalChild(logical, false);
+        }
         const runtime = this.requireRuntime(childId);
         this.index.updateState(childId, "stopping");
         return runtime.shutdown(options);
@@ -429,6 +630,11 @@ export class ChildSupervisor {
      * Forcefully terminates the child.
      */
     async kill(childId, options) {
+        const logical = this.getLogicalChild(childId);
+        if (logical) {
+            this.index.updateState(childId, "stopping");
+            return this.finalizeLogicalChild(logical, true);
+        }
         const runtime = this.requireRuntime(childId);
         this.index.updateState(childId, "stopping");
         return runtime.shutdown({ signal: "SIGTERM", timeoutMs: options?.timeoutMs ?? 100, force: true });
@@ -437,6 +643,14 @@ export class ChildSupervisor {
      * Waits for the child to exit and returns the shutdown information.
      */
     async waitForExit(childId, timeoutMs) {
+        const logical = this.getLogicalChild(childId);
+        if (logical) {
+            const recorded = this.exitEvents.get(childId);
+            if (recorded) {
+                return recorded;
+            }
+            throw new Error(`Logical child ${childId} is still active`);
+        }
         const runtime = this.runtimes.get(childId);
         if (runtime) {
             const exit = await runtime.waitForExit(timeoutMs);
@@ -461,6 +675,7 @@ export class ChildSupervisor {
     gc(childId) {
         this.index.removeChild(childId);
         this.runtimes.delete(childId);
+        this.logicalChildren.delete(childId);
         this.messageCounters.delete(childId);
         this.exitEvents.delete(childId);
         this.clearIdleWatchdog(childId);
@@ -485,6 +700,7 @@ export class ChildSupervisor {
         }
         this.childLogRecorders.clear();
         this.runtimes.clear();
+        this.logicalChildren.clear();
         this.messageCounters.clear();
         this.exitEvents.clear();
         for (const dispose of this.childEventBridges.values()) {
@@ -515,6 +731,76 @@ export class ChildSupervisor {
         }
         return snapshot;
     }
+    /** Returns the logical HTTP session if registered. */
+    getLogicalChild(childId) {
+        return this.logicalChildren.get(childId);
+    }
+    /** Builds a runtime status snapshot for logical HTTP children. */
+    buildLogicalRuntimeStatus(session) {
+        return {
+            childId: session.childId,
+            pid: -1,
+            command: "http-loopback",
+            args: [],
+            workdir: session.workdir,
+            startedAt: session.startedAt,
+            lastHeartbeatAt: session.lastHeartbeatAt,
+            lifecycle: "running",
+            closed: false,
+            exit: null,
+            resourceUsage: null,
+        };
+    }
+    /** Persists the manifest describing a logical HTTP child. */
+    async writeLogicalManifest(session) {
+        const manifest = {
+            childId: session.childId,
+            command: "http-loopback",
+            args: [],
+            pid: -1,
+            startedAt: new Date(session.startedAt).toISOString(),
+            workdir: session.workdir,
+            workspace: session.workdir,
+            logs: { child: session.logPath },
+            envKeys: [],
+            metadata: session.metadata,
+            limits: session.limits,
+            role: session.role,
+            tools_allow: session.allowedTools,
+            endpoint: session.endpoint,
+            ...session.manifestExtras,
+        };
+        await this.fileSystem.writeFileUtf8(session.manifestPath, JSON.stringify(manifest, null, 2));
+    }
+    /** Merges extra manifest fields while filtering reserved keys. */
+    mergeLogicalManifestExtras(session, extras) {
+        if (!extras || Object.keys(extras).length === 0) {
+            return;
+        }
+        const merged = { ...session.manifestExtras };
+        for (const [key, value] of Object.entries(extras)) {
+            if (key === "role" || key === "limits") {
+                continue;
+            }
+            merged[key] = structuredClone(value);
+        }
+        session.manifestExtras = merged;
+    }
+    /** Records exit information and removes the logical child from the supervisor. */
+    finalizeLogicalChild(session, forced) {
+        const durationMs = Math.max(0, Date.now() - session.startedAt);
+        this.index.recordExit(session.childId, {
+            code: 0,
+            signal: null,
+            forced,
+            at: Date.now(),
+            reason: forced ? "logical_child_forced" : "logical_child_completed",
+        });
+        const result = { code: 0, signal: null, forced, durationMs };
+        this.exitEvents.set(session.childId, result);
+        this.logicalChildren.delete(session.childId);
+        return result;
+    }
     /** Counts the number of children that are still running or spawning. */
     countActiveChildren() {
         let active = 0;
@@ -524,6 +810,7 @@ export class ChildSupervisor {
                 active += 1;
             }
         }
+        active += this.logicalChildren.size;
         return active;
     }
     /**
@@ -633,3 +920,4 @@ export class ChildSupervisor {
         }
     }
 }
+//# sourceMappingURL=childSupervisor.js.map

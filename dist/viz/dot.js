@@ -124,3 +124,4 @@ function escapeString(value) {
         .replace(/"/g, '\\"')
         .replace(/[\u0000-\u001f]/g, " ");
 }
+//# sourceMappingURL=dot.js.map

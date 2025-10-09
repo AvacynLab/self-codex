@@ -184,3 +184,4 @@ function cloneRecord(record) {
         ordinal: record.ordinal,
     };
 }
+//# sourceMappingURL=causalMemory.js.map

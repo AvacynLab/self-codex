@@ -201,3 +201,4 @@ class Parser {
         return new ParserError(`${message} (line ${token.line}, column ${token.column})`, token);
     }
 }
+//# sourceMappingURL=parser.js.map

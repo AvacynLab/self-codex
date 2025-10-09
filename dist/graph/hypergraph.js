@@ -117,3 +117,4 @@ export function projectHyperGraph(graph, options = {}) {
     };
 }
 export { HYPER_EDGE_ID_KEY, HYPER_EDGE_PAIR_INDEX_KEY, HYPER_EDGE_SOURCE_CARDINALITY_KEY, HYPER_EDGE_SOURCE_INDEX_KEY, HYPER_EDGE_TARGET_CARDINALITY_KEY, HYPER_EDGE_TARGET_INDEX_KEY, projectHyperEdge, };
+//# sourceMappingURL=hypergraph.js.map

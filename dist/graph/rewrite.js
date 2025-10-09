@@ -502,3 +502,4 @@ function isNormalisedGraph(graph) {
     }
     return candidate.edges.every((edge) => typeof edge.from === "string" && typeof edge.to === "string");
 }
+//# sourceMappingURL=rewrite.js.map

@@ -598,3 +598,4 @@ function normalizeCost(cost) {
     }
     return Number(cost);
 }
+//# sourceMappingURL=contractNet.js.map

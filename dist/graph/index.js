@@ -181,3 +181,4 @@ export function buildGraphAttributeIndex(graph) {
         degreeSummary,
     };
 }
+//# sourceMappingURL=index.js.map

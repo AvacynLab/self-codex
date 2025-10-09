@@ -177,3 +177,4 @@ export function resolveChildDir(childId) {
     mkdirSync(resolved, { recursive: true });
     return resolved;
 }
+//# sourceMappingURL=paths.js.map

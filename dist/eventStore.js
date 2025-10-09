@@ -94,3 +94,4 @@ export class EventStore {
         }
     }
 }
+//# sourceMappingURL=eventStore.js.map

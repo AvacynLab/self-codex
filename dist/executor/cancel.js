@@ -262,3 +262,4 @@ export function subscribeCancellationEvents(listener) {
         cancellationEmitter.off(EVENT_CANCELLED, listener);
     };
 }
+//# sourceMappingURL=cancel.js.map
