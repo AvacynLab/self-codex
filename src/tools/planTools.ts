@@ -53,7 +53,7 @@ import type {
   ValueImpactInput,
   ValueViolation,
 } from "../values/valueGraph.js";
-import { IdempotencyRegistry } from "../infra/idempotency.js";
+import { IdempotencyRegistry, buildIdempotencyCacheKey } from "../infra/idempotency.js";
 import { GraphState } from "../graphState.js";
 import { StructuredLogger } from "../logger.js";
 import { OrchestratorSupervisor } from "../agents/supervisor.js";
@@ -2753,9 +2753,10 @@ export async function handlePlanRunBT(
   const key = input.idempotency_key ?? null;
 
   if (context.idempotency && key) {
-    const hit = await context.idempotency.remember<PlanRunBTExecutionSnapshot>(
-      `plan_run_bt:${key}`,
-      () => executePlanRunBT(context, input),
+    const { op_id: _omitOpId, idempotency_key: _omitKey, ...fingerprint } = input;
+    const cacheKey = buildIdempotencyCacheKey("plan_run_bt", key, fingerprint);
+    const hit = await context.idempotency.remember<PlanRunBTExecutionSnapshot>(cacheKey, () =>
+      executePlanRunBT(context, input),
     );
     if (hit.idempotent) {
       const snapshot = hit.value as PlanRunBTExecutionSnapshot;
@@ -3308,9 +3309,10 @@ export async function handlePlanRunReactive(
   const key = input.idempotency_key ?? null;
 
   if (context.idempotency && key) {
-    const hit = await context.idempotency.remember<PlanRunReactiveExecutionSnapshot>(
-      `plan_run_reactive:${key}`,
-      () => executePlanRunReactive(context, input),
+    const { op_id: _omitOpId, idempotency_key: _omitKey, ...fingerprint } = input;
+    const cacheKey = buildIdempotencyCacheKey("plan_run_reactive", key, fingerprint);
+    const hit = await context.idempotency.remember<PlanRunReactiveExecutionSnapshot>(cacheKey, () =>
+      executePlanRunReactive(context, input),
     );
     if (hit.idempotent) {
       const snapshot = hit.value as PlanRunReactiveExecutionSnapshot;

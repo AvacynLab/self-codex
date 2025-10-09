@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 /**
  * Lightweight in-memory registry storing the outcome of idempotent operations.
  *
@@ -52,6 +54,8 @@ type MaybeAsyncFactory<T> = () => T | Promise<T>;
 const MIN_TTL_MS = 1;
 /** Default TTL (~10 minutes) offering a generous window for retries. */
 const DEFAULT_TTL_MS = 600_000;
+/** Hash algorithm used to fingerprint request parameters. */
+const IDEMPOTENCY_HASH_ALGORITHM = "sha256";
 
 /**
  * In-memory registry storing idempotent outcomes. The implementation favours a
@@ -219,6 +223,73 @@ export class IdempotencyRegistry {
     } catch {
       return value;
     }
+  }
+}
+
+/**
+ * Builds a deterministic cache key combining the user provided idempotency key,
+ * the targeted method, and a stable hash of the request parameters. The
+ * resulting token guards against callers accidentally reusing the same
+ * idempotency key with different payloads while remaining agnostic of property
+ * ordering in JSON bodies.
+ */
+export function buildIdempotencyCacheKey(method: string, idempotencyKey: string, params: unknown): string {
+  const safeMethod = typeof method === "string" && method.trim().length > 0 ? method.trim().toLowerCase() : "unknown";
+  const safeKey = typeof idempotencyKey === "string" ? idempotencyKey : String(idempotencyKey);
+  const fingerprint = hashParams(params);
+  return `${safeMethod}:${safeKey}:${fingerprint}`;
+}
+
+/**
+ * Serialises parameters with stable ordering before hashing so logically
+ * equivalent payloads generate the same digest even when property ordering
+ * differs between retries.
+ */
+function hashParams(params: unknown): string {
+  const canonical = canonicalise(params, new WeakSet());
+  const json = JSON.stringify(canonical);
+  return createHash(IDEMPOTENCY_HASH_ALGORITHM).update(json).digest("hex");
+}
+
+/**
+ * Recursively sorts object keys and normalises primitive wrappers to ensure the
+ * generated fingerprint remains stable for semantically identical payloads.
+ */
+function canonicalise(value: unknown, seen: WeakSet<object>): unknown {
+  if (value === null || typeof value !== "object") {
+    if (value instanceof Date) {
+      return value.toISOString();
+    }
+    return value;
+  }
+
+  if (value instanceof Date) {
+    return value.toISOString();
+  }
+
+  if (seen.has(value as object)) {
+    return "[Circular]";
+  }
+  seen.add(value as object);
+
+  try {
+    if (Array.isArray(value)) {
+      return value.map((entry) => canonicalise(entry, seen));
+    }
+
+    const record = value as Record<string, unknown>;
+    const sortedKeys = Object.keys(record).sort((a, b) => a.localeCompare(b));
+    const normalised: Record<string, unknown> = {};
+    for (const key of sortedKeys) {
+      const entry = record[key];
+      if (entry === undefined) {
+        continue;
+      }
+      normalised[key] = canonicalise(entry, seen);
+    }
+    return normalised;
+  } finally {
+    seen.delete(value as object);
   }
 }
 

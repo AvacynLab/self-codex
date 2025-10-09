@@ -134,42 +134,44 @@ describe("resources registry", () => {
 
     const run = registry.read("sc://runs/run-77/events");
     expect(run.kind).to.equal("run_events");
+    const expectedRunEvents = [
+      {
+        seq: 1,
+        ts: 2_000,
+        kind: "PLAN",
+        level: "info",
+        jobId: "job-1",
+        runId: "run-77",
+        opId: null,
+        graphId: null,
+        nodeId: null,
+        childId: null,
+        component: "graph",
+        stage: "plan",
+        elapsedMs: null,
+        payload: { run_id: "run-77", note: "start" },
+      },
+      {
+        seq: 2,
+        ts: 2_100,
+        kind: "STATUS",
+        level: "info",
+        jobId: "job-1",
+        runId: "run-77",
+        opId: null,
+        graphId: null,
+        nodeId: null,
+        childId: "child-9",
+        component: "graph",
+        stage: "status",
+        elapsedMs: null,
+        payload: { run_id: "run-77", step: "fanout" },
+      },
+    ];
     expect(run.payload).to.deep.equal({
       runId: "run-77",
-      events: [
-        {
-          seq: 1,
-          ts: 2_000,
-          kind: "PLAN",
-          level: "info",
-          jobId: "job-1",
-          runId: "run-77",
-          opId: null,
-          graphId: null,
-          nodeId: null,
-          childId: null,
-          component: "graph",
-          stage: "plan",
-          elapsedMs: null,
-          payload: { run_id: "run-77", note: "start" },
-        },
-        {
-          seq: 2,
-          ts: 2_100,
-          kind: "STATUS",
-          level: "info",
-          jobId: "job-1",
-          runId: "run-77",
-          opId: null,
-          graphId: null,
-          nodeId: null,
-          childId: "child-9",
-          component: "graph",
-          stage: "status",
-          elapsedMs: null,
-          payload: { run_id: "run-77", step: "fanout" },
-        },
-      ],
+      events: expectedRunEvents,
+      jsonl: `${expectedRunEvents.map((evt) => JSON.stringify(evt)).join("\n")}\n`,
     });
 
     const childLogs = registry.read("sc://children/child-9/logs");

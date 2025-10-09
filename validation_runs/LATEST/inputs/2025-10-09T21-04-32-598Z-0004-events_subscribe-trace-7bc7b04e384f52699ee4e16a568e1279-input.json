@@ -1,0 +1,8 @@
+{
+  "traceId": "trace-7bc7b04e384f52699ee4e16a568e1279",
+  "toolName": "events_subscribe",
+  "recordedAt": "2025-10-09T21:04:32.598Z",
+  "payload": {
+    "limit": 10
+  }
+}

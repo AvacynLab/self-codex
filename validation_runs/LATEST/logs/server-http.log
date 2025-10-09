@@ -1,0 +1,10 @@
+npm warn Unknown env config "http-proxy". This will stop working in the next major version of npm.
+
+> mcp-self-fork-orchestrator@1.3.0 start:http
+> node dist/server.js --http --http-host 127.0.0.1 --http-port 8765 --http-path /mcp --http-json on --http-stateless yes
+
+{"timestamp":"2025-10-09T21:04:31.885Z","level":"debug","message":"contract_net_bounds_watcher_telemetry","payload":{"reason":"initial","received_updates":0,"coalesced_updates":0,"skipped_refreshes":0,"applied_refreshes":0,"last_bounds":{"min_intensity":0,"max_intensity":null,"normalisation_ceiling":1}}}
+{"timestamp":"2025-10-09T21:04:31.901Z","level":"debug","message":"event_history_limit_updated","payload":{"limit":5000}}
+{"timestamp":"2025-10-09T21:04:31.902Z","level":"warn","message":"stdio_disabled_due_to_http"}
+{"timestamp":"2025-10-09T21:04:31.907Z","level":"error","message":"http_server_error","payload":{"message":"listen EADDRINUSE: address already in use 127.0.0.1:8765"}}
+{"timestamp":"2025-10-09T21:04:31.916Z","level":"debug","message":"contract_net_bounds_watcher_telemetry","payload":{"reason":"detach","received_updates":0,"coalesced_updates":0,"skipped_refreshes":0,"applied_refreshes":0,"last_bounds":{"min_intensity":0,"max_intensity":null,"normalisation_ceiling":1}}}

@@ -7,7 +7,7 @@ import {
   type BeginTransactionResult,
 } from "../graph/tx.js";
 import type { GraphLockManager } from "../graph/locks.js";
-import { IdempotencyRegistry } from "../infra/idempotency.js";
+import { IdempotencyRegistry, buildIdempotencyCacheKey } from "../infra/idempotency.js";
 import { normaliseGraphPayload, serialiseNormalisedGraph, GraphDescriptorSchema, GraphMutateInputSchema, handleGraphMutate } from "./graphTools.js";
 import type { GraphMutateInput } from "./graphTools.js";
 import type { ResourceGraphPayload, ResourceRegistry } from "../resources/registry.js";
@@ -154,6 +154,11 @@ export function handleTxBegin(context: TxToolContext, input: TxBeginInput): TxBe
   const opId = resolveOperationId(input.op_id, "tx_begin_op");
   const execute = (): TxBeginSnapshot => {
     const baseGraph = resolveBaseGraph(context, input);
+    // Validate the provided or committed base graph before opening the transaction.
+    const invariants = evaluateGraphInvariants(baseGraph);
+    if (!invariants.ok) {
+      throw new GraphInvariantError(invariants.violations);
+    }
     if (input.expected_version !== undefined && baseGraph.graphVersion !== input.expected_version) {
       throw new GraphVersionConflictError(input.graph_id, baseGraph.graphVersion, input.expected_version);
     }
@@ -182,7 +187,9 @@ export function handleTxBegin(context: TxToolContext, input: TxBeginInput): TxBe
 
   const key = input.idempotency_key ?? null;
   if (context.idempotency && key) {
-    const hit = context.idempotency.rememberSync<TxBeginSnapshot>(`tx_begin:${key}`, execute);
+    const { op_id: _omitOpId, idempotency_key: _omitKey, ...fingerprint } = input;
+    const cacheKey = buildIdempotencyCacheKey("tx_begin", key, fingerprint);
+    const hit = context.idempotency.rememberSync<TxBeginSnapshot>(cacheKey, execute);
     const snapshot = hit.value as TxBeginSnapshot;
     return { ...snapshot, idempotent: hit.idempotent, idempotency_key: key } as TxBeginResult;
   }

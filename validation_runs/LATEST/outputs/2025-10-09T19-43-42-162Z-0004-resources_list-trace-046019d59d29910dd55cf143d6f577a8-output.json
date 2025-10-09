@@ -1,0 +1,147 @@
+{
+  "traceId": "trace-046019d59d29910dd55cf143d6f577a8",
+  "toolName": "resources_list",
+  "recordedAt": "2025-10-09T19:43:42.164Z",
+  "payload": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\n  \"tool\": \"resources_list\",\n  \"result\": {\n    \"items\": [\n      {\n        \"uri\": \"sc://validation/LATEST/inputs/2025-10-09T19-43-42-129Z-0001-mcp_info-trace-71fc0332857c4285883802cba0d0ac25-input.json\",\n        \"kind\": \"validation_input\",\n        \"metadata\": {\n          \"session_id\": \"LATEST\",\n          \"artifact_type\": \"inputs\",\n          \"recorded_at\": 1760039022130,\n          \"mime\": \"application/json\",\n          \"run_id\": \"LATEST\",\n          \"phase\": \"phase-01-introspection\",\n          \"tool\": \"mcp_info\",\n          \"trace_id\": \"trace-71fc0332857c4285883802cba0d0ac25\",\n          \"call_index\": 1,\n          \"role\": \"input\"\n        }\n      },\n      {\n        \"uri\": \"sc://validation/LATEST/inputs/2025-10-09T19-43-42-136Z-0002-mcp_capabilities-trace-eba33770b5e5256ffed347f186a67f81-input.json\",\n        \"kind\": \"validation_input\",\n        \"metadata\": {\n          \"session_id\": \"LATEST\",\n          \"artifact_type\": \"inputs\",\n          \"recorded_at\": 1760039022136,\n          \"mime\": \"application/json\",\n          \"run_id\": \"LATEST\",\n          \"phase\": \"phase-01-introspection\",\n          \"tool\": \"mcp_capabilities\",\n          \"trace_id\": \"trace-eba33770b5e5256ffed347f186a67f81\",\n          \"call_index\": 2,\n          \"role\": \"input\"\n        }\n      },\n      {\n        \"uri\": \"sc://validation/LATEST/inputs/2025-10-09T19-43-42-158Z-0003-resources_list-trace-3b2bee2805157fa1e66e9b6582787452-input.json\",\n        \"kind\": \"validation_input\",\n        \"metadata\": {\n          \"session_id\": \"LATEST\",\n          \"artifact_type\": \"inputs\",\n          \"recorded_at\": 1760039022158,\n          \"mime\": \"application/json\",\n          \"run_id\": \"LATEST\",\n          \"phase\": \"phase-01-introspection\",\n          \"tool\": \"resources_list\",\n          \"trace_id\": \"trace-3b2bee2805157fa1e66e9b6582787452\",\n          \"call_index\": 3,\n          \"role\": \"input\"\n        }\n      },\n      {\n        \"uri\": \"sc://validation/LATEST/inputs/2025-10-09T19-43-42-162Z-0004-resources_list-trace-046019d59d29910dd55cf143d6f577a8-input.json\",\n        \"kind\": \"validation_input\",\n        \"metadata\": {\n          \"session_id\": \"LATEST\",\n          \"artifact_type\": \"inputs\",\n          \"recorded_at\": 1760039022162,\n          \"mime\": \"application/json\",\n          \"run_id\": \"LATEST\",\n          \"phase\": \"phase-01-introspection\",\n          \"tool\": \"resources_list\",\n          \"trace_id\": \"trace-046019d59d29910dd55cf143d6f577a8\",\n          \"call_index\": 4,\n          \"role\": \"input\"\n        }\n      },\n      {\n        \"uri\": \"sc://validation/LATEST/logs/run.log\",\n        \"kind\": \"validation_logs\",\n        \"metadata\": {\n          \"session_id\": \"LATEST\",\n          \"artifact_type\": \"logs\",\n          \"recorded_at\": 1760039022162,\n          \"mime\": \"application/json\",\n          \"run_id\": \"LATEST\",\n          \"phase\": \"phase-01-introspection\",\n          \"entry_count\": 5,\n          \"last_level\": \"info\",\n          \"last_message\": \"tool_call_completed\"\n        }\n      },\n      {\n        \"uri\": \"sc://validation/LATEST/outputs/2025-10-09T19-43-42-129Z-0001-mcp_info-trace-71fc0332857c4285883802cba0d0ac25-output.json\",\n        \"kind\": \"validation_output\",\n        \"metadata\": {\n          \"session_id\": \"LATEST\",\n          \"artifact_type\": \"outputs\",\n          \"recorded_at\": 1760039022134,\n          \"mime\": \"application/json\",\n          \"run_id\": \"LATEST\",\n          \"phase\": \"phase-01-introspection\",\n          \"tool\": \"mcp_info\",\n          \"trace_id\": \"trace-71fc0332857c4285883802cba0d0ac25\",\n          \"call_index\": 1,\n          \"role\": \"output\",\n          \"duration_ms\": 5.537449\n        }\n      },\n      {\n        \"uri\": \"sc://validation/LATEST/outputs/2025-10-09T19-43-42-136Z-0002-mcp_capabilities-trace-eba33770b5e5256ffed347f186a67f81-output.json\",\n        \"kind\": \"validation_output\",\n        \"metadata\": {\n          \"session_id\": \"LATEST\",\n          \"artifact_type\": \"outputs\",\n          \"recorded_at\": 1760039022155,\n          \"mime\": \"application/json\",\n          \"run_id\": \"LATEST\",\n          \"phase\": \"phase-01-introspection\",\n          \"tool\": \"mcp_capabilities\",\n          \"trace_id\": \"trace-eba33770b5e5256ffed347f186a67f81\",\n          \"call_index\": 2,\n          \"role\": \"output\",\n          \"duration_ms\": 19.596967\n        }\n      },\n      {\n        \"uri\": \"sc://validation/LATEST/outputs/2025-10-09T19-43-42-158Z-0003-resources_list-trace-3b2bee2805157fa1e66e9b6582787452-output.json\",\n        \"kind\": \"validation_output\",\n        \"metadata\": {\n          \"session_id\": \"LATEST\",\n          \"artifact_type\": \"outputs\",\n          \"recorded_at\": 1760039022160,\n          \"mime\": \"application/json\",\n          \"run_id\": \"LATEST\",\n          \"phase\": \"phase-01-introspection\",\n          \"tool\": \"resources_list\",\n          \"trace_id\": \"trace-3b2bee2805157fa1e66e9b6582787452\",\n          \"call_index\": 3,\n          \"role\": \"output\",\n          \"duration_ms\": 2.429638\n        }\n      }\n    ]\n  }\n}"
+      }
+    ],
+    "structuredContent": {
+      "items": [
+        {
+          "uri": "sc://validation/LATEST/inputs/2025-10-09T19-43-42-129Z-0001-mcp_info-trace-71fc0332857c4285883802cba0d0ac25-input.json",
+          "kind": "validation_input",
+          "metadata": {
+            "session_id": "LATEST",
+            "artifact_type": "inputs",
+            "recorded_at": 1760039022130,
+            "mime": "application/json",
+            "run_id": "LATEST",
+            "phase": "phase-01-introspection",
+            "tool": "mcp_info",
+            "trace_id": "trace-71fc0332857c4285883802cba0d0ac25",
+            "call_index": 1,
+            "role": "input"
+          }
+        },
+        {
+          "uri": "sc://validation/LATEST/inputs/2025-10-09T19-43-42-136Z-0002-mcp_capabilities-trace-eba33770b5e5256ffed347f186a67f81-input.json",
+          "kind": "validation_input",
+          "metadata": {
+            "session_id": "LATEST",
+            "artifact_type": "inputs",
+            "recorded_at": 1760039022136,
+            "mime": "application/json",
+            "run_id": "LATEST",
+            "phase": "phase-01-introspection",
+            "tool": "mcp_capabilities",
+            "trace_id": "trace-eba33770b5e5256ffed347f186a67f81",
+            "call_index": 2,
+            "role": "input"
+          }
+        },
+        {
+          "uri": "sc://validation/LATEST/inputs/2025-10-09T19-43-42-158Z-0003-resources_list-trace-3b2bee2805157fa1e66e9b6582787452-input.json",
+          "kind": "validation_input",
+          "metadata": {
+            "session_id": "LATEST",
+            "artifact_type": "inputs",
+            "recorded_at": 1760039022158,
+            "mime": "application/json",
+            "run_id": "LATEST",
+            "phase": "phase-01-introspection",
+            "tool": "resources_list",
+            "trace_id": "trace-3b2bee2805157fa1e66e9b6582787452",
+            "call_index": 3,
+            "role": "input"
+          }
+        },
+        {
+          "uri": "sc://validation/LATEST/inputs/2025-10-09T19-43-42-162Z-0004-resources_list-trace-046019d59d29910dd55cf143d6f577a8-input.json",
+          "kind": "validation_input",
+          "metadata": {
+            "session_id": "LATEST",
+            "artifact_type": "inputs",
+            "recorded_at": 1760039022162,
+            "mime": "application/json",
+            "run_id": "LATEST",
+            "phase": "phase-01-introspection",
+            "tool": "resources_list",
+            "trace_id": "trace-046019d59d29910dd55cf143d6f577a8",
+            "call_index": 4,
+            "role": "input"
+          }
+        },
+        {
+          "uri": "sc://validation/LATEST/logs/run.log",
+          "kind": "validation_logs",
+          "metadata": {
+            "session_id": "LATEST",
+            "artifact_type": "logs",
+            "recorded_at": 1760039022162,
+            "mime": "application/json",
+            "run_id": "LATEST",
+            "phase": "phase-01-introspection",
+            "entry_count": 5,
+            "last_level": "info",
+            "last_message": "tool_call_completed"
+          }
+        },
+        {
+          "uri": "sc://validation/LATEST/outputs/2025-10-09T19-43-42-129Z-0001-mcp_info-trace-71fc0332857c4285883802cba0d0ac25-output.json",
+          "kind": "validation_output",
+          "metadata": {
+            "session_id": "LATEST",
+            "artifact_type": "outputs",
+            "recorded_at": 1760039022134,
+            "mime": "application/json",
+            "run_id": "LATEST",
+            "phase": "phase-01-introspection",
+            "tool": "mcp_info",
+            "trace_id": "trace-71fc0332857c4285883802cba0d0ac25",
+            "call_index": 1,
+            "role": "output",
+            "duration_ms": 5.537449
+          }
+        },
+        {
+          "uri": "sc://validation/LATEST/outputs/2025-10-09T19-43-42-136Z-0002-mcp_capabilities-trace-eba33770b5e5256ffed347f186a67f81-output.json",
+          "kind": "validation_output",
+          "metadata": {
+            "session_id": "LATEST",
+            "artifact_type": "outputs",
+            "recorded_at": 1760039022155,
+            "mime": "application/json",
+            "run_id": "LATEST",
+            "phase": "phase-01-introspection",
+            "tool": "mcp_capabilities",
+            "trace_id": "trace-eba33770b5e5256ffed347f186a67f81",
+            "call_index": 2,
+            "role": "output",
+            "duration_ms": 19.596967
+          }
+        },
+        {
+          "uri": "sc://validation/LATEST/outputs/2025-10-09T19-43-42-158Z-0003-resources_list-trace-3b2bee2805157fa1e66e9b6582787452-output.json",
+          "kind": "validation_output",
+          "metadata": {
+            "session_id": "LATEST",
+            "artifact_type": "outputs",
+            "recorded_at": 1760039022160,
+            "mime": "application/json",
+            "run_id": "LATEST",
+            "phase": "phase-01-introspection",
+            "tool": "resources_list",
+            "trace_id": "trace-3b2bee2805157fa1e66e9b6582787452",
+            "call_index": 3,
+            "role": "output",
+            "duration_ms": 2.429638
+          }
+        }
+      ]
+    }
+  }
+}

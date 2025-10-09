@@ -45,7 +45,7 @@ import {
   type ConsensusDecision,
   type ConsensusVote,
 } from "../coord/consensus.js";
-import { IdempotencyRegistry } from "../infra/idempotency.js";
+import { IdempotencyRegistry, buildIdempotencyCacheKey } from "../infra/idempotency.js";
 import { BulkOperationError, buildBulkFailureDetail } from "./bulkError.js";
 import { resolveOperationId } from "./operationIds.js";
 
@@ -930,7 +930,9 @@ export function handleCnpAnnounce(
 
   const key = input.idempotency_key ?? null;
   if (context.idempotency && key) {
-    const hit = context.idempotency.rememberSync(`cnp_announce:${key}`, execute);
+    const { op_id: _omitOpId, idempotency_key: _omitKey, ...fingerprint } = input;
+    const cacheKey = buildIdempotencyCacheKey("cnp_announce", key, fingerprint);
+    const hit = context.idempotency.rememberSync(cacheKey, execute);
     if (hit.idempotent) {
       const snapshot = hit.value as ReturnType<typeof execute>;
       context.logger.info("cnp_announce_replayed", {

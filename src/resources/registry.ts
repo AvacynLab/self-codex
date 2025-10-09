@@ -15,7 +15,11 @@ export type ResourceKind =
   | "run_events"
   | "child_logs"
   | "snapshot"
-  | "blackboard_namespace";
+  | "blackboard_namespace"
+  | "validation_input"
+  | "validation_output"
+  | "validation_events"
+  | "validation_logs";
 
 /** Options accepted when instantiating the resource registry. */
 export interface ResourceRegistryOptions {
@@ -139,9 +143,55 @@ export interface ResourceReadResult extends Record<string, unknown> {
   payload:
     | ResourceGraphPayload
     | ResourceSnapshotPayload
-    | { runId: string; events: ResourceRunEvent[] }
+    | { runId: string; events: ResourceRunEvent[]; jsonl: string }
     | { childId: string; logs: ResourceChildLogEntry[] }
-    | { namespace: string; entries: BlackboardEntrySnapshot[] };
+    | { namespace: string; entries: BlackboardEntrySnapshot[] }
+    | ValidationResourcePayload;
+}
+
+/** Internal representation tracked for validation artefacts. */
+type ValidationResourceKind = "validation_input" | "validation_output" | "validation_events" | "validation_logs";
+
+interface ValidationArtifactRecord {
+  kind: ValidationResourceKind;
+  sessionId: string;
+  runId: string | null;
+  phase: string | null;
+  artifactType: "inputs" | "outputs" | "events" | "logs";
+  name: string;
+  recordedAt: number;
+  mime: string;
+  data: unknown;
+  metadata?: Record<string, unknown>;
+}
+
+/** Supported artifact categories tracked for validation campaigns. */
+export type ValidationArtifactType = "input" | "output" | "events" | "logs";
+
+/** Payload returned when reading validation artefacts from the registry. */
+export interface ValidationResourcePayload {
+  sessionId: string;
+  runId: string | null;
+  phase: string | null;
+  artifactType: ValidationArtifactType;
+  name: string;
+  recordedAt: number;
+  mime: string;
+  data: unknown;
+  metadata?: Record<string, unknown>;
+}
+
+/** Options accepted when registering a validation artefact. */
+export interface ValidationArtifactInput {
+  sessionId: string;
+  artifactType: "inputs" | "outputs" | "events" | "logs";
+  name: string;
+  recordedAt?: number;
+  mime?: string;
+  runId?: string | null;
+  phase?: string | null;
+  data: unknown;
+  metadata?: Record<string, unknown> | null;
 }
 
 /** Options accepted when requesting a watch page. */
@@ -914,6 +964,81 @@ function normaliseOptionalNumber(value: number | null | undefined): number | nul
   return Math.floor(value);
 }
 
+const VALIDATION_CATEGORY_KIND_MAP = {
+  inputs: "validation_input",
+  outputs: "validation_output",
+  events: "validation_events",
+  logs: "validation_logs",
+} as const satisfies Record<ValidationArtifactInput["artifactType"], ValidationResourceKind>;
+
+const VALIDATION_KIND_PAYLOAD_TYPE: Record<ValidationResourceKind, ValidationArtifactType> = {
+  validation_input: "input",
+  validation_output: "output",
+  validation_events: "events",
+  validation_logs: "logs",
+};
+
+function normaliseResourceSegment(value: string, label: string): string {
+  if (typeof value !== "string") {
+    throw new ResourceRegistryError("E-RES-INVALID", `Invalid ${label}`, "invalid_segment");
+  }
+  const trimmed = value.trim();
+  if (trimmed.length === 0) {
+    throw new ResourceRegistryError("E-RES-INVALID", `Invalid ${label}`, "invalid_segment");
+  }
+  if (trimmed.includes("/")) {
+    throw new ResourceRegistryError("E-RES-INVALID", `Invalid ${label}`, "invalid_segment");
+  }
+  return trimmed;
+}
+
+function normaliseValidationArtifactCategory(
+  category: ValidationArtifactInput["artifactType"],
+): ValidationArtifactInput["artifactType"] {
+  if (category === "inputs" || category === "outputs" || category === "events" || category === "logs") {
+    return category;
+  }
+  throw new ResourceRegistryError(
+    "E-RES-INVALID",
+    `Unsupported validation artefact category: ${String(category)}`,
+    "invalid_category",
+  );
+}
+
+function validationCategoryToKind(
+  category: ValidationArtifactInput["artifactType"],
+): ValidationResourceKind {
+  return VALIDATION_CATEGORY_KIND_MAP[category];
+}
+
+function validationKindToPayloadType(kind: ValidationResourceKind): ValidationArtifactType {
+  return VALIDATION_KIND_PAYLOAD_TYPE[kind];
+}
+
+function normaliseValidationMime(candidate: string | null | undefined): string {
+  if (typeof candidate !== "string") {
+    return "application/json";
+  }
+  const trimmed = candidate.trim();
+  return trimmed.length > 0 ? trimmed : "application/json";
+}
+
+function normaliseValidationMetadata(
+  metadata: Record<string, unknown> | null | undefined,
+): Record<string, unknown> | undefined {
+  if (!metadata || typeof metadata !== "object") {
+    return undefined;
+  }
+  const snapshot: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(metadata)) {
+    if (typeof key !== "string" || key.trim().length === 0) {
+      continue;
+    }
+    snapshot[key] = clone(value as unknown);
+  }
+  return Object.keys(snapshot).length > 0 ? snapshot : undefined;
+}
+
 /** Extract the namespace portion of a blackboard key. */
 const BLACKBOARD_NAMESPACE_SEPARATORS = [":", "/", "|"] as const;
 
@@ -1105,6 +1230,8 @@ export class ResourceRegistry {
   private readonly childHistories = new Map<string, ChildLogHistory>();
 
   private readonly blackboardHistories = new Map<string, BlackboardNamespaceHistory>();
+
+  private readonly validationArtifacts = new Map<string, ValidationArtifactRecord>();
 
   private readonly runHistoryLimit: number;
 
@@ -1322,6 +1449,62 @@ export class ResourceRegistry {
     history.emitter.emit("event", record);
   }
 
+  /** Registers a validation artefact so campaigns can persist deterministic evidence. */
+  registerValidationArtifact(input: ValidationArtifactInput): string {
+    const sessionId = normaliseResourceSegment(input.sessionId, "sessionId");
+    const category = normaliseValidationArtifactCategory(input.artifactType);
+    const name = normaliseResourceSegment(input.name, "name");
+    const runId = normaliseOptionalString(input.runId ?? null);
+    const phase = normaliseOptionalString(input.phase ?? null);
+    const recordedAt =
+      normaliseOptionalNumber(input.recordedAt ?? Date.now()) ?? Math.floor(Date.now());
+    const mime = normaliseValidationMime(input.mime);
+    const metadata = normaliseValidationMetadata(input.metadata);
+    const kind = validationCategoryToKind(category);
+    const uri = `sc://validation/${sessionId}/${category}/${name}`;
+
+    const record: ValidationArtifactRecord = {
+      kind,
+      sessionId,
+      runId,
+      phase,
+      artifactType: category,
+      name,
+      recordedAt,
+      mime,
+      data: clone(input.data),
+      metadata,
+    };
+
+    this.validationArtifacts.set(uri, record);
+    return uri;
+  }
+
+  /**
+   * Clears validation artefacts tracked by the registry. When a session
+   * identifier is provided only the matching artefacts are removed so test
+   * suites can isolate their state without interfering with concurrent
+   * campaigns.
+   */
+  clearValidationArtifacts(sessionId?: string | null): void {
+    if (!sessionId) {
+      this.validationArtifacts.clear();
+      return;
+    }
+
+    const normalised = sessionId.trim();
+    if (!normalised) {
+      this.validationArtifacts.clear();
+      return;
+    }
+
+    for (const [uri, artifact] of this.validationArtifacts.entries()) {
+      if (artifact.sessionId === normalised) {
+        this.validationArtifacts.delete(uri);
+      }
+    }
+  }
+
   /** Tracks a mutation emitted by the blackboard store. */
   private recordBlackboardEvent(event: BlackboardEvent): void {
     const namespace = extractNamespace(event.key);
@@ -1386,8 +1569,16 @@ export class ResourceRegistry {
         });
       }
     }
-    for (const runId of this.runHistories.keys()) {
-      entries.push({ uri: `sc://runs/${runId}/events`, kind: "run_events" });
+    for (const [runId, history] of this.runHistories.entries()) {
+      entries.push({
+        uri: `sc://runs/${runId}/events`,
+        kind: "run_events",
+        metadata: {
+          event_count: history.events.length,
+          latest_seq: history.lastSeq,
+          available_formats: ["structured", "jsonl"],
+        },
+      });
     }
     for (const childId of this.childHistories.keys()) {
       entries.push({ uri: `sc://children/${childId}/logs`, kind: "child_logs" });
@@ -1401,6 +1592,25 @@ export class ResourceRegistry {
           latest_version: summary.latestVersion,
         },
       });
+    }
+
+    for (const [uri, artifact] of this.validationArtifacts.entries()) {
+      const metadata: Record<string, unknown> = {
+        session_id: artifact.sessionId,
+        artifact_type: artifact.artifactType,
+        recorded_at: artifact.recordedAt,
+        mime: artifact.mime,
+      };
+      if (artifact.runId) {
+        metadata.run_id = artifact.runId;
+      }
+      if (artifact.phase) {
+        metadata.phase = artifact.phase;
+      }
+      if (artifact.metadata) {
+        Object.assign(metadata, clone(artifact.metadata));
+      }
+      entries.push({ uri, kind: artifact.kind, metadata });
     }
 
     const filtered = prefix ? entries.filter((entry) => entry.uri.startsWith(prefix)) : entries;
@@ -1465,10 +1675,13 @@ export class ResourceRegistry {
         if (!history) {
           throw new ResourceNotFoundError(uri);
         }
+        const events = history.events.map((evt) => clone(evt));
+        const jsonl =
+          events.length === 0 ? "" : `${events.map((evt) => JSON.stringify(evt)).join("\n")}\n`;
         return {
           uri,
           kind: "run_events",
-          payload: { runId: parsed.runId!, events: history.events.map((evt) => clone(evt)) },
+          payload: { runId: parsed.runId!, events, jsonl },
         };
       }
       case "child_logs": {
@@ -1510,6 +1723,24 @@ export class ResourceRegistry {
           kind: "blackboard_namespace",
           payload: { namespace, entries },
         };
+      }
+      case "validation_input":
+      case "validation_output":
+      case "validation_events":
+      case "validation_logs": {
+        const artifact = this.getValidationArtifactOrThrow(uri, parsed.kind);
+        const payload: ValidationResourcePayload = {
+          sessionId: artifact.sessionId,
+          runId: artifact.runId,
+          phase: artifact.phase,
+          artifactType: validationKindToPayloadType(artifact.kind),
+          name: artifact.name,
+          recordedAt: artifact.recordedAt,
+          mime: artifact.mime,
+          data: clone(artifact.data),
+          ...(artifact.metadata ? { metadata: clone(artifact.metadata) } : {}),
+        };
+        return { uri, kind: parsed.kind, payload };
       }
       default:
         throw new ResourceNotFoundError(uri);
@@ -1664,6 +1895,17 @@ export class ResourceRegistry {
       throw new ResourceNotFoundError(uri);
     }
     return history;
+  }
+
+  private getValidationArtifactOrThrow(
+    uri: string,
+    kind: ValidationResourceKind,
+  ): ValidationArtifactRecord {
+    const record = this.validationArtifacts.get(uri);
+    if (!record || record.kind !== kind) {
+      throw new ResourceNotFoundError(uri);
+    }
+    return record;
   }
 
   private getChildHistoryOrThrow(uri: string, childId: string): ChildLogHistory {
@@ -2018,7 +2260,13 @@ export class ResourceRegistry {
     | { kind: "snapshot"; graphId: string; txId: string }
     | { kind: "run_events"; runId: string }
     | { kind: "child_logs"; childId: string }
-    | { kind: "blackboard_namespace"; namespace: string } {
+    | { kind: "blackboard_namespace"; namespace: string }
+    | {
+        kind: ValidationResourceKind;
+        sessionId: string;
+        artifactType: ValidationArtifactInput["artifactType"];
+        name: string;
+      } {
     if (!uri.startsWith("sc://")) {
       throw new ResourceNotFoundError(uri);
     }
@@ -2066,6 +2314,27 @@ export class ResourceRegistry {
         throw new ResourceNotFoundError(uri);
       }
       return { kind: "blackboard_namespace", namespace };
+    }
+    if (body.startsWith("validation/")) {
+      const remainder = body.slice("validation/".length);
+      const segments = remainder.split("/");
+      if (segments.length !== 3) {
+        throw new ResourceNotFoundError(uri);
+      }
+      const [sessionId, category, name] = segments;
+      if (!sessionId || !category || !name) {
+        throw new ResourceNotFoundError(uri);
+      }
+      if (category !== "inputs" && category !== "outputs" && category !== "events" && category !== "logs") {
+        throw new ResourceNotFoundError(uri);
+      }
+      const artifactType = category as ValidationArtifactInput["artifactType"];
+      return {
+        kind: validationCategoryToKind(artifactType),
+        sessionId,
+        artifactType,
+        name,
+      };
     }
     throw new ResourceNotFoundError(uri);
   }

@@ -18,7 +18,9 @@
         "test": "npm run build --silent && npm run test:unit",
         "test:unit": "node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --file tests/setup.ts \"tests/**/*.test.ts\"",
         "test:int": "node scripts/run-int-tests.mjs",
-        "coverage": "npm run build --silent && c8 --reporter=text-summary --reporter=lcov --reporter=html --check-coverage --statements 85 --functions 85 --lines 85 --branches 70 node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --file tests/setup.ts \"tests/**/*.test.ts\"",
+        "test:e2e": "node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --file tests/setup.ts \"tests/e2e/**/*.test.ts\"",
+        "validate:run": "node scripts/validate-run.mjs",
+        "coverage": "npm run build --silent && c8 --reporter=text-summary --reporter=lcov --reporter=html --check-coverage --statements 85 --functions 85 --lines 85 --branches 70 --exclude \"dist/**\" node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --file tests/setup.ts \"tests/**/*.test.ts\"",
         "bench:scheduler": "node --import tsx tests/perf/scheduler.bench.ts",
         "lint": "tsc --noEmit --pretty false && tsc --noEmit --project graph-forge/tsconfig.json"
     },

@@ -1,0 +1,8 @@
+{
+  "traceId": "trace-5cc09861fcc32a85837151cfecaf94e3",
+  "toolName": "resources_list",
+  "recordedAt": "2025-10-09T21:04:32.597Z",
+  "payload": {
+    "limit": 200
+  }
+}

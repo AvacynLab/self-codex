@@ -1,0 +1,483 @@
+{
+  "runId": "LATEST",
+  "generatedAt": "2025-10-09T21:04:32.604Z",
+  "totals": {
+    "totalCalls": 5,
+    "errorCount": 0
+  },
+  "tools": [
+    {
+      "toolName": "mcp_info",
+      "totalCalls": 1,
+      "errorCount": 0,
+      "successRate": 1,
+      "p95DurationMs": 3.62722,
+      "traces": [
+        {
+          "traceId": "trace-99ccc3840a7e948e51c78a7374e0fd28",
+          "artefacts": {
+            "inputPath": "/workspace/self-codex/validation_runs/LATEST/inputs/2025-10-09T21-04-32-580Z-0001-mcp_info-trace-99ccc3840a7e948e51c78a7374e0fd28-input.json",
+            "outputPath": "/workspace/self-codex/validation_runs/LATEST/outputs/2025-10-09T21-04-32-580Z-0001-mcp_info-trace-99ccc3840a7e948e51c78a7374e0fd28-output.json"
+          }
+        }
+      ],
+      "lastResponse": {
+        "isError": false,
+        "structured": null,
+        "parsedText": {
+          "format": "json",
+          "info": {
+            "server": {
+              "name": "mcp-self-fork-orchestrator",
+              "version": "1.3.0"
+            },
+            "mcp": {
+              "protocol": "1.0",
+              "transports": [
+                {
+                  "kind": "stdio",
+                  "enabled": true
+                },
+                {
+                  "kind": "http",
+                  "enabled": false,
+                  "host": null,
+                  "port": null,
+                  "path": null,
+                  "modes": {
+                    "json": true,
+                    "stateless": false
+                  }
+                }
+              ]
+            },
+            "features": [
+              "core",
+              "events-bus",
+              "mcp-introspection",
+              "resources"
+            ],
+            "limits": {
+              "maxInputBytes": 524288,
+              "defaultTimeoutMs": 60000
+            },
+            "flags": {
+              "enableBT": false,
+              "enableReactiveScheduler": false,
+              "enableBlackboard": false,
+              "enableStigmergy": false,
+              "enableCNP": false,
+              "enableConsensus": false,
+              "enableAutoscaler": false,
+              "enableSupervisor": false,
+              "enableKnowledge": false,
+              "enableCausalMemory": false,
+              "enableValueGuard": false,
+              "enableMcpIntrospection": true,
+              "enableResources": true,
+              "enableEventsBus": true,
+              "enableCancellation": false,
+              "enableTx": false,
+              "enableBulk": false,
+              "enableIdempotency": false,
+              "enableLocks": false,
+              "enableDiffPatch": false,
+              "enablePlanLifecycle": false,
+              "enableChildOpsFine": false,
+              "enableValuesExplain": false,
+              "enableAssist": false
+            }
+          }
+        },
+        "rawText": "{\n  \"format\": \"json\",\n  \"info\": {\n    \"server\": {\n      \"name\": \"mcp-self-fork-orchestrator\",\n      \"version\": \"1.3.0\"\n    },\n    \"mcp\": {\n      \"protocol\": \"1.0\",\n      \"transports\": [\n        {\n          \"kind\": \"stdio\",\n          \"enabled\": true\n        },\n        {\n          \"kind\": \"http\",\n          \"enabled\": false,\n          \"host\": null,\n          \"port\": null,\n          \"path\": null,\n          \"modes\": {\n            \"json\": true,\n            \"stateless\": false\n          }\n        }\n      ]\n    },\n    \"features\": [\n      \"core\",\n      \"events-bus\",\n      \"mcp-introspection\",\n      \"resources\"\n    ],\n    \"limits\": {\n      \"maxInputBytes\": 524288,\n      \"defaultTimeoutMs\": 60000\n    },\n    \"flags\": {\n      \"enableBT\": false,\n      \"enableReactiveScheduler\": false,\n      \"enableBlackboard\": false,\n      \"enableStigmergy\": false,\n      \"enableCNP\": false,\n      \"enableConsensus\": false,\n      \"enableAutoscaler\": false,\n      \"enableSupervisor\": false,\n      \"enableKnowledge\": false,\n      \"enableCausalMemory\": false,\n      \"enableValueGuard\": false,\n      \"enableMcpIntrospection\": true,\n      \"enableResources\": true,\n      \"enableEventsBus\": true,\n      \"enableCancellation\": false,\n      \"enableTx\": false,\n      \"enableBulk\": false,\n      \"enableIdempotency\": false,\n      \"enableLocks\": false,\n      \"enableDiffPatch\": false,\n      \"enablePlanLifecycle\": false,\n      \"enableChildOpsFine\": false,\n      \"enableValuesExplain\": false,\n      \"enableAssist\": false\n    }\n  }\n}"
+      }
+    },
+    {
+      "toolName": "mcp_capabilities",
+      "totalCalls": 1,
+      "errorCount": 0,
+      "successRate": 1,
+      "p95DurationMs": 12.735628,
+      "traces": [
+        {
+          "traceId": "trace-eb918d72ce9de1ab58397309c0955512",
+          "artefacts": {
+            "inputPath": "/workspace/self-codex/validation_runs/LATEST/inputs/2025-10-09T21-04-32-583Z-0002-mcp_capabilities-trace-eb918d72ce9de1ab58397309c0955512-input.json",
+            "outputPath": "/workspace/self-codex/validation_runs/LATEST/outputs/2025-10-09T21-04-32-583Z-0002-mcp_capabilities-trace-eb918d72ce9de1ab58397309c0955512-output.json"
+          }
+        }
+      ],
+      "lastResponse": {
+        "isError": false,
+        "structured": null,
+        "parsedText": {
+          "format": "json",
+          "capabilities": {
+            "namespaces": [
+              "core.jobs",
+              "graph.core"
+            ],
+            "tools": [
+              {
+                "name": "aggregate",
+                "inputSchemaSummary": "object{include_goals?:boolean, include_system?:boolean, job_id:string, strategy?:string}"
+              },
+              {
+                "name": "child_cancel",
+                "inputSchemaSummary": "object{child_id:string, signal?:string, timeout_ms?:number}"
+              },
+              {
+                "name": "child_chat",
+                "inputSchemaSummary": "object{child_id:string, content:string, role?:enum(user|system)}"
+              },
+              {
+                "name": "child_collect",
+                "inputSchemaSummary": "object{child_id:string}"
+              },
+              {
+                "name": "child_create",
+                "inputSchemaSummary": "object{args?:array<string>, budget?:object{messages?:number, tokens?:number, wallclock_ms?:number}, child_id?:string, command?:string, env?:record<string, string>, idempotency_key?:string, initial_payload?:unknown, manifest_extras?:record<string, unknown>, metadata?:record<string, unknown>, op_id?:string, prompt?:object{assistant?:union[array<string> | string], system?:union[array<string> | string], user?:union[array<string> | string]}, ready_timeout_ms?:number, ready_type?:string, timeouts?:object{heartbeat_ms?:number, idle_ms?:number, ready_ms?:number}, tools_allow?:array<string>, wait_for_ready?:boolean}"
+              },
+              {
+                "name": "child_gc",
+                "inputSchemaSummary": "object{child_id:string}"
+              },
+              {
+                "name": "child_info",
+                "inputSchemaSummary": "object{child_id:string}"
+              },
+              {
+                "name": "child_kill",
+                "inputSchemaSummary": "object{child_id:string, timeout_ms?:number}"
+              },
+              {
+                "name": "child_prompt",
+                "inputSchemaSummary": "object{child_id:string, messages:array<object{content:string, role:enum(system|user|assistant)}>}"
+              },
+              {
+                "name": "child_push_partial",
+                "inputSchemaSummary": "object{delta:string, done?:boolean, pending_id:string}"
+              },
+              {
+                "name": "child_push_reply",
+                "inputSchemaSummary": "object{content:string, pending_id:string}"
+              },
+              {
+                "name": "child_rename",
+                "inputSchemaSummary": "object{child_id:string, name:string}"
+              },
+              {
+                "name": "child_reset",
+                "inputSchemaSummary": "object{child_id:string, keep_system?:boolean}"
+              },
+              {
+                "name": "child_send",
+                "inputSchemaSummary": "object{child_id:string, contract_net?:object{auto_complete?:boolean, call_id:string, requested_agent_id?:string}, expect?:enum(stream|final), payload:unknown, sandbox?:object{action?:string, allow_failure?:boolean, enabled?:boolean, metadata?:record<string, unknown>, payload?:unknown, require_handler?:boolean, timeout_ms?:number}, timeout_ms?:number}"
+              },
+              {
+                "name": "child_stream",
+                "inputSchemaSummary": "object{after_sequence?:number, child_id:string, limit?:number, streams?:array<enum(stdout|stderr)>}"
+              },
+              {
+                "name": "child_transcript",
+                "inputSchemaSummary": "object{child_id:string, limit?:number, reverse?:boolean, since_index?:number, since_ts?:number}"
+              },
+              {
+                "name": "conversation_view",
+                "inputSchemaSummary": "object{child_id:string, format?:enum(text|json), include_system?:boolean, limit?:number, since_index?:number, since_ts?:number}"
+              },
+              {
+                "name": "events_subscribe",
+                "inputSchemaSummary": "object{cats?:array<string>, child_id?:string, format?:enum(jsonlines|sse), from_seq?:number, graph_id?:string, job_id?:string, levels?:array<enum(debug|info|warn|error)>, limit?:number, node_id?:string, op_id?:string, run_id?:string}"
+              },
+              {
+                "name": "events_view",
+                "inputSchemaSummary": "object{child_id?:string, job_id?:string, limit?:number, min_seq?:number, mode?:enum(recent|pending|live), order?:enum(asc|desc)}"
+              },
+              {
+                "name": "events_view_live",
+                "inputSchemaSummary": "object{child_id?:string, job_id?:string, limit?:number, min_seq?:number, order?:enum(asc|desc)}"
+              },
+              {
+                "name": "graph_causal_analyze",
+                "inputSchemaSummary": "object{compute_min_cut?:boolean, graph:object{edges:array<object{attributes?:record<string, union[boolean | number | string]>, from:string, label?:string, to:string, weight?:number}>, graph_id?:string, graph_version?:number, metadata?:record<string, union[boolean | number | string]>, name?:string, nodes:array<object{attributes?:record<string, union[boolean | number | string]>, id:string, label?:string}>}, include_transitive_closure?:boolean, max_cycles?:number, op_id?:string}"
+              },
+              {
+                "name": "graph_centrality_betweenness",
+                "inputSchemaSummary": "object{cost?:union[object{attribute:string, default_value?:number, scale?:number} | string], graph:object{edges:array<object{attributes?:record<string, union[boolean | number | string]>, from:string, label?:string, to:string, weight?:number}>, graph_id?:string, graph_version?:number, metadata?:record<string, union[boolean | number | string]>, name?:string, nodes:array<object{attributes?:record<string, union[boolean | number | string]>, id:string, label?:string}>}, normalise?:boolean, op_id?:string, top_k?:number, weight_attribute?:string, weighted?:boolean}"
+              },
+              {
+                "name": "graph_config_retention",
+                "inputSchemaSummary": "object{max_event_nodes?:number, max_transcript_per_child?:number}"
+              },
+              {
+                "name": "graph_config_runtime",
+                "inputSchemaSummary": "object{reset?:boolean, runtime?:string}"
+              },
+              {
+                "name": "graph_critical_path",
+                "inputSchemaSummary": "object{default_duration?:number, duration_attribute?:string, fallback_duration_attribute?:string, graph:object{edges:array<object{attributes?:record<string, union[boolean | number | string]>, from:string, label?:string, to:string, weight?:number}>, graph_id?:string, graph_version?:number, metadata?:record<string, union[boolean | number | string]>, name?:string, nodes:array<object{attributes?:record<string, union[boolean | number | string]>, id:string, label?:string}>}, op_id?:string}"
+              },
+              {
+                "name": "graph_export",
+                "inputSchemaSummary": "object{direction?:enum(LR|TB), format?:enum(json|mermaid|dot|graphml), inline?:boolean, label_attribute?:string, max_label_length?:number, path?:string, pretty?:boolean, truncate?:number, weight_attribute?:string}"
+              },
+              {
+                "name": "graph_forge_analyze",
+                "inputSchemaSummary": "object{analyses?:array<object{args?:array<string>, name:string, weight_key?:string}>, entry_graph?:string, path?:string, source?:string, use_defined_analyses?:boolean, weight_key?:string}"
+              },
+              {
+                "name": "graph_generate",
+                "inputSchemaSummary": "object{default_weight?:number, name?:string, op_id?:string, preset?:enum(lint_test_build_package|analysis_ci_pipeline), tasks?:union[array<object{depends_on?:array<string>, duration?:number, id:string, label?:string, metadata?:record<string, union[boolean | number | string]>, weight?:number}> | object{tasks:array<object{depends_on?:array<string>, duration?:number, id:string, label?:string, metadata?:record<string, union[boolean | number | string]>, weight?:number}>} | string]}"
+              },
+              {
+                "name": "graph_hyper_export",
+                "inputSchemaSummary": "object{graph_version?:number, hyper_edges:array<object{attributes?:record<string, union[boolean | number | string]>, id:string, label?:string, sources:array<string>, targets:array<string>, weight?:number}>, id:string, metadata?:record<string, union[boolean | number | string]>, nodes:array<object{attributes?:record<string, union[boolean | number | string]>, id:string, label?:string}>, op_id?:string}"
+              },
+              {
+                "name": "graph_mutate",
+                "inputSchemaSummary": "object{graph:object{edges:array<object{attributes?:record<string, union[boolean | number | string]>, from:string, label?:string, to:string, weight?:number}>, graph_id?:string, graph_version?:number, metadata?:record<string, union[boolean | number | string]>, name?:string, nodes:array<object{attributes?:record<string, union[boolean | number | string]>, id:string, label?:string}>}, op_id?:string, operations:array<union[object{edge:object{attributes?:record<string, union[boolean | number | string]>, from:string, label?:string, to:string, weight?:number}, op:literal(\"add_edge\")} | object{from:string, key:string, op:literal(\"set_edge_attribute\"), to:string, value:union[boolean | number | string]|null} | object{from:string, op:literal(\"remove_edge\"), to:string} | object{id:string, key:string, op:literal(\"set_node_attribute\"), value:union[boolean | number | string]|null} | object{id:string, new_id:string, op:literal(\"rename_node\")} | object{id:string, op:literal(\"remove_node\")} | object{node:object{attributes?:record<string, union[boolean | number | string]>, id:string, label?:string}, op:literal(\"add_node\")} | object{op:literal(\"patch_metadata\"), set?:record<string, union[boolean | number | string]>, unset?:array<string>} | object{op:literal(\"rewrite\"), params?:object{reroute_avoid_labels?:array<string>, reroute_avoid_node_ids?:array<string>, split_parallel_targets?:array<string>, stop_on_no_change?:boolean}, rule:enum(split_parallel|inline_subgraph|reroute_avoid)}]>}"
+              },
+              {
+                "name": "graph_optimize",
+                "inputSchemaSummary": "object{default_duration?:number, duration_attribute?:string, explore_parallelism?:array<number>, fallback_duration_attribute?:string, graph:object{edges:array<object{attributes?:record<string, union[boolean | number | string]>, from:string, label?:string, to:string, weight?:number}>, graph_id?:string, graph_version?:number, metadata?:record<string, union[boolean | number | string]>, name?:string, nodes:array<object{attributes?:record<string, union[boolean | number | string]>, id:string, label?:string}>}, max_parallelism?:number, objective?:union[object{attribute?:string, concurrency_penalty?:number, default_value?:number, parallel_penalty?:number, type:literal(\"risk\")} | object{attribute?:string, default_value?:number, parallel_penalty?:number, type:literal(\"cost\")} | object{type:literal(\"makespan\")}], op_id?:string, parallelism?:number}"
+              },
+              {
+                "name": "graph_optimize_moo",
+                "inputSchemaSummary": "object{default_duration?:number, duration_attribute?:string, fallback_duration_attribute?:string, graph:object{edges:array<object{attributes?:record<string, union[boolean | number | string]>, from:string, label?:string, to:string, weight?:number}>, graph_id?:string, graph_version?:number, metadata?:record<string, union[boolean | number | string]>, name?:string, nodes:array<object{attributes?:record<string, union[boolean | number | string]>, id:string, label?:string}>}, objectives:array<union[object{attribute?:string, concurrency_penalty?:number, default_value?:number, label?:string, parallel_penalty?:number, type:literal(\"risk\")} | object{attribute?:string, default_value?:number, label?:string, parallel_penalty?:number, type:literal(\"cost\")} | object{label?:string, type:literal(\"makespan\")}]>, op_id?:string, parallelism_candidates:array<number>, scalarization?:object{method:literal(\"weighted_sum\"), weights:record<string, number>}}"
+              },
+              {
+                "name": "graph_partition",
+                "inputSchemaSummary": "object{graph:object{edges:array<object{attributes?:record<string, union[boolean | number | string]>, from:string, label?:string, to:string, weight?:number}>, graph_id?:string, graph_version?:number, metadata?:record<string, union[boolean | number | string]>, name?:string, nodes:array<object{attributes?:record<string, union[boolean | number | string]>, id:string, label?:string}>}, k?:number, max_iterations?:number, objective?:enum(min-cut|community), op_id?:string, seed?:number}"
+              },
+              {
+                "name": "graph_paths_constrained",
+                "inputSchemaSummary": "object{avoid_edges?:array<object{from:string, to:string}>, avoid_nodes?:array<string>, cost?:union[object{attribute:string, default_value?:number, scale?:number} | string], from:string, graph:object{edges:array<object{attributes?:record<string, union[boolean | number | string]>, from:string, label?:string, to:string, weight?:number}>, graph_id?:string, graph_version?:number, metadata?:record<string, union[boolean | number | string]>, name?:string, nodes:array<object{attributes?:record<string, union[boolean | number | string]>, id:string, label?:string}>}, max_cost?:number, op_id?:string, to:string, weight_attribute?:string}"
+              },
+              {
+                "name": "graph_paths_k_shortest",
+                "inputSchemaSummary": "object{cost?:union[object{attribute:string, default_value?:number, scale?:number} | string], from:string, graph:object{edges:array<object{attributes?:record<string, union[boolean | number | string]>, from:string, label?:string, to:string, weight?:number}>, graph_id?:string, graph_version?:number, metadata?:record<string, union[boolean | number | string]>, name?:string, nodes:array<object{attributes?:record<string, union[boolean | number | string]>, id:string, label?:string}>}, k?:number, max_deviation?:number, op_id?:string, to:string, weight_attribute?:string}"
+              },
+              {
+                "name": "graph_prune",
+                "inputSchemaSummary": "object{action:enum(transcript|events), child_id?:string, job_id?:string, keep_last?:number, max_events?:number}"
+              },
+              {
+                "name": "graph_query",
+                "inputSchemaSummary": "object{direction?:enum(out|in|both), edge_type?:string, kind:enum(neighbors|filter), limit?:number, node_id?:string, select?:enum(nodes|edges|both), where?:record<string, union[boolean | number | string]>}"
+              },
+              {
+                "name": "graph_rewrite_apply",
+                "inputSchemaSummary": "object{evaluation?:object{edges_to_boost?:array<string>, edges_to_prune?:array<string>, insights?:array<object{confidence:number, edge_key:string, metrics?:object{attempts:number, average_duration_ms:number, failures:number, last_updated_at:number, success_rate:number, successes:number, total_duration_ms:number, total_reward:number}, recommendation:enum(boost|keep|prune), reinforcement:number}>}, graph:object{edges:array<object{attributes?:record<string, union[boolean | number | string]>, from:string, label?:string, to:string, weight?:number}>, graph_id?:string, graph_version?:number, metadata?:record<string, union[boolean | number | string]>, name?:string, nodes:array<object{attributes?:record<string, union[boolean | number | string]>, id:string, label?:string}>}, mode:enum(manual|adaptive), op_id?:string, options?:object{avoid_labels?:array<string>, reroute_avoid_labels?:array<string>, reroute_avoid_node_ids?:array<string>, split_parallel_targets?:array<string>, stop_on_no_change?:boolean}, rules?:array<enum(split_parallel|inline_subgraph|reroute_avoid)>}"
+              },
+              {
+                "name": "graph_simulate",
+                "inputSchemaSummary": "object{default_duration?:number, duration_attribute?:string, fallback_duration_attribute?:string, graph:object{edges:array<object{attributes?:record<string, union[boolean | number | string]>, from:string, label?:string, to:string, weight?:number}>, graph_id?:string, graph_version?:number, metadata?:record<string, union[boolean | number | string]>, name?:string, nodes:array<object{attributes?:record<string, union[boolean | number | string]>, id:string, label?:string}>}, op_id?:string, parallelism?:number}"
+              },
+              {
+                "name": "graph_state_autosave",
+                "inputSchemaSummary": "object{action:enum(start|stop), interval_ms?:number, path?:string}"
+              },
+              {
+                "name": "graph_state_inactivity",
+                "inputSchemaSummary": "object{format?:enum(json|text), idle_threshold_ms?:number, inactivityThresholdSec?:number, inactivity_threshold_sec?:number, include_children_without_messages?:boolean, job_id?:string, limit?:number, pending_threshold_ms?:number, runtime?:string, scope?:enum(children), state?:string}"
+              },
+              {
+                "name": "graph_state_load",
+                "inputSchemaSummary": "object{path:string}"
+              },
+              {
+                "name": "graph_state_metrics",
+                "inputSchemaSummary": "object{}"
+              },
+              {
+                "name": "graph_state_save",
+                "inputSchemaSummary": "object{path:string}"
+              },
+              {
+                "name": "graph_state_stats",
+                "inputSchemaSummary": "object{}"
+              },
+              {
+                "name": "graph_subgraph_extract",
+                "inputSchemaSummary": "object{directory?:string, graph:object{edges:array<object{attributes?:record<string, union[boolean | number | string]>, from:string, label?:string, to:string, weight?:number}>, graph_id?:string, graph_version?:number, metadata?:record<string, union[boolean | number | string]>, name?:string, nodes:array<object{attributes?:record<string, union[boolean | number | string]>, id:string, label?:string}>}, node_id:string, op_id?:string, run_id:string}"
+              },
+              {
+                "name": "graph_summarize",
+                "inputSchemaSummary": "object{graph:object{edges:array<object{attributes?:record<string, union[boolean | number | string]>, from:string, label?:string, to:string, weight?:number}>, graph_id?:string, graph_version?:number, metadata?:record<string, union[boolean | number | string]>, name?:string, nodes:array<object{attributes?:record<string, union[boolean | number | string]>, id:string, label?:string}>}, include_centrality?:boolean, op_id?:string}"
+              },
+              {
+                "name": "graph_validate",
+                "inputSchemaSummary": "object{cycle_limit?:number, graph:object{edges:array<object{attributes?:record<string, union[boolean | number | string]>, from:string, label?:string, to:string, weight?:number}>, graph_id?:string, graph_version?:number, metadata?:record<string, union[boolean | number | string]>, name?:string, nodes:array<object{attributes?:record<string, union[boolean | number | string]>, id:string, label?:string}>}, op_id?:string, strict_weights?:boolean}"
+              },
+              {
+                "name": "job_view",
+                "inputSchemaSummary": "object{format?:enum(json|text), include_system?:boolean, job_id:string, per_child_limit?:number}"
+              },
+              {
+                "name": "kill",
+                "inputSchemaSummary": "object{child_id?:string, job_id?:string}"
+              },
+              {
+                "name": "logs_tail",
+                "inputSchemaSummary": "object{filters?:object{child_ids?:array<string>, graph_ids?:array<string>, job_ids?:array<string>, message_contains?:array<string>, node_ids?:array<string>, op_ids?:array<string>, run_ids?:array<string>, since_ts?:number, until_ts?:number}, from_seq?:number, id?:string, levels?:array<string>, limit?:number, stream?:enum(server|run|child)}"
+              },
+              {
+                "name": "mcp_capabilities",
+                "inputSchemaSummary": "object{}"
+              },
+              {
+                "name": "mcp_info",
+                "inputSchemaSummary": "object{}"
+              },
+              {
+                "name": "plan_fanout",
+                "inputSchemaSummary": "object{child_id?:string, children?:array<object{args?:array<string>, command?:string, env?:record<string, string>, goals?:array<string>, manifest_extras?:record<string, unknown>, metadata?:record<string, unknown>, name:string, prompt_variables?:record<string, union[boolean | number | string]>, runtime?:string, system?:string, ttl_s?:number, value_impacts?:array<object{impact?:enum(support|risk), rationale?:string, severity?:number, source?:string, value:string}>}>, children_spec?:union[object{count:number, goals?:array<string>, manifest_extras?:record<string, unknown>, metadata?:record<string, unknown>, name_prefix?:string, prompt_variables?:record<string, union[boolean | number | string]>, runtime?:string, system?:string, value_impacts?:array<object{impact?:enum(support|risk), rationale?:string, severity?:number, source?:string, value:string}>} | object{list:array<object{args?:array<string>, command?:string, env?:record<string, string>, goals?:array<string>, manifest_extras?:record<string, unknown>, metadata?:record<string, unknown>, name:string, prompt_variables?:record<string, union[boolean | number | string]>, runtime?:string, system?:string, ttl_s?:number, value_impacts?:array<object{impact?:enum(support|risk), rationale?:string, severity?:number, source?:string, value:string}>}>}], goal?:string, graph_id?:string, job_id?:string, node_id?:string, op_id?:string, parallelism?:number, prompt_template:object{assistant?:union[array<string> | string], system?:union[array<string> | string], user?:union[array<string> | string]}, retry?:object{delay_ms?:number, max_attempts?:number}, run_id?:string, run_label?:string}"
+              },
+              {
+                "name": "plan_join",
+                "inputSchemaSummary": "object{child_id?:string, children:array<string>, consensus?:object{mode?:enum(majority|quorum|weighted), prefer_value?:string, quorum?:number, tie_breaker?:enum(null|first|prefer), weights?:record<string, number>}, graph_id?:string, job_id?:string, join_policy?:enum(all|first_success|quorum), node_id?:string, op_id?:string, quorum_count?:number, run_id?:string, timeout_sec?:number}"
+              },
+              {
+                "name": "plan_reduce",
+                "inputSchemaSummary": "object{child_id?:string, children:array<string>, graph_id?:string, job_id?:string, node_id?:string, op_id?:string, reducer:enum(concat|merge_json|vote|custom), run_id?:string, spec?:record<string, unknown>}"
+              },
+              {
+                "name": "resources_list",
+                "inputSchemaSummary": "object{limit?:number, prefix?:string}"
+              },
+              {
+                "name": "resources_read",
+                "inputSchemaSummary": "object{uri:string}"
+              },
+              {
+                "name": "resources_watch",
+                "inputSchemaSummary": "object{blackboard?:object{keys?:array<string>, kinds?:array<enum(set|delete|expire)>, since_ts?:number, tags?:array<string>, until_ts?:number}, child?:object{graph_ids?:array<string>, job_ids?:array<string>, node_ids?:array<string>, op_ids?:array<string>, run_ids?:array<string>, since_ts?:number, streams?:array<enum(stdout|stderr|meta)>, until_ts?:number}, format?:enum(json|sse), from_seq?:number, keys?:array<string>, limit?:number, run?:object{child_ids?:array<string>, graph_ids?:array<string>, job_ids?:array<string>, kinds?:array<string>, levels?:array<enum(debug|info|warn|error)>, node_ids?:array<string>, op_ids?:array<string>, run_ids?:array<string>, since_ts?:number, until_ts?:number}, uri:string}"
+              },
+              {
+                "name": "start",
+                "inputSchemaSummary": "object{children?:array<object{goals?:array<string>, name:string, runtime?:string, system?:string}>, job_id:string}"
+              },
+              {
+                "name": "status",
+                "inputSchemaSummary": "object{job_id?:string}"
+              }
+            ]
+          }
+        },
+        "rawText": "{\n  \"format\": \"json\",\n  \"capabilities\": {\n    \"namespaces\": [\n      \"core.jobs\",\n      \"graph.core\"\n    ],\n    \"tools\": [\n      {\n        \"name\": \"aggregate\",\n        \"inputSchemaSummary\": \"object{include_goals?:boolean, include_system?:boolean, job_id:string, strategy?:string}\"\n      },\n      {\n        \"name\": \"child_cancel\",\n        \"inputSchemaSummary\": \"object{child_id:string, signal?:string, timeout_ms?:number}\"\n      },\n      {\n        \"name\": \"child_chat\",\n        \"inputSchemaSummary\": \"object{child_id:string, content:string, role?:enum(user|system)}\"\n      },\n      {\n        \"name\": \"child_collect\",\n        \"inputSchemaSummary\": \"object{child_id:string}\"\n      },\n      {\n        \"name\": \"child_create\",\n        \"inputSchemaSummary\": \"object{args?:array<string>, budget?:object{messages?:number, tokens?:number, wallclock_ms?:number}, child_id?:string, command?:string, env?:record<string, string>, idempotency_key?:string, initial_payload?:unknown, manifest_extras?:record<string, unknown>, metadata?:record<string, unknown>, op_id?:string, prompt?:object{assistant?:union[array<string> | string], system?:union[array<string> | string], user?:union[array<string> | string]}, ready_timeout_ms?:number, ready_type?:string, timeouts?:object{heartbeat_ms?:number, idle_ms?:number, ready_ms?:number}, tools_allow?:array<string>, wait_for_ready?:boolean}\"\n      },\n      {\n        \"name\": \"child_gc\",\n        \"inputSchemaSummary\": \"object{child_id:string}\"\n      },\n      {\n        \"name\": \"child_info\",\n        \"inputSchemaSummary\": \"object{child_id:string}\"\n      },\n      {\n        \"name\": \"child_kill\",\n        \"inputSchemaSummary\": \"object{child_id:string, timeout_ms?:number}\"\n      },\n      {\n        \"name\": \"child_prompt\",\n        \"inputSchemaSummary\": \"object{child_id:string, messages:array<object{content:string, role:enum(system|user|assistant)}>}\"\n      },\n      {\n        \"name\": \"child_push_partial\",\n        \"inputSchemaSummary\": \"object{delta:string, done?:boolean, pending_id:string}\"\n      },\n      {\n        \"name\": \"child_push_reply\",\n        \"inputSchemaSummary\": \"object{content:string, pending_id:string}\"\n      },\n      {\n        \"name\": \"child_rename\",\n        \"inputSchemaSummary\": \"object{child_id:string, name:string}\"\n      },\n      {\n        \"name\": \"child_reset\",\n        \"inputSchemaSummary\": \"object{child_id:string, keep_system?:boolean}\"\n      },\n      {\n        \"name\": \"child_send\",\n        \"inputSchemaSummary\": \"object{child_id:string, contract_net?:object{auto_complete?:boolean, call_id:string, requested_agent_id?:string}, expect?:enum(stream|final), payload:unknown, sandbox?:object{action?:string, allow_failure?:boolean, enabled?:boolean, metadata?:record<string, unknown>, payload?:unknown, require_handler?:boolean, timeout_ms?:number}, timeout_ms?:number}\"\n      },\n      {\n        \"name\": \"child_stream\",\n        \"inputSchemaSummary\": \"object{after_sequence?:number, child_id:string, limit?:number, streams?:array<enum(stdout|stderr)>}\"\n      },\n      {\n        \"name\": \"child_transcript\",\n        \"inputSchemaSummary\": \"object{child_id:string, limit?:number, reverse?:boolean, since_index?:number, since_ts?:number}\"\n      },\n      {\n        \"name\": \"conversation_view\",\n        \"inputSchemaSummary\": \"object{child_id:string, format?:enum(text|json), include_system?:boolean, limit?:number, since_index?:number, since_ts?:number}\"\n      },\n      {\n        \"name\": \"events_subscribe\",\n        \"inputSchemaSummary\": \"object{cats?:array<string>, child_id?:string, format?:enum(jsonlines|sse), from_seq?:number, graph_id?:string, job_id?:string, levels?:array<enum(debug|info|warn|error)>, limit?:number, node_id?:string, op_id?:string, run_id?:string}\"\n      },\n      {\n        \"name\": \"events_view\",\n        \"inputSchemaSummary\": \"object{child_id?:string, job_id?:string, limit?:number, min_seq?:number, mode?:enum(recent|pending|live), order?:enum(asc|desc)}\"\n      },\n      {\n        \"name\": \"events_view_live\",\n        \"inputSchemaSummary\": \"object{child_id?:string, job_id?:string, limit?:number, min_seq?:number, order?:enum(asc|desc)}\"\n      },\n      {\n        \"name\": \"graph_causal_analyze\",\n        \"inputSchemaSummary\": \"object{compute_min_cut?:boolean, graph:object{edges:array<object{attributes?:record<string, union[boolean | number | string]>, from:string, label?:string, to:string, weight?:number}>, graph_id?:string, graph_version?:number, metadata?:record<string, union[boolean | number | string]>, name?:string, nodes:array<object{attributes?:record<string, union[boolean | number | string]>, id:string, label?:string}>}, include_transitive_closure?:boolean, max_cycles?:number, op_id?:string}\"\n      },\n      {\n        \"name\": \"graph_centrality_betweenness\",\n        \"inputSchemaSummary\": \"object{cost?:union[object{attribute:string, default_value?:number, scale?:number} | string], graph:object{edges:array<object{attributes?:record<string, union[boolean | number | string]>, from:string, label?:string, to:string, weight?:number}>, graph_id?:string, graph_version?:number, metadata?:record<string, union[boolean | number | string]>, name?:string, nodes:array<object{attributes?:record<string, union[boolean | number | string]>, id:string, label?:string}>}, normalise?:boolean, op_id?:string, top_k?:number, weight_attribute?:string, weighted?:boolean}\"\n      },\n      {\n        \"name\": \"graph_config_retention\",\n        \"inputSchemaSummary\": \"object{max_event_nodes?:number, max_transcript_per_child?:number}\"\n      },\n      {\n        \"name\": \"graph_config_runtime\",\n        \"inputSchemaSummary\": \"object{reset?:boolean, runtime?:string}\"\n      },\n      {\n        \"name\": \"graph_critical_path\",\n        \"inputSchemaSummary\": \"object{default_duration?:number, duration_attribute?:string, fallback_duration_attribute?:string, graph:object{edges:array<object{attributes?:record<string, union[boolean | number | string]>, from:string, label?:string, to:string, weight?:number}>, graph_id?:string, graph_version?:number, metadata?:record<string, union[boolean | number | string]>, name?:string, nodes:array<object{attributes?:record<string, union[boolean | number | string]>, id:string, label?:string}>}, op_id?:string}\"\n      },\n      {\n        \"name\": \"graph_export\",\n        \"inputSchemaSummary\": \"object{direction?:enum(LR|TB), format?:enum(json|mermaid|dot|graphml), inline?:boolean, label_attribute?:string, max_label_length?:number, path?:string, pretty?:boolean, truncate?:number, weight_attribute?:string}\"\n      },\n      {\n        \"name\": \"graph_forge_analyze\",\n        \"inputSchemaSummary\": \"object{analyses?:array<object{args?:array<string>, name:string, weight_key?:string}>, entry_graph?:string, path?:string, source?:string, use_defined_analyses?:boolean, weight_key?:string}\"\n      },\n      {\n        \"name\": \"graph_generate\",\n        \"inputSchemaSummary\": \"object{default_weight?:number, name?:string, op_id?:string, preset?:enum(lint_test_build_package|analysis_ci_pipeline), tasks?:union[array<object{depends_on?:array<string>, duration?:number, id:string, label?:string, metadata?:record<string, union[boolean | number | string]>, weight?:number}> | object{tasks:array<object{depends_on?:array<string>, duration?:number, id:string, label?:string, metadata?:record<string, union[boolean | number | string]>, weight?:number}>} | string]}\"\n      },\n      {\n        \"name\": \"graph_hyper_export\",\n        \"inputSchemaSummary\": \"object{graph_version?:number, hyper_edges:array<object{attributes?:record<string, union[boolean | number | string]>, id:string, label?:string, sources:array<string>, targets:array<string>, weight?:number}>, id:string, metadata?:record<string, union[boolean | number | string]>, nodes:array<object{attributes?:record<string, union[boolean | number | string]>, id:string, label?:string}>, op_id?:string}\"\n      },\n      {\n        \"name\": \"graph_mutate\",\n        \"inputSchemaSummary\": \"object{graph:object{edges:array<object{attributes?:record<string, union[boolean | number | string]>, from:string, label?:string, to:string, weight?:number}>, graph_id?:string, graph_version?:number, metadata?:record<string, union[boolean | number | string]>, name?:string, nodes:array<object{attributes?:record<string, union[boolean | number | string]>, id:string, label?:string}>}, op_id?:string, operations:array<union[object{edge:object{attributes?:record<string, union[boolean | number | string]>, from:string, label?:string, to:string, weight?:number}, op:literal(\\\"add_edge\\\")} | object{from:string, key:string, op:literal(\\\"set_edge_attribute\\\"), to:string, value:union[boolean | number | string]|null} | object{from:string, op:literal(\\\"remove_edge\\\"), to:string} | object{id:string, key:string, op:literal(\\\"set_node_attribute\\\"), value:union[boolean | number | string]|null} | object{id:string, new_id:string, op:literal(\\\"rename_node\\\")} | object{id:string, op:literal(\\\"remove_node\\\")} | object{node:object{attributes?:record<string, union[boolean | number | string]>, id:string, label?:string}, op:literal(\\\"add_node\\\")} | object{op:literal(\\\"patch_metadata\\\"), set?:record<string, union[boolean | number | string]>, unset?:array<string>} | object{op:literal(\\\"rewrite\\\"), params?:object{reroute_avoid_labels?:array<string>, reroute_avoid_node_ids?:array<string>, split_parallel_targets?:array<string>, stop_on_no_change?:boolean}, rule:enum(split_parallel|inline_subgraph|reroute_avoid)}]>}\"\n      },\n      {\n        \"name\": \"graph_optimize\",\n        \"inputSchemaSummary\": \"object{default_duration?:number, duration_attribute?:string, explore_parallelism?:array<number>, fallback_duration_attribute?:string, graph:object{edges:array<object{attributes?:record<string, union[boolean | number | string]>, from:string, label?:string, to:string, weight?:number}>, graph_id?:string, graph_version?:number, metadata?:record<string, union[boolean | number | string]>, name?:string, nodes:array<object{attributes?:record<string, union[boolean | number | string]>, id:string, label?:string}>}, max_parallelism?:number, objective?:union[object{attribute?:string, concurrency_penalty?:number, default_value?:number, parallel_penalty?:number, type:literal(\\\"risk\\\")} | object{attribute?:string, default_value?:number, parallel_penalty?:number, type:literal(\\\"cost\\\")} | object{type:literal(\\\"makespan\\\")}], op_id?:string, parallelism?:number}\"\n      },\n      {\n        \"name\": \"graph_optimize_moo\",\n        \"inputSchemaSummary\": \"object{default_duration?:number, duration_attribute?:string, fallback_duration_attribute?:string, graph:object{edges:array<object{attributes?:record<string, union[boolean | number | string]>, from:string, label?:string, to:string, weight?:number}>, graph_id?:string, graph_version?:number, metadata?:record<string, union[boolean | number | string]>, name?:string, nodes:array<object{attributes?:record<string, union[boolean | number | string]>, id:string, label?:string}>}, objectives:array<union[object{attribute?:string, concurrency_penalty?:number, default_value?:number, label?:string, parallel_penalty?:number, type:literal(\\\"risk\\\")} | object{attribute?:string, default_value?:number, label?:string, parallel_penalty?:number, type:literal(\\\"cost\\\")} | object{label?:string, type:literal(\\\"makespan\\\")}]>, op_id?:string, parallelism_candidates:array<number>, scalarization?:object{method:literal(\\\"weighted_sum\\\"), weights:record<string, number>}}\"\n      },\n      {\n        \"name\": \"graph_partition\",\n        \"inputSchemaSummary\": \"object{graph:object{edges:array<object{attributes?:record<string, union[boolean | number | string]>, from:string, label?:string, to:string, weight?:number}>, graph_id?:string, graph_version?:number, metadata?:record<string, union[boolean | number | string]>, name?:string, nodes:array<object{attributes?:record<string, union[boolean | number | string]>, id:string, label?:string}>}, k?:number, max_iterations?:number, objective?:enum(min-cut|community), op_id?:string, seed?:number}\"\n      },\n      {\n        \"name\": \"graph_paths_constrained\",\n        \"inputSchemaSummary\": \"object{avoid_edges?:array<object{from:string, to:string}>, avoid_nodes?:array<string>, cost?:union[object{attribute:string, default_value?:number, scale?:number} | string], from:string, graph:object{edges:array<object{attributes?:record<string, union[boolean | number | string]>, from:string, label?:string, to:string, weight?:number}>, graph_id?:string, graph_version?:number, metadata?:record<string, union[boolean | number | string]>, name?:string, nodes:array<object{attributes?:record<string, union[boolean | number | string]>, id:string, label?:string}>}, max_cost?:number, op_id?:string, to:string, weight_attribute?:string}\"\n      },\n      {\n        \"name\": \"graph_paths_k_shortest\",\n        \"inputSchemaSummary\": \"object{cost?:union[object{attribute:string, default_value?:number, scale?:number} | string], from:string, graph:object{edges:array<object{attributes?:record<string, union[boolean | number | string]>, from:string, label?:string, to:string, weight?:number}>, graph_id?:string, graph_version?:number, metadata?:record<string, union[boolean | number | string]>, name?:string, nodes:array<object{attributes?:record<string, union[boolean | number | string]>, id:string, label?:string}>}, k?:number, max_deviation?:number, op_id?:string, to:string, weight_attribute?:string}\"\n      },\n      {\n        \"name\": \"graph_prune\",\n        \"inputSchemaSummary\": \"object{action:enum(transcript|events), child_id?:string, job_id?:string, keep_last?:number, max_events?:number}\"\n      },\n      {\n        \"name\": \"graph_query\",\n        \"inputSchemaSummary\": \"object{direction?:enum(out|in|both), edge_type?:string, kind:enum(neighbors|filter), limit?:number, node_id?:string, select?:enum(nodes|edges|both), where?:record<string, union[boolean | number | string]>}\"\n      },\n      {\n        \"name\": \"graph_rewrite_apply\",\n        \"inputSchemaSummary\": \"object{evaluation?:object{edges_to_boost?:array<string>, edges_to_prune?:array<string>, insights?:array<object{confidence:number, edge_key:string, metrics?:object{attempts:number, average_duration_ms:number, failures:number, last_updated_at:number, success_rate:number, successes:number, total_duration_ms:number, total_reward:number}, recommendation:enum(boost|keep|prune), reinforcement:number}>}, graph:object{edges:array<object{attributes?:record<string, union[boolean | number | string]>, from:string, label?:string, to:string, weight?:number}>, graph_id?:string, graph_version?:number, metadata?:record<string, union[boolean | number | string]>, name?:string, nodes:array<object{attributes?:record<string, union[boolean | number | string]>, id:string, label?:string}>}, mode:enum(manual|adaptive), op_id?:string, options?:object{avoid_labels?:array<string>, reroute_avoid_labels?:array<string>, reroute_avoid_node_ids?:array<string>, split_parallel_targets?:array<string>, stop_on_no_change?:boolean}, rules?:array<enum(split_parallel|inline_subgraph|reroute_avoid)>}\"\n      },\n      {\n        \"name\": \"graph_simulate\",\n        \"inputSchemaSummary\": \"object{default_duration?:number, duration_attribute?:string, fallback_duration_attribute?:string, graph:object{edges:array<object{attributes?:record<string, union[boolean | number | string]>, from:string, label?:string, to:string, weight?:number}>, graph_id?:string, graph_version?:number, metadata?:record<string, union[boolean | number | string]>, name?:string, nodes:array<object{attributes?:record<string, union[boolean | number | string]>, id:string, label?:string}>}, op_id?:string, parallelism?:number}\"\n      },\n      {\n        \"name\": \"graph_state_autosave\",\n        \"inputSchemaSummary\": \"object{action:enum(start|stop), interval_ms?:number, path?:string}\"\n      },\n      {\n        \"name\": \"graph_state_inactivity\",\n        \"inputSchemaSummary\": \"object{format?:enum(json|text), idle_threshold_ms?:number, inactivityThresholdSec?:number, inactivity_threshold_sec?:number, include_children_without_messages?:boolean, job_id?:string, limit?:number, pending_threshold_ms?:number, runtime?:string, scope?:enum(children), state?:string}\"\n      },\n      {\n        \"name\": \"graph_state_load\",\n        \"inputSchemaSummary\": \"object{path:string}\"\n      },\n      {\n        \"name\": \"graph_state_metrics\",\n        \"inputSchemaSummary\": \"object{}\"\n      },\n      {\n        \"name\": \"graph_state_save\",\n        \"inputSchemaSummary\": \"object{path:string}\"\n      },\n      {\n        \"name\": \"graph_state_stats\",\n        \"inputSchemaSummary\": \"object{}\"\n      },\n      {\n        \"name\": \"graph_subgraph_extract\",\n        \"inputSchemaSummary\": \"object{directory?:string, graph:object{edges:array<object{attributes?:record<string, union[boolean | number | string]>, from:string, label?:string, to:string, weight?:number}>, graph_id?:string, graph_version?:number, metadata?:record<string, union[boolean | number | string]>, name?:string, nodes:array<object{attributes?:record<string, union[boolean | number | string]>, id:string, label?:string}>}, node_id:string, op_id?:string, run_id:string}\"\n      },\n      {\n        \"name\": \"graph_summarize\",\n        \"inputSchemaSummary\": \"object{graph:object{edges:array<object{attributes?:record<string, union[boolean | number | string]>, from:string, label?:string, to:string, weight?:number}>, graph_id?:string, graph_version?:number, metadata?:record<string, union[boolean | number | string]>, name?:string, nodes:array<object{attributes?:record<string, union[boolean | number | string]>, id:string, label?:string}>}, include_centrality?:boolean, op_id?:string}\"\n      },\n      {\n        \"name\": \"graph_validate\",\n        \"inputSchemaSummary\": \"object{cycle_limit?:number, graph:object{edges:array<object{attributes?:record<string, union[boolean | number | string]>, from:string, label?:string, to:string, weight?:number}>, graph_id?:string, graph_version?:number, metadata?:record<string, union[boolean | number | string]>, name?:string, nodes:array<object{attributes?:record<string, union[boolean | number | string]>, id:string, label?:string}>}, op_id?:string, strict_weights?:boolean}\"\n      },\n      {\n        \"name\": \"job_view\",\n        \"inputSchemaSummary\": \"object{format?:enum(json|text), include_system?:boolean, job_id:string, per_child_limit?:number}\"\n      },\n      {\n        \"name\": \"kill\",\n        \"inputSchemaSummary\": \"object{child_id?:string, job_id?:string}\"\n      },\n      {\n        \"name\": \"logs_tail\",\n        \"inputSchemaSummary\": \"object{filters?:object{child_ids?:array<string>, graph_ids?:array<string>, job_ids?:array<string>, message_contains?:array<string>, node_ids?:array<string>, op_ids?:array<string>, run_ids?:array<string>, since_ts?:number, until_ts?:number}, from_seq?:number, id?:string, levels?:array<string>, limit?:number, stream?:enum(server|run|child)}\"\n      },\n      {\n        \"name\": \"mcp_capabilities\",\n        \"inputSchemaSummary\": \"object{}\"\n      },\n      {\n        \"name\": \"mcp_info\",\n        \"inputSchemaSummary\": \"object{}\"\n      },\n      {\n        \"name\": \"plan_fanout\",\n        \"inputSchemaSummary\": \"object{child_id?:string, children?:array<object{args?:array<string>, command?:string, env?:record<string, string>, goals?:array<string>, manifest_extras?:record<string, unknown>, metadata?:record<string, unknown>, name:string, prompt_variables?:record<string, union[boolean | number | string]>, runtime?:string, system?:string, ttl_s?:number, value_impacts?:array<object{impact?:enum(support|risk), rationale?:string, severity?:number, source?:string, value:string}>}>, children_spec?:union[object{count:number, goals?:array<string>, manifest_extras?:record<string, unknown>, metadata?:record<string, unknown>, name_prefix?:string, prompt_variables?:record<string, union[boolean | number | string]>, runtime?:string, system?:string, value_impacts?:array<object{impact?:enum(support|risk), rationale?:string, severity?:number, source?:string, value:string}>} | object{list:array<object{args?:array<string>, command?:string, env?:record<string, string>, goals?:array<string>, manifest_extras?:record<string, unknown>, metadata?:record<string, unknown>, name:string, prompt_variables?:record<string, union[boolean | number | string]>, runtime?:string, system?:string, ttl_s?:number, value_impacts?:array<object{impact?:enum(support|risk), rationale?:string, severity?:number, source?:string, value:string}>}>}], goal?:string, graph_id?:string, job_id?:string, node_id?:string, op_id?:string, parallelism?:number, prompt_template:object{assistant?:union[array<string> | string], system?:union[array<string> | string], user?:union[array<string> | string]}, retry?:object{delay_ms?:number, max_attempts?:number}, run_id?:string, run_label?:string}\"\n      },\n      {\n        \"name\": \"plan_join\",\n        \"inputSchemaSummary\": \"object{child_id?:string, children:array<string>, consensus?:object{mode?:enum(majority|quorum|weighted), prefer_value?:string, quorum?:number, tie_breaker?:enum(null|first|prefer), weights?:record<string, number>}, graph_id?:string, job_id?:string, join_policy?:enum(all|first_success|quorum), node_id?:string, op_id?:string, quorum_count?:number, run_id?:string, timeout_sec?:number}\"\n      },\n      {\n        \"name\": \"plan_reduce\",\n        \"inputSchemaSummary\": \"object{child_id?:string, children:array<string>, graph_id?:string, job_id?:string, node_id?:string, op_id?:string, reducer:enum(concat|merge_json|vote|custom), run_id?:string, spec?:record<string, unknown>}\"\n      },\n      {\n        \"name\": \"resources_list\",\n        \"inputSchemaSummary\": \"object{limit?:number, prefix?:string}\"\n      },\n      {\n        \"name\": \"resources_read\",\n        \"inputSchemaSummary\": \"object{uri:string}\"\n      },\n      {\n        \"name\": \"resources_watch\",\n        \"inputSchemaSummary\": \"object{blackboard?:object{keys?:array<string>, kinds?:array<enum(set|delete|expire)>, since_ts?:number, tags?:array<string>, until_ts?:number}, child?:object{graph_ids?:array<string>, job_ids?:array<string>, node_ids?:array<string>, op_ids?:array<string>, run_ids?:array<string>, since_ts?:number, streams?:array<enum(stdout|stderr|meta)>, until_ts?:number}, format?:enum(json|sse), from_seq?:number, keys?:array<string>, limit?:number, run?:object{child_ids?:array<string>, graph_ids?:array<string>, job_ids?:array<string>, kinds?:array<string>, levels?:array<enum(debug|info|warn|error)>, node_ids?:array<string>, op_ids?:array<string>, run_ids?:array<string>, since_ts?:number, until_ts?:number}, uri:string}\"\n      },\n      {\n        \"name\": \"start\",\n        \"inputSchemaSummary\": \"object{children?:array<object{goals?:array<string>, name:string, runtime?:string, system?:string}>, job_id:string}\"\n      },\n      {\n        \"name\": \"status\",\n        \"inputSchemaSummary\": \"object{job_id?:string}\"\n      }\n    ]\n  }\n}"
+      }
+    },
+    {
+      "toolName": "resources_list",
+      "totalCalls": 1,
+      "errorCount": 0,
+      "successRate": 1,
+      "p95DurationMs": 1.116512,
+      "traces": [
+        {
+          "traceId": "trace-5cc09861fcc32a85837151cfecaf94e3",
+          "artefacts": {
+            "inputPath": "/workspace/self-codex/validation_runs/LATEST/inputs/2025-10-09T21-04-32-597Z-0003-resources_list-trace-5cc09861fcc32a85837151cfecaf94e3-input.json",
+            "outputPath": "/workspace/self-codex/validation_runs/LATEST/outputs/2025-10-09T21-04-32-597Z-0003-resources_list-trace-5cc09861fcc32a85837151cfecaf94e3-output.json"
+          }
+        }
+      ],
+      "lastResponse": {
+        "isError": false,
+        "structured": {
+          "items": []
+        },
+        "parsedText": {
+          "tool": "resources_list",
+          "result": {
+            "items": []
+          }
+        },
+        "rawText": "{\n  \"tool\": \"resources_list\",\n  \"result\": {\n    \"items\": []\n  }\n}"
+      }
+    },
+    {
+      "toolName": "events_subscribe",
+      "totalCalls": 2,
+      "errorCount": 0,
+      "successRate": 1,
+      "p95DurationMs": 0.616721,
+      "traces": [
+        {
+          "traceId": "trace-7bc7b04e384f52699ee4e16a568e1279",
+          "artefacts": {
+            "inputPath": "/workspace/self-codex/validation_runs/LATEST/inputs/2025-10-09T21-04-32-598Z-0004-events_subscribe-trace-7bc7b04e384f52699ee4e16a568e1279-input.json",
+            "outputPath": "/workspace/self-codex/validation_runs/LATEST/outputs/2025-10-09T21-04-32-598Z-0004-events_subscribe-trace-7bc7b04e384f52699ee4e16a568e1279-output.json"
+          }
+        },
+        {
+          "traceId": "trace-d930dc36e6494f09edc5d0d86b1dae03",
+          "artefacts": {
+            "inputPath": "/workspace/self-codex/validation_runs/LATEST/inputs/2025-10-09T21-04-32-601Z-0005-events_subscribe-trace-d930dc36e6494f09edc5d0d86b1dae03-input.json",
+            "outputPath": "/workspace/self-codex/validation_runs/LATEST/outputs/2025-10-09T21-04-32-601Z-0005-events_subscribe-trace-d930dc36e6494f09edc5d0d86b1dae03-output.json"
+          }
+        }
+      ],
+      "lastResponse": {
+        "isError": false,
+        "structured": {
+          "format": "jsonlines",
+          "events": [
+            {
+              "seq": 2,
+              "ts": 1760043872601,
+              "cat": "graph",
+              "kind": "PROBE",
+              "level": "info",
+              "job_id": null,
+              "run_id": "validation-LATEST",
+              "op_id": null,
+              "graph_id": null,
+              "node_id": null,
+              "child_id": null,
+              "msg": "introspection_probe",
+              "data": {
+                "stage": "introspection",
+                "emitted_at": "2025-10-09T21:04:32.601Z"
+              }
+            }
+          ],
+          "stream": "{\"seq\":2,\"ts\":1760043872601,\"cat\":\"graph\",\"kind\":\"PROBE\",\"level\":\"info\",\"job_id\":null,\"run_id\":\"validation-LATEST\",\"op_id\":null,\"graph_id\":null,\"node_id\":null,\"child_id\":null,\"msg\":\"introspection_probe\",\"data\":{\"stage\":\"introspection\",\"emitted_at\":\"2025-10-09T21:04:32.601Z\"}}",
+          "next_seq": 2,
+          "count": 1
+        },
+        "parsedText": {
+          "tool": "events_subscribe",
+          "result": {
+            "format": "jsonlines",
+            "events": [
+              {
+                "seq": 2,
+                "ts": 1760043872601,
+                "cat": "graph",
+                "kind": "PROBE",
+                "level": "info",
+                "job_id": null,
+                "run_id": "validation-LATEST",
+                "op_id": null,
+                "graph_id": null,
+                "node_id": null,
+                "child_id": null,
+                "msg": "introspection_probe",
+                "data": {
+                  "stage": "introspection",
+                  "emitted_at": "2025-10-09T21:04:32.601Z"
+                }
+              }
+            ],
+            "stream": "{\"seq\":2,\"ts\":1760043872601,\"cat\":\"graph\",\"kind\":\"PROBE\",\"level\":\"info\",\"job_id\":null,\"run_id\":\"validation-LATEST\",\"op_id\":null,\"graph_id\":null,\"node_id\":null,\"child_id\":null,\"msg\":\"introspection_probe\",\"data\":{\"stage\":\"introspection\",\"emitted_at\":\"2025-10-09T21:04:32.601Z\"}}",
+            "next_seq": 2,
+            "count": 1
+          }
+        },
+        "rawText": "{\n  \"tool\": \"events_subscribe\",\n  \"result\": {\n    \"format\": \"jsonlines\",\n    \"events\": [\n      {\n        \"seq\": 2,\n        \"ts\": 1760043872601,\n        \"cat\": \"graph\",\n        \"kind\": \"PROBE\",\n        \"level\": \"info\",\n        \"job_id\": null,\n        \"run_id\": \"validation-LATEST\",\n        \"op_id\": null,\n        \"graph_id\": null,\n        \"node_id\": null,\n        \"child_id\": null,\n        \"msg\": \"introspection_probe\",\n        \"data\": {\n          \"stage\": \"introspection\",\n          \"emitted_at\": \"2025-10-09T21:04:32.601Z\"\n        }\n      }\n    ],\n    \"stream\": \"{\\\"seq\\\":2,\\\"ts\\\":1760043872601,\\\"cat\\\":\\\"graph\\\",\\\"kind\\\":\\\"PROBE\\\",\\\"level\\\":\\\"info\\\",\\\"job_id\\\":null,\\\"run_id\\\":\\\"validation-LATEST\\\",\\\"op_id\\\":null,\\\"graph_id\\\":null,\\\"node_id\\\":null,\\\"child_id\\\":null,\\\"msg\\\":\\\"introspection_probe\\\",\\\"data\\\":{\\\"stage\\\":\\\"introspection\\\",\\\"emitted_at\\\":\\\"2025-10-09T21:04:32.601Z\\\"}}\",\n    \"next_seq\": 2,\n    \"count\": 1\n  }\n}"
+      }
+    }
+  ]
+}

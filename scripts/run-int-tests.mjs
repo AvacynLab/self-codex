@@ -7,6 +7,7 @@
 import { readdir, stat } from 'node:fs/promises';
 import { resolve, extname } from 'node:path';
 import { spawn } from 'node:child_process';
+import { ensureSourceMapNodeOptions, assertNodeVersion } from './lib/env-helpers.mjs';
 
 const INTEGRATION_ROOT = resolve('tests', 'int');
 
@@ -46,7 +47,10 @@ async function runMocha(files) {
   ];
 
   await new Promise((resolvePromise, rejectPromise) => {
-    const child = spawn(command, args, { stdio: 'inherit' });
+    const child = spawn(command, args, {
+      stdio: 'inherit',
+      env: ensureSourceMapNodeOptions(process.env),
+    });
     child.on('close', (code) => {
       if (code === 0) {
         resolvePromise();
@@ -59,6 +63,7 @@ async function runMocha(files) {
 }
 
 async function main() {
+  assertNodeVersion();
   const exists = await stat(INTEGRATION_ROOT).then(() => true).catch(() => false);
   if (!exists) {
     console.log('No integration tests directory detected; skipping.');

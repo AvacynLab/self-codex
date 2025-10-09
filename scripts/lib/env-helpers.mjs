@@ -1,6 +1,13 @@
 import { spawn } from "node:child_process";
 
 /**
+ * Minimum Node.js major version required by the production guidelines. Keeping
+ * the constant close to the helpers simplifies future bumps and keeps the
+ * runtime checks and documentation in sync.
+ */
+const MINIMUM_NODE_MAJOR = 20;
+
+/**
  * Shared utilities consumed by the environment and maintenance scripts.
  *
  * The production guidelines require these scripts to avoid mutating the
@@ -72,9 +79,10 @@ export function selectInstallArguments(hasLockFile) {
  * sequence mirrors the checklist from AGENTS.md and is reused by both the
  * setup and maintenance scripts.
  */
-export function buildCommandPlan(hasLockFile) {
+export function buildCommandPlan(hasLockFile, options = {}) {
+  const { includeGraphForge = false } = options;
   const installArgs = selectInstallArguments(hasLockFile);
-  return [
+  const plan = [
     {
       description: `npm ${installArgs.join(" ")}`,
       command: "npm",
@@ -91,12 +99,80 @@ export function buildCommandPlan(hasLockFile) {
         "--no-package-lock",
       ],
     },
-    {
+  ];
+
+  if (hasLockFile) {
+    plan.push({
       description: "npm run build",
       command: "npm",
       args: ["run", "build"],
-    },
-  ];
+    });
+  } else {
+    plan.push({
+      description: "npx typescript tsc",
+      command: "npx",
+      args: ["typescript", "tsc"],
+    });
+
+    if (includeGraphForge) {
+      plan.push({
+        description: "npx typescript tsc -p graph-forge/tsconfig.json",
+        command: "npx",
+        args: [
+          "typescript",
+          "tsc",
+          "-p",
+          "graph-forge/tsconfig.json",
+        ],
+      });
+    }
+  }
+
+  return plan;
+}
+
+/**
+ * Returns a shallow clone of the provided environment object with
+ * `--enable-source-maps` guaranteed to be present in `NODE_OPTIONS`. The helper
+ * avoids mutating the original input so callers can safely reuse
+ * `process.env`.
+ */
+export function ensureSourceMapNodeOptions(baseEnv = process.env) {
+  const env = { ...(baseEnv ?? {}) };
+  const rawOptions = env.NODE_OPTIONS ?? "";
+  const tokens = rawOptions
+    .split(/\s+/)
+    .map((token) => token.trim())
+    .filter(Boolean);
+  if (!tokens.includes("--enable-source-maps")) {
+    tokens.push("--enable-source-maps");
+  }
+  env.NODE_OPTIONS = tokens.join(" ") || "--enable-source-maps";
+  return env;
+}
+
+/**
+ * Ensures the host Node.js runtime satisfies the minimum supported version.
+ * The check defends against CI misconfiguration where an older interpreter
+ * could silently skip source-map support and other language features.
+ */
+export function assertNodeVersion(minMajor = MINIMUM_NODE_MAJOR) {
+  const override = process.env.CODEX_NODE_VERSION_OVERRIDE;
+  const rawVersion =
+    (override && override.trim()) ||
+    (process.versions && process.versions.node) ||
+    (typeof process.version === "string" ? process.version.replace(/^v/, "") : "");
+  const [majorToken = "0"] = rawVersion.split(".");
+  const major = Number.parseInt(majorToken, 10);
+  if (!Number.isFinite(major)) {
+    throw new Error(
+      `Unable to determine the active Node.js version (reported: ${rawVersion || "unknown"}).`,
+    );
+  }
+  if (major < minMajor) {
+    throw new Error(`Node.js ${minMajor}+ is required (detected ${rawVersion}).`);
+  }
+  return rawVersion;
 }
 
 /**
@@ -109,8 +185,14 @@ export function createCommandRunner({ projectRoot, dryRun }) {
 
   const runCommand = (command, args, { captureOutput = false } = {}) =>
     new Promise((resolvePromise, rejectPromise) => {
+      const envWithSourceMaps = ensureSourceMapNodeOptions(process.env);
       if (dryRun) {
-        recordedCommands.push({ command, args, captureOutput });
+        recordedCommands.push({
+          command,
+          args,
+          captureOutput,
+          nodeOptions: envWithSourceMaps.NODE_OPTIONS,
+        });
         resolvePromise({ stdout: "", stderr: "" });
         return;
       }
@@ -118,6 +200,7 @@ export function createCommandRunner({ projectRoot, dryRun }) {
       const child = spawn(command, args, {
         cwd: projectRoot,
         stdio: captureOutput ? ["ignore", "pipe", "pipe"] : "inherit",
+        env: envWithSourceMaps,
       });
 
       let stdout = "";

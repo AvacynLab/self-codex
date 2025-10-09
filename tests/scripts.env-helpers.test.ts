@@ -37,8 +37,8 @@ describe("environment script helpers", () => {
   });
 
   it("builds the command plan with read-only installs when no lockfile is present", () => {
-    const plan = helpers.buildCommandPlan(false);
-    expect(plan).to.have.length(3);
+    const plan = helpers.buildCommandPlan(false, { includeGraphForge: true });
+    expect(plan).to.have.length(4);
     expect(plan[0]?.args).to.deep.equal([
       "install",
       "--omit=dev",
@@ -51,11 +51,39 @@ describe("environment script helpers", () => {
       "--no-save",
       "--no-package-lock",
     ]);
-    expect(plan[2]?.args).to.deep.equal(["run", "build"]);
+    expect(plan[2]?.args).to.deep.equal(["typescript", "tsc"]);
+    expect(plan[3]?.args).to.deep.equal([
+      "typescript",
+      "tsc",
+      "-p",
+      "graph-forge/tsconfig.json",
+    ]);
   });
 
   it("switches to npm ci when the lockfile is available", () => {
-    const plan = helpers.buildCommandPlan(true);
+    const plan = helpers.buildCommandPlan(true, { includeGraphForge: true });
     expect(plan[0]?.args).to.deep.equal(["ci"]);
+    expect(plan).to.have.length(3);
+    expect(plan[2]?.args).to.deep.equal(["run", "build"]);
+  });
+
+  it("ensures NODE_OPTIONS always contains the source map flag", () => {
+    const original = { NODE_OPTIONS: "--inspect" };
+    const result = helpers.ensureSourceMapNodeOptions(original);
+    expect(result.NODE_OPTIONS.split(/\s+/)).to.include("--enable-source-maps");
+    expect(original.NODE_OPTIONS).to.equal("--inspect");
+  });
+
+  it("rejects runtimes older than the minimum supported Node.js version", () => {
+    process.env.CODEX_NODE_VERSION_OVERRIDE = "18.19.0";
+    expect(() => helpers.assertNodeVersion(20)).to.throw(/Node\.js 20\+/);
+    delete process.env.CODEX_NODE_VERSION_OVERRIDE;
+  });
+
+  it("returns the detected runtime version when requirements are satisfied", () => {
+    process.env.CODEX_NODE_VERSION_OVERRIDE = "20.10.1";
+    const detected = helpers.assertNodeVersion(20);
+    expect(detected).to.equal("20.10.1");
+    delete process.env.CODEX_NODE_VERSION_OVERRIDE;
   });
 });

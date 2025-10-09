@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
-import { handleJsonRpc, type JsonRpcRequest } from "../server.js";
+import { handleJsonRpc, type JsonRpcRequest, type JsonRpcResponse } from "../server.js";
 
 /** Home directory used as a fallback when `MCP_FS_IPC_DIR` is not provided. */
 const HOME = process.env.HOME ?? process.cwd();
@@ -56,13 +56,27 @@ async function processReqFile(fileName: string): Promise<void> {
     return;
   }
 
+  let response: JsonRpcResponse;
   try {
-    const response = await handleJsonRpc(payload, { transport: "fs" });
-    const outName = fileName.replace(/\.json$/, "") + `.${randomUUID()}.json`;
-    await fs.writeFile(join(RES_DIR, outName), JSON.stringify(response), "utf8");
-    await fs.unlink(filePath);
+    // Delegate to the in-process JSON-RPC adapter while flagging the transport
+    // so downstream handlers emit telemetry aligned with the FS bridge.
+    response = await handleJsonRpc(payload, { transport: "fs" });
   } catch (error) {
     await writeErrorFile(fileName, error);
+    await fs.unlink(filePath).catch(() => {});
+    return;
+  }
+
+  const targetDir = response.error ? ERR_DIR : RES_DIR;
+  const outName = fileName.replace(/\.json$/, "") + `.${randomUUID()}.json`;
+
+  try {
+    await fs.writeFile(join(targetDir, outName), JSON.stringify(response), "utf8");
+  } catch (error) {
+    // Fallback to an error artefact so upstream callers still observe a
+    // terminal state even if the preferred channel was unavailable.
+    await writeErrorFile(fileName, error);
+  } finally {
     await fs.unlink(filePath).catch(() => {});
   }
 }
@@ -70,7 +84,7 @@ async function processReqFile(fileName: string): Promise<void> {
 /** Executes a single scan of the request directory. */
 async function scanOnce(): Promise<void> {
   const entries = await fs.readdir(REQ_DIR);
-  const requests = entries.filter((entry: string) => entry.endsWith(".json"));
+  const requests = entries.filter((entry: string) => entry.endsWith(".json") && !entry.endsWith(".json.part"));
   for (const request of requests) {
     await processReqFile(request);
   }

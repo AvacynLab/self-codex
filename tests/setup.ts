@@ -135,6 +135,17 @@ function installNetworkGuards(): void {
 installDeterministicRandom();
 installNetworkGuards();
 
+/**
+ * Signal to higher-level suites that network access has been disabled so they
+ * can gracefully opt-out instead of tripping the guard intentionally.  The
+ * HTTP end-to-end suites check this flag in their Mocha `before` hooks and
+ * call `this.skip()` when the hermetic environment forbids real socket
+ * connections.  Keeping the flag in sync with the guard helps the suites make
+ * an explicit decision instead of relying on an exception being thrown.
+ */
+(globalThis as { __OFFLINE_TEST_GUARD__?: string }).__OFFLINE_TEST_GUARD__ =
+  "network-blocked";
+
 after(() => {
   while (restores.length > 0) {
     const restore = restores.pop();
