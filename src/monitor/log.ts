@@ -49,6 +49,12 @@ export interface BaseCorrelatedLogEntry {
   nodeId?: string | null;
   /** Optional child identifier. */
   childId?: string | null;
+  /** Component that emitted the log entry (scheduler, plan_executor, ...). */
+  component: string;
+  /** Lifecycle stage associated with the log entry. */
+  stage: string;
+  /** Optional duration associated with the log entry. */
+  elapsedMs?: number | null;
 }
 
 /** Entry shape persisted in memory and on disk. */
@@ -69,6 +75,9 @@ export interface LogRecordInput {
   graphId?: string | null;
   nodeId?: string | null;
   childId?: string | null;
+  component?: string | null;
+  stage?: string | null;
+  elapsedMs?: number | null;
 }
 
 /** Result returned by {@link LogJournal.tail}. */
@@ -89,6 +98,10 @@ export interface LogTailFilters {
   readonly graphIds?: readonly string[];
   readonly nodeIds?: readonly string[];
   readonly childIds?: readonly string[];
+  readonly components?: readonly string[];
+  readonly stages?: readonly string[];
+  readonly minElapsedMs?: number;
+  readonly maxElapsedMs?: number;
   /** Case-insensitive substrings that must be present in the log message. */
   readonly messageIncludes?: readonly string[];
   /** Inclusive lower bound applied to entry timestamps. */
@@ -104,6 +117,10 @@ interface NormalisedTailFilters {
   readonly graphIds?: Set<string>;
   readonly nodeIds?: Set<string>;
   readonly childIds?: Set<string>;
+  readonly components?: Set<string>;
+  readonly stages?: Set<string>;
+  readonly minElapsedMs?: number;
+  readonly maxElapsedMs?: number;
   readonly messageIncludes?: readonly string[];
   readonly sinceTs?: number;
   readonly untilTs?: number;
@@ -156,6 +173,38 @@ function resolveStreamDir(rootDir: string, stream: LogStream): string {
   }
 }
 
+/** Normalises optional textual tags to non-empty strings when possible. */
+function normaliseTag(value: string | null | undefined): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+/** Maps log streams to their default orchestrator component identifier. */
+function inferDefaultComponent(stream: LogStream): string {
+  switch (stream) {
+    case "run":
+      return "run";
+    case "child":
+      return "child";
+    default:
+      return "server";
+  }
+}
+
+/** Normalises optional duration values expressed in milliseconds. */
+function normaliseElapsed(value: number | null | undefined): number | null {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return null;
+  }
+  if (value < 0) {
+    return 0;
+  }
+  return Math.round(value);
+}
+
 /**
  * Creates the JSONL file path for a bucket while delegating sandbox enforcement to
  * {@link resolveWithin}. This guarantees that even crafted bucket identifiers remain
@@ -203,6 +252,9 @@ export class LogJournal {
     state.lastSeq = Math.max(state.lastSeq, seq);
 
     const ts = typeof input.ts === "number" && Number.isFinite(input.ts) ? Math.floor(input.ts) : Date.now();
+    const component = normaliseTag(input.component ?? null) ?? inferDefaultComponent(input.stream);
+    const stage = normaliseTag(input.stage ?? input.message) ?? input.message;
+    const elapsedMs = normaliseElapsed(input.elapsedMs ?? null);
     const entry: CorrelatedLogEntry = {
       seq,
       ts,
@@ -217,6 +269,9 @@ export class LogJournal {
       graphId: input.graphId ?? null,
       nodeId: input.nodeId ?? null,
       childId: input.childId ?? null,
+      component,
+      stage,
+      elapsedMs,
     };
 
     state.entries.push(entry);
@@ -307,6 +362,24 @@ export class LogJournal {
       if (filterSets?.childIds && (!entry.childId || !filterSets.childIds.has(entry.childId))) {
         return false;
       }
+      if (filterSets?.components && !filterSets.components.has(entry.component)) {
+        return false;
+      }
+      if (filterSets?.stages && !filterSets.stages.has(entry.stage)) {
+        return false;
+      }
+      if (filterSets?.minElapsedMs !== undefined) {
+        const elapsed = entry.elapsedMs ?? null;
+        if (elapsed === null || elapsed < filterSets.minElapsedMs) {
+          return false;
+        }
+      }
+      if (filterSets?.maxElapsedMs !== undefined) {
+        const elapsed = entry.elapsedMs ?? null;
+        if (elapsed === null || elapsed > filterSets.maxElapsedMs) {
+          return false;
+        }
+      }
       return true;
     });
     const ordered = filtered.sort((a, b) => a.seq - b.seq).slice(0, limit);
@@ -347,7 +420,17 @@ export class LogJournal {
     const graphIds = toSet(filters.graphIds);
     const nodeIds = toSet(filters.nodeIds);
     const childIds = toSet(filters.childIds);
+    const components = toSet(filters.components);
+    const stages = toSet(filters.stages);
     const messageIncludes = this.normaliseMessageNeedles(filters.messageIncludes);
+    const minElapsedMs =
+      typeof filters.minElapsedMs === "number" && Number.isFinite(filters.minElapsedMs) && filters.minElapsedMs >= 0
+        ? Math.floor(filters.minElapsedMs)
+        : undefined;
+    const maxElapsedMs =
+      typeof filters.maxElapsedMs === "number" && Number.isFinite(filters.maxElapsedMs) && filters.maxElapsedMs >= 0
+        ? Math.floor(filters.maxElapsedMs)
+        : undefined;
     const sinceTs =
       typeof filters.sinceTs === "number" && Number.isFinite(filters.sinceTs) && filters.sinceTs >= 0
         ? Math.floor(filters.sinceTs)
@@ -364,6 +447,10 @@ export class LogJournal {
       !graphIds &&
       !nodeIds &&
       !childIds &&
+      !components &&
+      !stages &&
+      minElapsedMs === undefined &&
+      maxElapsedMs === undefined &&
       !messageIncludes &&
       sinceTs === undefined &&
       untilTs === undefined
@@ -378,6 +465,10 @@ export class LogJournal {
       ...(graphIds ? { graphIds } : null),
       ...(nodeIds ? { nodeIds } : null),
       ...(childIds ? { childIds } : null),
+      ...(components ? { components } : null),
+      ...(stages ? { stages } : null),
+      ...(minElapsedMs !== undefined ? { minElapsedMs } : null),
+      ...(maxElapsedMs !== undefined ? { maxElapsedMs } : null),
       ...(messageIncludes ? { messageIncludes } : null),
       ...(sinceTs !== undefined ? { sinceTs } : null),
       ...(untilTs !== undefined ? { untilTs } : null),

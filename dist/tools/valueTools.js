@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { resolveOperationId } from "./operationIds.js";
 /** Schema describing a single value definition accepted by the set tool. */
 const ValueNodeSchema = z
     .object({
@@ -33,7 +34,7 @@ export const ValueImpactSchema = z
 const ValuePlanCorrelationSchema = z
     .object({
     run_id: z.string().min(1).optional(),
-    op_id: z.string().min(1).optional(),
+    op_id: z.string().trim().min(1).optional(),
     job_id: z.string().min(1).optional(),
     graph_id: z.string().min(1).optional(),
     node_id: z.string().min(1).optional(),
@@ -45,6 +46,8 @@ export const ValuesSetInputSchema = z
     values: z.array(ValueNodeSchema).min(1).max(128),
     relationships: z.array(ValueRelationshipSchema).max(512).optional(),
     default_threshold: z.number().min(0).max(1).optional(),
+    // Optional correlation identifier propagated through events/logs.
+    op_id: z.string().trim().min(1).optional(),
 })
     .strict();
 export const ValuesSetInputShape = ValuesSetInputSchema.shape;
@@ -74,19 +77,17 @@ export const ValuesExplainInputShape = ValuesExplainInputSchema.shape;
  * Normalises optional correlation metadata supplied alongside value guard
  * inputs. Returning `null` keeps downstream logging and event emission tidy.
  */
-function extractCorrelationHints(input) {
-    const hints = {};
+function extractCorrelationHints(input, resolvedOpId) {
+    const hints = { opId: resolvedOpId };
     if (input.run_id !== undefined)
         hints.runId = input.run_id;
-    if (input.op_id !== undefined)
-        hints.opId = input.op_id;
     if (input.job_id !== undefined)
         hints.jobId = input.job_id;
     if (input.graph_id !== undefined)
         hints.graphId = input.graph_id;
     if (input.node_id !== undefined)
         hints.nodeId = input.node_id;
-    return Object.keys(hints).length > 0 ? hints : null;
+    return hints;
 }
 /**
  * Replace the value graph configuration with the provided specification.
@@ -96,6 +97,7 @@ function extractCorrelationHints(input) {
  * operators aware of the applied threshold and the graph size.
  */
 export function handleValuesSet(context, input) {
+    const opId = resolveOperationId(input.op_id, "values_set_op");
     const config = {
         values: input.values.map((value) => ({
             id: value.id,
@@ -118,8 +120,9 @@ export function handleValuesSet(context, input) {
         relationships: summary.relationships,
         default_threshold: summary.default_threshold,
         version: summary.version,
+        op_id: opId,
     });
-    return { summary };
+    return { op_id: opId, summary };
 }
 /**
  * Computes the guard decision without enforcing the threshold. The score and
@@ -127,7 +130,8 @@ export function handleValuesSet(context, input) {
  * plan results.
  */
 export function handleValuesScore(context, input) {
-    const correlation = extractCorrelationHints(input);
+    const opId = resolveOperationId(input.op_id, "values_score_op");
+    const correlation = extractCorrelationHints(input, opId);
     const score = context.valueGraph.score({
         id: input.id,
         label: input.label,
@@ -141,16 +145,17 @@ export function handleValuesScore(context, input) {
         score: score.score,
         total: score.total,
         run_id: correlation?.runId ?? null,
-        op_id: correlation?.opId ?? null,
+        op_id: opId,
     });
-    return { decision: { ...score, allowed, threshold } };
+    return { op_id: opId, decision: { ...score, allowed, threshold } };
 }
 /**
  * Applies the guard threshold and returns whether the plan can proceed. The
  * detailed decision is returned so the caller can surface it to operators.
  */
 export function handleValuesFilter(context, input) {
-    const correlation = extractCorrelationHints(input);
+    const opId = resolveOperationId(input.op_id, "values_filter_op");
+    const correlation = extractCorrelationHints(input, opId);
     const decision = context.valueGraph.filter({
         id: input.id,
         label: input.label,
@@ -165,9 +170,9 @@ export function handleValuesFilter(context, input) {
         allowed: decision.allowed,
         violations: decision.violations.length,
         run_id: correlation?.runId ?? null,
-        op_id: correlation?.opId ?? null,
+        op_id: opId,
     });
-    return decision;
+    return { ...decision, op_id: opId };
 }
 /**
  * Explains the guard decision by enriching violations with hints and
@@ -176,7 +181,8 @@ export function handleValuesFilter(context, input) {
  */
 export function handleValuesExplain(context, input) {
     const plan = input.plan;
-    const correlation = extractCorrelationHints(plan);
+    const opId = resolveOperationId(plan.op_id, "values_explain_op");
+    const correlation = extractCorrelationHints(plan, opId);
     const explanation = context.valueGraph.explain({
         id: plan.id,
         label: plan.label,
@@ -191,9 +197,9 @@ export function handleValuesExplain(context, input) {
         allowed: explanation.decision.allowed,
         violations: explanation.violations.length,
         run_id: correlation?.runId ?? null,
-        op_id: correlation?.opId ?? null,
+        op_id: opId,
     });
-    return explanation;
+    return { ...explanation, op_id: opId };
 }
 /** Normalises impacts to match the {@link ValueImpactInput} contract. */
 function normaliseImpacts(impacts) {

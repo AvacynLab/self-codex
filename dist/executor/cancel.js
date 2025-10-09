@@ -24,6 +24,21 @@ export class OperationCancelledError extends Error {
     }
 }
 /**
+ * Error thrown when a caller attempts to cancel an unknown operation. The
+ * message and hint intentionally mirror the specification excerpt used in the
+ * checklist so automated clients can pattern-match the guidance.
+ */
+export class CancellationNotFoundError extends Error {
+    code = "E-CANCEL-NOTFOUND";
+    hint = "verify opId via events_subscribe";
+    details;
+    constructor(opId) {
+        super("unknown opId");
+        this.name = "CancellationNotFoundError";
+        this.details = { opId };
+    }
+}
+/**
  * Register a new cancellable operation. Consumers should ensure
  * {@link unregisterCancellation} is called once the work completes to avoid
  * leaking book-keeping data.
@@ -150,12 +165,14 @@ export function isCancelled(opId) {
     return operations.get(opId)?.controller.signal.aborted ?? false;
 }
 /**
- * Request the cancellation of a specific operation.
+ * Request the cancellation of a specific operation. Throws
+ * {@link CancellationNotFoundError} when the identifier was never registered or
+ * already cleaned up from the registry.
  */
 export function requestCancellation(opId, options = {}) {
     const entry = operations.get(opId);
     if (!entry) {
-        return "not_found";
+        throw new CancellationNotFoundError(opId);
     }
     const alreadyCancelled = entry.controller.signal.aborted;
     if (!alreadyCancelled) {
@@ -192,6 +209,14 @@ export function requestCancellation(opId, options = {}) {
         outcome: "already_cancelled",
     });
     return "already_cancelled";
+}
+/**
+ * Alias maintained for parity with earlier checklist wording. The
+ * implementation defers to {@link requestCancellation} so callers benefit from
+ * the stricter error handling.
+ */
+export function requestCancel(opId, options = {}) {
+    return requestCancellation(opId, options);
 }
 /**
  * Request the cancellation of every operation associated with the provided run

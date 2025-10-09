@@ -1,5 +1,9 @@
 import { z } from "zod";
-/** Default values mirroring the conservative bootstrap configuration. */
+import { FEATURE_FLAG_DEFAULTS, RUNTIME_TIMING_DEFAULTS, } from "../serverOptions.js";
+/**
+ * Default values mirroring the conservative bootstrap configuration. The snapshot reuses the exported
+ * defaults so that runtime wiring and the handshake surface stay aligned without duplicating literals.
+ */
 const DEFAULT_RUNTIME_SNAPSHOT = {
     server: { name: "self-codex", version: "0.0.0", protocol: "1.0" },
     transports: {
@@ -13,40 +17,8 @@ const DEFAULT_RUNTIME_SNAPSHOT = {
             stateless: false,
         },
     },
-    features: {
-        enableBT: false,
-        enableReactiveScheduler: false,
-        enableBlackboard: false,
-        enableStigmergy: false,
-        enableCNP: false,
-        enableConsensus: false,
-        enableAutoscaler: false,
-        enableSupervisor: false,
-        enableKnowledge: false,
-        enableCausalMemory: false,
-        enableValueGuard: false,
-        enableMcpIntrospection: false,
-        enableResources: false,
-        enableEventsBus: false,
-        enableCancellation: false,
-        enableTx: false,
-        enableBulk: false,
-        enableIdempotency: false,
-        enableLocks: false,
-        enableDiffPatch: false,
-        enablePlanLifecycle: false,
-        enableChildOpsFine: false,
-        enableValuesExplain: false,
-        enableAssist: false,
-    },
-    timings: {
-        btTickMs: 50,
-        stigHalfLifeMs: 30_000,
-        supervisorStallTicks: 6,
-        defaultTimeoutMs: 60_000,
-        autoscaleCooldownMs: 10_000,
-        heartbeatIntervalMs: 2_000,
-    },
+    features: { ...FEATURE_FLAG_DEFAULTS },
+    timings: { ...RUNTIME_TIMING_DEFAULTS },
     safety: {
         maxChildren: 16,
         memoryLimitMb: 512,
@@ -54,7 +26,7 @@ const DEFAULT_RUNTIME_SNAPSHOT = {
     },
     limits: {
         maxInputBytes: 512 * 1024,
-        defaultTimeoutMs: 60_000,
+        defaultTimeoutMs: RUNTIME_TIMING_DEFAULTS.defaultTimeoutMs,
         maxEventHistory: 1_000,
     },
 };
@@ -170,7 +142,7 @@ const TOOL_FEATURE_RULES = [
     { pattern: /^graph_(diff|patch)$/, features: ["enableDiffPatch"] },
     { pattern: /^graph_(lock|unlock)$/, features: ["enableLocks"] },
     { pattern: /^(bb_batch_set|graph_batch_mutate|child_batch_create|stig_batch)$/, features: ["enableBulk"] },
-    { pattern: /^child_(spawn_codex|attach|set_role|set_limits)$/, features: ["enableChildOpsFine"] },
+    { pattern: /^child_(spawn_codex|attach|set_role|set_limits|status)$/, features: ["enableChildOpsFine"] },
     { pattern: /^kg_suggest_plan$/, features: ["enableAssist", "enableKnowledge"] },
     { pattern: /^kg_/, features: ["enableKnowledge"] },
     { pattern: /^causal_/, features: ["enableCausalMemory"] },

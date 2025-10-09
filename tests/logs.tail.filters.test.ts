@@ -10,6 +10,14 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { server, logJournal } from "../src/server.js";
 import { LogJournal } from "../src/monitor/log.js";
 
+function recordLog(entry: Parameters<LogJournal["record"]>[0]): void {
+  const component =
+    entry.component ?? (entry.stream === "server" ? "server" : entry.stream === "run" ? "run" : "child");
+  const stage = entry.stage ?? entry.message;
+  const elapsedMs = entry.elapsedMs ?? null;
+  logJournal.record({ ...entry, component, stage, elapsedMs });
+}
+
 /**
  * Integration coverage for the `logs_tail` MCP tool. The scenarios prime the journal with
  * deterministic entries and assert that the server enforces stream-specific invariants while
@@ -23,7 +31,7 @@ describe("logs tail tool", () => {
   it("returns orchestrator logs by default", async function () {
     this.timeout(5000);
 
-    logJournal.record({
+    recordLog({
       stream: "server",
       bucketId: "orchestrator",
       seq: 1,
@@ -32,7 +40,7 @@ describe("logs tail tool", () => {
       message: "runtime_started",
       data: { scope: "test" },
     });
-    logJournal.record({
+    recordLog({
       stream: "server",
       bucketId: "orchestrator",
       seq: 2,
@@ -75,7 +83,7 @@ describe("logs tail tool", () => {
   it("applies from_seq filters on run streams", async function () {
     this.timeout(5000);
 
-    logJournal.record({
+    recordLog({
       stream: "run",
       bucketId: "run-filter",
       seq: 10,
@@ -85,7 +93,7 @@ describe("logs tail tool", () => {
       runId: "run-filter",
       opId: "op-filter-1",
     });
-    logJournal.record({
+    recordLog({
       stream: "run",
       bucketId: "run-filter",
       seq: 11,
@@ -131,7 +139,7 @@ describe("logs tail tool", () => {
 
     // Prime the journal with a mix of informational and error level entries so the
     // tool has to apply the severity filter before pagination trims the results.
-    logJournal.record({
+    recordLog({
       stream: "server",
       bucketId: "orchestrator",
       seq: 21,
@@ -139,7 +147,7 @@ describe("logs tail tool", () => {
       level: "info",
       message: "scheduler_tick",
     });
-    logJournal.record({
+    recordLog({
       stream: "server",
       bucketId: "orchestrator",
       seq: 22,
@@ -148,7 +156,7 @@ describe("logs tail tool", () => {
       message: "scheduler_failed",
       data: { reason: "timeout" },
     });
-    logJournal.record({
+    recordLog({
       stream: "server",
       bucketId: "orchestrator",
       seq: 23,
@@ -191,7 +199,7 @@ describe("logs tail tool", () => {
   it("deduplicates normalised severity filters", async function () {
     this.timeout(5000);
 
-    logJournal.record({
+    recordLog({
       stream: "server",
       bucketId: "orchestrator",
       seq: 31,
@@ -199,7 +207,7 @@ describe("logs tail tool", () => {
       level: "debug",
       message: "prelude",
     });
-    logJournal.record({
+    recordLog({
       stream: "server",
       bucketId: "orchestrator",
       seq: 32,
@@ -207,7 +215,7 @@ describe("logs tail tool", () => {
       level: "warn",
       message: "scheduler_warning",
     });
-    logJournal.record({
+    recordLog({
       stream: "server",
       bucketId: "orchestrator",
       seq: 33,
@@ -248,7 +256,7 @@ describe("logs tail tool", () => {
   it("filters entries by message substrings", async function () {
     this.timeout(5000);
 
-    logJournal.record({
+    recordLog({
       stream: "server",
       bucketId: "orchestrator",
       seq: 51,
@@ -256,7 +264,7 @@ describe("logs tail tool", () => {
       level: "info",
       message: "scheduler_tick_completed",
     });
-    logJournal.record({
+    recordLog({
       stream: "server",
       bucketId: "orchestrator",
       seq: 52,
@@ -264,7 +272,7 @@ describe("logs tail tool", () => {
       level: "warn",
       message: "child failure timed out", // contains both search substrings.
     });
-    logJournal.record({
+    recordLog({
       stream: "server",
       bucketId: "orchestrator",
       seq: 53,
@@ -310,7 +318,7 @@ describe("logs tail tool", () => {
 
     // Insert entries sharing a bucket but exposing distinct correlated
     // identifiers so the tool can exercise every filter predicate at once.
-    logJournal.record({
+    recordLog({
       stream: "server",
       bucketId: "orchestrator",
       seq: 41,
@@ -324,7 +332,7 @@ describe("logs tail tool", () => {
       nodeId: "node-root",
       childId: "child-1",
     });
-    logJournal.record({
+    recordLog({
       stream: "server",
       bucketId: "orchestrator",
       seq: 42,
@@ -338,7 +346,7 @@ describe("logs tail tool", () => {
       nodeId: "node-root",
       childId: "child-1",
     });
-    logJournal.record({
+    recordLog({
       stream: "server",
       bucketId: "orchestrator",
       seq: 43,
@@ -418,7 +426,7 @@ describe("logs tail tool", () => {
 
     const baseTs = 1_000_000;
 
-    logJournal.record({
+    recordLog({
       stream: "server",
       bucketId: "orchestrator",
       seq: 51,
@@ -426,7 +434,7 @@ describe("logs tail tool", () => {
       level: "info",
       message: "before_window",
     });
-    logJournal.record({
+    recordLog({
       stream: "server",
       bucketId: "orchestrator",
       seq: 52,
@@ -434,7 +442,7 @@ describe("logs tail tool", () => {
       level: "warn",
       message: "within_window_start",
     });
-    logJournal.record({
+    recordLog({
       stream: "server",
       bucketId: "orchestrator",
       seq: 53,
@@ -442,7 +450,7 @@ describe("logs tail tool", () => {
       level: "error",
       message: "within_window_end",
     });
-    logJournal.record({
+    recordLog({
       stream: "server",
       bucketId: "orchestrator",
       seq: 54,
@@ -513,7 +521,7 @@ describe("logs tail tool", () => {
 
     // Inject entries spanning multiple severity levels so the tool can prove it
     // normalises the requested filters before delegating to the journal.
-    logJournal.record({
+    recordLog({
       stream: "server",
       bucketId: "orchestrator",
       seq: 31,
@@ -521,7 +529,7 @@ describe("logs tail tool", () => {
       level: "info",
       message: "dispatcher_idle",
     });
-    logJournal.record({
+    recordLog({
       stream: "server",
       bucketId: "orchestrator",
       seq: 32,
@@ -529,7 +537,7 @@ describe("logs tail tool", () => {
       level: "warn",
       message: "dispatcher_queue_growth",
     });
-    logJournal.record({
+    recordLog({
       stream: "server",
       bucketId: "orchestrator",
       seq: 33,

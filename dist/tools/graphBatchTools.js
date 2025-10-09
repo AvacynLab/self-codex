@@ -1,6 +1,8 @@
 import { z } from "zod";
 import { GraphTransactionError, GraphVersionConflictError, } from "../graph/tx.js";
+import { ERROR_CODES } from "../types.js";
 import { GraphMutateInputSchema, handleGraphMutate, normaliseGraphPayload, serialiseNormalisedGraph, } from "./graphTools.js";
+import { resolveOperationId } from "./operationIds.js";
 const GraphBatchOperationSchema = GraphMutateInputSchema.shape.operations.element;
 /** Schema accepted by the `graph_batch_mutate` tool. */
 export const GraphBatchMutateInputSchema = z
@@ -14,6 +16,7 @@ export const GraphBatchMutateInputSchema = z
     owner: z.string().trim().min(1).max(120).optional(),
     note: z.string().trim().min(1).max(240).optional(),
     idempotency_key: z.string().min(1).optional(),
+    op_id: z.string().trim().min(1).optional(),
 })
     .strict();
 export const GraphBatchMutateInputShape = GraphBatchMutateInputSchema.shape;
@@ -24,10 +27,16 @@ export const GraphBatchMutateInputShape = GraphBatchMutateInputSchema.shape;
  * idempotency key is provided.
  */
 export async function handleGraphBatchMutate(context, input) {
+    const key = input.idempotency_key ?? null;
+    const existingEntry = key && context.idempotency
+        ? context.idempotency.peek(`graph_batch_mutate:${key}`)
+        : null;
+    const existingOpId = existingEntry?.value?.op_id;
+    const opId = resolveOperationId(input.op_id ?? existingOpId, "graph_batch_mutate_op");
     const execute = async () => {
         const committed = context.transactions.getCommittedState(input.graph_id);
         if (!committed) {
-            throw new GraphTransactionError(`graph '${input.graph_id}' has no committed state`);
+            throw new GraphTransactionError(ERROR_CODES.TX_NOT_FOUND, "graph state unavailable", "commit an initial version before using graph_batch_mutate");
         }
         if (input.expected_version !== undefined && committed.version !== input.expected_version) {
             throw new GraphVersionConflictError(input.graph_id, committed.version, input.expected_version);
@@ -72,6 +81,7 @@ export async function handleGraphBatchMutate(context, input) {
             });
             const changed = mutation.applied.some((entry) => entry.changed);
             return {
+                op_id: opId,
                 graph_id: committedResult.graphId,
                 base_version: tx.baseVersion,
                 committed_version: committedResult.version,
@@ -95,7 +105,6 @@ export async function handleGraphBatchMutate(context, input) {
             throw error;
         }
     };
-    const key = input.idempotency_key ?? null;
     if (context.idempotency && key) {
         const hit = await context.idempotency.remember(`graph_batch_mutate:${key}`, execute);
         const snapshot = hit.value;

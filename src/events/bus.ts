@@ -37,6 +37,12 @@ export interface EventEnvelope {
   graphId?: string | null;
   nodeId?: string | null;
   childId?: string | null;
+  /** Identifier describing the orchestrator component that emitted the event. */
+  component: string | null;
+  /** Lifecycle stage or semantic step associated with the event. */
+  stage: string | null;
+  /** Optional duration expressed in milliseconds when the event measures latency. */
+  elapsedMs?: number | null;
   /**
    * Optional semantic kind describing the precise lifecycle event.
    *
@@ -64,6 +70,9 @@ export interface EventInput {
   graphId?: string | null;
   nodeId?: string | null;
   childId?: string | null;
+  component?: string | null;
+  stage?: string | null;
+  elapsedMs?: number | null;
   /** Optional semantic event identifier (see {@link EventEnvelope.kind}). */
   kind?: string | null;
   msg: string;
@@ -81,6 +90,8 @@ export interface EventFilter {
   graphId?: string;
   childId?: string;
   nodeId?: string;
+  component?: string;
+  stage?: string;
   afterSeq?: number;
   limit?: number;
 }
@@ -141,6 +152,35 @@ function normaliseKind(kind: string | null | undefined): string | undefined {
   // subscribers receive stable PROMPT/PENDING/etc. tokens regardless of the
   // original casing supplied by publishers.
   return trimmed.toUpperCase();
+}
+
+/**
+ * Normalise optional textual tags (component/stage) by trimming whitespace and
+ * rejecting empty strings. The helper keeps casing untouched so downstream
+ * dashboards can render human friendly identifiers while the bus guarantees the
+ * property is either a non-empty string or `null`.
+ */
+function normaliseTag(value: string | null | undefined): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+/**
+ * Normalise optional duration values (expressed in milliseconds). The bus
+ * stores `null` instead of `undefined` to preserve deterministic JSON
+ * serialisation for tests.
+ */
+function normaliseElapsed(value: number | null | undefined): number | null {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return null;
+  }
+  if (value < 0) {
+    return 0;
+  }
+  return Math.round(value);
 }
 
 class EventStream implements AsyncIterable<EventEnvelope>, AsyncIterator<EventEnvelope> {
@@ -243,6 +283,9 @@ export class EventBus {
   }
 
   publish(input: EventInput): EventEnvelope {
+    const message = normaliseMessage(input.msg);
+    const component = normaliseTag(input.component ?? input.cat);
+    const stage = normaliseTag(input.stage ?? message);
     const envelope: EventEnvelope = {
       seq: ++this.seq,
       ts: input.ts ?? this.now(),
@@ -254,10 +297,13 @@ export class EventBus {
       graphId: input.graphId ?? null,
       nodeId: input.nodeId ?? null,
       childId: input.childId ?? null,
+      component,
+      stage,
+      elapsedMs: normaliseElapsed(input.elapsedMs ?? null),
       // Preserve semantic PROMPT/PENDING/... identifiers whenever publishers
       // provide them while gracefully falling back to legacy category tokens.
       kind: normaliseKind(input.kind ?? undefined),
-      msg: normaliseMessage(input.msg),
+      msg: message,
       data: input.data,
     };
 
@@ -305,6 +351,12 @@ export class EventBus {
       return false;
     }
     if (filter.nodeId && event.nodeId !== filter.nodeId) {
+      return false;
+    }
+    if (filter.component && event.component !== filter.component) {
+      return false;
+    }
+    if (filter.stage && event.stage !== filter.stage) {
       return false;
     }
     if (typeof filter.afterSeq === "number" && !(event.seq > filter.afterSeq)) {

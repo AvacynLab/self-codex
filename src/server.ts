@@ -9,7 +9,7 @@ import { GraphState, type ChildSnapshot, type JobSnapshot } from "./graphState.j
 import { GraphTransactionManager, GraphTransactionError, GraphVersionConflictError } from "./graph/tx.js";
 import { GraphLockManager } from "./graph/locks.js";
 import { LoggerOptions, StructuredLogger, type LogEntry } from "./logger.js";
-import { EventStore, OrchestratorEvent, type EventKind } from "./eventStore.js";
+import { EventStore, OrchestratorEvent, type EventKind, type EventLevel, type EventSource } from "./eventStore.js";
 import {
   EventBus,
   EVENT_CATEGORIES,
@@ -636,6 +636,9 @@ function recordServerLogEntry(entry: LogEntry): void {
   const nodeId = extractNodeId(payload);
   const childId = extractChildId(payload);
   const jobId = extractJobId(payload);
+  const component = normaliseTag(extractComponentTag(payload)) ?? "server";
+  const stage = normaliseTag(extractStageTag(payload)) ?? entry.message;
+  const elapsedMs = resolveEventElapsedMs(extractElapsedMilliseconds(payload));
 
   try {
     logJournal.record({
@@ -651,6 +654,9 @@ function recordServerLogEntry(entry: LogEntry): void {
       graphId,
       nodeId,
       childId,
+      component,
+      stage,
+      elapsedMs,
     });
   } catch (error) {
     try {
@@ -793,6 +799,9 @@ const childSupervisor = new ChildSupervisor({
         graphId: entry.graphId ?? null,
         nodeId: entry.nodeId ?? null,
         childId: entry.childId ?? childId,
+        component: "child_io",
+        stage: entry.stream,
+        elapsedMs: null,
       });
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
@@ -1660,6 +1669,108 @@ function extractJobId(payload: unknown): string | null {
   return extractStringProperty(payload, "job_id") ?? null;
 }
 
+function extractStringCandidate(payload: unknown, keys: readonly string[]): string | null {
+  if (!payload || typeof payload !== "object") {
+    return null;
+  }
+  const record = payload as Record<string, unknown>;
+  for (const key of keys) {
+    if (!Object.prototype.hasOwnProperty.call(record, key)) {
+      continue;
+    }
+    const value = record[key];
+    if (value === null) {
+      return null;
+    }
+    if (typeof value === "string") {
+      const trimmed = value.trim();
+      if (trimmed.length > 0) {
+        return trimmed;
+      }
+      return null;
+    }
+  }
+  return null;
+}
+
+function extractComponentTag(payload: unknown): string | null {
+  return (
+    extractStringCandidate(payload, ["component", "component_id", "componentId", "origin", "source_component"]) ?? null
+  );
+}
+
+function extractStageTag(payload: unknown): string | null {
+  return extractStringCandidate(payload, ["stage", "phase", "status", "state"]);
+}
+
+function extractElapsedMilliseconds(payload: unknown): number | null {
+  if (!payload || typeof payload !== "object") {
+    return null;
+  }
+  const record = payload as Record<string, unknown>;
+  const keys = ["elapsed_ms", "elapsedMs", "duration_ms", "durationMs", "latency_ms", "latencyMs"];
+  for (const key of keys) {
+    if (!Object.prototype.hasOwnProperty.call(record, key)) {
+      continue;
+    }
+    const value = record[key];
+    if (value === null) {
+      return null;
+    }
+    if (typeof value === "number" && Number.isFinite(value)) {
+      return Math.max(0, Math.round(value));
+    }
+    if (typeof value === "string") {
+      const parsed = Number(value);
+      if (Number.isFinite(parsed)) {
+        return Math.max(0, Math.round(parsed));
+      }
+    }
+  }
+  return null;
+}
+
+function normaliseTag(value: string | null | undefined): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function resolveEventComponent(category: EventCategory, ...candidates: Array<string | null | undefined>): string {
+  for (const candidate of candidates) {
+    const normalised = normaliseTag(candidate ?? null);
+    if (normalised) {
+      return normalised;
+    }
+  }
+  return category;
+}
+
+function resolveEventStage(kind: string, message: string, ...candidates: Array<string | null | undefined>): string {
+  for (const candidate of candidates) {
+    const normalised = normaliseTag(candidate ?? null);
+    if (normalised) {
+      return normalised;
+    }
+  }
+  const fallback = normaliseTag(kind.toLowerCase()) ?? normaliseTag(message) ?? "event";
+  return fallback;
+}
+
+function resolveEventElapsedMs(...candidates: Array<number | null | undefined>): number | null {
+  for (const candidate of candidates) {
+    if (candidate === null) {
+      return null;
+    }
+    if (typeof candidate === "number" && Number.isFinite(candidate)) {
+      return Math.max(0, Math.round(candidate));
+    }
+  }
+  return null;
+}
+
 function deriveEventMessage(kind: string, payload: unknown): string {
   const msg = extractStringProperty(payload, "msg");
   if (msg) {
@@ -1934,18 +2045,28 @@ const GraphSubgraphExtractInputShape = GraphSubgraphExtractInputSchema.shape;
 
 type GraphSubgraphExtractInput = z.infer<typeof GraphSubgraphExtractInputSchema>;
 
-function pushEvent(
-  event: Omit<OrchestratorEvent, "seq" | "ts" | "source" | "level"> &
-    Partial<Pick<OrchestratorEvent, "source" | "level">> & { correlation?: EventCorrelationHints | null }
-): OrchestratorEvent {
+interface PushEventInput {
+  kind: EventKind;
+  level?: EventLevel;
+  source?: EventSource;
+  jobId?: string | null;
+  childId?: string | null;
+  payload?: unknown;
+  correlation?: EventCorrelationHints | null;
+  component?: string | null;
+  stage?: string | null;
+  elapsedMs?: number | null;
+}
+
+function pushEvent(event: PushEventInput): OrchestratorEvent {
   const emitted = eventStore.emit({
     // Forward the semantic kind so downstream consumers can latch onto
     // PROMPT/PENDING/... identifiers without re-deriving them from payloads.
     kind: event.kind,
     level: event.level,
     source: event.source,
-    jobId: event.jobId,
-    childId: event.childId,
+    jobId: event.jobId ?? undefined,
+    childId: event.childId ?? undefined,
     payload: event.payload
   });
   graphState.recordEvent({
@@ -1993,6 +2114,9 @@ function pushEvent(
   const childId = hints.childId ?? null;
   const message = deriveEventMessage(event.kind, event.payload);
   const category = deriveEventCategory(event.kind);
+  const component = resolveEventComponent(category, event.component, extractComponentTag(event.payload));
+  const stage = resolveEventStage(event.kind, message, event.stage, extractStageTag(event.payload));
+  const elapsedMs = resolveEventElapsedMs(event.elapsedMs, extractElapsedMilliseconds(event.payload));
 
   eventBus.publish({
     cat: category,
@@ -2003,6 +2127,9 @@ function pushEvent(
     graphId,
     nodeId,
     childId,
+    component,
+    stage,
+    elapsedMs,
     kind: event.kind,
     msg: message,
     data: event.payload,
@@ -2019,6 +2146,9 @@ function pushEvent(
       graphId,
       nodeId,
       childId,
+      component,
+      stage,
+      elapsedMs,
       payload: emitted.payload,
     });
     try {
@@ -2036,6 +2166,9 @@ function pushEvent(
         graphId,
         nodeId,
         childId,
+        component,
+        stage,
+        elapsedMs,
       });
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
@@ -2077,6 +2210,9 @@ function buildLiveEvents(input: { job_id?: string; child_id?: string; limit?: nu
       childId,
       runId: evt.runId ?? null,
       opId: evt.opId ?? null,
+      component: evt.component ?? null,
+      stage: evt.stage ?? null,
+      elapsed_ms: evt.elapsedMs ?? null,
       msg: evt.msg,
       payload: evt.data,
       vscode_deeplink: deepLink,
@@ -7534,6 +7670,48 @@ function normaliseJsonRpcInvocation(method: string, params: unknown): {
 }
 
 /**
+ * Ensures idempotency-aware tools observe the HTTP header forwarded by the bridge.
+ *
+ * The helper mirrors the behaviour expected by `child_*`, `tx_*`, and graph tools which
+ * all accept an optional `idempotency_key` property. When HTTP clients rely on the
+ * dedicated header instead of duplicating the field in the JSON body we transparently
+ * inject it here so downstream validation keeps succeeding.
+ */
+function injectIdempotencyKey(method: string, params: unknown, key: string): unknown {
+  if (!key || typeof key !== "string") {
+    return params;
+  }
+
+  if (!params || typeof params !== "object" || Array.isArray(params)) {
+    return params;
+  }
+
+  if (method === "tools/call") {
+    const payload = params as { arguments?: unknown };
+    if (!payload.arguments || typeof payload.arguments !== "object" || Array.isArray(payload.arguments)) {
+      return params;
+    }
+
+    const args = payload.arguments as Record<string, unknown>;
+    if (Object.prototype.hasOwnProperty.call(args, "idempotency_key")) {
+      return params;
+    }
+
+    return {
+      ...payload,
+      arguments: { ...args, idempotency_key: key },
+    };
+  }
+
+  const record = params as Record<string, unknown>;
+  if (Object.prototype.hasOwnProperty.call(record, "idempotency_key")) {
+    return params;
+  }
+
+  return { ...record, idempotency_key: key };
+}
+
+/**
  * Delegates the JSON-RPC method to the handler registered on the underlying
  * MCP server. The helper mirrors the transport layer implemented by the SDK
  * so tests and the FS-Bridge can issue requests without going through HTTP.
@@ -7553,7 +7731,7 @@ export async function routeJsonRpcRequest(
     throw new Error("JSON-RPC handlers not initialised");
   }
 
-  const invocation = normaliseJsonRpcInvocation(method, params);
+  let invocation = normaliseJsonRpcInvocation(method, params);
   const handler = handlers.get(invocation.method);
   if (!handler) {
     throw new Error(`Unknown method: ${invocation.method}`);
@@ -7574,6 +7752,13 @@ export async function routeJsonRpcRequest(
   }
   if (context.idempotencyKey) {
     headersSnapshot["idempotency-key"] = context.idempotencyKey;
+  }
+
+  if (context.idempotencyKey) {
+    invocation = {
+      method: invocation.method,
+      params: injectIdempotencyKey(invocation.method, invocation.params, context.idempotencyKey),
+    };
   }
 
   const extra = {

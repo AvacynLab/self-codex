@@ -1,6 +1,9 @@
 import { z } from "zod";
-import { buildStigmergySummary, formatPheromoneBoundsTooltip, normalisePheromoneBoundsForTelemetry, } from "../coord/stigmergy.js";
+import { BlackboardBatchSetEntryError, } from "../coord/blackboard.js";
+import { StigmergyBatchMarkError, buildStigmergySummary, formatPheromoneBoundsTooltip, normalisePheromoneBoundsForTelemetry, } from "../coord/stigmergy.js";
 import { ConsensusConfigSchema, majority, publishConsensusEvent, quorum, weighted, } from "../coord/consensus.js";
+import { BulkOperationError, buildBulkFailureDetail } from "./bulkError.js";
+import { resolveOperationId } from "./operationIds.js";
 /**
  * Error raised when a requested blackboard key cannot be found. The dedicated
  * code ensures MCP clients can distinguish between missing entries and actual
@@ -17,6 +20,7 @@ export class BlackboardEntryNotFoundError extends Error {
 }
 /** Schema validating the payload accepted by the `bb_set` tool. */
 export const BbSetInputSchema = z.object({
+    op_id: z.string().trim().min(1).optional(),
     key: z.string().min(1, "key must not be empty"),
     value: z.unknown(),
     tags: z.array(z.string().min(1)).max(16).default([]),
@@ -25,6 +29,7 @@ export const BbSetInputSchema = z.object({
 export const BbSetInputShape = BbSetInputSchema.shape;
 /** Schema validating the payload accepted by the `bb_batch_set` tool. */
 export const BbBatchSetInputSchema = z.object({
+    op_id: z.string().trim().min(1).optional(),
     entries: z
         .array(z
         .object({
@@ -40,11 +45,13 @@ export const BbBatchSetInputSchema = z.object({
 export const BbBatchSetInputShape = BbBatchSetInputSchema.shape;
 /** Schema validating the payload accepted by the `bb_get` tool. */
 export const BbGetInputSchema = z.object({
+    op_id: z.string().trim().min(1).optional(),
     key: z.string().min(1, "key must not be empty"),
 });
 export const BbGetInputShape = BbGetInputSchema.shape;
 /** Schema validating the payload accepted by the `bb_query` tool. */
 export const BbQueryInputSchema = z.object({
+    op_id: z.string().trim().min(1).optional(),
     keys: z.array(z.string().min(1)).max(64).optional(),
     tags: z.array(z.string().min(1)).max(16).optional(),
     limit: z.number().int().min(1).max(100).default(25),
@@ -52,6 +59,7 @@ export const BbQueryInputSchema = z.object({
 export const BbQueryInputShape = BbQueryInputSchema.shape;
 /** Schema validating the payload accepted by the `bb_watch` tool. */
 export const BbWatchInputSchema = z.object({
+    op_id: z.string().trim().min(1).optional(),
     start_version: z.number().int().min(0).default(0),
     limit: z.number().int().min(1).max(200).default(100),
 });
@@ -65,6 +73,7 @@ const ConsensusBallotSchema = z
     .strict();
 const ConsensusVoteBaseSchema = z
     .object({
+    op_id: z.string().trim().min(1).optional(),
     votes: z.array(ConsensusBallotSchema).min(1, "at least one vote must be provided"),
     config: ConsensusConfigSchema.optional(),
 })
@@ -88,6 +97,7 @@ export const ConsensusVoteInputSchema = ConsensusVoteBaseSchema.superRefine((pay
 export const ConsensusVoteInputShape = ConsensusVoteBaseSchema.shape;
 /** Schema validating the payload accepted by the `stig_mark` tool. */
 export const StigMarkInputSchema = z.object({
+    op_id: z.string().trim().min(1).optional(),
     node_id: z.string().min(1, "node_id must not be empty"),
     type: z.string().min(1, "type must not be empty"),
     intensity: z.number().positive().max(10_000, "intensity must remain bounded"),
@@ -95,6 +105,7 @@ export const StigMarkInputSchema = z.object({
 export const StigMarkInputShape = StigMarkInputSchema.shape;
 export const StigBatchInputSchema = z
     .object({
+    op_id: z.string().trim().min(1).optional(),
     entries: z
         .array(z
         .object({
@@ -110,11 +121,14 @@ export const StigBatchInputSchema = z
 export const StigBatchInputShape = StigBatchInputSchema.shape;
 /** Schema validating the payload accepted by the `stig_decay` tool. */
 export const StigDecayInputSchema = z.object({
+    op_id: z.string().trim().min(1).optional(),
     half_life_ms: z.number().int().positive().max(86_400_000, "half_life_ms too large"),
 });
 export const StigDecayInputShape = StigDecayInputSchema.shape;
 /** Schema validating the payload accepted by the `stig_snapshot` tool. */
-export const StigSnapshotInputSchema = z.object({});
+export const StigSnapshotInputSchema = z.object({
+    op_id: z.string().trim().min(1).optional(),
+});
 export const StigSnapshotInputShape = StigSnapshotInputSchema.shape;
 /** Schema validating the payload accepted by the `cnp_announce` tool. */
 export const CnpAnnounceInputSchema = z
@@ -164,6 +178,7 @@ const CnpPheromoneBoundsSchema = z
     .strict();
 export const CnpRefreshBoundsInputSchema = z
     .object({
+    op_id: z.string().trim().min(1).optional(),
     call_id: z.string().min(1, "call_id must not be empty"),
     bounds: CnpPheromoneBoundsSchema.optional(),
     refresh_auto_bids: z.boolean().optional(),
@@ -172,24 +187,30 @@ export const CnpRefreshBoundsInputSchema = z
     .strict();
 export const CnpRefreshBoundsInputShape = CnpRefreshBoundsInputSchema.shape;
 /** Schema validating the payload accepted by the `cnp_watcher_telemetry` tool. */
-export const CnpWatcherTelemetryInputSchema = z.object({}).strict();
+export const CnpWatcherTelemetryInputSchema = z
+    .object({
+    op_id: z.string().trim().min(1).optional(),
+})
+    .strict();
 export const CnpWatcherTelemetryInputShape = CnpWatcherTelemetryInputSchema.shape;
 /**
  * Stores or updates a key on the blackboard with optional tags and TTL. The
  * returned payload mirrors the current snapshot so clients can cache it.
  */
 export function handleBbSet(context, input) {
+    const opId = resolveOperationId(input.op_id, "bb_set_op");
     const snapshot = context.blackboard.set(input.key, input.value, {
         tags: input.tags,
         ttlMs: input.ttl_ms,
     });
     context.logger.info("bb_set", {
+        op_id: opId,
         key: snapshot.key,
         version: snapshot.version,
         tags: snapshot.tags,
         ttl_ms: input.ttl_ms ?? null,
     });
-    return serialiseEntry(snapshot);
+    return { op_id: opId, ...serialiseEntry(snapshot) };
 }
 /**
  * Atomically applies multiple {@link handleBbSet} style mutations on the
@@ -197,53 +218,83 @@ export function handleBbSet(context, input) {
  * batch even if one of the values cannot be cloned.
  */
 export function handleBbBatchSet(context, input) {
+    const opId = resolveOperationId(input.op_id, "bb_batch_set_op");
     const payloads = input.entries.map((entry) => ({
         key: entry.key,
         value: entry.value,
         tags: entry.tags,
         ttlMs: entry.ttl_ms,
     }));
-    const snapshots = context.blackboard.batchSet(payloads);
-    context.logger.info("bb_batch_set", {
-        entries: snapshots.length,
-        keys: snapshots.map((entry) => entry.key),
-    });
-    return { entries: snapshots.map(serialiseEntry) };
+    try {
+        const snapshots = context.blackboard.batchSet(payloads);
+        context.logger.info("bb_batch_set", {
+            op_id: opId,
+            entries: snapshots.length,
+            keys: snapshots.map((entry) => entry.key),
+        });
+        return { op_id: opId, entries: snapshots.map(serialiseEntry) };
+    }
+    catch (error) {
+        if (error instanceof BlackboardBatchSetEntryError) {
+            throw new BulkOperationError("blackboard batch aborted", {
+                failures: [
+                    buildBulkFailureDetail({
+                        index: error.index,
+                        entry: {
+                            key: error.entry.key,
+                            tags: Array.isArray(error.entry.tags) && error.entry.tags.length > 0
+                                ? [...error.entry.tags]
+                                : null,
+                        },
+                        error: error.cause ?? error,
+                        stage: "set",
+                    }),
+                ],
+                rolled_back: true,
+            });
+        }
+        throw error;
+    }
 }
 /** Retrieves a single entry when available. */
 export function handleBbGet(context, input) {
+    const opId = resolveOperationId(input.op_id, "bb_get_op");
     const snapshot = context.blackboard.get(input.key);
     if (!snapshot) {
-        context.logger.warn("bb_get_miss", { key: input.key });
+        context.logger.warn("bb_get_miss", { key: input.key, op_id: opId });
         throw new BlackboardEntryNotFoundError(input.key);
     }
-    context.logger.info("bb_get", { key: input.key, hit: 1 });
-    return { entry: serialiseEntry(snapshot) };
+    context.logger.info("bb_get", { key: input.key, hit: 1, op_id: opId });
+    return { op_id: opId, entry: serialiseEntry(snapshot) };
 }
 /** Queries the blackboard by keys and/or tags. */
 export function handleBbQuery(context, input) {
+    const opId = resolveOperationId(input.op_id, "bb_query_op");
     const results = context.blackboard.query({ keys: input.keys, tags: input.tags });
     const limited = results.slice(0, input.limit).map(serialiseEntry);
     context.logger.info("bb_query", {
+        op_id: opId,
         keys: input.keys ?? null,
         tags: input.tags ?? null,
         returned: limited.length,
     });
     const cursor = limited.length > 0 ? limited[limited.length - 1].version : null;
-    return { entries: limited, next_cursor: cursor };
+    return { op_id: opId, entries: limited, next_cursor: cursor };
 }
 /** Lists history events so clients can resume from the last delivered version. */
 export function handleBbWatch(context, input) {
+    const opId = resolveOperationId(input.op_id, "bb_watch_op");
     const events = context.blackboard.getEventsSince(input.start_version, { limit: input.limit });
     const serialised = events.map(serialiseEvent);
     const nextVersion = serialised.length > 0 ? serialised[serialised.length - 1].version : input.start_version;
     context.logger.info("bb_watch", {
+        op_id: opId,
         start_version: input.start_version,
         requested: input.limit,
         delivered: serialised.length,
         next_version: nextVersion,
     });
-    return { events: serialised, next_version: nextVersion };
+    return { op_id: opId, events: serialised, next_version: nextVersion };
 }
 function serialiseEntry(snapshot) {
     return {
@@ -273,6 +324,7 @@ function serialiseEvent(event) {
  * immediately.
  */
 export function handleStigMark(context, input) {
+    const opId = resolveOperationId(input.op_id, "stig_mark_op");
     const snapshot = context.stigmergy.mark(input.node_id, input.type, input.intensity);
     const total = context.stigmergy.getNodeIntensity(input.node_id) ?? {
         nodeId: input.node_id,
@@ -280,12 +332,14 @@ export function handleStigMark(context, input) {
         updatedAt: snapshot.updatedAt,
     };
     context.logger.info("stig_mark", {
+        op_id: opId,
         node_id: input.node_id,
         type: snapshot.type,
         intensity: snapshot.intensity,
         node_total: total.intensity,
     });
     return {
+        op_id: opId,
         point: serialisePoint(snapshot),
         node_total: serialiseTotal(total),
     };
@@ -296,12 +350,15 @@ export function handleStigMark(context, input) {
  * dashboards.
  */
 export function handleStigDecay(context, input) {
+    const opId = resolveOperationId(input.op_id, "stig_decay_op");
     const changes = context.stigmergy.evaporate(input.half_life_ms);
     context.logger.info("stig_decay", {
+        op_id: opId,
         half_life_ms: input.half_life_ms,
         affected: changes.length,
     });
     return {
+        op_id: opId,
         changes: changes.map((change) => ({
             point: serialisePoint({
                 nodeId: change.nodeId,
@@ -319,35 +376,61 @@ export function handleStigDecay(context, input) {
 }
 /** Applies several pheromone markings atomically. */
 export function handleStigBatch(context, input) {
-    const applied = context.stigmergy.batchMark(input.entries.map((entry) => ({
-        nodeId: entry.node_id,
-        type: entry.type,
-        intensity: entry.intensity,
-    })));
-    const serialised = applied.map((change) => ({
-        point: serialisePoint(change.point),
-        node_total: serialiseTotal(change.nodeTotal),
-    }));
-    const uniqueNodes = new Set(serialised.map((change) => change.point.node_id));
-    context.logger.info("stig_batch", {
-        entries: input.entries.length,
-        nodes: uniqueNodes.size,
-    });
-    return { changes: serialised };
+    const opId = resolveOperationId(input.op_id, "stig_batch_op");
+    try {
+        const applied = context.stigmergy.batchMark(input.entries.map((entry) => ({
+            nodeId: entry.node_id,
+            type: entry.type,
+            intensity: entry.intensity,
+        })));
+        const serialised = applied.map((change) => ({
+            point: serialisePoint(change.point),
+            node_total: serialiseTotal(change.nodeTotal),
+        }));
+        const uniqueNodes = new Set(serialised.map((change) => change.point.node_id));
+        context.logger.info("stig_batch", {
+            op_id: opId,
+            entries: input.entries.length,
+            nodes: uniqueNodes.size,
+        });
+        return { op_id: opId, changes: serialised };
+    }
+    catch (error) {
+        if (error instanceof StigmergyBatchMarkError) {
+            throw new BulkOperationError("stigmergy batch aborted", {
+                failures: [
+                    buildBulkFailureDetail({
+                        index: error.index,
+                        entry: {
+                            node_id: error.entry.nodeId,
+                            type: error.entry.type,
+                            intensity: error.entry.intensity,
+                        },
+                        error: error.cause ?? error,
+                        stage: "mark",
+                    }),
+                ],
+                rolled_back: true,
+            });
+        }
+        throw error;
+    }
 }
 /** Returns a deterministic snapshot of the stigmergic field. */
-export function handleStigSnapshot(context, _input) {
+export function handleStigSnapshot(context, input) {
+    const opId = resolveOperationId(input.op_id, "stig_snapshot_op");
     const snapshot = context.stigmergy.fieldSnapshot();
     const heatmap = context.stigmergy.heatmapSnapshot();
     const bounds = normalisePheromoneBoundsForTelemetry(context.stigmergy.getIntensityBounds());
     const summary = buildStigmergySummary(bounds);
     const boundsTooltip = formatPheromoneBoundsTooltip(bounds);
     context.logger.info("stig_snapshot", {
+        op_id: opId,
         points: snapshot.points.length,
         totals: snapshot.totals.length,
         heatmap_cells: heatmap.cells.length,
     });
-    return serialiseFieldSnapshot(snapshot, heatmap, summary, boundsTooltip);
+    return serialiseFieldSnapshot(snapshot, heatmap, summary, boundsTooltip, opId);
 }
 function serialisePoint(snapshot) {
     return {
@@ -364,8 +447,9 @@ function serialiseTotal(total) {
         updated_at: total.updatedAt,
     };
 }
-function serialiseFieldSnapshot(snapshot, heatmap, summary, boundsTooltip) {
+function serialiseFieldSnapshot(snapshot, heatmap, summary, boundsTooltip, opId) {
     return {
+        op_id: opId,
         generated_at: snapshot.generatedAt,
         points: snapshot.points.map(serialisePoint),
         totals: snapshot.totals.map(serialiseTotal),
@@ -413,6 +497,7 @@ function serialiseHeatmapPoint(point) {
 }
 /** Announces a task to the Contract-Net and immediately awards the best bid. */
 export function handleCnpAnnounce(context, input) {
+    const opId = resolveOperationId(input.op_id, "cnp_announce_op");
     const execute = () => {
         // Capture the current pheromone bounds before announcing the task so the
         // resulting snapshot and events mirror the scheduler telemetry. Consumers
@@ -424,7 +509,7 @@ export function handleCnpAnnounce(context, input) {
         // run/op hints without relying on out-of-band resolvers.
         const correlation = {
             runId: input.run_id ?? null,
-            opId: input.op_id ?? null,
+            opId,
             jobId: input.job_id ?? null,
             graphId: input.graph_id ?? null,
             nodeId: input.node_id ?? null,
@@ -459,12 +544,13 @@ export function handleCnpAnnounce(context, input) {
             throw new Error(`call ${announcement.callId} disappeared after award`);
         }
         context.logger.info("cnp_announce", {
+            op_id: opId,
             call_id: snapshot.callId,
             bids: snapshot.bids.length,
             awarded_agent_id: decision.agentId,
             idempotency_key: input.idempotency_key ?? null,
         });
-        return serialiseContractNetResult(snapshot, decision);
+        return serialiseContractNetResult(snapshot, decision, opId);
     };
     const key = input.idempotency_key ?? null;
     if (context.idempotency && key) {
@@ -472,6 +558,7 @@ export function handleCnpAnnounce(context, input) {
         if (hit.idempotent) {
             const snapshot = hit.value;
             context.logger.info("cnp_announce_replayed", {
+                op_id: snapshot.op_id,
                 call_id: snapshot.call_id,
                 awarded_agent_id: snapshot.awarded_agent_id,
                 idempotency_key: key,
@@ -491,6 +578,7 @@ export function handleCnpAnnounce(context, input) {
  */
 export function handleCnpRefreshBounds(context, input) {
     const parsed = CnpRefreshBoundsInputSchema.parse(input);
+    const opId = resolveOperationId(parsed.op_id, "cnp_refresh_bounds_op");
     const requestedBounds = parsed.bounds
         ? {
             min_intensity: parsed.bounds.min_intensity,
@@ -506,6 +594,7 @@ export function handleCnpRefreshBounds(context, input) {
     const refreshRequested = parsed.refresh_auto_bids !== false;
     const includeNewAgents = parsed.include_new_agents ?? true;
     const result = {
+        op_id: opId,
         call_id: snapshot.callId,
         auto_bid_refreshed: snapshot.autoBidRefreshed,
         refreshed_agents: [...snapshot.refreshedAgents],
@@ -516,6 +605,7 @@ export function handleCnpRefreshBounds(context, input) {
         },
     };
     context.logger.info("cnp_refresh_bounds", {
+        op_id: opId,
         call_id: result.call_id,
         auto_bid_refreshed: result.auto_bid_refreshed,
         refreshed_agents: result.refreshed_agents.length,
@@ -529,10 +619,12 @@ export function handleCnpRefreshBounds(context, input) {
  * MCP clients can observe coalescing efficiency and refresh cadence.
  */
 export function handleCnpWatcherTelemetry(context, input) {
-    CnpWatcherTelemetryInputSchema.parse(input);
+    const parsed = CnpWatcherTelemetryInputSchema.parse(input);
+    const opId = resolveOperationId(parsed.op_id, "cnp_watcher_telemetry_op");
     const recorder = context.contractNetWatcherTelemetry;
     if (!recorder) {
         return {
+            op_id: opId,
             telemetry_enabled: false,
             emissions: 0,
             last_emitted_at_ms: null,
@@ -556,6 +648,7 @@ export function handleCnpWatcherTelemetry(context, input) {
         : null;
     const lastEmittedAtIso = state.lastEmittedAtMs === null ? null : new Date(state.lastEmittedAtMs).toISOString();
     return {
+        op_id: opId,
         telemetry_enabled: true,
         emissions: state.emissions,
         last_emitted_at_ms: state.lastEmittedAtMs,
@@ -569,6 +662,7 @@ export function handleCnpWatcherTelemetry(context, input) {
  * demand without triggering a full reduce workflow.
  */
 export function handleConsensusVote(context, input) {
+    const opId = resolveOperationId(input.op_id, "consensus_vote_op");
     const votes = input.votes.map((ballot) => ({
         voter: ballot.voter,
         value: ballot.value,
@@ -594,6 +688,7 @@ export function handleConsensusVote(context, input) {
             break;
     }
     context.logger.info("consensus_vote", {
+        op_id: opId,
         mode: decision.mode,
         outcome: decision.outcome,
         satisfied: decision.satisfied,
@@ -614,6 +709,7 @@ export function handleConsensusVote(context, input) {
         totalWeight: decision.totalWeight,
         tally: decision.tally,
         votes: votes.length,
+        opId,
         metadata: {
             requested_mode: config.mode,
             requested_quorum: config.quorum ?? null,
@@ -623,6 +719,7 @@ export function handleConsensusVote(context, input) {
         },
     });
     return {
+        op_id: opId,
         mode: decision.mode,
         outcome: decision.outcome,
         satisfied: decision.satisfied,
@@ -633,8 +730,9 @@ export function handleConsensusVote(context, input) {
         votes: votes.length,
     };
 }
-function serialiseContractNetResult(snapshot, decision) {
+function serialiseContractNetResult(snapshot, decision, opId) {
     return {
+        op_id: opId,
         call_id: snapshot.callId,
         task_id: snapshot.taskId,
         payload: snapshot.payload,

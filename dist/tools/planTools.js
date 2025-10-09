@@ -13,6 +13,7 @@ import { ConsensusConfigSchema, majority as computeConsensusMajority, normaliseC
 import { ensureDirectory, resolveWithin } from "../paths.js";
 import { PromptTemplateSchema, PromptVariablesSchema, renderPromptTemplate, } from "../prompts.js";
 import { applyAll, createInlineSubgraphRule, createRerouteAvoidRule, createSplitParallelRule } from "../graph/rewrite.js";
+import { resolveOperationId } from "./operationIds.js";
 import { flatten } from "../graph/hierarchy.js";
 import { registerCancellation, unregisterCancellation, OperationCancelledError, } from "../executor/cancel.js";
 import { BehaviorTreeCancellationError } from "../executor/bt/nodes.js";
@@ -935,22 +936,35 @@ async function spawnChildWithRetry(context, jobId, plan, template, sharedVariabl
     }
     throw new Error("unreachable retry loop in plan_fanout");
 }
-async function runWithConcurrency(limit, tasks) {
+/**
+ * Executes the provided asynchronous tasks with a bounded concurrency level.
+ *
+ * The helper is aware of cancellation handles so long running fan-out
+ * operations periodically observe the abort signal before picking the next
+ * task and immediately after each awaited invocation. This ensures the
+ * checklist requirement "Vérifier isCancelled avant/après chaque await" holds
+ * without duplicating guard statements in every call site.
+ */
+async function runWithConcurrency(limit, tasks, options = {}) {
     if (tasks.length === 0) {
         return [];
     }
     const safeLimit = Math.max(1, Math.min(limit, tasks.length));
     const results = new Array(tasks.length);
     let index = 0;
+    const cancellation = options.cancellation ?? null;
     async function worker() {
         while (true) {
+            cancellation?.throwIfCancelled();
             const current = index;
             if (current >= tasks.length) {
                 return;
             }
             index += 1;
             const task = tasks[current];
-            results[current] = await task();
+            const value = await task();
+            cancellation?.throwIfCancelled();
+            results[current] = value;
         }
     }
     const workers = Array.from({ length: safeLimit }, () => worker());
@@ -977,21 +991,25 @@ export async function handlePlanFanout(context, input) {
     }
     const rejectedPlans = [];
     const plans = [];
-    const providedCorrelation = extractPlanCorrelationHints(input) ?? null;
+    const providedCorrelation = extractPlanCorrelationHints(input);
+    const opId = resolveOperationId(input.op_id ?? providedCorrelation?.opId, "plan_fanout_op");
     const runId = providedCorrelation?.runId ?? input.run_label ?? `run-${Date.now()}`;
-    const opId = providedCorrelation?.opId ?? `plan_fanout_op_${randomUUID()}`;
     const jobId = providedCorrelation?.jobId ?? `job_${randomUUID()}`;
     const graphId = providedCorrelation?.graphId ?? null;
     const nodeId = providedCorrelation?.nodeId ?? null;
     const parentChildId = providedCorrelation?.childId ?? null;
-    const correlationLogFields = {
-        run_id: runId,
-        op_id: opId,
-        job_id: jobId,
-        graph_id: graphId ?? null,
-        node_id: nodeId ?? null,
-        child_id: parentChildId ?? null,
+    const mergedCorrelation = {
+        ...(providedCorrelation ?? {}),
+        opId,
+        runId,
+        jobId,
+        graphId,
+        nodeId,
+        childId: parentChildId,
     };
+    const eventCorrelation = toEventCorrelationHints(mergedCorrelation);
+    const correlationPayload = serialiseCorrelationForPayload(eventCorrelation);
+    const correlationLogFields = { ...correlationPayload };
     if (context.valueGuard) {
         for (const plan of resolvedPlans) {
             if (!plan.valueImpacts?.length) {
@@ -1074,23 +1092,11 @@ export async function handlePlanFanout(context, input) {
         jobId,
         childId: parentChildId ?? undefined,
         payload: {
-            run_id: runId,
-            op_id: opId,
-            job_id: jobId,
-            graph_id: graphId,
-            node_id: nodeId,
-            child_id: parentChildId,
+            ...correlationPayload,
             children: plans.map((plan) => ({ name: plan.name, runtime: plan.runtime })),
             rejected: rejectedPlans.map((entry) => entry.name),
         },
-        correlation: {
-            runId,
-            opId,
-            jobId,
-            graphId,
-            nodeId,
-            childId: parentChildId ?? null,
-        },
+        correlation: eventCorrelation,
     });
     const sharedVariables = {
         job_id: jobId,
@@ -1129,7 +1135,7 @@ export async function handlePlanFanout(context, input) {
         });
         const tasks = plans.map((plan, index) => () => spawnChildWithRetry(context, jobId, plan, promptTemplate, sharedVariables, retryPolicy, index + 1, correlationContext, cancellation));
         const parallelism = input.parallelism ?? Math.min(3, plans.length || 1);
-        const spawned = await runWithConcurrency(parallelism, tasks);
+        const spawned = await runWithConcurrency(parallelism, tasks, { cancellation });
         cancellation.throwIfCancelled();
         const runDirectory = await ensureDirectory(context.childrenRoot, runId);
         const mappingPath = resolveWithin(runDirectory, "fanout.json");
@@ -1270,7 +1276,12 @@ async function observeChildForJoin(context, childId, timeoutMs) {
 export async function handlePlanJoin(context, input) {
     const timeoutMs = (input.timeout_sec ?? 10) * 1000;
     const providedCorrelation = extractPlanCorrelationHints(input);
-    const correlationHints = toEventCorrelationHints(providedCorrelation);
+    const opId = resolveOperationId(input.op_id ?? providedCorrelation?.opId, "plan_join_op");
+    const correlationSource = {
+        ...(providedCorrelation ?? {}),
+        opId,
+    };
+    const correlationHints = toEventCorrelationHints(correlationSource);
     const correlationPayload = serialiseCorrelationForPayload(correlationHints);
     context.logger.info("plan_join", {
         children: input.children.length,
@@ -1423,6 +1434,7 @@ export async function handlePlanJoin(context, input) {
         ...correlationPayload,
     });
     return {
+        op_id: opId,
         policy: input.join_policy,
         satisfied,
         timeout_ms: timeoutMs,
@@ -1511,7 +1523,12 @@ function normaliseVoteSummary(summary) {
 export async function handlePlanReduce(context, input) {
     const outputs = await Promise.all(input.children.map((childId) => context.supervisor.collect(childId)));
     const providedCorrelation = extractPlanCorrelationHints(input);
-    const correlationHints = toEventCorrelationHints(providedCorrelation);
+    const opId = resolveOperationId(input.op_id ?? providedCorrelation?.opId, "plan_reduce_op");
+    const correlationSource = {
+        ...(providedCorrelation ?? {}),
+        opId,
+    };
+    const correlationHints = toEventCorrelationHints(correlationSource);
     const correlationPayload = serialiseCorrelationForPayload(correlationHints);
     const guardDecisions = new Map();
     if (context.valueGuard) {
@@ -1710,7 +1727,8 @@ export async function handlePlanReduce(context, input) {
         aggregate_kind: typeof result.aggregate,
         child_count: summaries.length,
     });
-    return result;
+    const payload = { ...result, op_id: opId };
+    return payload;
 }
 /**
  * Compile a hierarchical graph into a serialised Behaviour Tree definition. The
@@ -1734,21 +1752,24 @@ async function executePlanRunBT(context, input) {
     let sawFailure = false;
     let reportedError = false;
     const dryRun = input.dry_run ?? false;
-    const providedCorrelation = extractPlanCorrelationHints(input) ?? null;
+    const providedCorrelation = extractPlanCorrelationHints(input);
+    const opId = resolveOperationId(input.op_id ?? providedCorrelation?.opId, "bt_op");
     const runId = providedCorrelation?.runId ?? `bt_run_${randomUUID()}`;
-    const opId = providedCorrelation?.opId ?? `bt_op_${randomUUID()}`;
     const jobId = providedCorrelation?.jobId ?? null;
     const graphId = providedCorrelation?.graphId ?? null;
     const nodeId = providedCorrelation?.nodeId ?? null;
     const childId = providedCorrelation?.childId ?? null;
-    const correlationLogFields = {
-        run_id: runId,
-        op_id: opId,
-        job_id: jobId,
-        graph_id: graphId,
-        node_id: nodeId,
-        child_id: childId,
+    const correlationSource = {
+        ...(providedCorrelation ?? {}),
+        opId,
+        runId,
+        jobId,
+        graphId,
+        nodeId,
+        childId,
     };
+    const eventCorrelation = toEventCorrelationHints(correlationSource);
+    const correlationLogFields = serialiseCorrelationForPayload(eventCorrelation);
     const baseLogFields = { ...correlationLogFields, tree_id: input.tree.id };
     const estimatedWork = estimateBehaviorTreeWorkload(input.tree.root);
     registerPlanLifecycleRun(context, {
@@ -1756,7 +1777,7 @@ async function executePlanRunBT(context, input) {
         opId,
         mode: "bt",
         dryRun,
-        correlation: providedCorrelation,
+        correlation: correlationSource,
         estimatedWork,
     });
     context.logger.info("plan_run_bt", {
@@ -1785,14 +1806,7 @@ async function executePlanRunBT(context, input) {
             jobId: jobId ?? undefined,
             childId: childId ?? undefined,
             payload: eventPayload,
-            correlation: {
-                runId,
-                opId,
-                jobId,
-                graphId,
-                nodeId,
-                childId,
-            },
+            correlation: eventCorrelation,
         });
     };
     publishLifecycleEvent("start", {});
@@ -2060,21 +2074,24 @@ async function executePlanRunReactive(context, input) {
     const dryRun = input.dry_run ?? false;
     let lastOutput = null;
     let lastResultStatus = "running";
-    const providedCorrelation = extractPlanCorrelationHints(input) ?? null;
+    const providedCorrelation = extractPlanCorrelationHints(input);
+    const opId = resolveOperationId(input.op_id ?? providedCorrelation?.opId, "bt_reactive_op");
     const runId = providedCorrelation?.runId ?? `bt_reactive_run_${randomUUID()}`;
-    const opId = providedCorrelation?.opId ?? `bt_reactive_op_${randomUUID()}`;
     const jobId = providedCorrelation?.jobId ?? null;
     const graphId = providedCorrelation?.graphId ?? null;
     const nodeId = providedCorrelation?.nodeId ?? null;
     const childId = providedCorrelation?.childId ?? null;
-    const correlationLogFields = {
-        run_id: runId,
-        op_id: opId,
-        job_id: jobId,
-        graph_id: graphId,
-        node_id: nodeId,
-        child_id: childId,
+    const correlationSource = {
+        ...(providedCorrelation ?? {}),
+        opId,
+        runId,
+        jobId,
+        graphId,
+        nodeId,
+        childId,
     };
+    const eventCorrelation = toEventCorrelationHints(correlationSource);
+    const correlationLogFields = serialiseCorrelationForPayload(eventCorrelation);
     const baseLogFields = {
         ...correlationLogFields,
         tree_id: input.tree.id,
@@ -2086,7 +2103,7 @@ async function executePlanRunReactive(context, input) {
         opId,
         mode: "reactive",
         dryRun,
-        correlation: providedCorrelation,
+        correlation: correlationSource,
         estimatedWork,
     });
     context.logger.info("plan_run_reactive", {
@@ -2116,14 +2133,7 @@ async function executePlanRunReactive(context, input) {
             jobId: jobId ?? undefined,
             childId: childId ?? undefined,
             payload: eventPayload,
-            correlation: {
-                runId,
-                opId,
-                jobId,
-                graphId,
-                nodeId,
-                childId,
-            },
+            correlation: eventCorrelation,
         });
     };
     /**
@@ -2143,14 +2153,7 @@ async function executePlanRunReactive(context, input) {
                 ...correlationLogFields,
                 ...payload,
             },
-            correlation: {
-                runId,
-                opId,
-                jobId,
-                graphId,
-                nodeId,
-                childId,
-            },
+            correlation: eventCorrelation,
         });
     };
     publishLifecycleEvent("start", { tick_ms: input.tick_ms, budget_ms: input.budget_ms ?? null });
@@ -2880,3 +2883,7 @@ function serialiseCorrelationForPayload(hints) {
         child_id: hints.childId ?? null,
     };
 }
+/** @internal Aggregates helper functions that are exclusively used in tests. */
+export const __testing = {
+    runWithConcurrency,
+};

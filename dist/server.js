@@ -2,15 +2,15 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { randomUUID } from "crypto";
-import { readFile, writeFile, mkdir } from "node:fs/promises";
-import { resolve as resolvePath, dirname as pathDirname, basename as pathBasename } from "node:path";
+import { readFile, writeFile } from "node:fs/promises";
+import { resolve as resolvePath, basename as pathBasename } from "node:path";
 import { pathToFileURL } from "url";
 import { GraphState } from "./graphState.js";
 import { GraphTransactionManager, GraphTransactionError, GraphVersionConflictError } from "./graph/tx.js";
 import { GraphLockManager } from "./graph/locks.js";
 import { StructuredLogger } from "./logger.js";
 import { EventStore } from "./eventStore.js";
-import { EventBus } from "./events/bus.js";
+import { EventBus, EVENT_CATEGORIES, } from "./events/bus.js";
 import { buildChildCorrelationHints, buildJobCorrelationHints, mergeCorrelationHints, } from "./events/correlation.js";
 import { buildChildCognitiveEvents } from "./events/cognitive.js";
 import { bridgeBlackboardEvents, bridgeCancellationEvents, bridgeConsensusEvents, bridgeContractNetEvents, bridgeValueEvents, bridgeStigmergyEvents, createContractNetWatcherTelemetryListener, } from "./events/bridges.js";
@@ -40,6 +40,7 @@ import { ResourceRegistry } from "./resources/registry.js";
 import { renderResourceWatchSseMessages, serialiseResourceWatchResultForSse } from "./resources/sse.js";
 import { IdempotencyRegistry } from "./infra/idempotency.js";
 import { PlanLifecycleRegistry, PlanRunNotFoundError } from "./executor/planLifecycle.js";
+import { ensureParentDirectory, resolveWorkspacePath, PathResolutionError } from "./paths.js";
 import { ChildCancelInputShape, ChildCancelInputSchema, ChildCollectInputShape, ChildCollectInputSchema, ChildCreateInputShape, ChildCreateInputSchema, ChildGcInputShape, ChildGcInputSchema, ChildKillInputShape, ChildKillInputSchema, ChildSendInputShape, ChildSendInputSchema, ChildStreamInputShape, ChildStreamInputSchema, ChildStatusInputShape, ChildStatusInputSchema, ChildSpawnCodexInputShape, ChildSpawnCodexInputSchema, ChildBatchCreateInputShape, ChildBatchCreateInputSchema, ChildAttachInputShape, ChildAttachInputSchema, ChildSetRoleInputShape, ChildSetRoleInputSchema, ChildSetLimitsInputShape, ChildSetLimitsInputSchema, handleChildCancel, handleChildCollect, handleChildCreate, handleChildSpawnCodex, handleChildBatchCreate, handleChildAttach, handleChildSetRole, handleChildSetLimits, handleChildGc, handleChildKill, handleChildSend, handleChildStream, handleChildStatus, } from "./tools/childTools.js";
 import { PlanFanoutInputSchema, PlanFanoutInputShape, PlanJoinInputSchema, PlanJoinInputShape, PlanCompileBTInputSchema, PlanCompileBTInputShape, PlanRunBTInputSchema, PlanRunBTInputShape, PlanRunReactiveInputSchema, PlanRunReactiveInputShape, PlanReduceInputSchema, PlanReduceInputShape, PlanDryRunInputSchema, PlanDryRunInputShape, PlanStatusInputSchema, PlanStatusInputShape, PlanPauseInputSchema, PlanPauseInputShape, PlanResumeInputSchema, PlanResumeInputShape, handlePlanFanout, handlePlanJoin, handlePlanCompileBT, handlePlanRunBT, handlePlanRunReactive, handlePlanReduce, handlePlanDryRun, handlePlanStatus, handlePlanPause, handlePlanResume, ValueGuardRejectionError, ValueGuardRequiredError, } from "./tools/planTools.js";
 import { BbGetInputSchema, BbGetInputShape, BbQueryInputSchema, BbQueryInputShape, BbSetInputSchema, BbSetInputShape, BbBatchSetInputSchema, BbBatchSetInputShape, BbWatchInputSchema, BbWatchInputShape, CnpAnnounceInputSchema, CnpAnnounceInputShape, handleBbGet, handleBbBatchSet, handleBbQuery, handleBbSet, handleBbWatch, StigDecayInputSchema, StigDecayInputShape, StigMarkInputSchema, StigMarkInputShape, StigBatchInputSchema, StigBatchInputShape, StigSnapshotInputSchema, StigSnapshotInputShape, handleStigDecay, handleStigMark, handleStigBatch, handleStigSnapshot, CnpRefreshBoundsInputSchema, CnpRefreshBoundsInputShape, handleCnpRefreshBounds, handleCnpAnnounce, CnpWatcherTelemetryInputSchema, CnpWatcherTelemetryInputShape, handleCnpWatcherTelemetry, ConsensusVoteInputSchema, ConsensusVoteInputShape, handleConsensusVote, } from "./tools/coordTools.js";
@@ -49,6 +50,7 @@ import { GraphGenerateInputSchema, GraphGenerateInputShape, GraphMutateInputSche
 import { GraphBatchMutateInputSchema, GraphBatchMutateInputShape, handleGraphBatchMutate, } from "./tools/graphBatchTools.js";
 import { GraphLockInputShape, GraphLockInputSchema, GraphUnlockInputShape, GraphUnlockInputSchema, handleGraphLock, handleGraphUnlock, } from "./tools/graphLockTools.js";
 import { GraphDiffInputSchema, GraphDiffInputShape, GraphPatchInputSchema, GraphPatchInputShape, handleGraphDiff, handleGraphPatch, } from "./tools/graphDiffTools.js";
+import { resolveOperationId } from "./tools/operationIds.js";
 import { TxBeginInputSchema, TxBeginInputShape, TxApplyInputSchema, TxApplyInputShape, TxCommitInputSchema, TxCommitInputShape, TxRollbackInputSchema, TxRollbackInputShape, handleTxBegin, handleTxApply, handleTxCommit, handleTxRollback, } from "./tools/txTools.js";
 import { KgExportInputSchema, KgExportInputShape, KgInsertInputSchema, KgInsertInputShape, KgQueryInputSchema, KgQueryInputShape, KgSuggestPlanInputSchema, KgSuggestPlanInputShape, handleKgExport, handleKgInsert, handleKgQuery, handleKgSuggestPlan, } from "./tools/knowledgeTools.js";
 import { CausalExportInputSchema, CausalExportInputShape, CausalExplainInputSchema, CausalExplainInputShape, handleCausalExport, handleCausalExplain, } from "./tools/causalTools.js";
@@ -292,6 +294,9 @@ function recordServerLogEntry(entry) {
     const nodeId = extractNodeId(payload);
     const childId = extractChildId(payload);
     const jobId = extractJobId(payload);
+    const component = normaliseTag(extractComponentTag(payload)) ?? "server";
+    const stage = normaliseTag(extractStageTag(payload)) ?? entry.message;
+    const elapsedMs = resolveEventElapsedMs(extractElapsedMilliseconds(payload));
     try {
         logJournal.record({
             stream: "server",
@@ -306,6 +311,9 @@ function recordServerLogEntry(entry) {
             graphId,
             nodeId,
             childId,
+            component,
+            stage,
+            elapsedMs,
         });
     }
     catch (error) {
@@ -434,6 +442,9 @@ const childSupervisor = new ChildSupervisor({
                 graphId: entry.graphId ?? null,
                 nodeId: entry.nodeId ?? null,
                 childId: entry.childId ?? childId,
+                component: "child_io",
+                stage: entry.stream,
+                elapsedMs: null,
             });
         }
         catch (error) {
@@ -1045,6 +1056,57 @@ function ensureEventsBusEnabled(toolName) {
     }
     return null;
 }
+function ensureLocksEnabled(toolName) {
+    if (!runtimeFeatures.enableLocks) {
+        logger.warn(`${toolName}_disabled`, { tool: toolName });
+        return {
+            isError: true,
+            content: [
+                {
+                    type: "text",
+                    text: j({ error: "LOCKS_DISABLED", tool: toolName, message: "graph locks disabled" }),
+                },
+            ],
+        };
+    }
+    return null;
+}
+function ensureBulkEnabled(toolName) {
+    if (!runtimeFeatures.enableBulk) {
+        logger.warn(`${toolName}_disabled`, { tool: toolName });
+        return {
+            isError: true,
+            content: [
+                {
+                    type: "text",
+                    text: j({ error: "BULK_DISABLED", tool: toolName, message: "bulk tools disabled" }),
+                },
+            ],
+        };
+    }
+    return null;
+}
+/**
+ * Guards fine-grained child management tools so they can only be exercised when
+ * the corresponding feature flag is enabled. This prevents partially configured
+ * deployments from invoking orchestration helpers that rely on richer child
+ * indexing guarantees.
+ */
+function ensureChildOpsFineEnabled(toolName) {
+    if (!runtimeFeatures.enableChildOpsFine) {
+        logger.warn(`${toolName}_disabled`, { tool: toolName });
+        return {
+            isError: true,
+            content: [
+                {
+                    type: "text",
+                    text: j({ error: "CHILD_OPS_FINE_DISABLED", tool: toolName, message: "child fine operations disabled" }),
+                },
+            ],
+        };
+    }
+    return null;
+}
 function ensureTransactionsEnabled(toolName) {
     if (!runtimeFeatures.enableTx) {
         logger.warn(`${toolName}_disabled`, { tool: toolName });
@@ -1060,11 +1122,50 @@ function ensureTransactionsEnabled(toolName) {
     }
     return null;
 }
+/**
+ * Guards MCP discovery tools so they cannot be invoked unless the dedicated flag is enabled.
+ * This keeps the handshake surface minimised while still logging the attempt for operators.
+ */
+function ensureMcpIntrospectionEnabled(toolName) {
+    if (!runtimeFeatures.enableMcpIntrospection) {
+        logger.warn(`${toolName}_disabled`, { tool: toolName });
+        return {
+            isError: true,
+            content: [
+                {
+                    type: "text",
+                    text: j({ error: "MCP_INTROSPECTION_DISABLED", tool: toolName, message: "mcp introspection disabled" }),
+                },
+            ],
+        };
+    }
+    return null;
+}
 // ---------------------------
 // Utils
 // ---------------------------
 const now = () => Date.now();
 const j = (o) => JSON.stringify(o, null, 2);
+/**
+ * Serialises a {@link PathResolutionError} into the legacy MCP text payload expected by the
+ * historical graph maintenance tools.
+ */
+function formatWorkspacePathError(error) {
+    return {
+        isError: true,
+        content: [
+            {
+                type: "text",
+                text: j({
+                    error: error.code,
+                    message: error.message,
+                    hint: error.hint,
+                    details: error.details,
+                }),
+            },
+        ],
+    };
+}
 function extractStringProperty(payload, key) {
     if (!payload || typeof payload !== "object") {
         return null;
@@ -1095,12 +1196,144 @@ function extractChildId(payload) {
 function extractJobId(payload) {
     return extractStringProperty(payload, "job_id") ?? null;
 }
+function extractStringCandidate(payload, keys) {
+    if (!payload || typeof payload !== "object") {
+        return null;
+    }
+    const record = payload;
+    for (const key of keys) {
+        if (!Object.prototype.hasOwnProperty.call(record, key)) {
+            continue;
+        }
+        const value = record[key];
+        if (value === null) {
+            return null;
+        }
+        if (typeof value === "string") {
+            const trimmed = value.trim();
+            if (trimmed.length > 0) {
+                return trimmed;
+            }
+            return null;
+        }
+    }
+    return null;
+}
+function extractComponentTag(payload) {
+    return (extractStringCandidate(payload, ["component", "component_id", "componentId", "origin", "source_component"]) ?? null);
+}
+function extractStageTag(payload) {
+    return extractStringCandidate(payload, ["stage", "phase", "status", "state"]);
+}
+function extractElapsedMilliseconds(payload) {
+    if (!payload || typeof payload !== "object") {
+        return null;
+    }
+    const record = payload;
+    const keys = ["elapsed_ms", "elapsedMs", "duration_ms", "durationMs", "latency_ms", "latencyMs"];
+    for (const key of keys) {
+        if (!Object.prototype.hasOwnProperty.call(record, key)) {
+            continue;
+        }
+        const value = record[key];
+        if (value === null) {
+            return null;
+        }
+        if (typeof value === "number" && Number.isFinite(value)) {
+            return Math.max(0, Math.round(value));
+        }
+        if (typeof value === "string") {
+            const parsed = Number(value);
+            if (Number.isFinite(parsed)) {
+                return Math.max(0, Math.round(parsed));
+            }
+        }
+    }
+    return null;
+}
+function normaliseTag(value) {
+    if (typeof value !== "string") {
+        return null;
+    }
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : null;
+}
+function resolveEventComponent(category, ...candidates) {
+    for (const candidate of candidates) {
+        const normalised = normaliseTag(candidate ?? null);
+        if (normalised) {
+            return normalised;
+        }
+    }
+    return category;
+}
+function resolveEventStage(kind, message, ...candidates) {
+    for (const candidate of candidates) {
+        const normalised = normaliseTag(candidate ?? null);
+        if (normalised) {
+            return normalised;
+        }
+    }
+    const fallback = normaliseTag(kind.toLowerCase()) ?? normaliseTag(message) ?? "event";
+    return fallback;
+}
+function resolveEventElapsedMs(...candidates) {
+    for (const candidate of candidates) {
+        if (candidate === null) {
+            return null;
+        }
+        if (typeof candidate === "number" && Number.isFinite(candidate)) {
+            return Math.max(0, Math.round(candidate));
+        }
+    }
+    return null;
+}
 function deriveEventMessage(kind, payload) {
     const msg = extractStringProperty(payload, "msg");
     if (msg) {
         return msg;
     }
     return kind.toLowerCase();
+}
+const EVENT_KIND_TO_CATEGORY = {
+    PLAN: "graph",
+    START: "graph",
+    PROMPT: "child",
+    PENDING: "child",
+    REPLY_PART: "child",
+    REPLY: "child",
+    STATUS: "graph",
+    AGGREGATE: "graph",
+    KILL: "scheduler",
+    HEARTBEAT: "scheduler",
+    INFO: "graph",
+    WARN: "graph",
+    ERROR: "graph",
+    BT_RUN: "bt",
+    SCHEDULER: "scheduler",
+    AUTOSCALER: "scheduler",
+    COGNITIVE: "child",
+};
+function deriveEventCategory(kind) {
+    return EVENT_KIND_TO_CATEGORY[kind] ?? "graph";
+}
+const EVENT_CATEGORY_SET = new Set(EVENT_CATEGORIES);
+function parseEventCategories(values) {
+    if (!values || values.length === 0) {
+        return undefined;
+    }
+    const collected = [];
+    for (const value of values) {
+        const trimmed = value.trim().toLowerCase();
+        if (!trimmed || !EVENT_CATEGORY_SET.has(trimmed)) {
+            continue;
+        }
+        const category = trimmed;
+        if (!collected.includes(category)) {
+            collected.push(category);
+        }
+    }
+    return collected.length > 0 ? collected : undefined;
 }
 function resolveChildLogLevel(stream) {
     switch (stream) {
@@ -1299,16 +1532,19 @@ const GraphSubgraphExtractInputSchema = z
     node_id: z.string().min(1),
     run_id: z.string().min(1),
     directory: z.string().min(1).optional(),
+    op_id: z.string().trim().min(1).optional(),
 })
     .strict();
 const GraphSubgraphExtractInputShape = GraphSubgraphExtractInputSchema.shape;
 function pushEvent(event) {
     const emitted = eventStore.emit({
+        // Forward the semantic kind so downstream consumers can latch onto
+        // PROMPT/PENDING/... identifiers without re-deriving them from payloads.
         kind: event.kind,
         level: event.level,
         source: event.source,
-        jobId: event.jobId,
-        childId: event.childId,
+        jobId: event.jobId ?? undefined,
+        childId: event.childId ?? undefined,
         payload: event.payload
     });
     graphState.recordEvent({
@@ -1352,9 +1588,12 @@ function pushEvent(event) {
     const jobId = hints.jobId ?? null;
     const childId = hints.childId ?? null;
     const message = deriveEventMessage(event.kind, event.payload);
+    const category = deriveEventCategory(event.kind);
+    const component = resolveEventComponent(category, event.component, extractComponentTag(event.payload));
+    const stage = resolveEventStage(event.kind, message, event.stage, extractStageTag(event.payload));
+    const elapsedMs = resolveEventElapsedMs(event.elapsedMs, extractElapsedMilliseconds(event.payload));
     eventBus.publish({
-        cat: event.kind,
-        kind: event.kind,
+        cat: category,
         level: (event.level ?? emitted.level),
         jobId,
         runId,
@@ -1362,6 +1601,10 @@ function pushEvent(event) {
         graphId,
         nodeId,
         childId,
+        component,
+        stage,
+        elapsedMs,
+        kind: event.kind,
         msg: message,
         data: event.payload,
     });
@@ -1377,6 +1620,9 @@ function pushEvent(event) {
             graphId,
             nodeId,
             childId,
+            component,
+            stage,
+            elapsedMs,
             payload: emitted.payload,
         });
         try {
@@ -1394,6 +1640,9 @@ function pushEvent(event) {
                 graphId,
                 nodeId,
                 childId,
+                component,
+                stage,
+                elapsedMs,
             });
         }
         catch (error) {
@@ -1419,15 +1668,23 @@ function buildLiveEvents(input) {
         const commandUri = childId
             ? `command:selfForkViewer.openConversation?${encodeURIComponent(JSON.stringify({ child_id: childId }))}`
             : null;
+        const eventKind = evt.kind && evt.kind.trim().length > 0 ? evt.kind : evt.cat.toUpperCase();
         return {
             seq: evt.seq,
             ts: evt.ts,
-            kind: evt.cat.toUpperCase(),
+            // Surface the semantic kind (PROMPT/PENDING/...) when available so the
+            // live event feed mirrors `events_subscribe` and the legacy `EventStore`
+            // API. Falling back to the upper-cased message preserves deterministic
+            // identifiers for bridged events that have not been migrated yet.
+            kind: eventKind,
             level: evt.level,
             jobId: evt.jobId ?? null,
             childId,
             runId: evt.runId ?? null,
             opId: evt.opId ?? null,
+            component: evt.component ?? null,
+            stage: evt.stage ?? null,
+            elapsed_ms: evt.elapsedMs ?? null,
             msg: evt.msg,
             payload: evt.data,
             vscode_deeplink: deepLink,
@@ -1898,6 +2155,10 @@ server.registerTool("mcp_info", {
     description: "Expose les métadonnées du serveur MCP (transports, limites, flags).",
     inputSchema: McpIntrospectionInputShape,
 }, async () => {
+    const disabled = ensureMcpIntrospectionEnabled("mcp_info");
+    if (disabled) {
+        return disabled;
+    }
     const info = getMcpInfo();
     return { content: [{ type: "text", text: j({ format: "json", info }) }] };
 });
@@ -1910,6 +2171,10 @@ server.registerTool("mcp_capabilities", {
     description: "Détaille les namespaces disponibles et leurs schémas résumés.",
     inputSchema: McpIntrospectionInputShape,
 }, async () => {
+    const disabled = ensureMcpIntrospectionEnabled("mcp_capabilities");
+    if (disabled) {
+        return disabled;
+    }
     const capabilities = getMcpCapabilities();
     return { content: [{ type: "text", text: j({ format: "json", capabilities }) }] };
 });
@@ -1942,10 +2207,21 @@ server.registerTool("resources_read", {
 }, async (input) => {
     try {
         const parsed = ResourceReadInputSchema.parse(input);
-        const result = resources.read(parsed.uri);
+        const registryResult = resources.read(parsed.uri);
+        /**
+         * Normalised payload returned by the `resources_read` tool. The helper
+         * mirrors the checklist example by surfacing both the MIME type and the
+         * decoded data while preserving the historical `{ uri, kind, payload }`
+         * properties expected by existing clients and end-to-end tests.
+         */
+        const structuredResult = {
+            ...registryResult,
+            mime: "application/json",
+            data: registryResult,
+        };
         return {
-            content: [{ type: "text", text: j({ tool: "resources_read", result }) }],
-            structuredContent: result,
+            content: [{ type: "text", text: j({ tool: "resources_read", result: structuredResult }) }],
+            structuredContent: structuredResult,
         };
     }
     catch (error) {
@@ -2051,8 +2327,7 @@ server.registerTool("events_subscribe", {
     try {
         const parsed = EventSubscribeInputSchema.parse(input ?? {});
         const limit = parsed.limit ?? 100;
-        const catsRaw = parsed.cats?.map((value) => value.trim().toLowerCase()).filter((value) => value.length > 0);
-        const cats = catsRaw && catsRaw.length > 0 ? catsRaw : undefined;
+        const cats = parseEventCategories(parsed.cats);
         const filter = {
             cats,
             levels: parsed.levels,
@@ -2067,7 +2342,7 @@ server.registerTool("events_subscribe", {
         };
         const events = eventBus.list(filter).sort((a, b) => a.seq - b.seq);
         const serialised = events.map((evt) => {
-            const eventKind = (evt.kind ?? evt.cat).toUpperCase();
+            const eventKind = evt.kind && evt.kind.trim().length > 0 ? evt.kind : evt.cat.toUpperCase();
             return {
                 seq: evt.seq,
                 ts: evt.ts,
@@ -2089,8 +2364,10 @@ server.registerTool("events_subscribe", {
             ? serialised
                 .map((evt) => [
                 `id: ${evt.seq}`,
-                // Use the upper-cased `kind` value so SSE consumers observe the same
-                // event type identifiers exposed via the JSON Lines payload.
+                // Use the semantic `kind` identifier so SSE consumers observe the
+                // same PROMPT/PENDING/... tokens exposed via the JSON Lines payload.
+                // When bridges have not supplied a kind yet we fall back to the
+                // upper-cased message to keep identifiers deterministic.
                 `event: ${evt.kind}`,
                 `data: ${serialiseForSse(evt)}`,
                 ``,
@@ -2365,20 +2642,17 @@ server.registerTool("graph_export", { title: "Graph export", description: "Expor
         const notes = [];
         let absolutePath = null;
         if (parsed.path) {
-            const cwd = process.cwd();
-            const absolute = resolvePath(cwd, parsed.path);
-            if (!absolute.toLowerCase().startsWith(cwd.toLowerCase())) {
-                return {
-                    isError: true,
-                    content: [
-                        {
-                            type: "text",
-                            text: j({ error: "BAD_PATH", message: "Path must be inside workspace" }),
-                        },
-                    ],
-                };
+            let absolute;
+            try {
+                absolute = resolveWorkspacePath(parsed.path);
             }
-            await mkdir(pathDirname(absolute), { recursive: true });
+            catch (error) {
+                if (error instanceof PathResolutionError) {
+                    return formatWorkspacePathError(error);
+                }
+                throw error;
+            }
+            await ensureParentDirectory(absolute);
             await writeFile(absolute, payloadString, "utf8");
             absolutePath = absolute;
         }
@@ -2425,21 +2699,32 @@ server.registerTool("graph_export", { title: "Graph export", description: "Expor
 });
 // graph_state_save
 server.registerTool("graph_state_save", { title: "Graph save", description: "Sauvegarde l'etat graphe dans un fichier JSON.", inputSchema: GraphSaveShape }, async (input) => {
-    const cwd = process.cwd();
-    const abs = resolvePath(cwd, input.path);
-    if (!abs.toLowerCase().startsWith(cwd.toLowerCase())) {
-        return { isError: true, content: [{ type: "text", text: j({ error: "BAD_PATH", message: "Path must be inside workspace" }) }] };
+    let abs;
+    try {
+        abs = resolveWorkspacePath(input.path);
     }
+    catch (error) {
+        if (error instanceof PathResolutionError) {
+            return formatWorkspacePathError(error);
+        }
+        throw error;
+    }
+    await ensureParentDirectory(abs);
     const snap = graphState.serialize();
     await writeFile(abs, JSON.stringify(snap, null, 2), "utf8");
     return { content: [{ type: "text", text: j({ format: "json", ok: true, path: abs }) }] };
 });
 // graph_state_load
 server.registerTool("graph_state_load", { title: "Graph load", description: "Recharge l'etat graphe depuis un fichier JSON.", inputSchema: GraphLoadShape }, async (input) => {
-    const cwd = process.cwd();
-    const abs = resolvePath(cwd, input.path);
-    if (!abs.toLowerCase().startsWith(cwd.toLowerCase())) {
-        return { isError: true, content: [{ type: "text", text: j({ error: "BAD_PATH", message: "Path must be inside workspace" }) }] };
+    let abs;
+    try {
+        abs = resolveWorkspacePath(input.path);
+    }
+    catch (error) {
+        if (error instanceof PathResolutionError) {
+            return formatWorkspacePathError(error);
+        }
+        throw error;
     }
     const data = await readFile(abs, "utf8");
     const snap = JSON.parse(data);
@@ -2524,15 +2809,21 @@ server.registerTool("graph_state_autosave", { title: "Graph autosave", descripti
         AUTOSAVE_PATH = null;
         return { content: [{ type: "text", text: j({ format: "json", ok: true, status: "stopped" }) }] };
     }
-    const cwd = process.cwd();
-    const p = input.path ? resolvePath(cwd, input.path) : resolvePath(cwd, "graph-autosave.json");
-    if (!p.toLowerCase().startsWith(cwd.toLowerCase())) {
-        return { isError: true, content: [{ type: "text", text: j({ error: "BAD_PATH", message: "Path must be inside workspace" }) }] };
+    let targetPath;
+    try {
+        targetPath = resolveWorkspacePath(input.path ?? "graph-autosave.json");
+    }
+    catch (error) {
+        if (error instanceof PathResolutionError) {
+            return formatWorkspacePathError(error);
+        }
+        throw error;
     }
     const interval = Math.min(Math.max(input.interval_ms ?? 5000, 1000), 600000);
     if (AUTOSAVE_TIMER)
         clearInterval(AUTOSAVE_TIMER);
-    AUTOSAVE_PATH = p;
+    await ensureParentDirectory(targetPath);
+    AUTOSAVE_PATH = targetPath;
     AUTOSAVE_TIMER = setInterval(async () => {
         try {
             const snap = graphState.serialize();
@@ -2541,6 +2832,7 @@ server.registerTool("graph_state_autosave", { title: "Graph autosave", descripti
                 inactivity_threshold_ms: lastInactivityThresholdMs,
                 event_history_limit: eventStore.getMaxHistory()
             };
+            await ensureParentDirectory(AUTOSAVE_PATH);
             await writeFile(AUTOSAVE_PATH, JSON.stringify({ metadata, snapshot: snap }, null, 2), "utf8");
             logger.info("graph_autosave_written", {
                 path: AUTOSAVE_PATH,
@@ -2563,7 +2855,7 @@ server.registerTool("graph_state_autosave", { title: "Graph autosave", descripti
                     format: "json",
                     ok: true,
                     status: "started",
-                    path: p,
+                    path: targetPath,
                     interval_ms: interval,
                     inactivity_threshold_ms: lastInactivityThresholdMs,
                     event_history_limit: eventStore.getMaxHistory()
@@ -2868,11 +3160,14 @@ server.registerTool("graph_generate", {
 }, async (input) => {
     try {
         const parsed = GraphGenerateInputSchema.parse(input);
+        const opId = resolveOperationId(parsed.op_id, "graph_generate_op");
+        const enrichedInput = { ...parsed, op_id: opId };
         logger.info("graph_generate_requested", {
             preset: parsed.preset ?? null,
             has_tasks: parsed.tasks !== undefined,
+            op_id: opId,
         });
-        const result = handleGraphGenerate(parsed, {
+        const result = handleGraphGenerate(enrichedInput, {
             knowledgeGraph: runtimeFeatures.enableKnowledge ? knowledgeGraph : undefined,
             knowledgeEnabled: runtimeFeatures.enableKnowledge,
         });
@@ -2881,6 +3176,7 @@ server.registerTool("graph_generate", {
             logger.info("graph_generate_subgraphs_detected", {
                 references: summary.references.length,
                 missing: summary.missing.length,
+                op_id: opId,
             });
         }
         let notes = result.notes;
@@ -2891,6 +3187,7 @@ server.registerTool("graph_generate", {
             logger.warn("graph_generate_missing_subgraphs", {
                 missing: summary.missing,
                 graph_id: result.graph.graph_id ?? null,
+                op_id: opId,
             });
         }
         const enriched = {
@@ -2902,6 +3199,7 @@ server.registerTool("graph_generate", {
         logger.info("graph_generate_succeeded", {
             nodes: result.graph.nodes.length,
             edges: result.graph.edges.length,
+            op_id: opId,
         });
         return {
             content: [{ type: "text", text: j({ tool: "graph_generate", result: enriched }) }],
@@ -2909,7 +3207,8 @@ server.registerTool("graph_generate", {
         };
     }
     catch (error) {
-        return graphToolError(logger, "graph_generate", error);
+        const providedOpId = extractStringProperty(input, "op_id");
+        return graphToolError(logger, "graph_generate", error, { op_id: providedOpId ?? undefined });
     }
 });
 server.registerTool("graph_mutate", {
@@ -2923,10 +3222,12 @@ server.registerTool("graph_mutate", {
         const parsed = GraphMutateInputSchema.parse(input);
         graphIdForError = parsed.graph.graph_id ?? null;
         graphVersionForError = parsed.graph.graph_version ?? null;
+        const opId = resolveOperationId(parsed.op_id, "graph_mutate_op");
         logger.info("graph_mutate_requested", {
             operations: parsed.operations.length,
             graph_id: graphIdForError,
             version: graphVersionForError,
+            op_id: opId,
         });
         const baseGraph = normaliseGraphPayload(parsed.graph);
         graphLocks.assertCanMutate(baseGraph.graphId, null);
@@ -2943,6 +3244,7 @@ server.registerTool("graph_mutate", {
             const mutateInput = {
                 ...parsed,
                 graph: serialiseNormalisedGraph(tx.workingCopy),
+                op_id: opId,
             };
             const intermediate = handleGraphMutate(mutateInput);
             graphLocks.assertCanMutate(baseGraph.graphId, null);
@@ -2968,12 +3270,14 @@ server.registerTool("graph_mutate", {
                     references: summary.references.length,
                     missing: summary.missing.length,
                     graph_id: committed.graphId,
+                    op_id: opId,
                 });
             }
             if (summary.missing.length > 0) {
                 logger.warn("graph_mutate_missing_subgraphs", {
                     missing: summary.missing,
                     graph_id: committed.graphId,
+                    op_id: opId,
                 });
             }
             const enrichedResult = {
@@ -2988,6 +3292,7 @@ server.registerTool("graph_mutate", {
                 graph_id: committed.graphId,
                 version: committed.version,
                 committed_at: committed.committedAt,
+                op_id: opId,
             });
             return {
                 content: [{ type: "text", text: j({ tool: "graph_mutate", result: enrichedResult }) }],
@@ -3022,11 +3327,13 @@ server.registerTool("graph_mutate", {
             return graphToolError(logger, "graph_mutate", error, {
                 graph_id: graphIdForError,
                 version: graphVersionForError,
+                op_id: extractStringProperty(input, "op_id") ?? undefined,
             });
         }
         return graphToolError(logger, "graph_mutate", error, {
             graph_id: graphIdForError,
             version: graphVersionForError ?? undefined,
+            op_id: extractStringProperty(input, "op_id") ?? undefined,
         });
     }
 });
@@ -3035,11 +3342,23 @@ server.registerTool("graph_batch_mutate", {
     description: "Applique un lot d'opérations sur le graphe côté serveur avec rollback atomique.",
     inputSchema: GraphBatchMutateInputShape,
 }, async (input) => {
+    const disabled = ensureBulkEnabled("graph_batch_mutate");
+    if (disabled) {
+        return disabled;
+    }
     pruneExpired();
     let graphIdForError = null;
+    let opIdForError = null;
     try {
         const parsed = GraphBatchMutateInputSchema.parse(input);
         graphIdForError = parsed.graph_id;
+        const existingEntry = runtimeFeatures.enableIdempotency && parsed.idempotency_key
+            ? idempotencyRegistry.peek(`graph_batch_mutate:${parsed.idempotency_key}`)
+            : null;
+        const existingOpId = existingEntry?.value?.op_id;
+        const opId = resolveOperationId(parsed.op_id ?? existingOpId, "graph_batch_mutate_op");
+        opIdForError = opId;
+        const enrichedInput = { ...parsed, op_id: opId };
         logger.info("graph_batch_mutate_requested", {
             graph_id: parsed.graph_id,
             operations: parsed.operations.length,
@@ -3047,8 +3366,9 @@ server.registerTool("graph_batch_mutate", {
             owner: parsed.owner ?? null,
             note: parsed.note ?? null,
             idempotency_key: parsed.idempotency_key ?? null,
+            op_id: opId,
         });
-        const result = await handleGraphBatchMutate(getGraphBatchToolContext(), parsed);
+        const result = await handleGraphBatchMutate(getGraphBatchToolContext(), enrichedInput);
         const logPayload = {
             graph_id: result.graph_id,
             base_version: result.base_version,
@@ -3058,6 +3378,7 @@ server.registerTool("graph_batch_mutate", {
             operations: parsed.operations.length,
             idempotent: result.idempotent,
             idempotency_key: result.idempotency_key,
+            op_id: result.op_id,
         };
         if (result.idempotent) {
             logger.info("graph_batch_mutate_replayed", logPayload);
@@ -3072,13 +3393,20 @@ server.registerTool("graph_batch_mutate", {
     }
     catch (error) {
         if (error instanceof GraphVersionConflictError) {
-            return graphToolError(logger, "graph_batch_mutate", error, { graph_id: graphIdForError });
+            return graphToolError(logger, "graph_batch_mutate", error, {
+                graph_id: graphIdForError,
+                op_id: opIdForError ?? extractStringProperty(input, "op_id") ?? undefined,
+            });
         }
         if (error instanceof GraphTransactionError) {
-            return graphToolError(logger, "graph_batch_mutate", error, { graph_id: graphIdForError });
+            return graphToolError(logger, "graph_batch_mutate", error, {
+                graph_id: graphIdForError,
+                op_id: opIdForError ?? extractStringProperty(input, "op_id") ?? undefined,
+            });
         }
         return graphToolError(logger, "graph_batch_mutate", error, {
             graph_id: graphIdForError ?? undefined,
+            op_id: opIdForError ?? extractStringProperty(input, "op_id") ?? undefined,
         });
     }
 });
@@ -3089,16 +3417,19 @@ server.registerTool("graph_diff", {
 }, async (input) => {
     try {
         const parsed = GraphDiffInputSchema.parse(input);
+        const opId = resolveOperationId(parsed.op_id, "graph_diff_op");
         logger.info("graph_diff_requested", {
             graph_id: parsed.graph_id,
             from: describeSelectorForLog(parsed.from),
             to: describeSelectorForLog(parsed.to),
+            op_id: opId,
         });
-        const result = handleGraphDiff(getGraphDiffToolContext(), parsed);
+        const result = handleGraphDiff(getGraphDiffToolContext(), { ...parsed, op_id: opId });
         logger.info("graph_diff_succeeded", {
             graph_id: result.graph_id,
             changed: result.changed,
             operations: result.operations.length,
+            op_id: result.op_id,
         });
         return {
             content: [{ type: "text", text: j({ tool: "graph_diff", result }) }],
@@ -3106,7 +3437,8 @@ server.registerTool("graph_diff", {
         };
     }
     catch (error) {
-        return graphToolError(logger, "graph_diff", error, {}, {
+        const providedOpId = extractStringProperty(input, "op_id");
+        return graphToolError(logger, "graph_diff", error, { op_id: providedOpId ?? undefined }, {
             defaultCode: "E-PATCH-DIFF",
             invalidInputCode: "E-PATCH-INVALID",
         });
@@ -3121,19 +3453,22 @@ server.registerTool("graph_patch", {
     try {
         const parsed = GraphPatchInputSchema.parse(input);
         graphIdForError = parsed.graph_id;
+        const opId = resolveOperationId(parsed.op_id, "graph_patch_op");
         logger.info("graph_patch_requested", {
             graph_id: parsed.graph_id,
             operations: parsed.patch.length,
             base_version: parsed.base_version ?? null,
             enforce_invariants: parsed.enforce_invariants,
+            op_id: opId,
         });
-        const result = handleGraphPatch(getGraphDiffToolContext(), parsed);
+        const result = handleGraphPatch(getGraphDiffToolContext(), { ...parsed, op_id: opId });
         logger.info("graph_patch_succeeded", {
             graph_id: result.graph_id,
             committed_version: result.committed_version,
             changed: result.changed,
             operations: result.operations_applied,
             invariants_ok: result.invariants ? result.invariants.ok : true,
+            op_id: result.op_id,
         });
         return {
             content: [{ type: "text", text: j({ tool: "graph_patch", result }) }],
@@ -3141,7 +3476,10 @@ server.registerTool("graph_patch", {
         };
     }
     catch (error) {
-        return graphToolError(logger, "graph_patch", error, { graph_id: graphIdForError }, {
+        return graphToolError(logger, "graph_patch", error, {
+            graph_id: graphIdForError,
+            op_id: extractStringProperty(input, "op_id") ?? undefined,
+        }, {
             defaultCode: "E-PATCH-APPLY",
             invalidInputCode: "E-PATCH-INVALID",
         });
@@ -3152,19 +3490,26 @@ server.registerTool("graph_lock", {
     description: "Acquiert ou rafraichit un verrou cooperatif sur un graphe afin de proteger les mutations.",
     inputSchema: GraphLockInputShape,
 }, async (input) => {
+    const disabled = ensureLocksEnabled("graph_lock");
+    if (disabled) {
+        return disabled;
+    }
     try {
         const parsed = GraphLockInputSchema.parse(input);
+        const opId = resolveOperationId(parsed.op_id, "graph_lock_op");
         logger.info("graph_lock_requested", {
             graph_id: parsed.graph_id,
             holder: parsed.holder,
             ttl_ms: parsed.ttl_ms ?? null,
+            op_id: opId,
         });
-        const result = handleGraphLock(getGraphLockToolContext(), parsed);
+        const result = handleGraphLock(getGraphLockToolContext(), { ...parsed, op_id: opId });
         logger.info("graph_lock_acquired", {
             graph_id: result.graph_id,
             holder: result.holder,
             lock_id: result.lock_id,
             expires_at: result.expires_at ?? null,
+            op_id: result.op_id,
         });
         return {
             content: [{ type: "text", text: j({ tool: "graph_lock", result }) }],
@@ -3172,7 +3517,9 @@ server.registerTool("graph_lock", {
         };
     }
     catch (error) {
-        return graphToolError(logger, "graph_lock", error, {}, {
+        return graphToolError(logger, "graph_lock", error, {
+            op_id: extractStringProperty(input, "op_id") ?? undefined,
+        }, {
             defaultCode: "E-LOCK-ACQUIRE",
             invalidInputCode: "E-LOCK-INVALID-INPUT",
         });
@@ -3183,18 +3530,25 @@ server.registerTool("graph_unlock", {
     description: "Libere un verrou cooperatif precedemment acquis sur un graphe.",
     inputSchema: GraphUnlockInputShape,
 }, async (input) => {
+    const disabled = ensureLocksEnabled("graph_unlock");
+    if (disabled) {
+        return disabled;
+    }
     let lockIdForError;
     try {
         const parsed = GraphUnlockInputSchema.parse(input);
         lockIdForError = parsed.lock_id;
+        const opId = resolveOperationId(parsed.op_id, "graph_unlock_op");
         logger.info("graph_unlock_requested", {
             lock_id: parsed.lock_id,
+            op_id: opId,
         });
-        const result = handleGraphUnlock(getGraphLockToolContext(), parsed);
+        const result = handleGraphUnlock(getGraphLockToolContext(), { ...parsed, op_id: opId });
         logger.info("graph_unlock_succeeded", {
             lock_id: result.lock_id,
             graph_id: result.graph_id,
             expired: result.expired,
+            op_id: result.op_id,
         });
         return {
             content: [{ type: "text", text: j({ tool: "graph_unlock", result }) }],
@@ -3202,7 +3556,10 @@ server.registerTool("graph_unlock", {
         };
     }
     catch (error) {
-        return graphToolError(logger, "graph_unlock", error, { lock_id: lockIdForError }, {
+        return graphToolError(logger, "graph_unlock", error, {
+            lock_id: lockIdForError,
+            op_id: extractStringProperty(input, "op_id") ?? undefined,
+        }, {
             defaultCode: "E-LOCK-RELEASE",
             invalidInputCode: "E-LOCK-INVALID-INPUT",
         });
@@ -3216,9 +3573,11 @@ server.registerTool("graph_subgraph_extract", {
     let parsed;
     try {
         parsed = GraphSubgraphExtractInputSchema.parse(input);
+        const opId = resolveOperationId(parsed.op_id, "graph_subgraph_extract_op");
         logger.info("graph_subgraph_extract_requested", {
             node_id: parsed.node_id,
             run_id: parsed.run_id,
+            op_id: opId,
         });
         const extraction = await extractSubgraphToFile({
             graph: parsed.graph,
@@ -3232,6 +3591,7 @@ server.registerTool("graph_subgraph_extract", {
             run_id: extraction.runId,
             subgraph_ref: extraction.subgraphRef,
             version: extraction.version,
+            op_id: opId,
         });
         const descriptorPayload = {
             run_id: extraction.runId,
@@ -3243,6 +3603,7 @@ server.registerTool("graph_subgraph_extract", {
             relative_path: extraction.relativePath,
             graph_id: extraction.graphId,
             graph_version: extraction.graphVersion,
+            op_id: opId,
         };
         return {
             content: [
@@ -3262,6 +3623,7 @@ server.registerTool("graph_subgraph_extract", {
         return graphToolError(logger, "graph_subgraph_extract", error, {
             node_id: parsed?.node_id,
             run_id: parsed?.run_id,
+            op_id: parsed ? parsed.op_id ?? undefined : undefined,
         });
     }
 });
@@ -3272,17 +3634,20 @@ server.registerTool("graph_hyper_export", {
 }, async (input) => {
     try {
         const parsed = GraphHyperExportInputSchema.parse(input);
+        const opId = resolveOperationId(parsed.op_id, "graph_hyper_export_op");
         logger.info("graph_hyper_export_requested", {
             graph_id: parsed.id,
             nodes: parsed.nodes.length,
             hyper_edges: parsed.hyper_edges.length,
+            op_id: opId,
         });
-        const result = handleGraphHyperExport(parsed);
+        const result = handleGraphHyperExport({ ...parsed, op_id: opId });
         logger.info("graph_hyper_export_succeeded", {
             graph_id: result.graph.graph_id,
             nodes: result.stats.nodes,
             edges: result.stats.edges,
             hyper_edges: result.stats.hyper_edges,
+            op_id: result.op_id,
         });
         return {
             content: [
@@ -3292,7 +3657,9 @@ server.registerTool("graph_hyper_export", {
         };
     }
     catch (error) {
-        return graphToolError(logger, "graph_hyper_export", error);
+        return graphToolError(logger, "graph_hyper_export", error, {
+            op_id: extractStringProperty(input, "op_id") ?? undefined,
+        });
     }
 });
 server.registerTool("kg_insert", {
@@ -3518,10 +3885,12 @@ server.registerTool("graph_rewrite_apply", {
         parsed = GraphRewriteApplyInputSchema.parse(input);
         graphIdForError = parsed.graph.graph_id ?? null;
         graphVersionForError = parsed.graph.graph_version ?? null;
+        const opId = resolveOperationId(parsed.op_id, "graph_rewrite_apply_op");
         logger.info("graph_rewrite_apply_requested", {
             mode: parsed.mode,
             graph_id: graphIdForError,
             version: graphVersionForError,
+            op_id: opId,
         });
         const baseGraph = normaliseGraphPayload(parsed.graph);
         const tx = graphTransactions.begin(baseGraph);
@@ -3537,6 +3906,7 @@ server.registerTool("graph_rewrite_apply", {
             const rewriteInput = {
                 ...parsed,
                 graph: serialiseNormalisedGraph(tx.workingCopy),
+                op_id: opId,
             };
             const intermediate = handleGraphRewriteApply(rewriteInput);
             committed = graphTransactions.commit(tx.txId, normaliseGraphPayload(intermediate.graph));
@@ -3561,12 +3931,14 @@ server.registerTool("graph_rewrite_apply", {
                     graph_id: committed.graphId,
                     references: summary.references.length,
                     missing: summary.missing.length,
+                    op_id: opId,
                 });
             }
             if (summary.missing.length > 0) {
                 logger.warn("graph_rewrite_apply_missing_subgraphs", {
                     graph_id: committed.graphId,
                     missing: summary.missing,
+                    op_id: opId,
                 });
             }
             const enrichedResult = {
@@ -3583,6 +3955,7 @@ server.registerTool("graph_rewrite_apply", {
                 graph_id: committed.graphId,
                 version: committed.version,
                 committed_at: committed.committedAt,
+                op_id: opId,
             });
             return {
                 content: [
@@ -3623,12 +3996,14 @@ server.registerTool("graph_rewrite_apply", {
                 graph_id: graphIdForError ?? undefined,
                 version: graphVersionForError ?? undefined,
                 mode: parsed?.mode,
+                op_id: extractStringProperty(input, "op_id") ?? undefined,
             });
         }
         return graphToolError(logger, "graph_rewrite_apply", error, {
             graph_id: graphIdForError ?? undefined,
             version: graphVersionForError ?? undefined,
             mode: parsed?.mode,
+            op_id: extractStringProperty(input, "op_id") ?? undefined,
         });
     }
 });
@@ -3642,17 +4017,21 @@ server.registerTool("tx_begin", {
         return disabled;
     }
     let graphIdForError = null;
+    let opIdForError;
     try {
         const parsed = TxBeginInputSchema.parse(input ?? {});
         graphIdForError = parsed.graph_id;
+        opIdForError = parsed.op_id ?? undefined;
+        const result = handleTxBegin(getTxToolContext(), parsed);
+        opIdForError = result.op_id;
         logger.info("tx_begin_requested", {
             graph_id: parsed.graph_id,
             expected_version: parsed.expected_version ?? null,
             owner: parsed.owner ?? null,
             ttl_ms: parsed.ttl_ms ?? null,
             idempotency_key: parsed.idempotency_key ?? null,
+            op_id: result.op_id,
         });
-        const result = handleTxBegin(getTxToolContext(), parsed);
         if (result.idempotent) {
             logger.info("tx_begin_replayed", {
                 graph_id: result.graph_id,
@@ -3661,6 +4040,7 @@ server.registerTool("tx_begin", {
                 owner: result.owner,
                 expires_at: result.expires_at,
                 idempotency_key: result.idempotency_key,
+                op_id: result.op_id,
             });
         }
         else {
@@ -3671,6 +4051,7 @@ server.registerTool("tx_begin", {
                 owner: result.owner,
                 expires_at: result.expires_at,
                 idempotency_key: result.idempotency_key,
+                op_id: result.op_id,
             });
         }
         return {
@@ -3679,7 +4060,10 @@ server.registerTool("tx_begin", {
         };
     }
     catch (error) {
-        return transactionToolError(logger, "tx_begin", error, { graph_id: graphIdForError ?? undefined });
+        return transactionToolError(logger, "tx_begin", error, {
+            graph_id: graphIdForError ?? undefined,
+            op_id: opIdForError,
+        });
     }
 });
 server.registerTool("tx_apply", {
@@ -3692,20 +4076,25 @@ server.registerTool("tx_apply", {
         return disabled;
     }
     let txIdForError = null;
+    let opIdForError;
     try {
         const parsed = TxApplyInputSchema.parse(input);
         txIdForError = parsed.tx_id;
+        opIdForError = parsed.op_id ?? undefined;
+        const result = handleTxApply(getTxToolContext(), parsed);
+        opIdForError = result.op_id;
         logger.info("tx_apply_requested", {
             tx_id: parsed.tx_id,
             operations: parsed.operations.length,
+            op_id: result.op_id,
         });
-        const result = handleTxApply(getTxToolContext(), parsed);
         logger.info("tx_apply_mutated", {
             tx_id: result.tx_id,
             graph_id: result.graph_id,
             base_version: result.base_version,
             preview_version: result.preview_version,
             changed: result.changed,
+            op_id: result.op_id,
         });
         return {
             content: [{ type: "text", text: j({ tool: "tx_apply", result }) }],
@@ -3713,7 +4102,10 @@ server.registerTool("tx_apply", {
         };
     }
     catch (error) {
-        return transactionToolError(logger, "tx_apply", error, { tx_id: txIdForError ?? undefined });
+        return transactionToolError(logger, "tx_apply", error, {
+            tx_id: txIdForError ?? undefined,
+            op_id: opIdForError,
+        });
     }
 });
 server.registerTool("tx_commit", {
@@ -3726,16 +4118,20 @@ server.registerTool("tx_commit", {
         return disabled;
     }
     let txIdForError = null;
+    let opIdForError;
     try {
         const parsed = TxCommitInputSchema.parse(input);
         txIdForError = parsed.tx_id;
-        logger.info("tx_commit_requested", { tx_id: parsed.tx_id });
+        opIdForError = parsed.op_id ?? undefined;
         const result = handleTxCommit(getTxToolContext(), parsed);
+        opIdForError = result.op_id;
+        logger.info("tx_commit_requested", { tx_id: parsed.tx_id, op_id: result.op_id });
         logger.info("tx_commit_succeeded", {
             tx_id: result.tx_id,
             graph_id: result.graph_id,
             version: result.version,
             committed_at: result.committed_at,
+            op_id: result.op_id,
         });
         return {
             content: [{ type: "text", text: j({ tool: "tx_commit", result }) }],
@@ -3743,7 +4139,10 @@ server.registerTool("tx_commit", {
         };
     }
     catch (error) {
-        return transactionToolError(logger, "tx_commit", error, { tx_id: txIdForError ?? undefined });
+        return transactionToolError(logger, "tx_commit", error, {
+            tx_id: txIdForError ?? undefined,
+            op_id: opIdForError,
+        });
     }
 });
 server.registerTool("tx_rollback", {
@@ -3756,16 +4155,20 @@ server.registerTool("tx_rollback", {
         return disabled;
     }
     let txIdForError = null;
+    let opIdForError;
     try {
         const parsed = TxRollbackInputSchema.parse(input);
         txIdForError = parsed.tx_id;
-        logger.info("tx_rollback_requested", { tx_id: parsed.tx_id });
+        opIdForError = parsed.op_id ?? undefined;
         const result = handleTxRollback(getTxToolContext(), parsed);
+        opIdForError = result.op_id;
+        logger.info("tx_rollback_requested", { tx_id: parsed.tx_id, op_id: result.op_id });
         logger.info("tx_rollback_succeeded", {
             tx_id: result.tx_id,
             graph_id: result.graph_id,
             version: result.version,
             rolled_back_at: result.rolled_back_at,
+            op_id: result.op_id,
         });
         return {
             content: [{ type: "text", text: j({ tool: "tx_rollback", result }) }],
@@ -3773,7 +4176,10 @@ server.registerTool("tx_rollback", {
         };
     }
     catch (error) {
-        return transactionToolError(logger, "tx_rollback", error, { tx_id: txIdForError ?? undefined });
+        return transactionToolError(logger, "tx_rollback", error, {
+            tx_id: txIdForError ?? undefined,
+            op_id: opIdForError,
+        });
     }
 });
 server.registerTool("graph_validate", {
@@ -3783,15 +4189,18 @@ server.registerTool("graph_validate", {
 }, async (input) => {
     try {
         const parsed = GraphValidateInputSchema.parse(input);
+        const opId = resolveOperationId(parsed.op_id, "graph_validate_op");
         logger.info("graph_validate_requested", {
             strict_weights: parsed.strict_weights ?? false,
             cycle_limit: parsed.cycle_limit,
+            op_id: opId,
         });
-        const result = handleGraphValidate(parsed);
+        const result = handleGraphValidate({ ...parsed, op_id: opId });
         logger.info("graph_validate_completed", {
             ok: result.ok,
             errors: result.errors.length,
             warnings: result.warnings.length,
+            op_id: result.op_id,
         });
         return {
             content: [{ type: "text", text: j({ tool: "graph_validate", result }) }],
@@ -3799,7 +4208,9 @@ server.registerTool("graph_validate", {
         };
     }
     catch (error) {
-        return graphToolError(logger, "graph_validate", error);
+        return graphToolError(logger, "graph_validate", error, {
+            op_id: extractStringProperty(input, "op_id") ?? undefined,
+        });
     }
 });
 server.registerTool("graph_summarize", {
@@ -3809,13 +4220,16 @@ server.registerTool("graph_summarize", {
 }, async (input) => {
     try {
         const parsed = GraphSummarizeInputSchema.parse(input);
+        const opId = resolveOperationId(parsed.op_id, "graph_summarize_op");
         logger.info("graph_summarize_requested", {
             include_centrality: parsed.include_centrality,
+            op_id: opId,
         });
-        const result = handleGraphSummarize(parsed);
+        const result = handleGraphSummarize({ ...parsed, op_id: opId });
         logger.info("graph_summarize_succeeded", {
             nodes: result.metrics.node_count,
             edges: result.metrics.edge_count,
+            op_id: result.op_id,
         });
         return {
             content: [{ type: "text", text: j({ tool: "graph_summarize", result }) }],
@@ -3823,7 +4237,9 @@ server.registerTool("graph_summarize", {
         };
     }
     catch (error) {
-        return graphToolError(logger, "graph_summarize", error);
+        return graphToolError(logger, "graph_summarize", error, {
+            op_id: extractStringProperty(input, "op_id") ?? undefined,
+        });
     }
 });
 server.registerTool("graph_paths_k_shortest", {
@@ -3833,16 +4249,19 @@ server.registerTool("graph_paths_k_shortest", {
 }, async (input) => {
     try {
         const parsed = GraphPathsKShortestInputSchema.parse(input);
+        const opId = resolveOperationId(parsed.op_id, "graph_paths_k_shortest_op");
         logger.info("graph_paths_k_shortest_requested", {
             from: parsed.from,
             to: parsed.to,
             k: parsed.k,
             weight_attribute: parsed.weight_attribute,
             max_deviation: parsed.max_deviation ?? null,
+            op_id: opId,
         });
-        const result = handleGraphPathsKShortest(parsed);
+        const result = handleGraphPathsKShortest({ ...parsed, op_id: opId });
         logger.info("graph_paths_k_shortest_succeeded", {
             returned_k: result.returned_k,
+            op_id: result.op_id,
         });
         return {
             content: [{ type: "text", text: j({ tool: "graph_paths_k_shortest", result }) }],
@@ -3850,7 +4269,9 @@ server.registerTool("graph_paths_k_shortest", {
         };
     }
     catch (error) {
-        return graphToolError(logger, "graph_paths_k_shortest", error);
+        return graphToolError(logger, "graph_paths_k_shortest", error, {
+            op_id: extractStringProperty(input, "op_id") ?? undefined,
+        });
     }
 });
 server.registerTool("graph_paths_constrained", {
@@ -3858,20 +4279,26 @@ server.registerTool("graph_paths_constrained", {
     description: "Recherche un chemin optimal en excluant certains noeuds/arcs.",
     inputSchema: GraphPathsConstrainedInputShape,
 }, async (input) => {
+    let opIdForError;
     try {
         const parsed = GraphPathsConstrainedInputSchema.parse(input);
+        const opId = resolveOperationId(parsed.op_id, "graph_paths_constrained_op");
+        opIdForError = opId;
         logger.info("graph_paths_constrained_requested", {
             from: parsed.from,
             to: parsed.to,
             avoid_nodes: parsed.avoid_nodes.length,
             avoid_edges: parsed.avoid_edges.length,
             max_cost: parsed.max_cost ?? null,
+            op_id: opId,
         });
-        const result = handleGraphPathsConstrained(parsed);
+        const result = handleGraphPathsConstrained({ ...parsed, op_id: opId });
+        opIdForError = result.op_id;
         logger.info("graph_paths_constrained_completed", {
             status: result.status,
             reason: result.reason,
             cost: result.cost,
+            op_id: result.op_id,
         });
         return {
             content: [{ type: "text", text: j({ tool: "graph_paths_constrained", result }) }],
@@ -3879,7 +4306,8 @@ server.registerTool("graph_paths_constrained", {
         };
     }
     catch (error) {
-        return graphToolError(logger, "graph_paths_constrained", error);
+        const providedOpId = opIdForError ?? extractStringProperty(input, "op_id") ?? undefined;
+        return graphToolError(logger, "graph_paths_constrained", error, { op_id: providedOpId });
     }
 });
 server.registerTool("graph_centrality_betweenness", {
@@ -3887,16 +4315,22 @@ server.registerTool("graph_centrality_betweenness", {
     description: "Calcule les scores de centralite de Brandes (pondere ou non).",
     inputSchema: GraphCentralityBetweennessInputShape,
 }, async (input) => {
+    let opIdForError;
     try {
         const parsed = GraphCentralityBetweennessInputSchema.parse(input);
+        const opId = resolveOperationId(parsed.op_id, "graph_centrality_betweenness_op");
+        opIdForError = opId;
         logger.info("graph_centrality_betweenness_requested", {
             weighted: parsed.weighted,
             normalise: parsed.normalise,
             top_k: parsed.top_k,
+            op_id: opId,
         });
-        const result = handleGraphCentralityBetweenness(parsed);
+        const result = handleGraphCentralityBetweenness({ ...parsed, op_id: opId });
+        opIdForError = result.op_id;
         logger.info("graph_centrality_betweenness_succeeded", {
             top_count: result.top.length,
+            op_id: result.op_id,
         });
         return {
             content: [{ type: "text", text: j({ tool: "graph_centrality_betweenness", result }) }],
@@ -3904,7 +4338,8 @@ server.registerTool("graph_centrality_betweenness", {
         };
     }
     catch (error) {
-        return graphToolError(logger, "graph_centrality_betweenness", error);
+        const providedOpId = opIdForError ?? extractStringProperty(input, "op_id") ?? undefined;
+        return graphToolError(logger, "graph_centrality_betweenness", error, { op_id: providedOpId });
     }
 });
 server.registerTool("graph_partition", {
@@ -3912,17 +4347,23 @@ server.registerTool("graph_partition", {
     description: "Partitionne le graphe en communautés ou minimise les coupures.",
     inputSchema: GraphPartitionInputShape,
 }, async (input) => {
+    let opIdForError;
     try {
         const parsed = GraphPartitionInputSchema.parse(input);
+        const opId = resolveOperationId(parsed.op_id, "graph_partition_op");
+        opIdForError = opId;
         logger.info("graph_partition_requested", {
             k: parsed.k,
             objective: parsed.objective,
             seed: parsed.seed ?? null,
+            op_id: opId,
         });
-        const result = handleGraphPartition(parsed);
+        const result = handleGraphPartition({ ...parsed, op_id: opId });
+        opIdForError = result.op_id;
         logger.info("graph_partition_succeeded", {
             partition_count: result.partition_count,
             cut_edges: result.cut_edges,
+            op_id: result.op_id,
         });
         return {
             content: [{ type: "text", text: j({ tool: "graph_partition", result }) }],
@@ -3930,7 +4371,8 @@ server.registerTool("graph_partition", {
         };
     }
     catch (error) {
-        return graphToolError(logger, "graph_partition", error);
+        const providedOpId = opIdForError ?? extractStringProperty(input, "op_id") ?? undefined;
+        return graphToolError(logger, "graph_partition", error, { op_id: providedOpId });
     }
 });
 server.registerTool("graph_critical_path", {
@@ -3938,16 +4380,22 @@ server.registerTool("graph_critical_path", {
     description: "Analyse le chemin critique et expose les marges/slacks.",
     inputSchema: GraphCriticalPathInputShape,
 }, async (input) => {
+    let opIdForError;
     try {
         const parsed = GraphCriticalPathInputSchema.parse(input);
+        const opId = resolveOperationId(parsed.op_id, "graph_critical_path_op");
+        opIdForError = opId;
         logger.info("graph_critical_path_requested", {
             duration_attribute: parsed.duration_attribute,
             fallback_duration_attribute: parsed.fallback_duration_attribute ?? null,
+            op_id: opId,
         });
-        const result = handleGraphCriticalPath(parsed);
+        const result = handleGraphCriticalPath({ ...parsed, op_id: opId });
+        opIdForError = result.op_id;
         logger.info("graph_critical_path_succeeded", {
             duration: result.duration,
             path_length: result.critical_path.length,
+            op_id: result.op_id,
         });
         return {
             content: [{ type: "text", text: j({ tool: "graph_critical_path", result }) }],
@@ -3955,7 +4403,8 @@ server.registerTool("graph_critical_path", {
         };
     }
     catch (error) {
-        return graphToolError(logger, "graph_critical_path", error);
+        const providedOpId = opIdForError ?? extractStringProperty(input, "op_id") ?? undefined;
+        return graphToolError(logger, "graph_critical_path", error, { op_id: providedOpId });
     }
 });
 server.registerTool("graph_simulate", {
@@ -3963,16 +4412,22 @@ server.registerTool("graph_simulate", {
     description: "Simule l'execution du graphe et retourne un planning détaillé.",
     inputSchema: GraphSimulateInputShape,
 }, async (input) => {
+    let opIdForError;
     try {
         const parsed = GraphSimulateInputSchema.parse(input);
+        const opId = resolveOperationId(parsed.op_id, "graph_simulate_op");
+        opIdForError = opId;
         logger.info("graph_simulate_requested", {
             parallelism: parsed.parallelism,
             duration_attribute: parsed.duration_attribute,
+            op_id: opId,
         });
-        const result = handleGraphSimulate(parsed);
+        const result = handleGraphSimulate({ ...parsed, op_id: opId });
+        opIdForError = result.op_id;
         logger.info("graph_simulate_succeeded", {
             makespan: result.metrics.makespan,
             queue_events: result.metrics.queue_events,
+            op_id: result.op_id,
         });
         return {
             content: [{ type: "text", text: j({ tool: "graph_simulate", result }) }],
@@ -3980,7 +4435,8 @@ server.registerTool("graph_simulate", {
         };
     }
     catch (error) {
-        return graphToolError(logger, "graph_simulate", error);
+        const providedOpId = opIdForError ?? extractStringProperty(input, "op_id") ?? undefined;
+        return graphToolError(logger, "graph_simulate", error, { op_id: providedOpId });
     }
 });
 server.registerTool("graph_optimize", {
@@ -3988,18 +4444,24 @@ server.registerTool("graph_optimize", {
     description: "Analyse un graphe planifié et propose des leviers de réduction du makespan.",
     inputSchema: GraphOptimizeInputShape,
 }, async (input) => {
+    let opIdForError;
     try {
         const parsed = GraphOptimizeInputSchema.parse(input);
+        const opId = resolveOperationId(parsed.op_id, "graph_optimize_op");
+        opIdForError = opId;
         logger.info("graph_optimize_requested", {
             parallelism: parsed.parallelism,
             max_parallelism: parsed.max_parallelism,
             explore_count: parsed.explore_parallelism?.length ?? 0,
+            op_id: opId,
         });
-        const result = handleGraphOptimize(parsed);
+        const result = handleGraphOptimize({ ...parsed, op_id: opId });
+        opIdForError = result.op_id;
         const bestMakespan = result.projections.reduce((acc, projection) => Math.min(acc, projection.makespan), Number.POSITIVE_INFINITY);
         logger.info("graph_optimize_completed", {
             suggestions: result.suggestions.length,
             best_makespan: Number.isFinite(bestMakespan) ? bestMakespan : null,
+            op_id: result.op_id,
         });
         return {
             content: [{ type: "text", text: j({ tool: "graph_optimize", result }) }],
@@ -4007,7 +4469,8 @@ server.registerTool("graph_optimize", {
         };
     }
     catch (error) {
-        return graphToolError(logger, "graph_optimize", error);
+        const providedOpId = opIdForError ?? extractStringProperty(input, "op_id") ?? undefined;
+        return graphToolError(logger, "graph_optimize", error, { op_id: providedOpId });
     }
 });
 server.registerTool("graph_optimize_moo", {
@@ -4015,16 +4478,22 @@ server.registerTool("graph_optimize_moo", {
     description: "Explore les pareto fronts pour plusieurs objectifs (makespan/coût/risque).",
     inputSchema: GraphOptimizeMooInputShape,
 }, async (input) => {
+    let opIdForError;
     try {
         const parsed = GraphOptimizeMooInputSchema.parse(input);
+        const opId = resolveOperationId(parsed.op_id, "graph_optimize_moo_op");
+        opIdForError = opId;
         logger.info("graph_optimize_moo_requested", {
             candidates: parsed.parallelism_candidates.length,
             objectives: parsed.objectives.length,
+            op_id: opId,
         });
-        const result = handleGraphOptimizeMoo(parsed);
+        const result = handleGraphOptimizeMoo({ ...parsed, op_id: opId });
+        opIdForError = result.op_id;
         logger.info("graph_optimize_moo_completed", {
             pareto_count: result.pareto_front.length,
             scalarized: result.scalarization ? true : false,
+            op_id: result.op_id,
         });
         return {
             content: [{ type: "text", text: j({ tool: "graph_optimize_moo", result }) }],
@@ -4032,7 +4501,8 @@ server.registerTool("graph_optimize_moo", {
         };
     }
     catch (error) {
-        return graphToolError(logger, "graph_optimize_moo", error);
+        const providedOpId = opIdForError ?? extractStringProperty(input, "op_id") ?? undefined;
+        return graphToolError(logger, "graph_optimize_moo", error, { op_id: providedOpId });
     }
 });
 server.registerTool("graph_causal_analyze", {
@@ -4040,17 +4510,23 @@ server.registerTool("graph_causal_analyze", {
     description: "Analyse causale: ordre topo, cycles et coupure minimale.",
     inputSchema: GraphCausalAnalyzeInputShape,
 }, async (input) => {
+    let opIdForError;
     try {
         const parsed = GraphCausalAnalyzeInputSchema.parse(input);
+        const opId = resolveOperationId(parsed.op_id, "graph_causal_analyze_op");
+        opIdForError = opId;
         logger.info("graph_causal_analyze_requested", {
             max_cycles: parsed.max_cycles,
             compute_min_cut: parsed.compute_min_cut,
+            op_id: opId,
         });
-        const result = handleGraphCausalAnalyze(parsed);
+        const result = handleGraphCausalAnalyze({ ...parsed, op_id: opId });
+        opIdForError = result.op_id;
         logger.info("graph_causal_analyze_completed", {
             acyclic: result.acyclic,
             cycles: result.cycles.length,
             min_cut_size: result.min_cut?.size ?? null,
+            op_id: result.op_id,
         });
         return {
             content: [{ type: "text", text: j({ tool: "graph_causal_analyze", result }) }],
@@ -4058,7 +4534,8 @@ server.registerTool("graph_causal_analyze", {
         };
     }
     catch (error) {
-        return graphToolError(logger, "graph_causal_analyze", error);
+        const providedOpId = opIdForError ?? extractStringProperty(input, "op_id") ?? undefined;
+        return graphToolError(logger, "graph_causal_analyze", error, { op_id: providedOpId });
     }
 });
 // plan_fanout
@@ -4337,6 +4814,9 @@ server.registerTool("op_cancel", {
         // registered so observers can link cancellation requests to plan
         // lifecycle artefacts.
         const result = {
+            // Surface the `{ ok:true }` contract documented in the checklist while
+            // preserving the richer correlation metadata already returned.
+            ok: true,
             op_id: parsed.op_id,
             outcome,
             reason: handle?.reason ?? parsed.reason ?? null,
@@ -4419,6 +4899,10 @@ server.registerTool("bb_batch_set", {
     description: "Met à jour plusieurs entrées du tableau noir dans une transaction atomique.",
     inputSchema: BbBatchSetInputShape,
 }, async (input) => {
+    const disabled = ensureBulkEnabled("bb_batch_set");
+    if (disabled) {
+        return disabled;
+    }
     try {
         pruneExpired();
         const parsed = BbBatchSetInputSchema.parse(input);
@@ -4527,6 +5011,10 @@ server.registerTool("stig_batch", {
     description: "Applique plusieurs dépôts de phéromones de façon atomique (rollback sur erreur).",
     inputSchema: StigBatchInputShape,
 }, async (input) => {
+    const disabled = ensureBulkEnabled("stig_batch");
+    if (disabled) {
+        return disabled;
+    }
     try {
         pruneExpired();
         const parsed = StigBatchInputSchema.parse(input);
@@ -4720,6 +5208,10 @@ server.registerTool("child_batch_create", {
     description: "Démarre plusieurs enfants Codex avec rollback atomique en cas d'échec.",
     inputSchema: ChildBatchCreateInputShape,
 }, async (input) => {
+    const disabled = ensureBulkEnabled("child_batch_create");
+    if (disabled) {
+        return disabled;
+    }
     pruneExpired();
     try {
         const parsed = ChildBatchCreateInputSchema.parse(input);
@@ -4750,6 +5242,10 @@ server.registerTool("child_spawn_codex", {
     description: "Démarre un enfant Codex avec un prompt structuré et des limites optionnelles.",
     inputSchema: ChildSpawnCodexInputShape,
 }, async (input) => {
+    const disabled = ensureChildOpsFineEnabled("child_spawn_codex");
+    if (disabled) {
+        return disabled;
+    }
     try {
         const parsed = ChildSpawnCodexInputSchema.parse(input);
         const result = await handleChildSpawnCodex(getChildToolContext(), parsed);
@@ -4776,6 +5272,10 @@ server.registerTool("child_attach", {
     description: "Rafraîchit le manifest d'un enfant déjà actif et note la ré-connexion.",
     inputSchema: ChildAttachInputShape,
 }, async (input) => {
+    const disabled = ensureChildOpsFineEnabled("child_attach");
+    if (disabled) {
+        return disabled;
+    }
     try {
         const parsed = ChildAttachInputSchema.parse(input);
         const result = await handleChildAttach(getChildToolContext(), parsed);
@@ -4795,6 +5295,10 @@ server.registerTool("child_set_role", {
     description: "Met à jour le rôle annoncé d'un enfant en cours d'exécution.",
     inputSchema: ChildSetRoleInputShape,
 }, async (input) => {
+    const disabled = ensureChildOpsFineEnabled("child_set_role");
+    if (disabled) {
+        return disabled;
+    }
     try {
         const parsed = ChildSetRoleInputSchema.parse(input);
         const result = await handleChildSetRole(getChildToolContext(), parsed);
@@ -4814,6 +5318,10 @@ server.registerTool("child_set_limits", {
     description: "Ajuste les limites déclaratives d'un enfant actif (tokens, temps, etc.).",
     inputSchema: ChildSetLimitsInputShape,
 }, async (input) => {
+    const disabled = ensureChildOpsFineEnabled("child_set_limits");
+    if (disabled) {
+        return disabled;
+    }
     try {
         const parsed = ChildSetLimitsInputSchema.parse(input);
         const result = await handleChildSetLimits(getChildToolContext(), parsed);
@@ -4901,6 +5409,10 @@ server.registerTool("child_status", {
     description: "Expose l'état runtime/index d'un enfant (pid, heartbeats, retries…).",
     inputSchema: ChildStatusInputShape,
 }, (input) => {
+    const disabled = ensureChildOpsFineEnabled("child_status");
+    if (disabled) {
+        return disabled;
+    }
     try {
         const parsed = ChildStatusInputSchema.parse(input);
         const result = handleChildStatus(getChildToolContext(), parsed);
@@ -5404,7 +5916,15 @@ server.registerTool("graph_forge_analyze", { title: "Graph Forge analyze", descr
         let resolvedPath;
         let source = cfg.source;
         if (!source && cfg.path) {
-            resolvedPath = resolvePath(process.cwd(), cfg.path);
+            try {
+                resolvedPath = resolveWorkspacePath(cfg.path);
+            }
+            catch (error) {
+                if (error instanceof PathResolutionError) {
+                    return formatWorkspacePathError(error);
+                }
+                throw error;
+            }
             try {
                 source = await readFile(resolvedPath, "utf8");
             }
@@ -5546,6 +6066,181 @@ server.registerTool("kill", { title: "Kill", description: "Termine un child_id o
     }
     return { isError: true, content: [{ type: "text", text: j({ error: "BAD_REQUEST", message: "Fournis child_id ou job_id" }) }] };
 });
+/**
+ * Normalises human-friendly method names (e.g. `mcp_info`) into actual MCP
+ * requests understood by the underlying SDK. Tools are exposed via
+ * `tools/call`, therefore we transparently translate direct tool invocations
+ * into the canonical request form.
+ */
+function normaliseJsonRpcInvocation(method, params) {
+    const trimmed = method.trim();
+    if (trimmed.includes("/")) {
+        return { method: trimmed, params };
+    }
+    const toolArgs = params && typeof params === "object" && params !== null ? { ...params } : {};
+    return {
+        method: "tools/call",
+        params: { name: trimmed, arguments: toolArgs },
+    };
+}
+/**
+ * Ensures idempotency-aware tools observe the HTTP header forwarded by the bridge.
+ *
+ * The helper mirrors the behaviour expected by `child_*`, `tx_*`, and graph tools which
+ * all accept an optional `idempotency_key` property. When HTTP clients rely on the
+ * dedicated header instead of duplicating the field in the JSON body we transparently
+ * inject it here so downstream validation keeps succeeding.
+ */
+function injectIdempotencyKey(method, params, key) {
+    if (!key || typeof key !== "string") {
+        return params;
+    }
+    if (!params || typeof params !== "object" || Array.isArray(params)) {
+        return params;
+    }
+    if (method === "tools/call") {
+        const payload = params;
+        if (!payload.arguments || typeof payload.arguments !== "object" || Array.isArray(payload.arguments)) {
+            return params;
+        }
+        const args = payload.arguments;
+        if (Object.prototype.hasOwnProperty.call(args, "idempotency_key")) {
+            return params;
+        }
+        return {
+            ...payload,
+            arguments: { ...args, idempotency_key: key },
+        };
+    }
+    const record = params;
+    if (Object.prototype.hasOwnProperty.call(record, "idempotency_key")) {
+        return params;
+    }
+    return { ...record, idempotency_key: key };
+}
+/**
+ * Delegates the JSON-RPC method to the handler registered on the underlying
+ * MCP server. The helper mirrors the transport layer implemented by the SDK
+ * so tests and the FS-Bridge can issue requests without going through HTTP.
+ */
+export async function routeJsonRpcRequest(method, params, context = {}) {
+    const originalMethod = method.trim();
+    const internalServer = server.server;
+    const handlers = internalServer._requestHandlers;
+    if (!handlers) {
+        throw new Error("JSON-RPC handlers not initialised");
+    }
+    let invocation = normaliseJsonRpcInvocation(method, params);
+    const handler = handlers.get(invocation.method);
+    if (!handler) {
+        throw new Error(`Unknown method: ${invocation.method}`);
+    }
+    const requestId = context.requestId ?? randomUUID();
+    const abort = new AbortController();
+    const headersSnapshot = { ...(context.headers ?? {}) };
+    if (context.transport) {
+        headersSnapshot["x-mcp-transport"] = context.transport;
+    }
+    if (context.childId) {
+        headersSnapshot["x-child-id"] = context.childId;
+    }
+    if (context.childLimits) {
+        headersSnapshot["x-child-limits"] = Buffer.from(JSON.stringify(context.childLimits), "utf8").toString("base64");
+    }
+    if (context.idempotencyKey) {
+        headersSnapshot["idempotency-key"] = context.idempotencyKey;
+    }
+    if (context.idempotencyKey) {
+        invocation = {
+            method: invocation.method,
+            params: injectIdempotencyKey(invocation.method, invocation.params, context.idempotencyKey),
+        };
+    }
+    const extra = {
+        signal: abort.signal,
+        sessionId: undefined,
+        sendNotification: async () => {
+            // Notifications are not routed when using the in-process adapter. They are
+            // primarily used by streaming transports, therefore we simply swallow them
+            // to keep the call fire-and-forget while documenting the limitation.
+        },
+        sendRequest: async () => {
+            throw new Error("Nested requests are not supported via handleJsonRpc");
+        },
+        requestId,
+        requestInfo: Object.keys(headersSnapshot).length > 0 ? { headers: headersSnapshot } : undefined,
+    };
+    try {
+        const rawResult = await handler({ jsonrpc: "2.0", id: requestId, method: invocation.method, params: invocation.params }, extra);
+        if (!originalMethod.includes("/") && invocation.method === "tools/call") {
+            return normaliseToolCallResult(rawResult);
+        }
+        return rawResult;
+    }
+    finally {
+        abort.abort();
+    }
+}
+/**
+ * Attempts to extract a structured payload from a tool response by leveraging
+ * the `structuredContent` field or the canonical JSON blob stored in
+ * `content[].text`. The helper keeps backward compatibility with clients that
+ * expect the raw MCP response while presenting a friendlier payload to the
+ * FS-Bridge and its tests.
+ */
+function normaliseToolCallResult(result) {
+    if (!result || typeof result !== "object") {
+        return result;
+    }
+    const payload = result;
+    if (Object.prototype.hasOwnProperty.call(payload, "structuredContent")) {
+        return payload.structuredContent;
+    }
+    if (Array.isArray(payload.content)) {
+        for (const entry of payload.content) {
+            if (entry && typeof entry === "object" && typeof entry.text === "string") {
+                try {
+                    const parsed = JSON.parse(entry.text);
+                    if (parsed && typeof parsed === "object") {
+                        const record = parsed;
+                        if (record.result !== undefined) {
+                            return record.result;
+                        }
+                        if (record.info !== undefined) {
+                            return record.info;
+                        }
+                        return parsed;
+                    }
+                }
+                catch {
+                    // Ignore parse failures and fall back to the raw response.
+                }
+                break;
+            }
+        }
+    }
+    return result;
+}
+/**
+ * Validates and executes a JSON-RPC request using the in-process router. Errors
+ * are serialised following the JSON-RPC 2.0 specification so callers receive a
+ * deterministic payload whether the failure originates from validation or the
+ * underlying handler.
+ */
+export async function handleJsonRpc(req, context) {
+    const id = req?.id ?? null;
+    if (!req || req.jsonrpc !== "2.0" || typeof req.method !== "string") {
+        return { jsonrpc: "2.0", id, error: { code: -32600, message: "Invalid Request" } };
+    }
+    try {
+        const result = await routeJsonRpcRequest(req.method, req.params, { ...context, requestId: id });
+        return { jsonrpc: "2.0", id, result };
+    }
+    catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        return { jsonrpc: "2.0", id, error: { code: -32000, message } };
+    }
+}
 // --- Transports ---
 const isMain = process.argv[1] ? pathToFileURL(process.argv[1]).href === import.meta.url : false;
 if (isMain) {

@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { ERROR_CODES } from "../types.js";
 /** Metadata key storing the timestamp of the last successful transaction commit. */
 const TX_COMMITTED_AT_METADATA_KEY = "__txCommittedAt";
 /**
@@ -6,34 +7,40 @@ const TX_COMMITTED_AT_METADATA_KEY = "__txCommittedAt";
  * situation occurs (unknown transaction, invalid graph id, ...).
  */
 export class GraphTransactionError extends Error {
-    constructor(message) {
+    /** Stable transaction error code surfaced to MCP clients. */
+    code;
+    /** Optional operator hint describing how to recover from the error. */
+    hint;
+    constructor(code, message, hint) {
         super(message);
         this.name = "GraphTransactionError";
+        this.code = code;
+        this.hint = hint;
     }
 }
 /** Error thrown when attempting to commit using a stale base version. */
 export class GraphVersionConflictError extends GraphTransactionError {
-    code = "E-REWRITE-CONFLICT";
+    code;
     details;
     constructor(graphId, expected, found) {
-        super(`graph '${graphId}' diverged: expected version ${expected} but received ${found}`);
+        super(ERROR_CODES.TX_CONFLICT, "graph version conflict", "reload latest committed graph before retrying");
         this.name = "GraphVersionConflictError";
+        this.code = ERROR_CODES.TX_CONFLICT;
         this.details = { graphId, expected, found };
     }
 }
 /** Error thrown when a caller references a transaction identifier that expired. */
 export class UnknownTransactionError extends GraphTransactionError {
     constructor(txId) {
-        super(`transaction '${txId}' is not active`);
+        super(ERROR_CODES.TX_NOT_FOUND, "transaction not found", "open a new transaction");
         this.name = "UnknownTransactionError";
     }
 }
 /** Error thrown when attempting to interact with an expired transaction. */
 export class GraphTransactionExpiredError extends GraphTransactionError {
-    code = "E-TX-EXPIRED";
     details;
     constructor(txId, expiredAt, now) {
-        super(`transaction '${txId}' expired at ${new Date(expiredAt).toISOString()}`);
+        super(ERROR_CODES.TX_EXPIRED, "transaction expired", "open a new transaction");
         this.name = "GraphTransactionExpiredError";
         this.details = { txId, expiredAt, now };
     }
@@ -55,7 +62,7 @@ export class GraphTransactionManager {
      */
     begin(graph, options = {}) {
         if (!graph.graphId || graph.graphId.trim().length === 0) {
-            throw new GraphTransactionError("graph id must be provided before opening a transaction");
+            throw new GraphTransactionError(ERROR_CODES.TX_INVALID_INPUT, "graph id required", "supply a graph_id before opening transactions");
         }
         const state = this.states.get(graph.graphId);
         if (state) {
@@ -113,11 +120,11 @@ export class GraphTransactionManager {
         const now = Date.now();
         const record = this.getActiveTransaction(txId, now);
         if (updatedGraph.graphId !== record.graphId) {
-            throw new GraphTransactionError(`graph id mismatch: expected '${record.graphId}' but received '${updatedGraph.graphId}'`);
+            throw new GraphTransactionError(ERROR_CODES.TX_INVALID_INPUT, "graph id mismatch", "commit using the graph returned by tx_begin");
         }
         const state = this.states.get(record.graphId);
         if (!state) {
-            throw new GraphTransactionError(`no committed state registered for graph '${record.graphId}'`);
+            throw new GraphTransactionError(ERROR_CODES.TX_NOT_FOUND, "graph state unavailable", "seed the graph via resources before opening transactions");
         }
         if (state.version !== record.baseVersion) {
             throw new GraphVersionConflictError(record.graphId, state.version, record.baseVersion);

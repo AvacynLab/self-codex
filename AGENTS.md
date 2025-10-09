@@ -38,7 +38,7 @@ export async function handleJsonRpc(req: JsonRpcRequest): Promise<JsonRpcRespons
 
 ### 1.2 **Auth HTTP** stateless (si `MCP_HTTP_TOKEN` défini)
 
-* [ ] Dans le handler HTTP existant, insère le contrôle suivant **avant** de traiter la requête :
+* [x] Dans le handler HTTP existant, insère le contrôle suivant **avant** de traiter la requête :
 
 ```ts
 // Dans la branche HTTP de src/server.ts (là où tu traites POST /mcp)
@@ -57,7 +57,7 @@ if (requiredToken) {
 
 ### 1.3 **Propagation du contexte enfant** (self-provider)
 
-* [ ] Récupérer `X-Child-Id` et, si présent, l’insérer dans le **contexte** (logs + events + budgets).
+* [x] Récupérer `X-Child-Id` et, si présent, l’insérer dans le **contexte** (logs + events + budgets).
 
 ```ts
 // Toujours dans la route HTTP JSON-RPC
@@ -234,7 +234,7 @@ test("fs-bridge mcp_info roundtrip", async () => {
 
 ## 7) `tests/e2e/child.http.test.ts` — enfant = session HTTP
 
-* [ ] Teste qu’un `child_spawn_codex` crée bien un `childId` et qu’un appel tool **porte** `X-Child-Id`.
+* [x] Teste qu’un `child_spawn_codex` crée bien un `childId` et qu’un appel tool **porte** `X-Child-Id`.
 
 ```ts
 // tests/e2e/child.http.test.ts (pseudo-code)
@@ -261,7 +261,7 @@ test("child headers propagated", async () => {
 
 ## 8) `src/events/bus.ts` & `src/monitor/log.ts` — corrélation systématique
 
-* [ ] S’assurer que **tous** les events/logs portent `seq` monotone, et les clés : `runId`, `opId`, `childId?`, `graphId?`, `component`, `stage`, `elapsedMs?`.
+* [x] S’assurer que **tous** les events/logs portent `seq` monotone, et les clés : `runId`, `opId`, `childId?`, `graphId?`, `component`, `stage`, `elapsedMs?`.
 
 ```ts
 // Exemple d’enrichissement à la création d’event
@@ -282,7 +282,7 @@ function emitEvent(partial: any, ctx: { runId?: string; opId?: string; childId?:
 
 ## 9) `src/infra/idempotency.ts` — header ⇒ clé
 
-* [ ] Mapper l’en-tête `Idempotency-Key` HTTP → `ctx.idempotencyKey` et l’utiliser dans les endpoints `tx_begin`, `child_batch_create`, etc.
+* [x] Mapper l’en-tête `Idempotency-Key` HTTP → `ctx.idempotencyKey` et l’utiliser dans les endpoints `tx_begin`, `child_batch_create`, etc.
 
 ```ts
 // Dans HTTP handler
@@ -319,3 +319,6 @@ Quand tu as coché tout ça et validé les tests rapides, on lance la **campagne
 ## Historique
 - 2025-10-08 – Agent `gpt-5-codex` (iteration 63) — Réinitialisation du fichier avec la nouvelle checklist MCP HTTP/FS-Bridge.
 - 2025-10-08 – Agent `gpt-5-codex` (iteration 64) — Ajout de l’adaptateur JSON-RPC (`handleJsonRpc`), du FS-Bridge (polling + start/stop), des scripts `start:*`, et du test e2e `fs-bridge` validant la boucle disque.
+- 2025-10-08 – Agent `gpt-5-codex` (iteration 65) — Auth HTTP stateless sur le handler `/mcp`, extraction `X-Child-*` vers le contexte JSON-RPC et tests unitaires sur les helpers HTTP.
+- 2025-10-08 – Agent `gpt-5-codex` (iteration 66) — Injection automatique de l’`Idempotency-Key` dans les appels tools HTTP, mutualisation des stubs HTTP de test et scénario e2e validant l’en-tête `X-Child-Id`.
+- 2025-10-09 – Agent `gpt-5-codex` (iteration 67) — Normalisation automatique `component`/`stage`/`elapsedMs` sur le bus d’événements, harmonisation des fixtures resources et exécution complète de `npm test`.

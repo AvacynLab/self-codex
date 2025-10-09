@@ -66,7 +66,7 @@ function isSerializedChildRecord(value) {
 export class UnknownChildError extends Error {
     childId;
     /** Machine readable error code surfaced to MCP clients. */
-    code = "E-CHILD-NOT-FOUND";
+    code = "E-CHILD-NOTFOUND";
     /** Hint describing how the caller can recover from the failure. */
     hint = "unknown_child";
     /** Structured details automatically serialised by the server error helpers. */
