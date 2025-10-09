@@ -7856,6 +7856,57 @@ function normaliseToolCallResult(result: unknown): unknown {
  * deterministic payload whether the failure originates from validation or the
  * underlying handler.
  */
+/**
+ * Determines whether the incoming JSON-RPC payload targets the `mcp_info`
+ * tool either directly or via the canonical `tools/call` indirection.
+ *
+ * The helper keeps the transport helpers agnostic of how callers choose to
+ * address the introspection tool, which allows tests to exercise both code
+ * paths while sharing the same response normalisation logic.
+ */
+function isMcpInfoInvocation(request: JsonRpcRequest): boolean {
+  const method = request?.method?.trim();
+  if (method === "mcp_info") {
+    return true;
+  }
+
+  if (method === "tools/call") {
+    const params = request?.params;
+    if (params && typeof params === "object" && !Array.isArray(params)) {
+      const name = (params as { name?: unknown }).name;
+      if (typeof name === "string" && name.trim() === "mcp_info") {
+        return true;
+      }
+    }
+  }
+
+  return false;
+}
+
+/**
+ * Checks whether the fast-path HTTP transport should hydrate the `mcp_info`
+ * response with the latest runtime snapshot. When introspection is disabled we
+ * still serve a minimal descriptor so stateless HTTP clients can negotiate the
+ * transport before toggling feature flags. Other transports (FS bridge, STDIO)
+ * retain the stricter behaviour enforced by {@link ensureMcpIntrospectionEnabled}.
+ */
+function shouldHydrateMcpInfo(
+  request: JsonRpcRequest,
+  context: JsonRpcRouteContext | undefined,
+  result: unknown,
+): boolean {
+  if (!context || context.transport !== "http" || !isMcpInfoInvocation(request)) {
+    return false;
+  }
+
+  if (!result || typeof result !== "object") {
+    return true;
+  }
+
+  const payload = result as { server?: { name?: unknown } };
+  return typeof payload.server?.name !== "string";
+}
+
 export async function handleJsonRpc(
   req: JsonRpcRequest,
   context?: JsonRpcRouteContext,
@@ -7866,7 +7917,15 @@ export async function handleJsonRpc(
   }
 
   try {
-    const result = await routeJsonRpcRequest(req.method, req.params, { ...context, requestId: id });
+    let result = await routeJsonRpcRequest(req.method, req.params, { ...context, requestId: id });
+
+    if (shouldHydrateMcpInfo(req, context, result)) {
+      // The fallback keeps the HTTP fast-path in sync with the FS bridge where
+      // clients expect the runtime descriptor even when introspection toggles
+      // have not been flipped yet.
+      result = getMcpInfo();
+    }
+
     return { jsonrpc: "2.0", id, result };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

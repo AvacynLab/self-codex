@@ -103,6 +103,53 @@ describe("http json-rpc fast path", () => {
     expect(body.result?.server?.name, "server name").to.be.a("string");
   }).timeout(10_000);
 
+  it("hydrates mcp_info metadata for HTTP clients when introspection is disabled", async () => {
+    const featuresBefore = getRuntimeFeatures();
+    configureRuntimeFeatures({ ...featuresBefore, enableMcpIntrospection: false });
+
+    try {
+      const request = createJsonRpcRequest(
+        {
+          jsonrpc: "2.0",
+          id: "info-http-disabled",
+          method: "mcp_info",
+          params: {},
+        },
+        {
+          "content-type": "application/json",
+          accept: "application/json",
+        },
+      );
+      const response = new MemoryHttpResponse();
+
+      const handled = await __httpServerInternals.tryHandleJsonRpc(
+        request,
+        response as any,
+        new Proxy(
+          {},
+          {
+            get() {
+              return () => {};
+            },
+          },
+        ),
+        async (payload, context) => handleJsonRpc(payload, context),
+      );
+
+      expect(handled, "request should be processed by the JSON fast-path").to.equal(true);
+      expect(response.statusCode, "HTTP status").to.equal(200);
+
+      const body = JSON.parse(response.body) as {
+        result?: { server?: { name?: string; version?: string } };
+      };
+
+      expect(body.result?.server?.name, "server name").to.be.a("string");
+      expect(body.result?.server?.version, "server version").to.be.a("string");
+    } finally {
+      configureRuntimeFeatures({ ...featuresBefore, enableMcpIntrospection: true });
+    }
+  }).timeout(10_000);
+
   it("delegates tool calls through the JSON fast-path", async () => {
     if (!handlers) {
       throw new Error("Handlers map not initialised");

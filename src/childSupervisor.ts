@@ -1,5 +1,5 @@
 import { randomUUID } from "crypto";
-import { writeFile } from "node:fs/promises";
+import { defaultFileSystemGateway, type FileSystemGateway } from "./gateways/fs.js";
 
 import {
   ChildCollectedOutputs,
@@ -75,6 +75,8 @@ export interface ChildSupervisorOptions {
    * Allows callers to persist IO streams alongside correlation metadata.
    */
   recordChildLogEntry?: (childId: string, entry: ChildLogEventSnapshot) => void;
+  /** File-system gateway used to persist manifests and other artefacts. */
+  fileSystem?: FileSystemGateway;
 }
 
 /** Snapshot persisted when forwarding child logs to downstream observers. */
@@ -304,6 +306,7 @@ export class ChildSupervisor {
     context: ChildRuntimeBridgeContext,
   ) => EventCorrelationHints | void;
   private readonly recordChildLogEntry?: (childId: string, entry: ChildLogEventSnapshot) => void;
+  private readonly fileSystem: FileSystemGateway;
   private readonly childEventBridges = new Map<string, () => void>();
   private readonly childLogRecorders = new Map<string, (message: ChildRuntimeMessage) => void>();
   private readonly idleTimeoutMs: number;
@@ -322,6 +325,7 @@ export class ChildSupervisor {
     this.eventBus = options.eventBus;
     this.resolveChildCorrelation = options.resolveChildCorrelation;
     this.recordChildLogEntry = options.recordChildLogEntry;
+    this.fileSystem = options.fileSystem ?? defaultFileSystemGateway;
 
     const configuredIdle = options.idleTimeoutMs ?? 120_000;
     this.idleTimeoutMs = configuredIdle > 0 ? configuredIdle : 0;
@@ -1060,7 +1064,7 @@ export class ChildSupervisor {
       ...session.manifestExtras,
     };
 
-    await writeFile(session.manifestPath, JSON.stringify(manifest, null, 2), "utf8");
+    await this.fileSystem.writeFileUtf8(session.manifestPath, JSON.stringify(manifest, null, 2));
   }
 
   /** Merges extra manifest fields while filtering reserved keys. */
