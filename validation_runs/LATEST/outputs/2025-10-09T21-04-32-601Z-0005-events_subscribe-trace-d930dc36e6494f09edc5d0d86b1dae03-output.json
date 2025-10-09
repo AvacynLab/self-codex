@@ -1,0 +1,39 @@
+{
+  "traceId": "trace-d930dc36e6494f09edc5d0d86b1dae03",
+  "toolName": "events_subscribe",
+  "recordedAt": "2025-10-09T21:04:32.601Z",
+  "payload": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\n  \"tool\": \"events_subscribe\",\n  \"result\": {\n    \"format\": \"jsonlines\",\n    \"events\": [\n      {\n        \"seq\": 2,\n        \"ts\": 1760043872601,\n        \"cat\": \"graph\",\n        \"kind\": \"PROBE\",\n        \"level\": \"info\",\n        \"job_id\": null,\n        \"run_id\": \"validation-LATEST\",\n        \"op_id\": null,\n        \"graph_id\": null,\n        \"node_id\": null,\n        \"child_id\": null,\n        \"msg\": \"introspection_probe\",\n        \"data\": {\n          \"stage\": \"introspection\",\n          \"emitted_at\": \"2025-10-09T21:04:32.601Z\"\n        }\n      }\n    ],\n    \"stream\": \"{\\\"seq\\\":2,\\\"ts\\\":1760043872601,\\\"cat\\\":\\\"graph\\\",\\\"kind\\\":\\\"PROBE\\\",\\\"level\\\":\\\"info\\\",\\\"job_id\\\":null,\\\"run_id\\\":\\\"validation-LATEST\\\",\\\"op_id\\\":null,\\\"graph_id\\\":null,\\\"node_id\\\":null,\\\"child_id\\\":null,\\\"msg\\\":\\\"introspection_probe\\\",\\\"data\\\":{\\\"stage\\\":\\\"introspection\\\",\\\"emitted_at\\\":\\\"2025-10-09T21:04:32.601Z\\\"}}\",\n    \"next_seq\": 2,\n    \"count\": 1\n  }\n}"
+      }
+    ],
+    "structuredContent": {
+      "format": "jsonlines",
+      "events": [
+        {
+          "seq": 2,
+          "ts": 1760043872601,
+          "cat": "graph",
+          "kind": "PROBE",
+          "level": "info",
+          "job_id": null,
+          "run_id": "validation-LATEST",
+          "op_id": null,
+          "graph_id": null,
+          "node_id": null,
+          "child_id": null,
+          "msg": "introspection_probe",
+          "data": {
+            "stage": "introspection",
+            "emitted_at": "2025-10-09T21:04:32.601Z"
+          }
+        }
+      ],
+      "stream": "{\"seq\":2,\"ts\":1760043872601,\"cat\":\"graph\",\"kind\":\"PROBE\",\"level\":\"info\",\"job_id\":null,\"run_id\":\"validation-LATEST\",\"op_id\":null,\"graph_id\":null,\"node_id\":null,\"child_id\":null,\"msg\":\"introspection_probe\",\"data\":{\"stage\":\"introspection\",\"emitted_at\":\"2025-10-09T21:04:32.601Z\"}}",
+      "next_seq": 2,
+      "count": 1
+    }
+  }
+}

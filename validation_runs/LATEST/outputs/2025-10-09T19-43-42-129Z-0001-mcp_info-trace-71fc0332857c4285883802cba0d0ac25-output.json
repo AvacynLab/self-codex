@@ -1,0 +1,13 @@
+{
+  "traceId": "trace-71fc0332857c4285883802cba0d0ac25",
+  "toolName": "mcp_info",
+  "recordedAt": "2025-10-09T19:43:42.134Z",
+  "payload": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\n  \"format\": \"json\",\n  \"info\": {\n    \"server\": {\n      \"name\": \"mcp-self-fork-orchestrator\",\n      \"version\": \"1.3.0\"\n    },\n    \"mcp\": {\n      \"protocol\": \"1.0\",\n      \"transports\": [\n        {\n          \"kind\": \"stdio\",\n          \"enabled\": true\n        },\n        {\n          \"kind\": \"http\",\n          \"enabled\": false,\n          \"host\": null,\n          \"port\": null,\n          \"path\": null,\n          \"modes\": {\n            \"json\": true,\n            \"stateless\": false\n          }\n        }\n      ]\n    },\n    \"features\": [\n      \"core\",\n      \"events-bus\",\n      \"mcp-introspection\",\n      \"resources\"\n    ],\n    \"limits\": {\n      \"maxInputBytes\": 524288,\n      \"defaultTimeoutMs\": 60000\n    },\n    \"flags\": {\n      \"enableBT\": false,\n      \"enableReactiveScheduler\": false,\n      \"enableBlackboard\": false,\n      \"enableStigmergy\": false,\n      \"enableCNP\": false,\n      \"enableConsensus\": false,\n      \"enableAutoscaler\": false,\n      \"enableSupervisor\": false,\n      \"enableKnowledge\": false,\n      \"enableCausalMemory\": false,\n      \"enableValueGuard\": false,\n      \"enableMcpIntrospection\": true,\n      \"enableResources\": true,\n      \"enableEventsBus\": true,\n      \"enableCancellation\": false,\n      \"enableTx\": false,\n      \"enableBulk\": false,\n      \"enableIdempotency\": false,\n      \"enableLocks\": false,\n      \"enableDiffPatch\": false,\n      \"enablePlanLifecycle\": false,\n      \"enableChildOpsFine\": false,\n      \"enableValuesExplain\": false,\n      \"enableAssist\": false\n    }\n  }\n}"
+      }
+    ]
+  }
+}

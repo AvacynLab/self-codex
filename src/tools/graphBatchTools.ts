@@ -7,7 +7,7 @@ import {
 } from "../graph/tx.js";
 import type { GraphLockManager } from "../graph/locks.js";
 import type { ResourceRegistry } from "../resources/registry.js";
-import { IdempotencyRegistry } from "../infra/idempotency.js";
+import { IdempotencyRegistry, buildIdempotencyCacheKey } from "../infra/idempotency.js";
 import { ERROR_CODES } from "../types.js";
 import {
   GraphMutateInputSchema,
@@ -170,10 +170,9 @@ export async function handleGraphBatchMutate(
   };
 
   if (context.idempotency && key) {
-    const hit = await context.idempotency.remember<GraphBatchMutateSnapshot>(
-      `graph_batch_mutate:${key}`,
-      execute,
-    );
+    const { op_id: _omitOpId, idempotency_key: _omitKey, ...fingerprint } = input;
+    const cacheKey = buildIdempotencyCacheKey("graph_batch_mutate", key, fingerprint);
+    const hit = await context.idempotency.remember<GraphBatchMutateSnapshot>(cacheKey, execute);
     const snapshot = hit.value as GraphBatchMutateSnapshot;
     return { ...snapshot, idempotent: hit.idempotent, idempotency_key: key };
   }

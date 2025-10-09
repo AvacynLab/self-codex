@@ -20,7 +20,8 @@ import { PromptTemplateSchema } from "../prompts.js";
 import { LoopAlert, LoopDetector } from "../guard/loopDetector.js";
 import { OrchestratorSupervisor } from "../agents/supervisor.js";
 import { ContractNetAwardDecision, ContractNetCoordinator, RegisterAgentOptions } from "../coord/contractNet.js";
-import { IdempotencyRegistry } from "../infra/idempotency.js";
+import { IdempotencyRegistry, buildIdempotencyCacheKey } from "../infra/idempotency.js";
+import { getJsonRpcContext } from "../infra/jsonRpcContext.js";
 import { BulkOperationError, buildBulkFailureDetail } from "./bulkError.js";
 import { resolveOperationId } from "./operationIds.js";
 
@@ -353,7 +354,9 @@ export async function handleChildCreate(
 
   const key = input.idempotency_key ?? null;
   if (context.idempotency && key) {
-    const hit = await context.idempotency.remember<ChildCreateSnapshot>(`child_create:${key}`, execute);
+    const { op_id: _omitOpId, idempotency_key: _omitKey, ...fingerprint } = input;
+    const cacheKey = buildIdempotencyCacheKey("child_create", key, fingerprint);
+    const hit = await context.idempotency.remember<ChildCreateSnapshot>(cacheKey, execute);
     if (hit.idempotent) {
       const snapshot = hit.value as ChildCreateSnapshot;
       context.logger.info("child_create_replayed", {
@@ -411,7 +414,7 @@ export async function handleChildSpawnCodex(
 
     if (isHttpLoopbackEnabled()) {
       const childId = context.supervisor.createChildId();
-      const endpoint = buildHttpChildEndpoint(childId, limitsCopy);
+      const endpoint = buildHttpChildEndpoint(context, childId, limitsCopy);
       const registration = await context.supervisor.registerHttpChild({
         childId,
         endpoint,
@@ -487,7 +490,9 @@ export async function handleChildSpawnCodex(
 
   const key = input.idempotency_key ?? null;
   if (context.idempotency && key) {
-    const hit = await context.idempotency.remember<ChildSpawnCodexSnapshot>(`child_spawn_codex:${key}`, execute);
+    const { op_id: _omitOpId, idempotency_key: _omitKey, ...fingerprint } = input;
+    const cacheKey = buildIdempotencyCacheKey("child_spawn_codex", key, fingerprint);
+    const hit = await context.idempotency.remember<ChildSpawnCodexSnapshot>(cacheKey, execute);
     if (hit.idempotent) {
       const snapshot = hit.value as ChildSpawnCodexSnapshot;
       context.logger.info("child_spawn_codex_replayed", {
@@ -520,76 +525,119 @@ export async function handleChildBatchCreate(
 ): Promise<ChildBatchCreateResult> {
   context.logger.info("child_batch_create_requested", { entries: input.entries.length });
 
-  const results: ChildSpawnCodexResult[] = [];
-  const createdChildIds: string[] = [];
-  let failingIndex: number | null = null;
-  let failingSummary: Record<string, unknown> | null = null;
+  const execute = async (): Promise<ChildBatchCreateResult> => {
+    const results: ChildSpawnCodexResult[] = [];
+    const createdChildIds: string[] = [];
+    let failingIndex: number | null = null;
+    let failingSummary: Record<string, unknown> | null = null;
 
-  try {
-    for (let index = 0; index < input.entries.length; index += 1) {
-      const entry: ChildBatchCreateEntry = input.entries[index]!;
-      try {
-        const snapshot = await handleChildSpawnCodex(context, entry);
-        results.push(snapshot);
-        if (!snapshot.idempotent) {
-          createdChildIds.push(snapshot.child_id);
-        }
-      } catch (error) {
-        failingIndex = index;
-        failingSummary = summariseChildBatchEntry(entry);
-        throw error;
-      }
-    }
-  } catch (error) {
-    for (const childId of createdChildIds.reverse()) {
-      try {
-        context.logger.warn("child_batch_create_rollback", { child_id: childId });
-        await context.supervisor.kill(childId, { timeoutMs: 200 });
-        await context.supervisor.waitForExit(childId, 1_000);
-      } catch (shutdownError) {
-        context.logger.error("child_batch_create_rollback_failed", {
-          child_id: childId,
-          reason:
-            shutdownError instanceof Error ? shutdownError.message : String(shutdownError),
-        });
-      } finally {
+    try {
+      for (let index = 0; index < input.entries.length; index += 1) {
+        const entry: ChildBatchCreateEntry = input.entries[index]!;
         try {
-          context.supervisor.gc(childId);
-        } catch {
-          // The child might have already been reclaimed by the supervisor.
+          const snapshot = await handleChildSpawnCodex(context, entry);
+          results.push(snapshot);
+          if (!snapshot.idempotent) {
+            createdChildIds.push(snapshot.child_id);
+          }
+        } catch (error) {
+          failingIndex = index;
+          failingSummary = summariseChildBatchEntry(entry);
+          throw error;
         }
-        clearLoopSignature(childId);
       }
+    } catch (error) {
+      for (const childId of createdChildIds.reverse()) {
+        try {
+          context.logger.warn("child_batch_create_rollback", { child_id: childId });
+          await context.supervisor.kill(childId, { timeoutMs: 200 });
+          await context.supervisor.waitForExit(childId, 1_000);
+        } catch (shutdownError) {
+          context.logger.error("child_batch_create_rollback_failed", {
+            child_id: childId,
+            reason:
+              shutdownError instanceof Error ? shutdownError.message : String(shutdownError),
+          });
+        } finally {
+          try {
+            context.supervisor.gc(childId);
+          } catch {
+            // The child might have already been reclaimed by the supervisor.
+          }
+          clearLoopSignature(childId);
+        }
+      }
+      const entrySummary = failingSummary;
+      throw new BulkOperationError("child batch aborted", {
+        failures: [
+          buildBulkFailureDetail({
+            index: failingIndex ?? 0,
+            entry: entrySummary,
+            error,
+            stage: "spawn",
+          }),
+        ],
+        rolled_back: true,
+        metadata: {
+          rollback_child_ids: [...createdChildIds].reverse(),
+        },
+      });
     }
-    const entrySummary = failingSummary;
-    throw new BulkOperationError("child batch aborted", {
-      failures: [
-        buildBulkFailureDetail({
-          index: failingIndex ?? 0,
-          entry: entrySummary,
-          error,
-          stage: "spawn",
-        }),
-      ],
-      rolled_back: true,
-      metadata: {
-        rollback_child_ids: [...createdChildIds].reverse(),
-      },
+
+    const idempotentCount = results.filter((entry) => entry.idempotent).length;
+    context.logger.info("child_batch_create_succeeded", {
+      entries: input.entries.length,
+      created: results.length - idempotentCount,
+      replayed: idempotentCount,
     });
+
+    return {
+      children: results,
+      created: results.length - idempotentCount,
+      idempotent_entries: idempotentCount,
+    };
+  };
+
+  const aggregatedKey = (() => {
+    const parts: string[] = [];
+    for (let index = 0; index < input.entries.length; index += 1) {
+      const entry = input.entries[index]!;
+      if (!entry.idempotency_key) {
+        return null;
+      }
+      parts.push(`${index}:${entry.idempotency_key}`);
+    }
+    return parts.length > 0 ? parts.join("|") : null;
+  })();
+
+  if (context.idempotency && aggregatedKey) {
+    const fingerprint = input.entries.map((entry) => {
+      const { op_id: _omitOpId, idempotency_key: _omitKey, ...rest } = entry;
+      return rest;
+    });
+    const cacheKey = buildIdempotencyCacheKey("child_batch_create", aggregatedKey, fingerprint);
+    const hit = await context.idempotency.remember<ChildBatchCreateResult>(cacheKey, execute);
+    if (hit.idempotent) {
+      const replayedChildren = hit.value.children.map((child) => ({
+        ...child,
+        idempotent: true,
+      }));
+      const replayedResult: ChildBatchCreateResult = {
+        ...hit.value,
+        children: replayedChildren,
+        created: 0,
+        idempotent_entries: replayedChildren.length,
+      };
+      context.logger.info("child_batch_create_replayed", {
+        entries: input.entries.length,
+        idempotent_entries: replayedResult.idempotent_entries,
+      });
+      return replayedResult;
+    }
+    return hit.value;
   }
 
-  const idempotentCount = results.filter((entry) => entry.idempotent).length;
-  context.logger.info("child_batch_create_succeeded", {
-    entries: input.entries.length,
-    created: results.length - idempotentCount,
-    replayed: idempotentCount,
-  });
-
-  return {
-    children: results,
-    created: results.length - idempotentCount,
-    idempotent_entries: idempotentCount,
-  };
+  return execute();
 }
 
 /** Refreshes manifest metadata for an existing child runtime. */
@@ -792,9 +840,38 @@ function isHttpLoopbackEnabled(): boolean {
 
 /** Normalises the MCP HTTP endpoint so logical children can call the server again. */
 function buildHttpChildEndpoint(
+  context: ChildToolContext,
   childId: string,
   limits: ChildRuntimeLimits | null,
 ): { url: string; headers: Record<string, string> } {
+  const inherited = (() => {
+    const routeContext = getJsonRpcContext();
+    if (!routeContext?.childId) {
+      return null;
+    }
+    return context.supervisor.getHttpEndpoint(routeContext.childId) ?? null;
+  })();
+
+  if (inherited) {
+    const headers = { ...inherited.headers };
+    headers["x-child-id"] = childId;
+
+    if (limits && Object.keys(limits).length > 0) {
+      headers["x-child-limits"] = Buffer.from(JSON.stringify(limits), "utf8").toString("base64");
+    } else {
+      delete headers["x-child-limits"];
+    }
+
+    if (!headers["content-type"]) {
+      headers["content-type"] = "application/json";
+    }
+    if (!headers.accept) {
+      headers.accept = "application/json";
+    }
+
+    return { url: inherited.url, headers };
+  }
+
   const host = (process.env.MCP_HTTP_HOST ?? "127.0.0.1").trim() || "127.0.0.1";
   const rawPort = process.env.MCP_HTTP_PORT ?? "";
   const parsedPort = Number.parseInt(rawPort, 10);

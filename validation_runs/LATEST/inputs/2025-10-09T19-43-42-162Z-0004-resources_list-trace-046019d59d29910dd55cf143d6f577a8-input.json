@@ -1,0 +1,9 @@
+{
+  "traceId": "trace-046019d59d29910dd55cf143d6f577a8",
+  "toolName": "resources_list",
+  "recordedAt": "2025-10-09T19:43:42.162Z",
+  "payload": {
+    "prefix": "sc://validation/",
+    "limit": 200
+  }
+}

@@ -9,6 +9,7 @@ import { access } from "node:fs/promises";
 import { constants as fsConstants } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { ensureSourceMapNodeOptions, assertNodeVersion } from "./lib/env-helpers.mjs";
 
 const ROOT = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const DIST_SERVER = resolve(ROOT, "dist", "server.js");
@@ -33,6 +34,7 @@ async function ensureBuildIsPresent() {
 }
 
 await ensureBuildIsPresent();
+assertNodeVersion();
 
 const httpHost = process.env.MCP_HTTP_HOST ?? "127.0.0.1";
 const httpPort = process.env.MCP_HTTP_PORT ?? "4000";
@@ -62,7 +64,7 @@ if (dashboardInterval) {
 
 const child = spawn(process.execPath, launchArgs, {
   stdio: "inherit",
-  env: process.env,
+  env: ensureSourceMapNodeOptions(process.env),
 });
 
 function forwardSignal(signal) {

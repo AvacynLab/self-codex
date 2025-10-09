@@ -89,7 +89,14 @@ async function createChildBatchFixture(options: {
     defaultArgs: [mockRunnerPath, "--role", "friendly"],
     idleTimeoutMs: 200,
     idleCheckIntervalMs: 40,
-    maxChildren: options.maxChildren,
+    // The supervisor now expects guardrails to be provided through the `safety`
+    // block so mimic the production configuration to keep the tests honest.
+    safety:
+      typeof options.maxChildren === "number"
+        ? {
+            maxChildren: options.maxChildren,
+          }
+        : undefined,
   });
   const logFile = path.join(childrenRoot, "child-batch.log");
   const logger = new StructuredLogger({ logFile });

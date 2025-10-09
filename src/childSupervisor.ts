@@ -805,6 +805,24 @@ export class ChildSupervisor {
   ): Promise<ChildStatusSnapshot & { limits: ChildRuntimeLimits | null }> {
     const resolved = this.resolveChildLimits(limits ?? null);
     const logical = this.getLogicalChild(childId);
+    const publishLimitsEvent = (limitsSnapshot: ChildRuntimeLimits | null) => {
+      if (!this.eventBus) {
+        return;
+      }
+      // Surface the update on the unified event bus so validation tooling can
+      // assert declarative guardrails were actually refreshed. The message
+      // mirrors the checklist wording while the structured payload retains the
+      // resolved limits for downstream consumers.
+      this.eventBus.publish({
+        cat: "child",
+        level: "info",
+        childId,
+        component: "child_supervisor",
+        stage: "limits",
+        msg: "child.limits.updated",
+        data: { childId, limits: limitsSnapshot },
+      });
+    };
     if (logical) {
       logical.limits = resolved ? { ...resolved } : null;
       const metadata = { ...logical.metadata };
@@ -817,11 +835,13 @@ export class ChildSupervisor {
       this.mergeLogicalManifestExtras(logical, options.manifestExtras);
       await this.writeLogicalManifest(logical);
       const index = this.index.setLimits(childId, resolved);
+      publishLimitsEvent(resolved);
       return { runtime: this.buildLogicalRuntimeStatus(logical), index, limits: resolved };
     }
     const runtime = this.requireRuntime(childId);
     await runtime.setLimits(resolved, options.manifestExtras ?? {});
     const index = this.index.setLimits(childId, resolved);
+    publishLimitsEvent(resolved);
     return { runtime: runtime.getStatus(), index, limits: resolved };
   }
 
@@ -837,7 +857,9 @@ export class ChildSupervisor {
     if (logical) {
       this.mergeLogicalManifestExtras(logical, options.manifestExtras);
       await this.writeLogicalManifest(logical);
-      const index = this.index.markAttached(childId);
+      const existing = this.index.getChild(childId);
+      const attachTimestamp = existing?.attachedAt ?? Date.now();
+      const index = this.index.markAttached(childId, attachTimestamp);
       logical.lastHeartbeatAt = Date.now();
       this.index.updateHeartbeat(childId, logical.lastHeartbeatAt);
       return { runtime: this.buildLogicalRuntimeStatus(logical), index };
@@ -893,6 +915,22 @@ export class ChildSupervisor {
     }
     const runtime = this.requireRuntime(childId);
     return runtime.toolsAllow;
+  }
+
+  /**
+   * Returns a shallow clone of the HTTP endpoint descriptor registered for the
+   * provided logical child. Process-backed runtimes return `null` since they do
+   * not expose an HTTP loopback endpoint.
+   */
+  getHttpEndpoint(childId: string): { url: string; headers: Record<string, string> } | null {
+    const logical = this.getLogicalChild(childId);
+    if (!logical) {
+      return null;
+    }
+    return {
+      url: logical.endpoint.url,
+      headers: { ...logical.endpoint.headers },
+    };
   }
 
   /**

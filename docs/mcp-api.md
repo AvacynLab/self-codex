@@ -95,7 +95,11 @@ type ResourceKind =
   | "run_events"
   | "child_logs"
   | "snapshot"
-  | "blackboard_namespace";
+  | "blackboard_namespace"
+  | "validation_input"
+  | "validation_output"
+  | "validation_events"
+  | "validation_logs";
 
 interface ResourceListResult {
   items: Array<{
@@ -114,9 +118,10 @@ const ResourceReadInput = z.object({ uri: z.string().min(1) }).strict();
 type ResourcePayload =
   | { graphId: string; version: number; committedAt: number | null; graph: NormalisedGraph }
   | { graphId: string; txId: string; baseVersion: number; startedAt: number; state: string; committedAt: number | null; finalVersion: number | null; baseGraph: NormalisedGraph; finalGraph: NormalisedGraph | null }
-  | { runId: string; events: ResourceRunEvent[] }
+  | { runId: string; events: ResourceRunEvent[]; jsonl: string }
   | { childId: string; logs: ResourceChildLogEntry[] }
-  | { namespace: string; entries: BlackboardEntrySnapshot[] };
+  | { namespace: string; entries: BlackboardEntrySnapshot[] }
+  | { sessionId: string; runId: string | null; phase: string | null; artifactType: "input" | "output" | "events" | "logs"; name: string; recordedAt: number; mime: string; data: unknown; metadata?: Record<string, unknown> };
 
 interface ResourceReadResult {
   uri: string;

@@ -1,0 +1,48 @@
+{
+  "traceId": "trace-10294f202055b55ca500b1df24716335",
+  "toolName": "events_subscribe",
+  "recordedAt": "2025-10-09T19:43:42.172Z",
+  "payload": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\n  \"tool\": \"events_subscribe\",\n  \"result\": {\n    \"format\": \"jsonlines\",\n    \"events\": [\n      {\n        \"seq\": 1,\n        \"ts\": 1760039022046,\n        \"cat\": \"cnp\",\n        \"kind\": \"CNP_WATCHER_TELEMETRY\",\n        \"level\": \"info\",\n        \"job_id\": null,\n        \"run_id\": null,\n        \"op_id\": null,\n        \"graph_id\": null,\n        \"node_id\": null,\n        \"child_id\": null,\n        \"msg\": \"cnp_watcher_telemetry\",\n        \"data\": {\n          \"reason\": \"initial\",\n          \"received_updates\": 0,\n          \"coalesced_updates\": 0,\n          \"skipped_refreshes\": 0,\n          \"applied_refreshes\": 0,\n          \"flushes\": 0,\n          \"last_bounds\": {\n            \"min_intensity\": 0,\n            \"max_intensity\": null,\n            \"normalisation_ceiling\": 1\n          }\n        }\n      }\n    ],\n    \"stream\": \"{\\\"seq\\\":1,\\\"ts\\\":1760039022046,\\\"cat\\\":\\\"cnp\\\",\\\"kind\\\":\\\"CNP_WATCHER_TELEMETRY\\\",\\\"level\\\":\\\"info\\\",\\\"job_id\\\":null,\\\"run_id\\\":null,\\\"op_id\\\":null,\\\"graph_id\\\":null,\\\"node_id\\\":null,\\\"child_id\\\":null,\\\"msg\\\":\\\"cnp_watcher_telemetry\\\",\\\"data\\\":{\\\"reason\\\":\\\"initial\\\",\\\"received_updates\\\":0,\\\"coalesced_updates\\\":0,\\\"skipped_refreshes\\\":0,\\\"applied_refreshes\\\":0,\\\"flushes\\\":0,\\\"last_bounds\\\":{\\\"min_intensity\\\":0,\\\"max_intensity\\\":null,\\\"normalisation_ceiling\\\":1}}}\",\n    \"next_seq\": 1,\n    \"count\": 1\n  }\n}"
+      }
+    ],
+    "structuredContent": {
+      "format": "jsonlines",
+      "events": [
+        {
+          "seq": 1,
+          "ts": 1760039022046,
+          "cat": "cnp",
+          "kind": "CNP_WATCHER_TELEMETRY",
+          "level": "info",
+          "job_id": null,
+          "run_id": null,
+          "op_id": null,
+          "graph_id": null,
+          "node_id": null,
+          "child_id": null,
+          "msg": "cnp_watcher_telemetry",
+          "data": {
+            "reason": "initial",
+            "received_updates": 0,
+            "coalesced_updates": 0,
+            "skipped_refreshes": 0,
+            "applied_refreshes": 0,
+            "flushes": 0,
+            "last_bounds": {
+              "min_intensity": 0,
+              "max_intensity": null,
+              "normalisation_ceiling": 1
+            }
+          }
+        }
+      ],
+      "stream": "{\"seq\":1,\"ts\":1760039022046,\"cat\":\"cnp\",\"kind\":\"CNP_WATCHER_TELEMETRY\",\"level\":\"info\",\"job_id\":null,\"run_id\":null,\"op_id\":null,\"graph_id\":null,\"node_id\":null,\"child_id\":null,\"msg\":\"cnp_watcher_telemetry\",\"data\":{\"reason\":\"initial\",\"received_updates\":0,\"coalesced_updates\":0,\"skipped_refreshes\":0,\"applied_refreshes\":0,\"flushes\":0,\"last_bounds\":{\"min_intensity\":0,\"max_intensity\":null,\"normalisation_ceiling\":1}}}",
+      "next_seq": 1,
+      "count": 1
+    }
+  }
+}
