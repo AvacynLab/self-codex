@@ -1,4 +1,5 @@
-﻿import { readFile } from "node:fs/promises";
+﻿import process from "node:process";
+import { readFile } from "node:fs/promises";
 import { compileSource } from "./compiler.js";
 import { criticalPath } from "./algorithms/criticalPath.js";
 import { shortestPath } from "./algorithms/dijkstra.js";

@@ -2,6 +2,7 @@ import { describe, it } from "mocha";
 import { expect } from "chai";
 
 import { ExecutionLoop } from "../src/executor/loop.js";
+import type { IntervalHandle } from "../src/runtime/timers.js";
 
 /** Deterministic clock mirroring the manual scheduler used in the tests. */
 class ManualClock {
@@ -23,10 +24,10 @@ class ManualIntervalController {
 
   constructor(private readonly clock: ManualClock) {}
 
-  set(handler: () => void, interval: number): NodeJS.Timeout {
+  set(handler: () => void, interval: number): IntervalHandle {
     this.handler = handler;
     this.interval = interval;
-    return {} as NodeJS.Timeout;
+    return {} as IntervalHandle;
   }
 
   clear(): void {

@@ -1,3 +1,4 @@
+import type { Signal } from "../nodePrimitives.js";
 import { inspect } from "node:util";
 
 import type { ChildRuntimeLimits } from "../childRuntime.js";
@@ -33,7 +34,7 @@ export interface ChildRecordSnapshot {
   metadata: Record<string, unknown>;
   endedAt: number | null;
   exitCode: number | null;
-  exitSignal: NodeJS.Signals | null;
+  exitSignal: Signal | null;
   forcedTermination: boolean;
   stopReason: string | null;
   /** High level role advertised by the orchestrator for this child. */
@@ -64,7 +65,7 @@ export interface RegisterChildOptions {
  */
 export interface ChildExitDetails {
   code: number | null;
-  signal: NodeJS.Signals | null;
+  signal: Signal | null;
   at?: number;
   forced?: boolean;
   reason?: string;
@@ -81,7 +82,7 @@ export interface SerializedChildRecord {
   retries?: number;
   endedAt?: number | null;
   exitCode?: number | null;
-  exitSignal?: NodeJS.Signals | null;
+  exitSignal?: Signal | null;
   forcedTermination?: boolean;
   startedAt?: number;
   metadata?: Record<string, unknown>;

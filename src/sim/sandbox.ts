@@ -1,4 +1,5 @@
 import { setTimeout as delay } from "node:timers/promises";
+import { runtimeTimers, type TimeoutHandle } from "../runtime/timers.js";
 
 /**
  * Status values reported after executing a sandboxed action.
@@ -154,7 +155,7 @@ export class SandboxRegistry {
       signal: abortSignal,
     };
 
-    let timeoutHandle: NodeJS.Timeout | null = null;
+    let timeoutHandle: TimeoutHandle | null = null;
     let timedOut = false;
 
     const handlerPromise = Promise.resolve()
@@ -162,7 +163,7 @@ export class SandboxRegistry {
       .then((result) => normaliseHandlerResult(result));
 
     const timeoutPromise: Promise<SandboxHandlerResult> = new Promise((_, reject) => {
-      timeoutHandle = setTimeout(() => {
+      timeoutHandle = runtimeTimers.setTimeout(() => {
         timedOut = true;
         controller.abort();
         reject(new SandboxTimeoutError(`Sandbox action "${request.action}" timed out after ${timeoutMs}ms`));
@@ -178,7 +179,7 @@ export class SandboxRegistry {
       caughtError = error;
     } finally {
       if (timeoutHandle) {
-        clearTimeout(timeoutHandle);
+        runtimeTimers.clearTimeout(timeoutHandle);
       }
       // Give cooperative handlers a brief chance to observe the abort signal.
       if (timedOut) {

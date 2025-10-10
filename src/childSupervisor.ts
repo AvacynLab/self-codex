@@ -1,4 +1,9 @@
 import { randomUUID } from "crypto";
+import { runtimeTimers, type IntervalHandle } from "./runtime/timers.js";
+import process from "node:process";
+
+import type { ProcessEnv, Signal } from "./nodePrimitives.js";
+
 import { defaultFileSystemGateway, type FileSystemGateway } from "./gateways/fs.js";
 
 import {
@@ -42,7 +47,7 @@ export interface ChildSupervisorOptions {
   /**
    * Extra environment variables propagated to each child.
    */
-  defaultEnv?: NodeJS.ProcessEnv;
+  defaultEnv?: ProcessEnv;
   /**
    * Shared in-memory index used to expose lifecycle metadata to the rest of
    * the orchestrator. When omitted, a fresh instance is created.
@@ -225,7 +230,7 @@ export interface CreateChildOptions {
   /** Additional command line arguments. */
   args?: string[];
   /** Extra environment variables for the child process. */
-  env?: NodeJS.ProcessEnv;
+  env?: ProcessEnv;
   /** Metadata persisted in the runtime manifest and surfaced via the index. */
   metadata?: Record<string, unknown>;
   /** Additional manifest fields (handy for tooling). */
@@ -294,13 +299,13 @@ export class ChildSupervisor {
   private readonly childrenRoot: string;
   private readonly defaultCommand: string;
   private readonly defaultArgs: string[];
-  private readonly defaultEnv: NodeJS.ProcessEnv;
+  private readonly defaultEnv: ProcessEnv;
   private readonly index: ChildrenIndex;
   private readonly runtimes = new Map<string, ChildRuntime>();
   private readonly logicalChildren = new Map<string, LogicalChildSession>();
   private readonly messageCounters = new Map<string, number>();
   private readonly exitEvents = new Map<string, ChildShutdownResult>();
-  private readonly watchdogs = new Map<string, NodeJS.Timeout>();
+  private readonly watchdogs = new Map<string, IntervalHandle>();
   private readonly eventBus?: EventBus;
   private readonly resolveChildCorrelation?: (
     context: ChildRuntimeBridgeContext,
@@ -936,7 +941,7 @@ export class ChildSupervisor {
   /**
    * Requests a graceful shutdown of the child.
    */
-  async cancel(childId: string, options?: { signal?: NodeJS.Signals; timeoutMs?: number }): Promise<ChildShutdownResult> {
+  async cancel(childId: string, options?: { signal?: Signal; timeoutMs?: number }): Promise<ChildShutdownResult> {
     const logical = this.getLogicalChild(childId);
     if (logical) {
       this.index.updateState(childId, "stopping");
@@ -1039,7 +1044,7 @@ export class ChildSupervisor {
     }
     this.childEventBridges.clear();
     for (const timer of this.watchdogs.values()) {
-      clearInterval(timer);
+      runtimeTimers.clearInterval(timer);
     }
     this.watchdogs.clear();
   }
@@ -1205,11 +1210,11 @@ export class ChildSupervisor {
 
     const existing = this.watchdogs.get(childId);
     if (existing) {
-      clearInterval(existing);
+      runtimeTimers.clearInterval(existing);
     }
 
     const interval = Math.min(this.idleCheckIntervalMs, this.idleTimeoutMs || this.idleCheckIntervalMs);
-    const timer = setInterval(() => {
+    const timer = runtimeTimers.setInterval(() => {
       const snapshot = this.index.getChild(childId);
       if (!snapshot) {
         this.clearIdleWatchdog(childId);
@@ -1246,7 +1251,7 @@ export class ChildSupervisor {
   private clearIdleWatchdog(childId: string): void {
     const timer = this.watchdogs.get(childId);
     if (timer) {
-      clearInterval(timer);
+      runtimeTimers.clearInterval(timer);
       this.watchdogs.delete(childId);
     }
   }

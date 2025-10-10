@@ -2,8 +2,11 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z, type ZodTypeAny } from "zod";
 import { randomUUID } from "crypto";
+import { Buffer } from "node:buffer";
 import { readFile, writeFile } from "node:fs/promises";
 import { resolve as resolvePath, basename as pathBasename } from "node:path";
+import process from "node:process";
+import { runtimeTimers, type IntervalHandle } from "./runtime/timers.js";
 import { pathToFileURL } from "url";
 import { GraphState, type ChildSnapshot, type JobSnapshot } from "./graphState.js";
 import { GraphTransactionManager, GraphTransactionError, GraphVersionConflictError } from "./graph/tx.js";
@@ -2254,7 +2257,7 @@ function buildLiveEvents(input: { job_id?: string; child_id?: string; limit?: nu
 }
 
 // Heartbeat
-let HEARTBEAT_TIMER: NodeJS.Timeout | null = null;
+let HEARTBEAT_TIMER: IntervalHandle | null = null;
 
 function resolveHeartbeatIntervalMs(): number {
   const raw = runtimeTimings.heartbeatIntervalMs ?? DEFAULT_RUNTIME_TIMINGS.heartbeatIntervalMs;
@@ -2293,7 +2296,7 @@ function emitHeartbeatTick(): void {
 function startHeartbeat() {
   if (HEARTBEAT_TIMER) return;
   const interval = resolveHeartbeatIntervalMs();
-  HEARTBEAT_TIMER = setInterval(() => {
+  HEARTBEAT_TIMER = runtimeTimers.setInterval(() => {
     emitHeartbeatTick();
   }, interval);
   HEARTBEAT_TIMER.unref?.();
@@ -2304,7 +2307,7 @@ function stopHeartbeat(): void {
   if (!HEARTBEAT_TIMER) {
     return;
   }
-  clearInterval(HEARTBEAT_TIMER);
+  runtimeTimers.clearInterval(HEARTBEAT_TIMER);
   HEARTBEAT_TIMER = null;
 }
 
@@ -3590,14 +3593,14 @@ server.registerTool(
 );
 
 // Autosave (start/stop)
-let AUTOSAVE_TIMER: NodeJS.Timeout | null = null;
+let AUTOSAVE_TIMER: IntervalHandle | null = null;
 let AUTOSAVE_PATH: string | null = null;
 server.registerTool(
   "graph_state_autosave",
   { title: "Graph autosave", description: "Demarre/arrete la sauvegarde periodique du graphe.", inputSchema: { action: z.enum(["start", "stop"]), path: z.string().optional(), interval_ms: z.number().optional() } },
   async (input: { action: "start" | "stop"; path?: string; interval_ms?: number }) => {
     if (input.action === "stop") {
-      if (AUTOSAVE_TIMER) clearInterval(AUTOSAVE_TIMER);
+      if (AUTOSAVE_TIMER) runtimeTimers.clearInterval(AUTOSAVE_TIMER);
       AUTOSAVE_TIMER = null;
       AUTOSAVE_PATH = null;
       return { content: [{ type: "text", text: j({ format: "json", ok: true, status: "stopped" }) }] };
@@ -3612,10 +3615,10 @@ server.registerTool(
       throw error;
     }
     const interval = Math.min(Math.max(input.interval_ms ?? 5000, 1000), 600000);
-    if (AUTOSAVE_TIMER) clearInterval(AUTOSAVE_TIMER);
+    if (AUTOSAVE_TIMER) runtimeTimers.clearInterval(AUTOSAVE_TIMER);
     await ensureParentDirectory(targetPath);
     AUTOSAVE_PATH = targetPath;
-    AUTOSAVE_TIMER = setInterval(async () => {
+    AUTOSAVE_TIMER = runtimeTimers.setInterval(async () => {
       try {
         const snap = graphState.serialize();
         const metadata = {

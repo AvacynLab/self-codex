@@ -1,6 +1,7 @@
 import { randomUUID } from "crypto";
 import { writeFile } from "node:fs/promises";
 import { setTimeout as delay } from "node:timers/promises";
+import { runtimeTimers, type TimeoutHandle } from "../runtime/timers.js";
 import { z } from "zod";
 
 import { ChildCollectedOutputs, ChildRuntimeMessage } from "../childRuntime.js";
@@ -279,7 +280,7 @@ async function waitWithCancellation(handle: CancellationHandle, ms: number): Pro
     return;
   }
   await new Promise<void>((resolve, reject) => {
-    const timer = setTimeout(() => {
+    const timer = runtimeTimers.setTimeout(() => {
       cleanup();
       resolve();
     }, ms);
@@ -288,7 +289,7 @@ async function waitWithCancellation(handle: CancellationHandle, ms: number): Pro
       reject(handle.toError());
     };
     const cleanup = () => {
-      clearTimeout(timer);
+      runtimeTimers.clearTimeout(timer);
       handle.signal.removeEventListener("abort", onAbort);
     };
     handle.signal.addEventListener("abort", onAbort, { once: true });
@@ -3203,9 +3204,9 @@ async function executePlanRunReactive(
     resume: () => loop?.resume() ?? false,
   });
 
-  let timeoutHandle: NodeJS.Timeout | null = null;
+  let timeoutHandle: TimeoutHandle | null = null;
   if (input.timeout_ms !== undefined) {
-    timeoutHandle = setTimeout(() => {
+    timeoutHandle = runtimeTimers.setTimeout(() => {
       fail?.(new BehaviorTreeRunTimeoutError(input.timeout_ms!));
     }, input.timeout_ms);
   }
@@ -3280,7 +3281,7 @@ async function executePlanRunReactive(
     throw error;
   } finally {
     if (timeoutHandle) {
-      clearTimeout(timeoutHandle);
+      runtimeTimers.clearTimeout(timeoutHandle);
     }
     if (unsubscribeBlackboard) {
       unsubscribeBlackboard();

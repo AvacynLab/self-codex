@@ -1,3 +1,6 @@
+import { Buffer } from "node:buffer";
+import process from "node:process";
+import type { Signal } from "../nodePrimitives.js";
 import { z } from "zod";
 
 import {
@@ -1662,7 +1665,7 @@ export async function handleChildCancel(
   });
 
   const shutdown = await context.supervisor.cancel(input.child_id, {
-    signal: input.signal as NodeJS.Signals | undefined,
+    signal: input.signal as Signal | undefined,
     timeoutMs: input.timeout_ms,
   });
 

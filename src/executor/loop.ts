@@ -1,4 +1,8 @@
-import { setTimeout as defaultSetTimeout, clearTimeout as defaultClearTimeout } from "node:timers";
+import {
+  runtimeTimers,
+  type IntervalHandle,
+  type TimeoutHandle,
+} from "../runtime/timers.js";
 
 /**
  * Context made available to every tick executed by the {@link ExecutionLoop}.
@@ -36,10 +40,10 @@ export interface ExecutionLoopOptions {
   /** Error hook invoked when a tick throws. */
   readonly onError?: (error: unknown) => void;
   /** Injection points easing deterministic tests. */
-  readonly setIntervalFn?: (handler: () => void, interval: number) => NodeJS.Timeout;
-  readonly clearIntervalFn?: (handle: NodeJS.Timeout) => void;
-  readonly scheduleYield?: (resume: () => void) => unknown;
-  readonly cancelYield?: (handle: unknown) => void;
+  readonly setIntervalFn?: (handler: () => void, interval: number) => IntervalHandle;
+  readonly clearIntervalFn?: (handle: IntervalHandle) => void;
+  readonly scheduleYield?: (resume: () => void) => TimeoutHandle;
+  readonly cancelYield?: (handle: TimeoutHandle) => void;
 }
 
 /**
@@ -86,8 +90,8 @@ export class CooperativeBudget {
   constructor(
     private readonly budgetMs: number,
     private readonly now: () => number,
-    private readonly scheduleYield: (resume: () => void) => unknown,
-    private readonly cancelYield: (handle: unknown) => void,
+    private readonly scheduleYield: (resume: () => void) => TimeoutHandle,
+    private readonly cancelYield: (handle: TimeoutHandle) => void,
     private readonly signal: AbortSignal,
   ) {
     this.checkpoint = now();
@@ -124,16 +128,16 @@ export class CooperativeBudget {
 
     await new Promise<void>((resolve) => {
       let finished = false;
-      let handle: unknown | undefined;
+      let handle: TimeoutHandle | null = null;
 
       const finalize = () => {
         if (finished) {
           return;
         }
         finished = true;
-        if (handle != null) {
+        if (handle) {
           this.cancelYield(handle);
-          handle = undefined;
+          handle = null;
         }
         this.signal.removeEventListener("abort", onAbort);
         resolve();
@@ -145,7 +149,7 @@ export class CooperativeBudget {
 
       this.signal.addEventListener("abort", onAbort, { once: true });
       handle = this.scheduleYield(() => {
-        handle = undefined;
+        handle = null;
         finalize();
       });
     });
@@ -178,17 +182,17 @@ export class ExecutionLoop {
   private readonly intervalMs: number;
   private readonly tick: (context: LoopTickContext) => Promise<void> | void;
   private readonly now: () => number;
-  private readonly setIntervalFn: (handler: () => void, interval: number) => NodeJS.Timeout;
-  private readonly clearIntervalFn: (handle: NodeJS.Timeout) => void;
-  private readonly scheduleYield: (resume: () => void) => unknown;
-  private readonly cancelYield: (handle: unknown) => void;
+  private readonly setIntervalFn: (handler: () => void, interval: number) => IntervalHandle;
+  private readonly clearIntervalFn: (handle: IntervalHandle) => void;
+  private readonly scheduleYield: (resume: () => void) => TimeoutHandle;
+  private readonly cancelYield: (handle: TimeoutHandle) => void;
   private readonly budgetMs?: number;
   private readonly onError?: (error: unknown) => void;
   private readonly reconcilers: LoopReconciler[];
   private readonly afterTick?: (details: LoopAfterTickDetails) => void;
 
   private state: LoopState = "idle";
-  private timer: NodeJS.Timeout | null = null;
+  private timer: IntervalHandle | null = null;
   private abortController: AbortController = new AbortController();
   private processing = false;
   private idlePromise: Promise<void> | null = null;
@@ -201,10 +205,11 @@ export class ExecutionLoop {
     this.now = options.now ?? Date.now;
     this.budgetMs = options.budgetMs;
     this.onError = options.onError;
-    this.setIntervalFn = options.setIntervalFn ?? ((handler, interval) => setInterval(handler, interval));
-    this.clearIntervalFn = options.clearIntervalFn ?? ((handle) => clearInterval(handle));
-    this.scheduleYield = options.scheduleYield ?? ((resume) => defaultSetTimeout(resume, 0));
-    this.cancelYield = options.cancelYield ?? ((handle) => defaultClearTimeout(handle as NodeJS.Timeout));
+    this.setIntervalFn =
+      options.setIntervalFn ?? ((handler, interval) => runtimeTimers.setInterval(handler, interval));
+    this.clearIntervalFn = options.clearIntervalFn ?? ((handle) => runtimeTimers.clearInterval(handle));
+    this.scheduleYield = options.scheduleYield ?? ((resume) => runtimeTimers.setTimeout(resume, 0));
+    this.cancelYield = options.cancelYield ?? ((handle) => runtimeTimers.clearTimeout(handle));
     this.reconcilers = options.reconcilers ? [...options.reconcilers] : [];
     this.afterTick = options.afterTick;
   }

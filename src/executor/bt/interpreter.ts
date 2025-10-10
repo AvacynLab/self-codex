@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import { runtimeTimers } from "../../runtime/timers.js";
+
 import {
   type BTStatus,
   type BehaviorNode,
@@ -42,7 +44,12 @@ export class BehaviorTreeInterpreter {
     const resolvedRuntime: TickRuntime = {
       invokeTool: runtime.invokeTool,
       now: runtime.now ?? (() => Date.now()),
-      wait: runtime.wait ?? ((ms: number) => new Promise((resolve) => setTimeout(resolve, ms))),
+      wait:
+        runtime.wait ??
+        ((ms: number) =>
+          new Promise((resolve) => {
+            runtimeTimers.setTimeout(resolve, ms);
+          })),
       variables: runtime.variables ?? {},
       cancellationSignal: runtime.cancellationSignal,
       isCancelled: runtime.isCancelled,

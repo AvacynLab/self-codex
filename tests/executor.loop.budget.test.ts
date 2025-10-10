@@ -2,6 +2,7 @@ import { describe, it } from "mocha";
 import { expect } from "chai";
 
 import { ExecutionLoop } from "../src/executor/loop.js";
+import type { IntervalHandle } from "../src/runtime/timers.js";
 
 /** Deterministic manual clock so tests can simulate work duration explicitly. */
 class ManualClock {
@@ -27,7 +28,7 @@ describe("execution loop budget", () => {
 
     const intervalHandlers: Array<() => void> = [];
     const scheduledResumes: Array<() => void> = [];
-    const fakeTimer = {} as NodeJS.Timeout;
+    const fakeTimer = {} as IntervalHandle;
 
     const loop = new ExecutionLoop({
       intervalMs: 100,

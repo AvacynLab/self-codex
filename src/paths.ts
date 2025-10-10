@@ -1,6 +1,7 @@
 import { mkdirSync } from 'node:fs';
 import { mkdir } from 'node:fs/promises';
 import path from 'node:path';
+import process from 'node:process';
 
 /** Maximum number of characters preserved in a sanitised filename. */
 const MAX_FILENAME_LENGTH = 120;

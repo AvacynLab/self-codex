@@ -1,5 +1,6 @@
+import { Buffer } from "node:buffer";
 import { createServer, IncomingMessage, ServerResponse } from "node:http";
-import { clearInterval, setInterval } from "node:timers";
+import { runtimeTimers, type IntervalHandle } from "../runtime/timers.js";
 import { URL } from "node:url";
 import { z } from "zod";
 
@@ -248,10 +249,10 @@ export function createDashboardRouter(options: DashboardRouterOptions): Dashboar
   const streamIntervalMs = Math.max(250, options.streamIntervalMs ?? 2_000);
   const clients = new Set<ServerResponse>();
   const autoBroadcast = options.autoBroadcast ?? true;
-  let interval: NodeJS.Timeout | null = null;
+  let interval: IntervalHandle | null = null;
 
   if (autoBroadcast) {
-    interval = setInterval(() => {
+    interval = runtimeTimers.setInterval(() => {
       if (clients.size === 0) {
         return;
       }
@@ -403,7 +404,7 @@ export function createDashboardRouter(options: DashboardRouterOptions): Dashboar
       ),
     async close() {
       if (interval) {
-        clearInterval(interval);
+        runtimeTimers.clearInterval(interval);
         interval = null;
       }
       for (const client of clients) {

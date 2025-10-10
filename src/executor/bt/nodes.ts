@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import { runtimeTimers } from "../../runtime/timers.js";
+
 import {
   type BTStatus,
   type BehaviorNode,
@@ -90,8 +92,11 @@ const FAILURE_RESULT: BehaviorTickResult = { status: "failure" };
 
 /** Delay helper used by {@link RetryNode} when no runtime wait function is provided. */
 async function defaultDelay(ms: number): Promise<void> {
-  await new Promise((resolve) => {
-    setTimeout(resolve, ms);
+  if (ms <= 0) {
+    return;
+  }
+  await new Promise<void>((resolve) => {
+    runtimeTimers.setTimeout(resolve, ms);
   });
 }
 

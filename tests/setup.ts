@@ -21,6 +21,7 @@
  */
 
 import { after } from "mocha";
+import type { ErrnoException } from "../src/nodePrimitives.js";
 import { Agent as HttpAgent } from "node:http";
 import { Agent as HttpsAgent } from "node:https";
 import { Socket } from "node:net";
@@ -95,7 +96,7 @@ function blockFunction<T extends (...args: any[]) => any>(
   const blocker: T = ((..._args: unknown[]) => {
     const error = new Error(
       `network access via ${moduleName}.${name} is disabled during tests`,
-    ) as NodeJS.ErrnoException;
+    ) as ErrnoException;
     error.code = "E-NETWORK-BLOCKED";
     throw error;
   }) as T;
@@ -121,7 +122,7 @@ function installNetworkGuards(): void {
     globalThis.fetch = ((..._args: Parameters<typeof fetch>) => {
       const error = new Error(
         "network access via fetch is disabled during tests",
-      ) as NodeJS.ErrnoException;
+      ) as ErrnoException;
       error.code = "E-NETWORK-BLOCKED";
       return Promise.reject(error);
     }) as typeof fetch;
