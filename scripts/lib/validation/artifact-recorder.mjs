@@ -20,7 +20,7 @@ const VALIDATION_MIME = "application/json";
  *     outputs: string,
  *     events: string,
  *     logs: string,
- *     resources: string,
+ *     artifacts: string,
  *     report: string,
  *   },
  *   createTraceId: () => string,
@@ -50,6 +50,7 @@ export class ArtifactRecorder {
     this.logEntries = [];
     this.resourceRegistry = options.resourceRegistry ?? null;
     this.logger = options.logger ?? console;
+    this.jsonlStatistics = new Map();
   }
 
   /** Records the payload that will be sent to an MCP tool. */
@@ -215,6 +216,92 @@ export class ArtifactRecorder {
     return logPath;
   }
 
+  /**
+   * Persists a standalone JSON document under one of the validation directories
+   * (inputs, outputs, events, logs, artifacts, report). The helper mirrors the
+   * document into the resource registry so the validation viewer can expose the
+   * generated artefact alongside tool call evidence.
+   *
+   * @param {{
+   *   directory: keyof RunContext["directories"],
+   *   filename: string,
+   *   payload: unknown,
+   *   phaseId?: string | null,
+   *   metadata?: Record<string, unknown>,
+   *   resourceData?: Record<string, unknown>,
+   * }} options
+   * @returns {Promise<string>} absolute path to the written file.
+   */
+  async recordJsonDocument({ directory, filename, payload, phaseId, metadata }) {
+    const targetDir = this.#resolveDirectory(directory);
+    const targetName = filename;
+    const targetPath = join(targetDir, targetName);
+    await this.#writeJsonFile(targetPath, payload);
+
+    this.#registerValidationArtifact({
+      artifactType: directory,
+      name: targetName,
+      phaseId,
+      data: payload,
+      metadata: {
+        role: "document",
+        ...(metadata ?? {}),
+      },
+    });
+
+    return targetPath;
+  }
+
+  /**
+   * Appends a JSON serialisable payload to a JSONL artefact. The method keeps a
+   * counter per `(directory, filename)` pair so the associated resource entry
+   * can expose a stable `entry_count` field to downstream consumers.
+   *
+   * @param {{
+   *   directory: keyof RunContext["directories"],
+   *   filename: string,
+   *   payload: unknown,
+   *   phaseId?: string | null,
+   *   metadata?: Record<string, unknown>,
+   * }} options
+   * @returns {Promise<string>} absolute path to the JSONL file.
+   */
+  async appendJsonlArtifact({ directory, filename, payload, phaseId, metadata, resourceData }) {
+    const targetDir = this.#resolveDirectory(directory);
+    const targetName = filename;
+    const targetPath = join(targetDir, targetName);
+    await this.#appendJsonLine(targetPath, payload);
+
+    const counterKey = `${directory}:${targetName}`;
+    const nextCount = (this.jsonlStatistics.get(counterKey) ?? 0) + 1;
+    this.jsonlStatistics.set(counterKey, nextCount);
+
+    const normalisedResourceData = resourceData
+      ? this.#clone(resourceData)
+      : {
+          entry_count: nextCount,
+          last_entry: this.#clone(payload),
+        };
+
+    if (typeof normalisedResourceData.entry_count !== "number") {
+      normalisedResourceData.entry_count = nextCount;
+    }
+
+    this.#registerValidationArtifact({
+      artifactType: directory,
+      name: targetName,
+      phaseId,
+      data: normalisedResourceData,
+      metadata: {
+        role: "jsonl",
+        entry_count: nextCount,
+        ...(metadata ?? {}),
+      },
+    });
+
+    return targetPath;
+  }
+
   #createFileDescriptor(toolName, traceId) {
     this.invocationCounter += 1;
     const invocationIndex = this.invocationCounter;
@@ -237,6 +324,14 @@ export class ArtifactRecorder {
   async #appendJsonLine(filePath, value) {
     const jsonLine = `${JSON.stringify(value)}\n`;
     await appendFile(filePath, jsonLine, "utf8");
+  }
+
+  #resolveDirectory(directory) {
+    const target = this.context.directories?.[directory];
+    if (!target) {
+      throw new Error(`Unknown validation directory: ${directory}`);
+    }
+    return target;
   }
 
   #registerValidationArtifact({ artifactType, name, phaseId, data, metadata, recordedAt }) {

@@ -57,7 +57,7 @@ export class McpToolCallError extends Error {
 export class McpSession {
   /**
    * @param {{
-   *   context: { runId:string, rootDir:string, directories:{inputs:string, outputs:string, events:string, logs:string, resources:string, report:string}, createTraceId:() => string },
+   *   context: { runId:string, rootDir:string, directories:{inputs:string, outputs:string, events:string, logs:string, artifacts:string, report:string}, createTraceId:() => string },
    *   recorder: ArtifactRecorder,
    *   clientName?: string,
    *   clientVersion?: string,
@@ -194,6 +194,90 @@ export class McpSession {
         },
       });
       throw new McpToolCallError(`MCP tool call failed: ${toolName}`, {
+        traceId,
+        toolName,
+        durationMs,
+        artefacts,
+        cause: error,
+      });
+    }
+  }
+
+  /**
+   * Executes the `tools/list` RPC while recording deterministic artefacts.
+   *
+   * The operation is treated as a pseudo-tool named `rpc:tools_list` so the
+   * validation campaign can reuse the existing tracing infrastructure and
+   * surface the request/response pair in the findings report.
+   *
+   * @param {{ cursor?: string | null, limit?: number | null }=} params request arguments forwarded to the MCP client.
+   * @param {{ phaseId?: string }=} options optional execution hints (phase association).
+   * @returns {Promise<{traceId:string, toolName:string, response:any, durationMs:number, artefacts:{inputPath:string, outputPath:string}}>} outcome payload mirroring `callTool`.
+   */
+  async listTools(params = {}, options = {}) {
+    const phaseId = options?.phaseId ?? null;
+    const client = this.#assertClient();
+    const toolName = "rpc:tools_list";
+    const startedAt = process.hrtime.bigint();
+    const { traceId, inputPath } = await this.recorder.recordToolInput({
+      toolName,
+      payload: params,
+      phaseId,
+    });
+
+    try {
+      const response = await client.listTools(params);
+      const durationMs = Number(process.hrtime.bigint() - startedAt) / 1_000_000;
+      const artefacts = await this.recorder.recordToolOutput({
+        toolName,
+        traceId,
+        payload: response,
+        phaseId,
+        metadata: { duration_ms: durationMs, rpc: true },
+      });
+      await this.recorder.appendLogEntry({
+        level: "info",
+        message: "rpc_call_completed",
+        traceId,
+        phaseId,
+        details: {
+          method: "tools/list",
+          duration_ms: durationMs,
+          input_path: inputPath,
+          output_path: artefacts.outputPath,
+        },
+      });
+
+      return { traceId, toolName, response, durationMs, artefacts };
+    } catch (error) {
+      const durationMs = Number(process.hrtime.bigint() - startedAt) / 1_000_000;
+      const failurePayload = {
+        error: error instanceof Error
+          ? { message: error.message, stack: error.stack }
+          : { message: String(error) },
+      };
+      const artefacts = await this.recorder.recordToolOutput({
+        toolName,
+        traceId,
+        payload: failurePayload,
+        phaseId,
+        metadata: { duration_ms: durationMs, failure: true, rpc: true },
+      });
+      await this.recorder.appendLogEntry({
+        level: "error",
+        message: "rpc_call_failed",
+        traceId,
+        phaseId,
+        details: {
+          method: "tools/list",
+          duration_ms: durationMs,
+          input_path: inputPath,
+          output_path: artefacts.outputPath,
+          error: failurePayload.error,
+        },
+      });
+
+      throw new McpToolCallError("MCP RPC call failed: tools/list", {
         traceId,
         toolName,
         durationMs,

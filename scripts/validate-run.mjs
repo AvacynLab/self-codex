@@ -2,9 +2,10 @@
 /**
  * Validation run orchestrator.
  *
- * The production workflow requires us to regenerate the `validation_runs` artefacts
- * before every release candidate.  This script is responsible for preparing the
- * filesystem layout and, eventually, driving the full MCP validation campaign.
+ * The production workflow requires us to regenerate the validation artefacts
+ * described in `AGENTS.md` before every release candidate.  This script is
+ * responsible for preparing the filesystem layout under `runs/` and,
+ * eventually, driving the full MCP validation campaign.
  *
  * The current iteration focuses on providing a safe, testable scaffold:
  *   • deterministic directory preparation with `.gitkeep` sentinels;
@@ -15,7 +16,7 @@
  *
  * Future iterations will extend `runValidationCampaign` so it can record tool
  * interactions, collect logs, and populate the validation reports described in
- * AGENTS.md.
+ * the updated checklist.
  */
 import { createWriteStream } from "node:fs";
 import { mkdir, stat, writeFile } from "node:fs/promises";
@@ -24,6 +25,7 @@ import { spawn } from "node:child_process";
 import { resolve, join, relative } from "node:path";
 import { createRunContext } from "./lib/validation/run-context.mjs";
 import { ArtifactRecorder } from "./lib/validation/artifact-recorder.mjs";
+import { runPreflightStage } from "./lib/validation/stages/preflight.mjs";
 import { runIntrospectionStage } from "./lib/validation/stages/introspection.mjs";
 import { loadServerModule } from "./lib/validation/server-loader.mjs";
 import {
@@ -48,8 +50,8 @@ async function resolveResourceRegistry() {
   return resourceRegistryPromise;
 }
 
-const DEFAULT_SESSION_NAME = "LATEST";
-const SUBDIRECTORIES = ["inputs", "outputs", "events", "logs", "resources", "report"];
+const DEFAULT_SESSION_PREFIX = "validation_";
+const SUBDIRECTORIES = ["inputs", "outputs", "events", "logs", "artifacts", "report"];
 const GITKEEP_FILENAME = ".gitkeep";
 const SERVER_READINESS_TIMEOUT_MS = 1500;
 const TEST_MODE = process.env.CODEX_SCRIPT_TEST === "1";
@@ -363,7 +365,7 @@ function resolveRootDir(explicitRoot) {
   if (envOverride) {
     return resolve(envOverride);
   }
-  return resolve("validation_runs");
+  return resolve("runs");
 }
 
 function resolveSessionName(explicitName) {
@@ -373,7 +375,9 @@ function resolveSessionName(explicitName) {
   if (process.env.VALIDATION_RUNS_SESSION) {
     return process.env.VALIDATION_RUNS_SESSION;
   }
-  return DEFAULT_SESSION_NAME;
+  const now = new Date();
+  const isoDate = now.toISOString().slice(0, 10);
+  return `${DEFAULT_SESSION_PREFIX}${isoDate}`;
 }
 
 function extractFirstText(response) {
@@ -490,8 +494,14 @@ async function writeSummaryReport(sessionDir, runId, summary, options = {}) {
       const followUpCount = events?.followUp?.count
         ?? (Array.isArray(events?.followUp?.events) ? events.followUp.events.length : 0);
       const resourceBuckets = stage.summary?.resourceCatalog?.byPrefix ?? [];
+      const toolsSummary = stage.summary?.tools ?? {};
+      const toolCount = Array.isArray(toolsSummary.items)
+        ? toolsSummary.items.length
+        : typeof toolsSummary.total === "number"
+          ? toolsSummary.total
+          : 0;
       lines.push(
-        `- ${stage.phaseId}: ${resourceBuckets.length} resource prefixes probed, ` +
+        `- ${stage.phaseId}: ${toolCount} tools enumerated, ${resourceBuckets.length} resource prefixes probed, ` +
           `${baselineCount} baseline events captured, ${followUpCount} follow-up events recorded.`,
       );
     }
@@ -533,7 +543,7 @@ function normaliseRelativePath(basePath, targetPath) {
 }
 
 /**
- * Updates the `validation_runs/README.md` file with the latest campaign
+ * Updates the `runs/README.md` file with the latest campaign
  * metadata so operators can quickly identify the freshest artefacts.
  *
  * The README intentionally keeps the historical reset message at the top while
@@ -596,6 +606,17 @@ async function defaultExecuteCampaign({ sessionName, sessionDir, rootDir, logger
     message: "campaign_started",
     details: { run_id: sessionName, session_dir: sessionDir, root: rootDir },
   });
+
+  const preflight = await runPreflightStage({
+    context,
+    recorder,
+    logger,
+    phaseId: "phase-00-preflight",
+  });
+  stageSummaries.push({ phaseId: preflight.phaseId, summary: preflight.summary });
+  for (const call of preflight.calls ?? []) {
+    recordedCalls.push(call);
+  }
 
   const serverController = await startBackgroundServerIfRequested({
     context,

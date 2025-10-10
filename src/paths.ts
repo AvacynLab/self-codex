@@ -1,5 +1,5 @@
 import { mkdirSync } from 'fs';
-import { mkdir } from 'fs/promises';
+import { mkdir, writeFile } from 'fs/promises';
 import path from 'path';
 import process from 'process';
 
@@ -100,6 +100,24 @@ export async function ensureDirectory(
   const target = resolveWithin(rootDir, ...segments);
   await mkdir(target, { recursive: true });
   return target;
+}
+
+/**
+ * Ensures that a `.gitkeep` sentinel exists inside the provided directory.  The
+ * helper is intentionally tolerant: it creates the file when missing and
+ * ignores the `EEXIST` error so callers can invoke it multiple times without
+ * branching.
+ */
+export async function ensureGitkeep(directory: string): Promise<void> {
+  const gitkeepPath = path.join(directory, '.gitkeep');
+  try {
+    await writeFile(gitkeepPath, '', { flag: 'wx' });
+  } catch (error) {
+    if (error && typeof error === 'object' && 'code' in error && (error as NodeJS.ErrnoException).code === 'EEXIST') {
+      return;
+    }
+    throw error;
+  }
 }
 
 /**
