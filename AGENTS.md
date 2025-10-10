@@ -166,8 +166,3 @@ Adresse-toi au serveur via HTTP (port et chemin configurés), consigne tout dans
 Si tu veux, je peux aussi te fournir un **jeu de requêtes JSON d’exemple** (un par phase) prêt à être injecté, et un petit script Node pour router les appels et journaliser automatiquement dans l’arborescence `runs/validation_<DATE-ISO>/`.
 
 ---
-
-## Journal des interventions
-- 2025-10-10 — gpt-5-codex : harmonisation de l’orchestrateur `validate-run.mjs` et du module `run-context` pour préparer automatiquement `runs/validation_<DATE-ISO>/` (avec sous-dossiers et artefacts d’introspection) + ajout de tests Mocha couvrant la nouvelle arborescence.
-- 2025-10-10 — gpt-5-codex : correction du stage de préflight pour renseigner explicitement `actualPort`/`baseUrl` en mode hors-ligne et mise à jour des tests d’intégration afin de valider l’export des événements des phases `phase-00-preflight` et `phase-01-introspection`.
-- 2025-10-10 — gpt-5-codex : enrichissement des artefacts JSONL (inputs/outputs/events) pour exposer des instantanés complets via le registre MCP, couverture de tests mise à jour (`artifact-recorder`, `validate-run`) et `npm test` exécuté.
