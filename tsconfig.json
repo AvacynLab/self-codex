@@ -8,6 +8,7 @@
     "rootDir": "src",
     "baseUrl": ".",
     "types": ["node"],
+    "typeRoots": ["./node_modules/@types"],
     "paths": {
       "graph/*": ["src/graph/*"],
       "executor/*": ["src/executor/*"],
