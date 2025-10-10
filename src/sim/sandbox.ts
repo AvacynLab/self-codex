@@ -1,4 +1,4 @@
-import { setTimeout as delay } from "node:timers/promises";
+import { setTimeout as delay } from "timers/promises";
 import { runtimeTimers, type TimeoutHandle } from "../runtime/timers.js";
 
 /**

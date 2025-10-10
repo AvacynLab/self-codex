@@ -1,6 +1,6 @@
 import { randomUUID } from "crypto";
-import { writeFile } from "node:fs/promises";
-import { setTimeout as delay } from "node:timers/promises";
+import { writeFile } from "fs/promises";
+import { setTimeout as delay } from "timers/promises";
 import { runtimeTimers, type TimeoutHandle } from "../runtime/timers.js";
 import { z } from "zod";
 

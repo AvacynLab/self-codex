@@ -1,6 +1,6 @@
-import { Buffer } from "node:buffer";
-import { appendFile, mkdir, rename, rm, stat } from "node:fs/promises";
-import { dirname } from "node:path";
+import { Buffer } from "buffer";
+import { appendFile, mkdir, rename, rm, stat } from "fs/promises";
+import { dirname } from "path";
 import type { ErrnoException } from "./nodePrimitives.js";
 
 /** Default placeholder inserted when a secret token is redacted. */

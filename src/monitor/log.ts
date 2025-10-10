@@ -1,6 +1,6 @@
-import { appendFile, mkdir, rename, rm, stat } from "node:fs/promises";
-import { Buffer } from "node:buffer";
-import { dirname, resolve } from "node:path";
+import { appendFile, mkdir, rename, rm, stat } from "fs/promises";
+import { Buffer } from "buffer";
+import { dirname, resolve } from "path";
 import type { ErrnoException } from "../nodePrimitives.js";
 
 import { resolveWithin } from "../paths.js";

@@ -1,4 +1,4 @@
-import { EventEmitter } from "node:events";
+import { EventEmitter } from "events";
 
 /**
  * Error emitted when callers provide an invalid pheromone type. The server maps

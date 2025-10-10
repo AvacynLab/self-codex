@@ -1,6 +1,6 @@
 import { randomUUID } from "crypto";
 import { runtimeTimers, type IntervalHandle } from "./runtime/timers.js";
-import process from "node:process";
+import process from "process";
 
 import type { ProcessEnv, Signal } from "./nodePrimitives.js";
 

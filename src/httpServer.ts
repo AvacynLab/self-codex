@@ -1,12 +1,15 @@
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { createServer as createHttpServer, IncomingMessage, Server as NodeHttpServer } from "node:http";
-import { Buffer } from "node:buffer";
-import process from "node:process";
+import { createServer as createHttpServer, Server as NodeHttpServer } from "http";
+import { Buffer } from "buffer";
+import process from "process";
 
 import { StructuredLogger } from "./logger.js";
 import { handleJsonRpc, type JsonRpcRequest, type JsonRpcRouteContext } from "./server.js";
 import { HttpRuntimeOptions, createHttpSessionId } from "./serverOptions.js";
+
+type HttpTransportRequest = Parameters<StreamableHTTPServerTransport["handleRequest"]>[0];
+type HttpTransportResponse = Parameters<StreamableHTTPServerTransport["handleRequest"]>[1];
 
 /** Maximum payload size accepted by the lightweight JSON handler (5 MiB). */
 const MAX_JSON_RPC_BYTES = 5 * 1024 * 1024;
@@ -44,31 +47,33 @@ export async function startHttpServer(
   await server.connect(httpTransport);
 
   const httpServer = createHttpServer(async (req, res) => {
-    const requestUrl = req.url ? new URL(req.url, `http://${req.headers.host ?? "localhost"}`) : null;
+    const request = req as HttpTransportRequest;
+    const response = res as HttpTransportResponse;
+    const requestUrl = request.url ? new URL(request.url, `http://${request.headers.host ?? "localhost"}`) : null;
 
     if (!requestUrl || requestUrl.pathname !== options.path) {
-      res.writeHead(404, { "Content-Type": "application/json" }).end(JSON.stringify({ error: "NOT_FOUND" }));
+      response.writeHead(404, { "Content-Type": "application/json" }).end(JSON.stringify({ error: "NOT_FOUND" }));
       return;
     }
 
-    if (!enforceBearerToken(req, res, logger)) {
+    if (!enforceBearerToken(request, response, logger)) {
       return;
     }
 
-    if (await tryHandleJsonRpc(req, res, logger)) {
+    if (await tryHandleJsonRpc(request, response, logger)) {
       return;
     }
 
     try {
-      await httpTransport.handleRequest(req, res);
+      await httpTransport.handleRequest(request, response);
     } catch (error) {
       logger.error("http_request_failure", {
         message: error instanceof Error ? error.message : String(error),
       });
-      if (!res.headersSent) {
-        res.writeHead(500, { "Content-Type": "application/json" }).end(JSON.stringify({ error: "INTERNAL_ERROR" }));
+      if (!response.headersSent) {
+        response.writeHead(500, { "Content-Type": "application/json" }).end(JSON.stringify({ error: "INTERNAL_ERROR" }));
       } else {
-        res.end();
+        response.end();
       }
     }
   });
@@ -118,8 +123,8 @@ export async function startHttpServer(
  * returned when the header is missing or does not match.
  */
 function enforceBearerToken(
-  req: IncomingMessage,
-  res: Parameters<StreamableHTTPServerTransport["handleRequest"]>[1],
+  req: HttpTransportRequest,
+  res: HttpTransportResponse,
   logger: StructuredLogger,
 ): boolean {
   const requiredToken = process.env.MCP_HTTP_TOKEN ?? "";
@@ -148,8 +153,8 @@ function enforceBearerToken(
  * while still allowing the official Streamable transport to handle SSE.
  */
 async function tryHandleJsonRpc(
-  req: IncomingMessage,
-  res: Parameters<StreamableHTTPServerTransport["handleRequest"]>[1],
+  req: HttpTransportRequest,
+  res: HttpTransportResponse,
   logger: StructuredLogger,
   delegate: (request: JsonRpcRequest, context?: JsonRpcRouteContext) => Promise<unknown> = handleJsonRpc,
 ): Promise<boolean> {
@@ -206,11 +211,11 @@ async function tryHandleJsonRpc(
 }
 
 /** Reads the raw request body while guarding against over-sized payloads. */
-async function readRequestBody(req: IncomingMessage): Promise<string> {
+async function readRequestBody(req: HttpTransportRequest): Promise<string> {
   const chunks: Buffer[] = [];
   let total = 0;
   for await (const chunk of req) {
-    const buffer = typeof chunk === "string" ? Buffer.from(chunk) : Buffer.from(chunk as Buffer);
+    const buffer = Buffer.from(chunk);
     total += buffer.length;
     if (total > MAX_JSON_RPC_BYTES) {
       throw new Error("JSON-RPC payload exceeds limit");
@@ -224,7 +229,7 @@ async function readRequestBody(req: IncomingMessage): Promise<string> {
  * Builds the routing context forwarded to {@link handleJsonRpc} from the HTTP
  * headers set by Codex clients.
  */
-function buildRouteContextFromHeaders(req: IncomingMessage, request: JsonRpcRequest): JsonRpcRouteContext {
+function buildRouteContextFromHeaders(req: HttpTransportRequest, request: JsonRpcRequest): JsonRpcRouteContext {
   const headers: Record<string, string> = {};
   for (const [key, value] of Object.entries(req.headers)) {
     if (typeof value === "string") {

@@ -1,4 +1,4 @@
-import { EventEmitter } from "node:events";
+import { EventEmitter } from "events";
 
 /**
  * Outcome returned when requesting the cancellation of an operation. The enum

@@ -3,7 +3,7 @@ import {
   clearTimeout as nodeClearTimeout,
   setInterval as nodeSetInterval,
   setTimeout as nodeSetTimeout,
-} from "node:timers";
+} from "timers";
 
 /**
  * Handle returned by {@link runtimeSetTimeout}. The type mirrors the Node.js

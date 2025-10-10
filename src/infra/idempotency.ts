@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash } from "crypto";
 
 /**
  * Lightweight in-memory registry storing the outcome of idempotent operations.

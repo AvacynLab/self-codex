@@ -1,4 +1,4 @@
-import { EventEmitter } from "node:events";
+import { EventEmitter } from "events";
 
 /**
  * High-level category describing the subsystem that produced the event. The

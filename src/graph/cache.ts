@@ -1,4 +1,4 @@
-import { inspect } from "node:util";
+import { inspect } from "util";
 
 /**
  * Serialises arbitrary data into a deterministic JSON string so the cache keys

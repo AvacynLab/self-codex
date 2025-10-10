@@ -1,5 +1,5 @@
-import { EventEmitter } from "node:events";
-import { randomUUID } from "node:crypto";
+import { EventEmitter } from "events";
+import { randomUUID } from "crypto";
 
 /**
  * Error raised when the Contract-Net coordinator cannot award a task because no

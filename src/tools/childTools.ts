@@ -1,5 +1,5 @@
-import { Buffer } from "node:buffer";
-import process from "node:process";
+import { Buffer } from "buffer";
+import process from "process";
 import type { Signal } from "../nodePrimitives.js";
 import { z } from "zod";
 

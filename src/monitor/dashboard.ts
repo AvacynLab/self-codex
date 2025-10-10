@@ -1,7 +1,7 @@
-import { Buffer } from "node:buffer";
-import { createServer, IncomingMessage, ServerResponse } from "node:http";
+import { Buffer } from "buffer";
+import { createServer, IncomingMessage, ServerResponse } from "http";
 import { runtimeTimers, type IntervalHandle } from "../runtime/timers.js";
-import { URL } from "node:url";
+import { URL } from "url";
 import { z } from "zod";
 
 import { EventStore, OrchestratorEvent } from "../eventStore.js";
@@ -502,7 +502,7 @@ function writeHtml(res: ServerResponse, status: number, payload: string): void {
 async function parseJsonBody(req: IncomingMessage): Promise<unknown> {
   const chunks: Buffer[] = [];
   for await (const chunk of req) {
-    chunks.push(typeof chunk === "string" ? Buffer.from(chunk) : chunk);
+    chunks.push(Buffer.from(chunk));
   }
   if (chunks.length === 0) {
     return {};

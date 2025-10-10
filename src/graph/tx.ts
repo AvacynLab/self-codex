@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { randomUUID } from "crypto";
 
 import { ERROR_CODES } from "../types.js";
 import type { NormalisedGraph } from "./types.js";

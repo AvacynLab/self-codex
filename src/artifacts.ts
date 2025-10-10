@@ -1,7 +1,7 @@
-import { createHash } from 'node:crypto';
-import { Buffer } from 'node:buffer';
-import { createReadStream, promises as fs } from 'node:fs';
-import path from 'node:path';
+import { createHash } from 'crypto';
+import { Buffer } from 'buffer';
+import { createReadStream, promises as fs } from 'fs';
+import path from 'path';
 import type { BufferEncoding, ErrnoException } from './nodePrimitives.js';
 
 import {
@@ -181,7 +181,7 @@ export async function readArtifact(
   if (options.encoding) {
     return fs.readFile(absolutePath, { encoding: options.encoding });
   }
-  return fs.readFile(absolutePath);
+  return Buffer.from(await fs.readFile(absolutePath));
 }
 
 /**

@@ -1,4 +1,4 @@
-import { EventEmitter } from "node:events";
+import { EventEmitter } from "events";
 
 /** Options accepted by {@link BlackboardStore}. */
 export interface BlackboardStoreOptions {
