@@ -6,13 +6,25 @@
  * samples the unified event bus so the resulting artefacts can be audited
  * offline.
  */
-import { writeFile } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { loadServerModule } from "../server-loader.mjs";
 import { McpSession, McpToolCallError } from "../mcp-session.mjs";
 
 let eventBusResolver = null;
+
+const AGGREGATED_FILENAMES = Object.freeze({
+  requests: "01_introspection.jsonl",
+  responses: "01_introspection.jsonl",
+  events: "01_bus.jsonl",
+  report: "step01-introspection.json",
+});
+
+/** Returns the current timestamp formatted as ISO8601 for artefact metadata. */
+function nowIso() {
+  return new Date().toISOString();
+}
 
 async function resolveEventBus() {
   if (!eventBusResolver) {
@@ -72,6 +84,14 @@ export async function runIntrospectionStage(options) {
   } = options;
 
   const toolCalls = [];
+  const aggregatedPaths = { requests: null, responses: null, events: null };
+  let requestSequence = 0;
+  let responseSequence = 0;
+  let eventSequence = 0;
+  const aggregatedRequestEntries = [];
+  const aggregatedResponseEntries = [];
+  const aggregatedBusEntries = [];
+
   const session = createSession
     ? createSession()
     : new McpSession({
@@ -97,23 +117,172 @@ export async function runIntrospectionStage(options) {
 
   const toolCallSummaries = [];
 
-  async function safeCall(toolName, payload) {
+  async function recordAggregatedRequest({ callType, toolName, payload, traceId, artefacts }) {
+    requestSequence += 1;
+    const entry = {
+      sequence: requestSequence,
+      observedAt: nowIso(),
+      phaseId,
+      callType,
+      tool: toolName,
+      traceId,
+      payload,
+      artefacts,
+    };
+    aggregatedRequestEntries.push(entry);
+    const path = await recorder.appendJsonlArtifact({
+      directory: "inputs",
+      filename: AGGREGATED_FILENAMES.requests,
+      payload: entry,
+      phaseId,
+      metadata: {
+        channel: "introspection_requests",
+        tool: toolName,
+        call_type: callType,
+      },
+      resourceData: {
+        entry_count: aggregatedRequestEntries.length,
+        entries: aggregatedRequestEntries,
+      },
+    });
+    if (!aggregatedPaths.requests) {
+      aggregatedPaths.requests = path;
+    }
+    return path;
+  }
+
+  async function recordAggregatedResponse({
+    callType,
+    toolName,
+    traceId,
+    artefacts,
+    response,
+    error,
+    durationMs,
+  }) {
+    responseSequence += 1;
+    const entry = {
+      sequence: responseSequence,
+      observedAt: nowIso(),
+      phaseId,
+      callType,
+      tool: toolName,
+      traceId,
+      durationMs,
+      artefacts,
+      response: response ?? null,
+      error: error ?? null,
+    };
+    aggregatedResponseEntries.push(entry);
+    const path = await recorder.appendJsonlArtifact({
+      directory: "outputs",
+      filename: AGGREGATED_FILENAMES.responses,
+      payload: entry,
+      phaseId,
+      metadata: {
+        channel: "introspection_responses",
+        tool: toolName,
+        call_type: callType,
+      },
+      resourceData: {
+        entry_count: aggregatedResponseEntries.length,
+        entries: aggregatedResponseEntries,
+      },
+    });
+    if (!aggregatedPaths.responses) {
+      aggregatedPaths.responses = path;
+    }
+    return path;
+  }
+
+  async function recordBusEvent({ source, event, traceId }) {
+    eventSequence += 1;
+    const entry = {
+      sequence: eventSequence,
+      observedAt: nowIso(),
+      phaseId,
+      source,
+      traceId: traceId ?? null,
+      event,
+    };
+    aggregatedBusEntries.push(entry);
+    const path = await recorder.appendJsonlArtifact({
+      directory: "events",
+      filename: AGGREGATED_FILENAMES.events,
+      payload: entry,
+      phaseId,
+      metadata: {
+        channel: "event_bus",
+        source,
+      },
+      resourceData: {
+        entry_count: aggregatedBusEntries.length,
+        events: aggregatedBusEntries,
+      },
+    });
+    if (!aggregatedPaths.events) {
+      aggregatedPaths.events = path;
+    }
+    await recorder.appendPhaseEvent({
+      phaseId,
+      traceId: traceId ?? null,
+      event: {
+        kind: "bus_event",
+        source,
+        sequence: eventSequence,
+        payload: event,
+      },
+    });
+    return path;
+  }
+
+  async function executeCall({ label, payload, callType, invoke }) {
     try {
-      const call = await session.callTool(toolName, payload, { phaseId });
+      const call = await invoke();
+      await recordAggregatedRequest({
+        callType,
+        toolName: label,
+        payload,
+        traceId: call.traceId,
+        artefacts: call.artefacts,
+      });
+      await recordAggregatedResponse({
+        callType,
+        toolName: label,
+        traceId: call.traceId,
+        artefacts: call.artefacts,
+        response: call.response,
+        durationMs: call.durationMs,
+      });
       toolCalls.push({
-        toolName,
+        toolName: label,
         traceId: call.traceId,
         durationMs: call.durationMs,
         artefacts: call.artefacts,
         response: call.response,
       });
-      toolCallSummaries.push({ toolName, traceId: call.traceId });
+      toolCallSummaries.push({ toolName: label, traceId: call.traceId });
       return call;
     } catch (error) {
       if (error instanceof McpToolCallError) {
         const message = error.cause instanceof Error ? error.cause.message : String(error.cause);
+        await recordAggregatedRequest({
+          callType,
+          toolName: label,
+          payload,
+          traceId: error.traceId,
+          artefacts: error.artefacts,
+        });
+        await recordAggregatedResponse({
+          callType,
+          toolName: label,
+          traceId: error.traceId,
+          artefacts: error.artefacts,
+          error: { message },
+          durationMs: error.durationMs,
+        });
         toolCalls.push({
-          toolName,
+          toolName: label,
           traceId: error.traceId,
           durationMs: error.durationMs,
           artefacts: error.artefacts,
@@ -123,8 +292,8 @@ export async function runIntrospectionStage(options) {
             content: [{ type: "text", text: message }],
           },
         });
-        toolCallSummaries.push({ toolName, traceId: error.traceId, error: message });
-        logger?.warn?.(`tool_call_failed:${toolName}`, message);
+        toolCallSummaries.push({ toolName: label, traceId: error.traceId, error: message });
+        logger?.warn?.(`tool_call_failed:${label}`, message);
         return null;
       }
       throw error;
@@ -132,15 +301,40 @@ export async function runIntrospectionStage(options) {
   }
 
   try {
-    const infoCall = await safeCall("mcp_info", {});
+    const infoCall = await executeCall({
+      label: "mcp_info",
+      payload: {},
+      callType: "tool",
+      invoke: () => session.callTool("mcp_info", {}, { phaseId }),
+    });
     const infoPayload = infoCall ? parseJsonContent(infoCall.response) : {};
     const info = infoPayload.info ?? {};
 
-    const capabilitiesCall = await safeCall("mcp_capabilities", {});
+    const capabilitiesCall = await executeCall({
+      label: "mcp_capabilities",
+      payload: {},
+      callType: "tool",
+      invoke: () => session.callTool("mcp_capabilities", {}, { phaseId }),
+    });
     const capabilitiesPayload = capabilitiesCall ? parseJsonContent(capabilitiesCall.response) : {};
     const capabilities = capabilitiesPayload.capabilities ?? {};
 
-    const resourcesListCall = await safeCall("resources_list", { limit: 200 });
+    const toolsListCall = await executeCall({
+      label: "rpc:tools_list",
+      payload: { limit: 200 },
+      callType: "rpc",
+      invoke: () => session.listTools({ limit: 200 }, { phaseId }),
+    });
+    const toolsResponse = toolsListCall?.response ?? {};
+    const tools = Array.isArray(toolsResponse.tools) ? [...toolsResponse.tools] : [];
+    const toolsNextCursor = toolsResponse.nextCursor ?? null;
+
+    const resourcesListCall = await executeCall({
+      label: "resources_list",
+      payload: { limit: 200 },
+      callType: "tool",
+      invoke: () => session.callTool("resources_list", { limit: 200 }, { phaseId }),
+    });
     const allResources = Array.isArray(resourcesListCall?.response?.structuredContent?.items)
       ? [...resourcesListCall.response.structuredContent.items]
       : [];
@@ -158,18 +352,28 @@ export async function runIntrospectionStage(options) {
 
     const prefixResults = [];
     for (const [prefix] of resourcesByPrefix) {
-      const listing = await safeCall("resources_list", { prefix, limit: 200 });
+      const listing = await executeCall({
+        label: "resources_list",
+        payload: { prefix, limit: 200 },
+        callType: "tool",
+        invoke: () => session.callTool("resources_list", { prefix, limit: 200 }, { phaseId }),
+      });
       const items = Array.isArray(listing?.response?.structuredContent?.items)
         ? [...listing.response.structuredContent.items]
         : [];
       prefixResults.push({ prefix, items, traceId: listing?.traceId ?? null });
     }
 
-    const baselineEventsCall = await safeCall("events_subscribe", { limit: 10 });
+    const baselineEventsCall = await executeCall({
+      label: "events_subscribe",
+      payload: { limit: 10 },
+      callType: "tool",
+      invoke: () => session.callTool("events_subscribe", { limit: 10 }, { phaseId }),
+    });
     const baselineEvents = baselineEventsCall?.response?.structuredContent ?? baselineEventsCall?.response ?? {};
     if (baselineEventsCall && Array.isArray(baselineEvents.events)) {
       for (const event of baselineEvents.events) {
-        await recorder.appendPhaseEvent({ phaseId, traceId: baselineEventsCall.traceId, event });
+        await recordBusEvent({ source: "baseline", event, traceId: baselineEventsCall.traceId });
       }
     }
 
@@ -187,26 +391,49 @@ export async function runIntrospectionStage(options) {
     const fromSeq = typeof baselineEvents?.next_seq === "number"
       ? baselineEvents.next_seq
       : Math.max(0, publishedSeq - 1);
-    const followUpEventsCall = await safeCall("events_subscribe", { from_seq: fromSeq, limit: 20 });
+    const followUpEventsCall = await executeCall({
+      label: "events_subscribe",
+      payload: { from_seq: fromSeq, limit: 20 },
+      callType: "tool",
+      invoke: () => session.callTool("events_subscribe", { from_seq: fromSeq, limit: 20 }, { phaseId }),
+    });
     const followUpEvents = followUpEventsCall?.response?.structuredContent ?? followUpEventsCall?.response ?? {};
     if (followUpEventsCall && Array.isArray(followUpEvents.events)) {
       for (const event of followUpEvents.events) {
-        await recorder.appendPhaseEvent({ phaseId, traceId: followUpEventsCall.traceId, event });
+        await recordBusEvent({ source: "follow_up", event, traceId: followUpEventsCall.traceId });
       }
     }
 
-    const reportPath = join(context.directories.report, "step01-introspection.json");
+    if (eventSequence === 0) {
+      await recordBusEvent({
+        source: "summary",
+        event: { kind: "bus_idle", note: "no events captured during introspection" },
+        traceId: null,
+      });
+    }
+
+    const reportPath = join(context.directories.report, AGGREGATED_FILENAMES.report);
     await writeFile(
       reportPath,
       `${JSON.stringify(
         {
           info,
           capabilities,
+          tools: {
+            total: tools.length,
+            next_cursor: toolsNextCursor,
+            items: tools,
+          },
           resource_prefixes: prefixResults.map((entry) => ({ prefix: entry.prefix, count: entry.items.length })),
           events: {
             published_seq: published.seq,
             baseline_count: baselineEvents?.count ?? (Array.isArray(baselineEvents?.events) ? baselineEvents.events.length : 0),
             follow_up_count: followUpEvents?.count ?? (Array.isArray(followUpEvents?.events) ? followUpEvents.events.length : 0),
+          },
+          artifacts: {
+            requests: aggregatedPaths.requests,
+            responses: aggregatedPaths.responses,
+            events: aggregatedPaths.events,
           },
         },
         null,
@@ -215,13 +442,30 @@ export async function runIntrospectionStage(options) {
       "utf8",
     );
 
-    const resourceIndexPath = join(context.directories.resources, "resource-prefixes.json");
+    const introspectionArtifactsDir = join(context.directories.artifacts, "introspection");
+    await mkdir(introspectionArtifactsDir, { recursive: true });
+    const resourceIndexPath = join(introspectionArtifactsDir, "resource-prefixes.json");
     await writeFile(
       resourceIndexPath,
       `${JSON.stringify(
         {
           all: allResources,
           byPrefix: prefixResults,
+        },
+        null,
+        2,
+      )}\n`,
+      "utf8",
+    );
+
+    const toolsCatalogPath = join(introspectionArtifactsDir, "tools-catalog.json");
+    await writeFile(
+      toolsCatalogPath,
+      `${JSON.stringify(
+        {
+          total: tools.length,
+          nextCursor: toolsNextCursor,
+          items: tools,
         },
         null,
         2,
@@ -239,6 +483,10 @@ export async function runIntrospectionStage(options) {
         calls: toolCallSummaries,
         report_path: reportPath,
         resource_index_path: resourceIndexPath,
+        tools_catalog_path: toolsCatalogPath,
+        aggregated_requests: aggregatedPaths.requests,
+        aggregated_responses: aggregatedPaths.responses,
+        aggregated_events: aggregatedPaths.events,
       },
     });
 
@@ -247,6 +495,11 @@ export async function runIntrospectionStage(options) {
       summary: {
         info,
         capabilities,
+        tools: {
+          total: tools.length,
+          nextCursor: toolsNextCursor,
+          items: tools,
+        },
         resourceCatalog: {
           all: allResources,
           byPrefix: prefixResults,
@@ -256,8 +509,14 @@ export async function runIntrospectionStage(options) {
           baseline: baselineEvents,
           followUp: followUpEvents,
         },
-        reportPath,
-        resourceIndexPath,
+        artifacts: {
+          requestsPath: aggregatedPaths.requests,
+          responsesPath: aggregatedPaths.responses,
+          eventsPath: aggregatedPaths.events,
+          reportPath,
+          resourceIndexPath,
+          toolsCatalogPath,
+        },
       },
       calls: toolCalls,
     };

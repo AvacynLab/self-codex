@@ -18,6 +18,10 @@ describe("validate run script", () => {
     process.env.CODEX_SCRIPT_TEST = "1";
     delete process.env.START_MCP_BG;
     delete process.env.MCP_HTTP_ENABLE;
+    process.env.MCP_HTTP_HOST = "127.0.0.1";
+    process.env.MCP_HTTP_PORT = "0";
+    process.env.MCP_HTTP_PATH = "/mcp";
+    delete process.env.MCP_HTTP_TOKEN;
     process.env.CODEX_NODE_VERSION_OVERRIDE = "20.10.0";
     delete (globalThis as any).CODEX_VALIDATE_PLAN;
     resources.clearValidationArtifacts();
@@ -27,6 +31,10 @@ describe("validate run script", () => {
     delete process.env.CODEX_SCRIPT_TEST;
     delete process.env.START_MCP_BG;
     delete process.env.MCP_HTTP_ENABLE;
+    delete process.env.MCP_HTTP_HOST;
+    delete process.env.MCP_HTTP_PORT;
+    delete process.env.MCP_HTTP_PATH;
+    delete process.env.MCP_HTTP_TOKEN;
     delete process.env.CODEX_NODE_VERSION_OVERRIDE;
     delete (globalThis as any).CODEX_VALIDATE_PLAN;
     resources.clearValidationArtifacts();
@@ -69,12 +77,13 @@ describe("validate run script", () => {
 
       expect(outcome.prepared).to.equal(true);
       expect(outcome.executed).to.equal(false);
-      expect(outcome.sessionName).to.equal("LATEST");
+      const expectedSession = `validation_${new Date().toISOString().slice(0, 10)}`;
+      expect(outcome.sessionName).to.equal(expectedSession);
 
-      const sessionDir = join(tempRoot, "LATEST");
+      const sessionDir = join(tempRoot, expectedSession);
       await stat(sessionDir);
 
-      for (const folder of ["inputs", "outputs", "events", "logs", "resources", "report"]) {
+      for (const folder of ["inputs", "outputs", "events", "logs", "artifacts", "report"]) {
         const folderPath = join(sessionDir, folder);
         await stat(folderPath);
         const gitkeepPath = join(folderPath, ".gitkeep");
@@ -105,9 +114,48 @@ describe("validate run script", () => {
 
       const sessionDir = join(tempRoot, "RUN-CAMPAIGN");
       const inputs = await readdir(join(sessionDir, "inputs"));
+      expect(inputs).to.include("phase-00-preflight-requests.jsonl");
+      expect(inputs).to.include("01_introspection.jsonl");
       expect(inputs.some((file) => file.includes("mcp_info"))).to.equal(true);
       expect(inputs.some((file) => file.includes("mcp_capabilities"))).to.equal(true);
       expect(inputs.some((file) => file.includes("events_subscribe"))).to.equal(true);
+
+      const outputs = await readdir(join(sessionDir, "outputs"));
+      expect(outputs).to.include("phase-00-preflight-responses.jsonl");
+      expect(outputs).to.include("01_introspection.jsonl");
+
+      const preflightContext = await readFile(join(sessionDir, "report", "context.json"), "utf8");
+      const contextSummary = JSON.parse(preflightContext) as {
+        target: { baseUrl: string | null };
+        offline?: { reason: string };
+        token: { source: string };
+      };
+
+      const offlineGuard = (globalThis as { __OFFLINE_TEST_GUARD__?: string }).__OFFLINE_TEST_GUARD__;
+
+      if (offlineGuard) {
+        expect(contextSummary.offline).to.deep.equal({ reason: offlineGuard });
+        expect(contextSummary.target.baseUrl).to.equal(null);
+        expect(contextSummary.token.source).to.equal("skipped");
+      } else {
+        expect(contextSummary.target.baseUrl).to.match(/^http:\/\/127\.0\.0\.1:\d+\/mcp$/);
+        expect(contextSummary.token.source).to.equal("generated");
+      }
+
+      const preflightReportRaw = await readFile(join(sessionDir, "report", "step00-preflight.json"), "utf8");
+      const preflightReport = JSON.parse(preflightReportRaw) as {
+        checks: Record<string, { status?: number; skipped?: boolean; reason?: string }>;
+        offline?: { reason: string };
+      };
+
+      if (offlineGuard) {
+        expect(preflightReport.offline).to.deep.equal({ reason: offlineGuard });
+        expect(preflightReport.checks.unauthorised).to.include({ skipped: true, reason: offlineGuard });
+        expect(preflightReport.checks.authorised).to.include({ skipped: true, reason: offlineGuard });
+      } else {
+        expect(preflightReport.checks.unauthorised.status).to.equal(401);
+        expect(preflightReport.checks.authorised.status).to.equal(200);
+      }
 
       const findingsRaw = await readFile(join(sessionDir, "report", "findings.json"), "utf8");
       const findings = JSON.parse(findingsRaw) as {
@@ -119,23 +167,52 @@ describe("validate run script", () => {
       expect(infoTool?.p95DurationMs).to.be.a("number");
 
       const phaseEventsFiles = await readdir(join(sessionDir, "events"));
-      const phaseFile = phaseEventsFiles.find((file) => file.startsWith("phase-01-introspection"));
-      expect(phaseFile).to.be.a("string");
-      const phaseEventsContent = await readFile(join(sessionDir, "events", phaseFile as string), "utf8");
+      const preflightEventsFile = phaseEventsFiles.find((file) => file.startsWith("phase-00-preflight"));
+      expect(preflightEventsFile).to.be.a("string");
+      const preflightEventsContent = await readFile(join(sessionDir, "events", preflightEventsFile as string), "utf8");
+      const preflightLines = preflightEventsContent.trim().split("\n").filter(Boolean);
+      expect(preflightLines.length).to.equal(2);
+
+      const introspectionEventsFile = phaseEventsFiles.find((file) => file.startsWith("phase-01-introspection"));
+      expect(introspectionEventsFile).to.be.a("string");
+      const phaseEventsContent = await readFile(join(sessionDir, "events", introspectionEventsFile as string), "utf8");
       const recordedLines = phaseEventsContent.trim().split("\n").filter(Boolean);
       expect(recordedLines.length).to.be.greaterThan(0);
 
-      const resourceIndexRaw = await readFile(join(sessionDir, "resources", "resource-prefixes.json"), "utf8");
+      expect(phaseEventsFiles).to.include("01_bus.jsonl");
+      const aggregatedBusContent = await readFile(join(sessionDir, "events", "01_bus.jsonl"), "utf8");
+      const aggregatedBusLines = aggregatedBusContent.trim().split("\n").filter(Boolean).map((line) => JSON.parse(line));
+      if (aggregatedBusLines.length > 0) {
+        aggregatedBusLines.forEach((entry, index) => {
+          expect(entry.sequence).to.equal(index + 1);
+        });
+      }
+
+      const resourceIndexRaw = await readFile(join(sessionDir, "artifacts", "introspection", "resource-prefixes.json"), "utf8");
       const resourceIndex = JSON.parse(resourceIndexRaw) as { all: unknown[]; byPrefix: unknown[] };
       expect(resourceIndex).to.have.property("all");
       expect(resourceIndex).to.have.property("byPrefix");
 
+      const toolsCatalogRaw = await readFile(join(sessionDir, "artifacts", "introspection", "tools-catalog.json"), "utf8");
+      const toolsCatalog = JSON.parse(toolsCatalogRaw) as { total: number; items: Array<{ name: string }> };
+      expect(toolsCatalog.total).to.equal(toolsCatalog.items.length);
+      expect(toolsCatalog.items.some((tool) => typeof tool.name === "string")).to.equal(true);
+
       const stageReportRaw = await readFile(join(sessionDir, "report", "step01-introspection.json"), "utf8");
-      const stageReport = JSON.parse(stageReportRaw) as { events?: Record<string, unknown> };
+      const stageReport = JSON.parse(stageReportRaw) as {
+        events?: Record<string, unknown>;
+        tools?: { total?: number };
+        artifacts?: { requests?: string; events?: string };
+      };
       expect(stageReport.events).to.have.property("baseline_count");
+      expect(stageReport.tools?.total ?? 0).to.be.greaterThan(0);
+      expect(stageReport.artifacts?.requests).to.be.a("string");
+      expect(stageReport.artifacts?.events).to.be.a("string");
 
       const summaryMarkdown = await readFile(join(sessionDir, "report", "summary.md"), "utf8");
       expect(summaryMarkdown).to.include("Stage coverage");
+      expect(summaryMarkdown).to.include("phase-00-preflight");
+      expect(summaryMarkdown).to.match(/tools enumerated/i);
 
       const readmeContent = await readFile(join(tempRoot, "README.md"), "utf8");
       expect(readmeContent).to.include("## Dernière campagne");
@@ -154,8 +231,19 @@ describe("validate run script", () => {
       const outputResource = validationResources.find((entry) => entry.kind === "validation_output");
       expect(outputResource?.metadata?.artifact_type).to.equal("outputs");
 
-      const eventResource = validationResources.find((entry) => entry.kind === "validation_events");
-      expect(eventResource?.metadata?.phase).to.equal("phase-01-introspection");
+      const eventResources = validationResources.filter((entry) => entry.kind === "validation_events");
+      expect(eventResources.length).to.be.greaterThan(0);
+      expect(
+        eventResources.some((entry) => entry.metadata?.phase === "phase-00-preflight"),
+        "preflight stage events should be exported as validation event resources",
+      ).to.equal(true);
+      expect(
+        eventResources.some((entry) => entry.metadata?.phase === "phase-01-introspection"),
+        "introspection stage events should be exported as validation event resources",
+      ).to.equal(true);
+
+      const eventResource = eventResources.find((entry) => entry.metadata?.phase === "phase-01-introspection")
+        ?? eventResources[0];
 
       const logResource = validationResources.find((entry) => entry.kind === "validation_logs");
       expect(logResource?.metadata?.entry_count).to.be.greaterThan(0);

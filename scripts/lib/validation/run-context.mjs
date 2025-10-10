@@ -2,11 +2,11 @@
 
 /**
  * Minimal runtime helpers used by the validation harness to manage the
- * filesystem layout and trace identifier generation.  The implementation mirrors
- * the historical TypeScript utilities that lived under
- * `validation_runs/20251007T184620Z/lib`, but the logic is intentionally kept in
- * plain JavaScript so it can be consumed directly by the Node-based scripts in
- * this repository.
+ * filesystem layout and trace identifier generation.  The implementation now
+ * follows the updated validation playbook which stores campaign artefacts under
+ * `runs/validation_<DATE-ISO>/`.  We keep the helper in plain JavaScript so the
+ * Node-based harness located under `scripts/` can consume it without requiring
+ * the TypeScript compiler during runtime orchestration.
  */
 import { mkdir, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
@@ -18,7 +18,7 @@ import { createHash, randomUUID } from "node:crypto";
  * untouched so operators can keep manual notes between iterations.
  *
  * @param {string} runRoot absolute path to the validation run directory.
- * @returns {Promise<{inputs:string, outputs:string, events:string, logs:string, resources:string, report:string}>}
+ * @returns {Promise<{inputs:string, outputs:string, events:string, logs:string, artifacts:string, report:string}>}
  */
 export async function ensureRunDirectories(runRoot) {
   const directories = {
@@ -26,7 +26,7 @@ export async function ensureRunDirectories(runRoot) {
     outputs: join(runRoot, "outputs"),
     events: join(runRoot, "events"),
     logs: join(runRoot, "logs"),
-    resources: join(runRoot, "resources"),
+    artifacts: join(runRoot, "artifacts"),
     report: join(runRoot, "report"),
   };
 
@@ -83,7 +83,7 @@ export function createTraceIdFactory(seed = randomUUID()) {
 export async function createRunContext(params) {
   const runId = params.runId;
   const workspaceRoot = resolve(params.workspaceRoot);
-  const rootDir = params.runRoot ? resolve(params.runRoot) : join(workspaceRoot, "validation_runs", runId);
+  const rootDir = params.runRoot ? resolve(params.runRoot) : join(workspaceRoot, "runs", runId);
   const directories = await ensureRunDirectories(rootDir);
 
   return {
