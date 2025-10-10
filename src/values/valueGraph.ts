@@ -1,5 +1,5 @@
-import { strict as assert } from "node:assert";
-import { EventEmitter } from "node:events";
+import { strict as assert } from "assert";
+import { EventEmitter } from "events";
 
 const DEFAULT_THRESHOLD = 0.6;
 

@@ -1,4 +1,4 @@
-import process from "node:process";
+import process from "process";
 
 /**
  * Minimal runtime-dependent types derived from the Node.js process globals. The

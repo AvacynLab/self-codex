@@ -1,4 +1,4 @@
-import { writeFile } from "node:fs/promises";
+import { writeFile } from "fs/promises";
 
 /**
  * Narrow abstraction over the Node.js filesystem API used by orchestrator components.

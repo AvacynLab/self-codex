@@ -1,6 +1,6 @@
-import { promises as fs } from "node:fs";
+import { promises as fs } from "fs";
 import type { ErrnoException } from "../nodePrimitives.js";
-import path from "node:path";
+import path from "path";
 
 import { ensureDirectory, resolveWithin } from "../paths.js";
 import type { GraphDescriptorPayload } from "../tools/graphTools.js";

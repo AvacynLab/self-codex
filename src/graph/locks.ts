@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { randomUUID } from "crypto";
 
 /** Function returning the current epoch milliseconds, injectable for tests. */
 type Clock = () => number;

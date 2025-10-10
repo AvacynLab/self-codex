@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { randomUUID } from "crypto";
 
 /**
  * Determine the operation identifier to correlate a tool invocation.

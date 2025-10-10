@@ -1,9 +1,9 @@
-import { randomUUID } from "node:crypto";
-import { promises as fs } from "node:fs";
-import { join } from "node:path";
-import process from "node:process";
+import { randomUUID } from "crypto";
+import { promises as fs } from "fs";
+import { join } from "path";
+import process from "process";
 import { runtimeTimers, type IntervalHandle } from "../runtime/timers.js";
-import { pathToFileURL } from "node:url";
+import { pathToFileURL } from "url";
 
 import { handleJsonRpc, type JsonRpcRequest, type JsonRpcResponse } from "../server.js";
 

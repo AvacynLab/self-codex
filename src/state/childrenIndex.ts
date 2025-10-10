@@ -1,5 +1,5 @@
 import type { Signal } from "../nodePrimitives.js";
-import { inspect } from "node:util";
+import { inspect } from "util";
 
 import type { ChildRuntimeLimits } from "../childRuntime.js";
 
