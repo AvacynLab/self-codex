@@ -1,6 +1,8 @@
-import { promises as fs } from "node:fs";
 import { randomUUID } from "node:crypto";
+import { promises as fs } from "node:fs";
 import { join } from "node:path";
+import process from "node:process";
+import { runtimeTimers, type IntervalHandle } from "../runtime/timers.js";
 import { pathToFileURL } from "node:url";
 
 import { handleJsonRpc, type JsonRpcRequest, type JsonRpcResponse } from "../server.js";
@@ -17,7 +19,7 @@ const RES_DIR = join(IPC_DIR, "responses");
 const ERR_DIR = join(IPC_DIR, "errors");
 
 /** Interval identifier used by the polling loop (null when stopped). */
-let pollTimer: NodeJS.Timeout | null = null;
+let pollTimer: IntervalHandle | null = null;
 /** Guards against overlapping scans so request processing stays sequential. */
 let scanInFlight = false;
 
@@ -99,7 +101,7 @@ export async function startFsBridgeWatcher(): Promise<void> {
   await ensureDirs();
   await scanOnce();
 
-  pollTimer = setInterval(async () => {
+  pollTimer = runtimeTimers.setInterval(async () => {
     if (scanInFlight) {
       return;
     }
@@ -118,7 +120,7 @@ export async function startFsBridgeWatcher(): Promise<void> {
 /** Stops the polling loop so tests can tear down the bridge deterministically. */
 export async function stopFsBridgeWatcher(): Promise<void> {
   if (pollTimer) {
-    clearInterval(pollTimer);
+    runtimeTimers.clearInterval(pollTimer);
     pollTimer = null;
   }
   scanInFlight = false;

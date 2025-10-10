@@ -1,3 +1,5 @@
+import { runtimeTimers, type TimeoutHandle } from "../runtime/timers.js";
+
 import { ContractNetCoordinator, type ContractNetPheromoneBounds } from "./contractNet.js";
 import { StigmergyField } from "./stigmergy.js";
 import { StructuredLogger } from "../logger.js";
@@ -162,7 +164,7 @@ export function watchContractNetPheromoneBounds(options: ContractNetPheromoneWat
     throw new Error("coalesceWindowMs must be a finite number greater than or equal to 0");
   }
   let lastBounds: ContractNetPheromoneBounds | null = null;
-  let flushTimer: NodeJS.Timeout | null = null;
+  let flushTimer: TimeoutHandle | null = null;
   let pendingDirty = false;
   let receivedUpdates = 0;
   let coalescedUpdates = 0;
@@ -261,7 +263,7 @@ export function watchContractNetPheromoneBounds(options: ContractNetPheromoneWat
       coalescedUpdates += 1;
       return;
     }
-    flushTimer = setTimeout(() => {
+    flushTimer = runtimeTimers.setTimeout(() => {
       flushTimer = null;
       flush("flush");
     }, coalesceWindowMs);
@@ -282,7 +284,7 @@ export function watchContractNetPheromoneBounds(options: ContractNetPheromoneWat
   return () => {
     detach();
     if (flushTimer) {
-      clearTimeout(flushTimer);
+      runtimeTimers.clearTimeout(flushTimer);
       flushTimer = null;
     }
     flush("detach");

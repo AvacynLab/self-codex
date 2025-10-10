@@ -77,7 +77,7 @@ export interface ChildSnapshot {
   /** Exit code captured upon termination, null when the child has not exited. */
   exitCode: number | null;
   /** Exit signal captured upon termination, null when absent. */
-  exitSignal: string | null;
+  exitSignal: string | number | null;
   /** Whether the supervisor had to forcefully terminate the child. */
   forcedTermination: boolean;
   /** Human-readable reason provided by the supervisor upon termination. */
@@ -378,7 +378,7 @@ export class GraphState {
       endedAt: number | null;
       retries: number;
       exitCode: number | null;
-      exitSignal: string | null;
+      exitSignal: string | number | null;
       forcedTermination: boolean | null;
       stopReason: string | null;
       role: string | null;
@@ -459,7 +459,9 @@ export class GraphState {
       }
     }
     if (updates.exitSignal !== undefined) {
-      attributes.exit_signal = normalizeString(updates.exitSignal);
+      const signal = updates.exitSignal;
+      attributes.exit_signal =
+        typeof signal === "number" ? signal.toString(10) : normalizeString(signal);
     }
     if (updates.forcedTermination !== undefined) {
       attributes.forced_termination = !!updates.forcedTermination;

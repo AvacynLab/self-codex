@@ -1,4 +1,5 @@
 import { promises as fs } from "node:fs";
+import type { ErrnoException } from "../nodePrimitives.js";
 import path from "node:path";
 
 import { ensureDirectory, resolveWithin } from "../paths.js";
@@ -99,7 +100,7 @@ export async function extractSubgraphToFile(
   const targetDirectory = await ensureDirectory(options.childrenRoot, options.runId, subdir);
 
   const safeRef = sanitiseForFileName(ref);
-  const entries = await fs.readdir(targetDirectory).catch((error: NodeJS.ErrnoException) => {
+  const entries = await fs.readdir(targetDirectory).catch((error: ErrnoException) => {
     if (error.code === "ENOENT") {
       return [] as string[];
     }

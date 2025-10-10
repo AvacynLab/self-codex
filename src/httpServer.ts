@@ -1,6 +1,8 @@
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { createServer as createHttpServer, IncomingMessage, Server as NodeHttpServer } from "node:http";
+import { Buffer } from "node:buffer";
+import process from "node:process";
 
 import { StructuredLogger } from "./logger.js";
 import { handleJsonRpc, type JsonRpcRequest, type JsonRpcRouteContext } from "./server.js";

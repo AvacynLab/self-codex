@@ -1,5 +1,7 @@
 import { appendFile, mkdir, rename, rm, stat } from "node:fs/promises";
+import { Buffer } from "node:buffer";
 import { dirname, resolve } from "node:path";
+import type { ErrnoException } from "../nodePrimitives.js";
 
 import { resolveWithin } from "../paths.js";
 
@@ -543,7 +545,7 @@ export class LogJournal {
       const stats = await stat(state.filePath);
       state.bytesWritten = stats.size;
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      if ((error as ErrnoException).code === "ENOENT") {
         state.bytesWritten = 0;
       } else {
         throw error;
@@ -577,7 +579,7 @@ export class LogJournal {
       try {
         await rename(source, destination);
       } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+        if ((error as ErrnoException).code !== "ENOENT") {
           throw error;
         }
       }
@@ -586,7 +588,7 @@ export class LogJournal {
     try {
       await rename(target, `${target}.1`);
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+      if ((error as ErrnoException).code !== "ENOENT") {
         throw error;
       }
     }

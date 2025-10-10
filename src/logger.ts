@@ -1,5 +1,7 @@
+import { Buffer } from "node:buffer";
 import { appendFile, mkdir, rename, rm, stat } from "node:fs/promises";
 import { dirname } from "node:path";
+import type { ErrnoException } from "./nodePrimitives.js";
 
 /** Default placeholder inserted when a secret token is redacted. */
 const REDACTION_TOKEN = "[REDACTED]";
@@ -232,7 +234,7 @@ export class StructuredLogger {
       const stats = await stat(this.logFile);
       currentSize = stats.size;
     } catch (error) {
-      const err = error as NodeJS.ErrnoException;
+      const err = error as ErrnoException;
       if (err?.code === "ENOENT") {
         return;
       }
@@ -277,7 +279,7 @@ export class StructuredLogger {
       try {
         await rename(source, target);
       } catch (error) {
-        const err = error as NodeJS.ErrnoException;
+        const err = error as ErrnoException;
         if (err?.code !== "ENOENT") {
           throw error;
         }
@@ -287,7 +289,7 @@ export class StructuredLogger {
     try {
       await rename(this.logFile, `${this.logFile}.1`);
     } catch (error) {
-      const err = error as NodeJS.ErrnoException;
+      const err = error as ErrnoException;
       if (err?.code !== "ENOENT") {
         throw error;
       }

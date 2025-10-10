@@ -2,10 +2,13 @@ import { spawn, type ChildProcessWithoutNullStreams, type SpawnOptions } from "n
 import { EventEmitter } from "node:events";
 import { createWriteStream, type WriteStream } from "node:fs";
 import { writeFile } from "node:fs/promises";
+import process from "node:process";
+import type { ProcessEnv, ResourceUsage, Signal } from "./nodePrimitives.js";
 import { inspect } from "node:util";
 
 import { scanArtifacts, type ArtifactManifestEntry } from "./artifacts.js";
 import { childWorkspacePath, ensureDirectory } from "./paths.js";
+import { runtimeTimers, type TimeoutHandle } from "./runtime/timers.js";
 
 /**
  * Message emitted by a child process runtime.
@@ -37,7 +40,7 @@ export type ChildRuntimeLifecycleEvent =
       pid: number;
       forced: boolean;
       code: number | null;
-      signal: NodeJS.Signals | null;
+      signal: Signal | null;
       reason: string | null;
     }
   | {
@@ -53,7 +56,7 @@ export type ChildRuntimeLifecycleEvent =
  */
 interface ChildExitEvent {
   code: number | null;
-  signal: NodeJS.Signals | null;
+  signal: Signal | null;
   at: number;
   forced: boolean;
   error: Error | null;
@@ -100,7 +103,7 @@ export interface StartChildRuntimeOptions {
   childrenRoot: string;
   command: string;
   args?: string[];
-  env?: NodeJS.ProcessEnv;
+  env?: ProcessEnv;
   metadata?: Record<string, unknown>;
   manifestExtras?: Record<string, unknown>;
   limits?: ChildRuntimeLimits | null;
@@ -124,7 +127,7 @@ export interface StartChildRuntimeOptions {
  * Parameters configuring the shutdown sequence.
  */
 export interface ChildShutdownOptions {
-  signal?: NodeJS.Signals;
+  signal?: Signal;
   timeoutMs?: number;
   /**
    * When true the shutdown request is considered forceful even if the child
@@ -140,7 +143,7 @@ export interface ChildShutdownOptions {
  */
 export interface ChildShutdownResult {
   code: number | null;
-  signal: NodeJS.Signals | null;
+  signal: Signal | null;
   forced: boolean;
   durationMs: number;
 }
@@ -196,8 +199,8 @@ export interface ChildRuntimeStatus {
   lastHeartbeatAt: number | null;
   lifecycle: "spawning" | "running" | "exited";
   closed: boolean;
-  exit: { code: number | null; signal: NodeJS.Signals | null; forced: boolean; at: number } | null;
-  resourceUsage: NodeJS.ResourceUsage | null;
+  exit: { code: number | null; signal: Signal | null; forced: boolean; at: number } | null;
+  resourceUsage: ResourceUsage | null;
 }
 
 /**
@@ -424,9 +427,9 @@ export class ChildRuntime extends EventEmitter {
    * most recent heartbeat and the exit information when available.
    */
   getStatus(): ChildRuntimeStatus {
-    let resourceUsage: NodeJS.ResourceUsage | null = null;
+    let resourceUsage: ResourceUsage | null = null;
     const resourceUsageFn = (this.child as ChildProcessWithoutNullStreams & {
-      resourceUsage?: () => NodeJS.ResourceUsage;
+      resourceUsage?: () => ResourceUsage;
     }).resourceUsage;
 
     if (typeof resourceUsageFn === "function") {
@@ -587,14 +590,20 @@ export class ChildRuntime extends EventEmitter {
     }
 
     return new Promise<ChildRuntimeMessage>((resolve, reject) => {
-      const timer = timeoutMs >= 0 ? setTimeout(() => {
+      let timer: TimeoutHandle | null = null;
+
+      const onTimeout = () => {
         this.off("message", onMessage);
         reject(new Error(`Timed out after ${timeoutMs}ms while waiting for child message`));
-      }, timeoutMs) : null;
+      };
+
+      if (timeoutMs >= 0) {
+        timer = runtimeTimers.setTimeout(onTimeout, timeoutMs);
+      }
 
       const onMessage = (message: ChildRuntimeMessage) => {
         if (predicate(message)) {
-          if (timer) clearTimeout(timer);
+          if (timer) runtimeTimers.clearTimeout(timer);
           this.off("message", onMessage);
           resolve(message);
         }
@@ -693,17 +702,29 @@ export class ChildRuntime extends EventEmitter {
     }
 
     return new Promise<ChildExitEvent>((resolve, reject) => {
-      const timer = timeoutMs >= 0 ? setTimeout(() => {
-        reject(new Error("Timed out waiting for child exit"));
-      }, timeoutMs) : null;
+      let timer: TimeoutHandle | null = null;
+
+      const cancelTimer = () => {
+        if (timer) {
+          runtimeTimers.clearTimeout(timer);
+          timer = null;
+        }
+      };
+
+      if (timeoutMs >= 0) {
+        timer = runtimeTimers.setTimeout(() => {
+          cancelTimer();
+          reject(new Error("Timed out waiting for child exit"));
+        }, timeoutMs);
+      }
 
       this.exitPromise
         .then((event) => {
-          if (timer) clearTimeout(timer);
+          cancelTimer();
           resolve(event);
         })
         .catch((error) => {
-          if (timer) clearTimeout(timer);
+          cancelTimer();
           reject(error);
         });
     });
@@ -1009,7 +1030,12 @@ export function formatChildMessages(messages: ChildRuntimeMessage[]): string {
  * new process launch.
  */
 async function sleep(delayMs: number): Promise<void> {
-  await new Promise((resolve) => setTimeout(resolve, delayMs));
+  if (delayMs <= 0) {
+    return;
+  }
+  await new Promise<void>((resolve) => {
+    runtimeTimers.setTimeout(resolve, delayMs);
+  });
 }
 
 /**

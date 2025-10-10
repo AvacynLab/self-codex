@@ -1,6 +1,8 @@
 import { createHash } from 'node:crypto';
+import { Buffer } from 'node:buffer';
 import { createReadStream, promises as fs } from 'node:fs';
 import path from 'node:path';
+import type { BufferEncoding, ErrnoException } from './nodePrimitives.js';
 
 import {
   childWorkspacePath,
@@ -111,7 +113,7 @@ async function loadManifest(outboxDir: string): Promise<Map<string, ArtifactMani
     }
     return map;
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+    if ((error as ErrnoException).code === 'ENOENT') {
       return new Map();
     }
     throw error;
@@ -176,7 +178,10 @@ export async function readArtifact(
     options.relativePath,
   );
 
-  return fs.readFile(absolutePath, options.encoding);
+  if (options.encoding) {
+    return fs.readFile(absolutePath, { encoding: options.encoding });
+  }
+  return fs.readFile(absolutePath);
 }
 
 /**

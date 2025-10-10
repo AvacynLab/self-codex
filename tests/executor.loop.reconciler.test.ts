@@ -2,14 +2,15 @@ import { describe, it } from "mocha";
 import { expect } from "chai";
 
 import { ExecutionLoop, LoopReconciler, LoopTickContext } from "../src/executor/loop.js";
+import type { IntervalHandle } from "../src/runtime/timers.js";
 
 /** Manual timer stub exposing hooks to trigger scheduled ticks deterministically. */
 class ManualTimer {
   public handler: (() => void) | null = null;
 
-  schedule(handler: () => void): NodeJS.Timeout {
+  schedule(handler: () => void): IntervalHandle {
     this.handler = handler;
-    return {} as NodeJS.Timeout;
+    return {} as IntervalHandle;
   }
 
   clear(): void {
