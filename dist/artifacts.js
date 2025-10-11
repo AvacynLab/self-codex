@@ -1,6 +1,8 @@
 import { createHash } from 'node:crypto';
+import { Buffer } from 'node:buffer';
 import { createReadStream, promises as fs } from 'node:fs';
 import path from 'node:path';
+// NOTE: Node built-in modules are imported with the explicit `node:` prefix to guarantee ESM resolution in Node.js.
 import { childWorkspacePath, ensureDirectory, ensureParentDirectory, resolveWithin, } from './paths.js';
 const OUTBOX_DIRNAME = 'outbox';
 const MANIFEST_FILENAME = 'manifest.json';
@@ -92,7 +94,10 @@ export async function writeArtifact(options) {
  */
 export async function readArtifact(options) {
     const absolutePath = outboxPath(options.childrenRoot, options.childId, options.relativePath);
-    return fs.readFile(absolutePath, options.encoding);
+    if (options.encoding) {
+        return fs.readFile(absolutePath, { encoding: options.encoding });
+    }
+    return Buffer.from(await fs.readFile(absolutePath));
 }
 /**
  * Lists all artifacts present in the child outbox directory while refreshing

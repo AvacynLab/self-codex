@@ -1,5 +1,7 @@
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { createServer as createHttpServer } from "node:http";
+import { Buffer } from "node:buffer";
+import process from "node:process";
 import { handleJsonRpc } from "./server.js";
 import { createHttpSessionId } from "./serverOptions.js";
 /** Maximum payload size accepted by the lightweight JSON handler (5 MiB). */
@@ -23,29 +25,31 @@ export async function startHttpServer(server, options, logger) {
     };
     await server.connect(httpTransport);
     const httpServer = createHttpServer(async (req, res) => {
-        const requestUrl = req.url ? new URL(req.url, `http://${req.headers.host ?? "localhost"}`) : null;
+        const request = req;
+        const response = res;
+        const requestUrl = request.url ? new URL(request.url, `http://${request.headers.host ?? "localhost"}`) : null;
         if (!requestUrl || requestUrl.pathname !== options.path) {
-            res.writeHead(404, { "Content-Type": "application/json" }).end(JSON.stringify({ error: "NOT_FOUND" }));
+            response.writeHead(404, { "Content-Type": "application/json" }).end(JSON.stringify({ error: "NOT_FOUND" }));
             return;
         }
-        if (!enforceBearerToken(req, res, logger)) {
+        if (!enforceBearerToken(request, response, logger)) {
             return;
         }
-        if (await tryHandleJsonRpc(req, res, logger)) {
+        if (await tryHandleJsonRpc(request, response, logger)) {
             return;
         }
         try {
-            await httpTransport.handleRequest(req, res);
+            await httpTransport.handleRequest(request, response);
         }
         catch (error) {
             logger.error("http_request_failure", {
                 message: error instanceof Error ? error.message : String(error),
             });
-            if (!res.headersSent) {
-                res.writeHead(500, { "Content-Type": "application/json" }).end(JSON.stringify({ error: "INTERNAL_ERROR" }));
+            if (!response.headersSent) {
+                response.writeHead(500, { "Content-Type": "application/json" }).end(JSON.stringify({ error: "INTERNAL_ERROR" }));
             }
             else {
-                res.end();
+                response.end();
             }
         }
     });
@@ -159,7 +163,7 @@ async function readRequestBody(req) {
     const chunks = [];
     let total = 0;
     for await (const chunk of req) {
-        const buffer = typeof chunk === "string" ? Buffer.from(chunk) : Buffer.from(chunk);
+        const buffer = Buffer.from(chunk);
         total += buffer.length;
         if (total > MAX_JSON_RPC_BYTES) {
             throw new Error("JSON-RPC payload exceeds limit");

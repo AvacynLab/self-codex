@@ -1,4 +1,4 @@
-import { randomUUID } from "crypto";
+import { randomUUID } from "node:crypto";
 /**
  * Immutable defaults applied to every feature flag. Exported so tests and
  * introspection helpers can share a single source of truth when reporting the

@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+// NOTE: Node built-in modules are imported with the explicit `node:` prefix to guarantee ESM resolution in Node.js.
 import { z } from "zod";
 import { applyAdaptiveRewrites } from "../graph/adaptive.js";
 import { GraphComputationCache } from "../graph/cache.js";

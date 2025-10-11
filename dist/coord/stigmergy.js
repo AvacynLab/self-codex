@@ -1,4 +1,5 @@
 import { EventEmitter } from "node:events";
+// NOTE: Node built-in modules are imported with the explicit `node:` prefix to guarantee ESM resolution in Node.js.
 /**
  * Error emitted when callers provide an invalid pheromone type. The server maps
  * the code to `E-STIG-TYPE` so MCP clients can correct payloads without having

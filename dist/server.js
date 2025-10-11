@@ -1,16 +1,21 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { randomUUID } from "crypto";
+import { randomUUID } from "node:crypto";
+import { Buffer } from "node:buffer";
 import { readFile, writeFile } from "node:fs/promises";
 import { resolve as resolvePath, basename as pathBasename } from "node:path";
-import { pathToFileURL } from "url";
+import process from "node:process";
+import { runtimeTimers } from "./runtime/timers.js";
+import { pathToFileURL } from "node:url";
 import { GraphState } from "./graphState.js";
 import { GraphTransactionManager, GraphTransactionError, GraphVersionConflictError } from "./graph/tx.js";
 import { GraphLockManager } from "./graph/locks.js";
 import { StructuredLogger } from "./logger.js";
 import { EventStore } from "./eventStore.js";
-import { EventBus, EVENT_CATEGORIES, } from "./events/bus.js";
+import { 
+// NOTE: Node built-in modules are imported with the explicit `node:` prefix to guarantee ESM resolution in Node.js.
+EventBus, EVENT_CATEGORIES, } from "./events/bus.js";
 import { buildChildCorrelationHints, buildJobCorrelationHints, extractCorrelationHints, mergeCorrelationHints, } from "./events/correlation.js";
 import { buildChildCognitiveEvents } from "./events/cognitive.js";
 import { bridgeBlackboardEvents, bridgeCancellationEvents, bridgeConsensusEvents, bridgeContractNetEvents, bridgeValueEvents, bridgeStigmergyEvents, createContractNetWatcherTelemetryListener, } from "./events/bridges.js";
@@ -122,6 +127,8 @@ const logJournal = new LogJournal({
     maxFileSizeBytes: 4 * 1024 * 1024,
     maxFileCount: 5,
 });
+/** Timestamp captured when the orchestrator module is initialised. */
+const SERVER_STARTED_AT = Date.now();
 /** Default feature toggles used before CLI/flags are parsed. */
 const DEFAULT_FEATURE_TOGGLES = {
     enableBT: false,
@@ -1389,6 +1396,53 @@ const PlanCancelInputShape = PlanCancelInputSchema.shape;
 const McpIntrospectionInputSchema = z.object({}).strict();
 const McpIntrospectionInputShape = McpIntrospectionInputSchema.shape;
 /**
+ * Payload accepted by the lightweight `health_check` RPC. The optional flag
+ * allows callers to request extended probe details without making the handler
+ * heavyweight for the common case where a simple availability verdict is
+ * enough.
+ */
+const HealthCheckInputSchema = z
+    .object({
+    include_details: z.boolean().optional(),
+})
+    .strict();
+const HealthCheckInputShape = HealthCheckInputSchema.shape;
+/**
+ * Executes a probe while capturing latency and optional diagnostics. The helper
+ * normalises thrown values into human friendly messages so the JSON-RPC
+ * contract remains stable even when dependencies fail in unexpected ways.
+ */
+function runHealthCheckProbe(name, includeDetails, task) {
+    const startedAt = Date.now();
+    try {
+        const detail = task();
+        const elapsed = Math.max(0, Date.now() - startedAt);
+        const result = {
+            name,
+            status: "ok",
+            elapsed_ms: elapsed,
+        };
+        if (includeDetails && detail !== undefined) {
+            result.detail = detail ?? null;
+        }
+        return result;
+    }
+    catch (error) {
+        const elapsed = Math.max(0, Date.now() - startedAt);
+        const message = error instanceof Error ? error.message : String(error);
+        const result = {
+            name,
+            status: "error",
+            elapsed_ms: elapsed,
+            error: message,
+        };
+        if (includeDetails) {
+            result.detail = { message };
+        }
+        return result;
+    }
+}
+/**
  * Input schema guarding the `resources_list` tool. Accepts optional prefix and
  * limit parameters so clients can page deterministically through the registry.
  */
@@ -1751,7 +1805,7 @@ function startHeartbeat() {
     if (HEARTBEAT_TIMER)
         return;
     const interval = resolveHeartbeatIntervalMs();
-    HEARTBEAT_TIMER = setInterval(() => {
+    HEARTBEAT_TIMER = runtimeTimers.setInterval(() => {
         emitHeartbeatTick();
     }, interval);
     HEARTBEAT_TIMER.unref?.();
@@ -1761,7 +1815,7 @@ function stopHeartbeat() {
     if (!HEARTBEAT_TIMER) {
         return;
     }
-    clearInterval(HEARTBEAT_TIMER);
+    runtimeTimers.clearInterval(HEARTBEAT_TIMER);
     HEARTBEAT_TIMER = null;
 }
 // ---------------------------
@@ -2199,6 +2253,68 @@ server.registerTool("mcp_capabilities", {
     }
     const capabilities = getMcpCapabilities();
     return { content: [{ type: "text", text: j({ format: "json", capabilities }) }] };
+});
+/**
+ * Lightweight RPC used by smoke tests to validate the orchestrator without
+ * invoking domain specific tools. The response aggregates a handful of quick
+ * probes that cover the primary observability surfaces used in production.
+ */
+server.registerTool("health_check", {
+    title: "Health check",
+    description: "Retourne l'état courant du serveur MCP et de ses sondes clés.",
+    inputSchema: HealthCheckInputShape,
+}, async (input) => {
+    const parsed = HealthCheckInputSchema.parse(input ?? {});
+    const includeDetails = parsed.include_details ?? false;
+    const observedAt = new Date();
+    const probes = [
+        runHealthCheckProbe("mcp_info", includeDetails, () => {
+            const info = getMcpInfo();
+            if (!includeDetails) {
+                return undefined;
+            }
+            return {
+                transports: info.mcp.transports.map((transport) => transport.kind),
+                feature_flags: info.features.length,
+            };
+        }),
+        runHealthCheckProbe("event_bus", includeDetails, () => {
+            const latest = eventBus.list({ limit: 1 });
+            if (!includeDetails) {
+                return undefined;
+            }
+            const mostRecent = latest.at(-1) ?? null;
+            return {
+                backlog_size: latest.length,
+                latest_seq: mostRecent?.seq ?? null,
+                latest_kind: mostRecent?.kind ?? null,
+            };
+        }),
+        runHealthCheckProbe("log_journal", includeDetails, () => {
+            const tail = logJournal.tail({ stream: "server", limit: 1 });
+            if (!includeDetails) {
+                return undefined;
+            }
+            const lastEntry = tail.entries.at(-1) ?? null;
+            return {
+                next_seq: tail.nextSeq,
+                last_level: lastEntry?.level ?? null,
+                last_message: lastEntry?.message ?? null,
+            };
+        }),
+    ];
+    const status = probes.some((probe) => probe.status !== "ok") ? "error" : "ok";
+    const payload = {
+        status,
+        observed_at: observedAt.toISOString(),
+        uptime_ms: Math.max(0, observedAt.getTime() - SERVER_STARTED_AT),
+        server: { name: SERVER_NAME, version: SERVER_VERSION, protocol: MCP_PROTOCOL_VERSION },
+        probes,
+    };
+    return {
+        content: [{ type: "text", text: j({ tool: "health_check", result: payload }) }],
+        structuredContent: payload,
+    };
 });
 server.registerTool("resources_list", {
     title: "Resources list",
@@ -2826,7 +2942,7 @@ let AUTOSAVE_PATH = null;
 server.registerTool("graph_state_autosave", { title: "Graph autosave", description: "Demarre/arrete la sauvegarde periodique du graphe.", inputSchema: { action: z.enum(["start", "stop"]), path: z.string().optional(), interval_ms: z.number().optional() } }, async (input) => {
     if (input.action === "stop") {
         if (AUTOSAVE_TIMER)
-            clearInterval(AUTOSAVE_TIMER);
+            runtimeTimers.clearInterval(AUTOSAVE_TIMER);
         AUTOSAVE_TIMER = null;
         AUTOSAVE_PATH = null;
         return { content: [{ type: "text", text: j({ format: "json", ok: true, status: "stopped" }) }] };
@@ -2843,10 +2959,10 @@ server.registerTool("graph_state_autosave", { title: "Graph autosave", descripti
     }
     const interval = Math.min(Math.max(input.interval_ms ?? 5000, 1000), 600000);
     if (AUTOSAVE_TIMER)
-        clearInterval(AUTOSAVE_TIMER);
+        runtimeTimers.clearInterval(AUTOSAVE_TIMER);
     await ensureParentDirectory(targetPath);
     AUTOSAVE_PATH = targetPath;
-    AUTOSAVE_TIMER = setInterval(async () => {
+    AUTOSAVE_TIMER = runtimeTimers.setInterval(async () => {
         try {
             const snap = graphState.serialize();
             const metadata = {
@@ -5733,7 +5849,22 @@ server.registerTool("child_prompt", { title: "Child prompt", description: "Ajout
         payload: { pendingId },
         correlation,
     });
-    return { content: [{ type: "text", text: j({ pending_id: pendingId, child_id }) }] };
+    const payload = {
+        // Propagate the pending identifier so callers can reference the stream
+        // produced by the child when acknowledgments arrive asynchronously.
+        pending_id: pendingId,
+        // Echo the targeted child identifier to ease debugging on the consumer
+        // side when multiple conversations are active in parallel.
+        child_id,
+        // Advertise how many messages have been appended to the transcript so the
+        // caller can reconcile the expected transcript growth without re-reading
+        // the entire history.
+        appended: messages.length,
+    };
+    return {
+        content: [{ type: "text", text: j(payload) }],
+        structuredContent: payload,
+    };
 });
 // child_push_partial
 server.registerTool("child_push_partial", { title: "Child push partial", description: "Pousse un fragment de reponse (stream).", inputSchema: ChildPushPartialShape }, async (input) => {
@@ -5801,7 +5932,8 @@ server.registerTool("child_push_reply", { title: "Child push reply", description
 // child_chat
 server.registerTool("child_chat", { title: "Child chat", description: "Envoie un message orchestrateur->enfant et retourne un pending_id.", inputSchema: ChildChatShape }, async (input) => {
     pruneExpired();
-    const { child_id, content, role = "user" } = input;
+    const { child_id, content, role: requestedRole } = input;
+    const role = requestedRole ?? "user";
     const child = graphState.getChild(child_id);
     if (!child)
         return { isError: true, content: [{ type: "text", text: j({ error: "NOT_FOUND", message: "child_id inconnu" }) }] };
@@ -5828,7 +5960,22 @@ server.registerTool("child_chat", { title: "Child chat", description: "Envoie un
         payload: { pendingId },
         correlation,
     });
-    return { content: [{ type: "text", text: j({ pending_id: pendingId, child_id }) }] };
+    const payload = {
+        // Expose the pending identifier so streaming acknowledgments can reference
+        // the correct in-flight reply when the child pushes partial chunks.
+        pending_id: pendingId,
+        // Echo the child identifier to simplify correlation when operators run
+        // multiple conversations in parallel and need to attribute events.
+        child_id,
+        // Surface the role/content that triggered the prompt so downstream
+        // analytics do not need to rehydrate the original request payload.
+        role,
+        content,
+    };
+    return {
+        content: [{ type: "text", text: j(payload) }],
+        structuredContent: payload,
+    };
 });
 // child_info
 server.registerTool("child_info", { title: "Child info", description: "Retourne l etat et les metadonnees d un enfant.", inputSchema: ChildInfoShape }, async (input) => {
@@ -6350,6 +6497,15 @@ function collectCorrelationFromPayload(payload) {
             snapshot = mergeCorrelationSnapshots(snapshot, collectCorrelationFromPayload(record[nestedKey]));
         }
     }
+    if (Object.prototype.hasOwnProperty.call(record, "structuredContent")) {
+        const structured = record.structuredContent;
+        if (structured !== undefined) {
+            // Structured tool responses mirror the textual JSON while surfacing fields such as
+            // `child_id` and `run_id`. Propagate those identifiers into the correlation snapshot so
+            // observability logs can attribute results even when callers rely on the richer payload.
+            snapshot = mergeCorrelationSnapshots(snapshot, collectCorrelationFromPayload(structured));
+        }
+    }
     return snapshot;
 }
 function collectCorrelationFromUnknown(value) {
@@ -6481,6 +6637,7 @@ function recordJsonRpcObservability(input) {
             runId: input.correlation.runId ?? null,
             opId: input.correlation.opId ?? null,
             childId: input.correlation.childId ?? null,
+            jobId: input.correlation.jobId ?? null,
             component: "jsonrpc",
             stage: payload.msg,
             elapsedMs: payload.elapsed_ms ?? undefined,

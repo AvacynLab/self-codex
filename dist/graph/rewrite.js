@@ -1,5 +1,7 @@
 import { flatten } from "./hierarchy.js";
-import { SUBGRAPH_REGISTRY_KEY, parseSubgraphRegistry, } from "./subgraphRegistry.js";
+import { 
+// NOTE: Node built-in modules are imported with the explicit `node:` prefix to guarantee ESM resolution in Node.js.
+SUBGRAPH_REGISTRY_KEY, parseSubgraphRegistry, } from "./subgraphRegistry.js";
 /** Attribute flag automatically added to edges produced by the split-parallel rule. */
 const SPLIT_PARALLEL_FLAG = "rewritten_split_parallel";
 /** Attribute flag automatically added to edges produced by the inline-subgraph rule. */

@@ -1,5 +1,7 @@
 import { appendFile, mkdir, rename, rm, stat } from "node:fs/promises";
+import { Buffer } from "node:buffer";
 import { dirname, resolve } from "node:path";
+// NOTE: Node built-in modules are imported with the explicit `node:` prefix to guarantee ESM resolution in Node.js.
 import { resolveWithin } from "../paths.js";
 /** Error raised when a log operation fails. */
 export class LogJournalError extends Error {

@@ -1,6 +1,8 @@
 import { mkdirSync } from 'node:fs';
-import { mkdir } from 'node:fs/promises';
+import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import process from 'node:process';
+// NOTE: Node built-in modules are imported with the explicit `node:` prefix to guarantee ESM resolution in Node.js.
 /** Maximum number of characters preserved in a sanitised filename. */
 const MAX_FILENAME_LENGTH = 120;
 /** Absolute path (resolved against the current working directory) hosting run artefacts. */
@@ -86,6 +88,24 @@ export async function ensureDirectory(rootDir, ...segments) {
     const target = resolveWithin(rootDir, ...segments);
     await mkdir(target, { recursive: true });
     return target;
+}
+/**
+ * Ensures that a `.gitkeep` sentinel exists inside the provided directory.  The
+ * helper is intentionally tolerant: it creates the file when missing and
+ * ignores the `EEXIST` error so callers can invoke it multiple times without
+ * branching.
+ */
+export async function ensureGitkeep(directory) {
+    const gitkeepPath = path.join(directory, '.gitkeep');
+    try {
+        await writeFile(gitkeepPath, '', { flag: 'wx' });
+    }
+    catch (error) {
+        if (error && typeof error === 'object' && 'code' in error && error.code === 'EEXIST') {
+            return;
+        }
+        throw error;
+    }
 }
 /**
  * Convenience helper used by tests and higher level modules to obtain the

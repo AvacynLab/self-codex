@@ -2,9 +2,12 @@ import { spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { createWriteStream } from "node:fs";
 import { writeFile } from "node:fs/promises";
+import process from "node:process";
 import { inspect } from "node:util";
+// NOTE: Node built-in modules are imported with the explicit `node:` prefix to guarantee ESM resolution in Node.js.
 import { scanArtifacts } from "./artifacts.js";
 import { childWorkspacePath, ensureDirectory } from "./paths.js";
+import { runtimeTimers } from "./runtime/timers.js";
 /**
  * Error raised when the runtime fails to spawn after exhausting all retry
  * attempts. The original cause is exposed for diagnostic purposes so the
@@ -324,14 +327,18 @@ export class ChildRuntime extends EventEmitter {
             }
         }
         return new Promise((resolve, reject) => {
-            const timer = timeoutMs >= 0 ? setTimeout(() => {
+            let timer = null;
+            const onTimeout = () => {
                 this.off("message", onMessage);
                 reject(new Error(`Timed out after ${timeoutMs}ms while waiting for child message`));
-            }, timeoutMs) : null;
+            };
+            if (timeoutMs >= 0) {
+                timer = runtimeTimers.setTimeout(onTimeout, timeoutMs);
+            }
             const onMessage = (message) => {
                 if (predicate(message)) {
                     if (timer)
-                        clearTimeout(timer);
+                        runtimeTimers.clearTimeout(timer);
                     this.off("message", onMessage);
                     resolve(message);
                 }
@@ -418,18 +425,26 @@ export class ChildRuntime extends EventEmitter {
             return this.exitPromise;
         }
         return new Promise((resolve, reject) => {
-            const timer = timeoutMs >= 0 ? setTimeout(() => {
-                reject(new Error("Timed out waiting for child exit"));
-            }, timeoutMs) : null;
+            let timer = null;
+            const cancelTimer = () => {
+                if (timer) {
+                    runtimeTimers.clearTimeout(timer);
+                    timer = null;
+                }
+            };
+            if (timeoutMs >= 0) {
+                timer = runtimeTimers.setTimeout(() => {
+                    cancelTimer();
+                    reject(new Error("Timed out waiting for child exit"));
+                }, timeoutMs);
+            }
             this.exitPromise
                 .then((event) => {
-                if (timer)
-                    clearTimeout(timer);
+                cancelTimer();
                 resolve(event);
             })
                 .catch((error) => {
-                if (timer)
-                    clearTimeout(timer);
+                cancelTimer();
                 reject(error);
             });
         });
@@ -706,7 +721,12 @@ export function formatChildMessages(messages) {
  * new process launch.
  */
 async function sleep(delayMs) {
-    await new Promise((resolve) => setTimeout(resolve, delayMs));
+    if (delayMs <= 0) {
+        return;
+    }
+    await new Promise((resolve) => {
+        runtimeTimers.setTimeout(resolve, delayMs);
+    });
 }
 /**
  * Computes the next backoff delay while enforcing the configured ceiling.

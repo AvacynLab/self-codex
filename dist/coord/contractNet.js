@@ -1,5 +1,6 @@
 import { EventEmitter } from "node:events";
 import { randomUUID } from "node:crypto";
+// NOTE: Node built-in modules are imported with the explicit `node:` prefix to guarantee ESM resolution in Node.js.
 /**
  * Error raised when the Contract-Net coordinator cannot award a task because no
  * bids were submitted. The orchestrator surfaces the code so callers can react

@@ -1,5 +1,6 @@
+import { Buffer } from "node:buffer";
 import { createServer } from "node:http";
-import { clearInterval, setInterval } from "node:timers";
+import { runtimeTimers } from "../runtime/timers.js";
 import { URL } from "node:url";
 import { z } from "zod";
 import { StructuredLogger } from "../logger.js";
@@ -36,7 +37,7 @@ export function createDashboardRouter(options) {
     const autoBroadcast = options.autoBroadcast ?? true;
     let interval = null;
     if (autoBroadcast) {
-        interval = setInterval(() => {
+        interval = runtimeTimers.setInterval(() => {
             if (clients.size === 0) {
                 return;
             }
@@ -104,7 +105,7 @@ export function createDashboardRouter(options) {
         broadcast: () => broadcast(clients, graphState, eventStore, stigmergy, btStatusRegistry, supervisorAgent, contractNetWatcherTelemetry, logger),
         async close() {
             if (interval) {
-                clearInterval(interval);
+                runtimeTimers.clearInterval(interval);
                 interval = null;
             }
             for (const client of clients) {
@@ -195,7 +196,7 @@ function writeHtml(res, status, payload) {
 async function parseJsonBody(req) {
     const chunks = [];
     for await (const chunk of req) {
-        chunks.push(typeof chunk === "string" ? Buffer.from(chunk) : chunk);
+        chunks.push(Buffer.from(chunk));
     }
     if (chunks.length === 0) {
         return {};

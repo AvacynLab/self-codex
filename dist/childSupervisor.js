@@ -1,4 +1,5 @@
-import { randomUUID } from "crypto";
+import { randomUUID } from "node:crypto";
+import { runtimeTimers } from "./runtime/timers.js";
 import { defaultFileSystemGateway } from "./gateways/fs.js";
 import { startChildRuntime, } from "./childRuntime.js";
 import { bridgeChildRuntimeEvents } from "./events/bridges.js";
@@ -713,7 +714,7 @@ export class ChildSupervisor {
         }
         this.childEventBridges.clear();
         for (const timer of this.watchdogs.values()) {
-            clearInterval(timer);
+            runtimeTimers.clearInterval(timer);
         }
         this.watchdogs.clear();
     }
@@ -856,10 +857,10 @@ export class ChildSupervisor {
         }
         const existing = this.watchdogs.get(childId);
         if (existing) {
-            clearInterval(existing);
+            runtimeTimers.clearInterval(existing);
         }
         const interval = Math.min(this.idleCheckIntervalMs, this.idleTimeoutMs || this.idleCheckIntervalMs);
-        const timer = setInterval(() => {
+        const timer = runtimeTimers.setInterval(() => {
             const snapshot = this.index.getChild(childId);
             if (!snapshot) {
                 this.clearIdleWatchdog(childId);
@@ -889,7 +890,7 @@ export class ChildSupervisor {
     clearIdleWatchdog(childId) {
         const timer = this.watchdogs.get(childId);
         if (timer) {
-            clearInterval(timer);
+            runtimeTimers.clearInterval(timer);
             this.watchdogs.delete(childId);
         }
     }

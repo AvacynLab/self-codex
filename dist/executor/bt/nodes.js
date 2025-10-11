@@ -1,3 +1,4 @@
+import { runtimeTimers } from "../../runtime/timers.js";
 import { OperationCancelledError } from "../cancel.js";
 /**
  * Error thrown when cooperative cancellation is triggered at runtime.
@@ -71,8 +72,11 @@ const SUCCESS_RESULT = { status: "success" };
 const FAILURE_RESULT = { status: "failure" };
 /** Delay helper used by {@link RetryNode} when no runtime wait function is provided. */
 async function defaultDelay(ms) {
+    if (ms <= 0) {
+        return;
+    }
     await new Promise((resolve) => {
-        setTimeout(resolve, ms);
+        runtimeTimers.setTimeout(resolve, ms);
     });
 }
 /** Determine whether the provided status represents a terminal outcome. */

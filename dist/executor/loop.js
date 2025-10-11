@@ -1,4 +1,4 @@
-import { setTimeout as defaultSetTimeout, clearTimeout as defaultClearTimeout } from "node:timers";
+import { runtimeTimers, } from "../runtime/timers.js";
 /**
  * Cooperative helper used by long-running ticks to voluntarily yield control
  * when a time budget is exceeded. The loop provides an instance per tick when
@@ -45,15 +45,15 @@ export class CooperativeBudget {
         }
         await new Promise((resolve) => {
             let finished = false;
-            let handle;
+            let handle = null;
             const finalize = () => {
                 if (finished) {
                     return;
                 }
                 finished = true;
-                if (handle != null) {
+                if (handle) {
                     this.cancelYield(handle);
-                    handle = undefined;
+                    handle = null;
                 }
                 this.signal.removeEventListener("abort", onAbort);
                 resolve();
@@ -63,7 +63,7 @@ export class CooperativeBudget {
             };
             this.signal.addEventListener("abort", onAbort, { once: true });
             handle = this.scheduleYield(() => {
-                handle = undefined;
+                handle = null;
                 finalize();
             });
         });
@@ -111,10 +111,11 @@ export class ExecutionLoop {
         this.now = options.now ?? Date.now;
         this.budgetMs = options.budgetMs;
         this.onError = options.onError;
-        this.setIntervalFn = options.setIntervalFn ?? ((handler, interval) => setInterval(handler, interval));
-        this.clearIntervalFn = options.clearIntervalFn ?? ((handle) => clearInterval(handle));
-        this.scheduleYield = options.scheduleYield ?? ((resume) => defaultSetTimeout(resume, 0));
-        this.cancelYield = options.cancelYield ?? ((handle) => defaultClearTimeout(handle));
+        this.setIntervalFn =
+            options.setIntervalFn ?? ((handler, interval) => runtimeTimers.setInterval(handler, interval));
+        this.clearIntervalFn = options.clearIntervalFn ?? ((handle) => runtimeTimers.clearInterval(handle));
+        this.scheduleYield = options.scheduleYield ?? ((resume) => runtimeTimers.setTimeout(resume, 0));
+        this.cancelYield = options.cancelYield ?? ((handle) => runtimeTimers.clearTimeout(handle));
         this.reconcilers = options.reconcilers ? [...options.reconcilers] : [];
         this.afterTick = options.afterTick;
     }

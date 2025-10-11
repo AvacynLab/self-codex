@@ -1,4 +1,4 @@
-import { randomUUID } from "crypto";
+import { randomUUID } from "node:crypto";
 /** Utility converting arbitrary tags into a deduplicated lowercase list. */
 function normaliseTags(tags) {
     if (!tags || tags.length === 0) {

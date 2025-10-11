@@ -1,3 +1,4 @@
+import { runtimeTimers } from "../runtime/timers.js";
 /**
  * Collector recording the latest Contract-Net bounds watcher telemetry. The
  * recorder stores cumulative counters and the timestamp of the last emission so
@@ -146,7 +147,7 @@ export function watchContractNetPheromoneBounds(options) {
             coalescedUpdates += 1;
             return;
         }
-        flushTimer = setTimeout(() => {
+        flushTimer = runtimeTimers.setTimeout(() => {
             flushTimer = null;
             flush("flush");
         }, coalesceWindowMs);
@@ -164,7 +165,7 @@ export function watchContractNetPheromoneBounds(options) {
     return () => {
         detach();
         if (flushTimer) {
-            clearTimeout(flushTimer);
+            runtimeTimers.clearTimeout(flushTimer);
             flushTimer = null;
         }
         flush("detach");

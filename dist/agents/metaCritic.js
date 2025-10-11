@@ -1,4 +1,4 @@
-import { createHash } from "crypto";
+import { createHash } from "node:crypto";
 /** Counts the number of non-empty lines in the evaluation context. */
 function countNonEmptyLines(ctx) {
     return ctx.lines.reduce((total, line) => (line.trim().length > 0 ? total + 1 : total), 0);

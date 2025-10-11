@@ -1,3 +1,5 @@
+// NOTE: Node built-in modules are imported with the explicit `node:` prefix to guarantee ESM resolution in Node.js.
+import { runtimeTimers } from "../../runtime/timers.js";
 import { GuardNode, ParallelNode, RetryNode, SelectorNode, SequenceNode, TaskLeaf, TimeoutNode, CancellableNode, } from "./nodes.js";
 /**
  * Interpreter responsible for ticking a Behaviour Tree. The class is stateless
@@ -16,7 +18,10 @@ export class BehaviorTreeInterpreter {
         const resolvedRuntime = {
             invokeTool: runtime.invokeTool,
             now: runtime.now ?? (() => Date.now()),
-            wait: runtime.wait ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms))),
+            wait: runtime.wait ??
+                ((ms) => new Promise((resolve) => {
+                    runtimeTimers.setTimeout(resolve, ms);
+                })),
             variables: runtime.variables ?? {},
             cancellationSignal: runtime.cancellationSignal,
             isCancelled: runtime.isCancelled,

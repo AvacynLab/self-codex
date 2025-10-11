@@ -258,7 +258,9 @@ export class GraphState {
             }
         }
         if (updates.exitSignal !== undefined) {
-            attributes.exit_signal = normalizeString(updates.exitSignal);
+            const signal = updates.exitSignal;
+            attributes.exit_signal =
+                typeof signal === "number" ? signal.toString(10) : normalizeString(signal);
         }
         if (updates.forcedTermination !== undefined) {
             attributes.forced_termination = !!updates.forcedTermination;

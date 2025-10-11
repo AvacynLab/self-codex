@@ -1,4 +1,4 @@
-import { randomUUID } from "crypto";
+import { randomUUID } from "node:crypto";
 const DEFAULT_GENERATION_OPTIONS = {
     maxHypotheses: 5,
     noveltyBoost: 0.15,

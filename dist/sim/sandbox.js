@@ -1,4 +1,5 @@
 import { setTimeout as delay } from "node:timers/promises";
+import { runtimeTimers } from "../runtime/timers.js";
 /**
  * Error raised internally when a sandbox handler exceeds the granted timeout.
  */
@@ -78,7 +79,7 @@ export class SandboxRegistry {
             .then(() => handler(executionRequest))
             .then((result) => normaliseHandlerResult(result));
         const timeoutPromise = new Promise((_, reject) => {
-            timeoutHandle = setTimeout(() => {
+            timeoutHandle = runtimeTimers.setTimeout(() => {
                 timedOut = true;
                 controller.abort();
                 reject(new SandboxTimeoutError(`Sandbox action "${request.action}" timed out after ${timeoutMs}ms`));
@@ -94,7 +95,7 @@ export class SandboxRegistry {
         }
         finally {
             if (timeoutHandle) {
-                clearTimeout(timeoutHandle);
+                runtimeTimers.clearTimeout(timeoutHandle);
             }
             // Give cooperative handlers a brief chance to observe the abort signal.
             if (timedOut) {

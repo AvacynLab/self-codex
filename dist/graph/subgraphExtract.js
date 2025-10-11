@@ -1,5 +1,6 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
+// NOTE: Node built-in modules are imported with the explicit `node:` prefix to guarantee ESM resolution in Node.js.
 import { ensureDirectory, resolveWithin } from "../paths.js";
 import { SUBGRAPH_REGISTRY_KEY, collectMissingSubgraphDescriptors, resolveSubgraphDescriptor, } from "./subgraphRegistry.js";
 /**
