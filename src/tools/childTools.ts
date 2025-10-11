@@ -73,6 +73,14 @@ export interface ChildToolContext {
 const PromptSchema = PromptTemplateSchema;
 
 /**
+ * Default timeout (in milliseconds) granted to Codex children while waiting for
+ * the ready handshake. The value intentionally stays conservative but higher
+ * than the historical 2s threshold so slower cold starts inside CI do not
+ * trigger spurious timeouts.
+ */
+const DEFAULT_CHILD_READY_TIMEOUT_MS = 8_000;
+
+/**
  * Schema describing timeout overrides granted to the child. Values are kept as
  * integers (milliseconds) to remain consistent with the supervisor settings.
  * The refinement avoids persisting empty objects that would provide no signal
@@ -163,6 +171,7 @@ export const ChildSpawnCodexInputSchema = z.object({
     }),
   metadata: z.record(z.unknown()).optional(),
   manifest_extras: z.record(z.unknown()).optional(),
+  ready_timeout_ms: z.number().int().positive().optional(),
   idempotency_key: z.string().min(1).optional(),
 });
 export const ChildSpawnCodexInputShape = ChildSpawnCodexInputSchema.shape;
@@ -454,13 +463,18 @@ export async function handleChildSpawnCodex(
       } satisfies ChildSpawnCodexSnapshot;
     }
 
+    const readyTimeoutMs =
+      typeof input.ready_timeout_ms === "number" && Number.isFinite(input.ready_timeout_ms)
+        ? Math.max(1, Math.trunc(input.ready_timeout_ms))
+        : DEFAULT_CHILD_READY_TIMEOUT_MS;
+
     const created = await context.supervisor.createChild({
       role,
       manifestExtras,
       metadata,
       limits: limitsCopy,
       waitForReady: true,
-      readyTimeoutMs: 2000,
+      readyTimeoutMs,
     });
 
     const runtimeStatus = created.runtime.getStatus();
@@ -471,6 +485,7 @@ export async function handleChildSpawnCodex(
       child_id: created.childId,
       pid: runtimeStatus.pid,
       workdir: runtimeStatus.workdir,
+      ready_timeout_ms: readyTimeoutMs,
       idempotency_key: idempotencyKey,
     });
 

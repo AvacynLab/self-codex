@@ -1,7 +1,7 @@
 import { beforeEach, describe, it } from "mocha";
 import { expect } from "chai";
 
-import { handleJsonRpc, logJournal, buildLiveEvents } from "../../src/server.js";
+import { handleJsonRpc, logJournal, buildLiveEvents, server as mcpServer } from "../../src/server.js";
 import type { JsonRpcResponse } from "../../src/server.js";
 
 /**
@@ -130,5 +130,85 @@ describe("jsonrpc observability", () => {
 
     const runBucket = logJournal.tail({ stream: "run" });
     expect(runBucket.entries).to.deep.equal([]);
+  });
+
+  it("extracts correlation from structuredContent tool responses", async () => {
+    logJournal.reset();
+    const internal = mcpServer.server as unknown as {
+      _requestHandlers?: Map<string, (request: any, extra: any) => Promise<unknown> | unknown>;
+    };
+    const handlers = internal._requestHandlers;
+    if (!handlers) {
+      throw new Error("JSON-RPC handlers map not initialised");
+    }
+
+    const originalToolsCall = handlers.get("tools/call");
+    const childId = `child-structured-${Date.now()}`;
+    const runId = `run-structured-${Date.now()}`;
+    const jobId = `job-structured-${Date.now()}`;
+
+    handlers.set("tools/call", async (request: any, extra: any) => {
+      if (request?.params && typeof request.params === "object") {
+        const params = request.params as { name?: string };
+        if (params.name === "structured_test") {
+          return {
+            content: [{ type: "text", text: "{}" }],
+            structuredContent: {
+              child_id: childId,
+              run_id: runId,
+              job_id: jobId,
+            },
+          } as const;
+        }
+      }
+      if (!originalToolsCall) {
+        throw new Error("tools/call handler missing");
+      }
+      return originalToolsCall(request, extra);
+    });
+
+    try {
+      const startSeq = latestEventSeq();
+      const response = (await handleJsonRpc(
+        {
+          jsonrpc: "2.0",
+          id: "structured-correlation",
+          method: "tools/call",
+          params: { name: "structured_test" },
+        },
+        { transport: "http" },
+      )) as JsonRpcResponse;
+
+      const payload = response.result as { structuredContent?: Record<string, unknown> } | undefined;
+      expect(payload?.structuredContent).to.deep.equal({ child_id: childId, run_id: runId, job_id: jobId });
+
+      const events = buildLiveEvents({ limit: 10, order: "asc", min_seq: startSeq + 1 });
+      const requestEvent = events.find(
+        (event) => event.stage === "jsonrpc_request" && event.payload?.request_id === "structured-correlation",
+      );
+      const responseEvent = events.find(
+        (event) => event.stage === "jsonrpc_response" && event.payload?.request_id === "structured-correlation",
+      );
+
+      expect(requestEvent, "request event should exist").to.exist;
+      expect(responseEvent, "response event should exist").to.exist;
+      expect(responseEvent?.childId).to.equal(childId);
+      expect(responseEvent?.runId).to.equal(runId);
+      expect(responseEvent?.jobId).to.equal(jobId);
+
+      const serverLogs = logJournal.tail({ stream: "server", bucketId: "jsonrpc" });
+      const messages = serverLogs.entries.map((entry) => entry.message);
+      expect(messages).to.include("jsonrpc_response");
+      const responseLog = serverLogs.entries.find((entry) => entry.message === "jsonrpc_response");
+      expect(responseLog?.childId).to.equal(childId);
+      expect(responseLog?.runId).to.equal(runId);
+      expect(responseLog?.jobId).to.equal(jobId);
+    } finally {
+      if (originalToolsCall) {
+        handlers.set("tools/call", originalToolsCall);
+      } else {
+        handlers.delete("tools/call");
+      }
+    }
   });
 });
