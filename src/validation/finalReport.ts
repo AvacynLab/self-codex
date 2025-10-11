@@ -178,6 +178,7 @@ interface StageCoverageRule {
   readonly stageId: string;
   readonly expectedScenarios?: readonly string[] | null;
   readonly expectedMethods?: readonly string[] | null;
+  readonly expectedCalls?: readonly string[] | null;
 }
 
 /**
@@ -214,6 +215,11 @@ const STAGE_COVERAGE_RULES: readonly StageCoverageRule[] = [
     stageId: "04",
     expectedScenarios: ["graph_forge_analyze", "graph_state_autosave"],
     expectedMethods: ["tools/call"],
+    expectedCalls: [
+      "graph_forge_analyze",
+      "graph_state_autosave:start",
+      "graph_state_autosave:stop",
+    ],
   },
   {
     stageId: "05",
@@ -357,6 +363,10 @@ export interface StageReportSummary {
   readonly scenarios: readonly string[];
   /** Scenarios expected by the checklist but missing from artefacts. */
   readonly missingScenarios: readonly string[];
+  /** Call labels captured for the stage, sorted alphabetically for display. */
+  readonly calls: readonly string[];
+  /** Call labels expected by the checklist but missing from artefacts. */
+  readonly missingCalls: readonly string[];
   /** JSON-RPC methods exercised by the stage. */
   readonly methods: readonly string[];
   /** Methods expected by the checklist but absent from artefacts. */
@@ -885,12 +895,14 @@ function buildStageNotes(
   eventSequenceMonotonic: boolean | null,
   missingScenarios: readonly string[],
   missingMethods: readonly string[],
+  missingCalls: readonly string[],
 ): string {
   if (totalCalls === 0 && !summaryPresent) {
     return appendCoverageSuffix(
       `Aucun appel capturé${describeEventSequenceNote(eventsCaptured, eventSequenceMonotonic)}`,
       missingScenarios,
       missingMethods,
+      missingCalls,
     );
   }
   if (totalCalls === 0 && summaryPresent) {
@@ -898,6 +910,7 @@ function buildStageNotes(
       `Résumé disponible (exécution externe)${describeEventSequenceNote(eventsCaptured, eventSequenceMonotonic)}`,
       missingScenarios,
       missingMethods,
+      missingCalls,
     );
   }
   if (errorCount === 0) {
@@ -905,12 +918,14 @@ function buildStageNotes(
       `${totalCalls} appel(s) sans erreur${describeEventSequenceNote(eventsCaptured, eventSequenceMonotonic)}`,
       missingScenarios,
       missingMethods,
+      missingCalls,
     );
   }
   return appendCoverageSuffix(
     `${errorCount}/${totalCalls} appel(s) en erreur${describeEventSequenceNote(eventsCaptured, eventSequenceMonotonic)}`,
     missingScenarios,
     missingMethods,
+    missingCalls,
   );
 }
 
@@ -937,6 +952,7 @@ function appendCoverageSuffix(
   note: string,
   missingScenarios: readonly string[],
   missingMethods: readonly string[],
+  missingCalls: readonly string[],
 ): string {
   const coverageHints: string[] = [];
   if (missingScenarios.length) {
@@ -944,6 +960,9 @@ function appendCoverageSuffix(
   }
   if (missingMethods.length) {
     coverageHints.push(`méthodes manquantes: ${missingMethods.join(", ")}`);
+  }
+  if (missingCalls.length) {
+    coverageHints.push(`appels manquants: ${missingCalls.join(", ")}`);
   }
   if (!coverageHints.length) {
     return note;
@@ -1187,6 +1206,7 @@ export async function runFinalReport(runRoot: string, options: FinalReportOption
     let stageErrors = 0;
     const stageScenarios = new Set<string>();
     const stageMethods = new Set<string>();
+    const stageCalls = new Set<string>();
 
     for (let index = 0; index < pairCount; index += 1) {
       const input = inputs[index];
@@ -1203,7 +1223,16 @@ export async function runFinalReport(runRoot: string, options: FinalReportOption
         uniqueTools.add(toolName);
       }
 
-      const callName = typeof input?.name === "string" ? input.name : typeof output?.name === "string" ? output.name : null;
+      const rawCallName =
+        typeof input?.name === "string"
+          ? input.name
+          : typeof output?.name === "string"
+          ? output.name
+          : null;
+      const callName = rawCallName && rawCallName.trim().length > 0 ? rawCallName.trim() : null;
+      if (callName) {
+        stageCalls.add(callName);
+      }
       const scenarioFromArtefact = extractScenarioFromArtefact(input) ?? extractScenarioFromArtefact(output);
       const scenario = scenarioFromArtefact ?? extractScenarioFromName(callName);
       if (scenario) {
@@ -1281,11 +1310,14 @@ export async function runFinalReport(runRoot: string, options: FinalReportOption
     const summaryPresent = summaryDocument !== null;
     const observedScenarios = Array.from(stageScenarios).sort();
     const observedMethods = Array.from(stageMethods).sort();
+    const observedCalls = Array.from(stageCalls).sort();
     const coverageRule = STAGE_COVERAGE_RULES.find((rule) => rule.stageId === stage.id);
     const expectedScenarios = coverageRule?.expectedScenarios?.slice().sort() ?? [];
     const expectedMethods = coverageRule?.expectedMethods?.slice().sort() ?? [];
+    const expectedCalls = coverageRule?.expectedCalls?.slice().sort() ?? [];
     const missingScenarios = expectedScenarios.filter((scenario) => !stageScenarios.has(scenario));
     const missingMethods = expectedMethods.filter((method) => !stageMethods.has(method));
+    const missingCalls = expectedCalls.filter((call) => !stageCalls.has(call));
     const stageCompleted = pairCount > 0 || summaryPresent;
     let notes = buildStageNotes(
       pairCount,
@@ -1295,6 +1327,7 @@ export async function runFinalReport(runRoot: string, options: FinalReportOption
       eventSequenceMonotonic,
       missingScenarios,
       missingMethods,
+      missingCalls,
     );
     notes = appendStageSpecificDetails(stage.id, summaryDocument, notes);
 
@@ -1309,6 +1342,8 @@ export async function runFinalReport(runRoot: string, options: FinalReportOption
       artefactBytes,
       scenarios: observedScenarios,
       missingScenarios,
+      calls: observedCalls,
+      missingCalls,
       methods: observedMethods,
       missingMethods,
       notes,

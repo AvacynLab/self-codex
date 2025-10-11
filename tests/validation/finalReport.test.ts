@@ -718,9 +718,17 @@ describe("validation final report", () => {
     const stageForge = result.findings.stages.find((stage) => stage.id === "04");
     expect(stageForge?.scenarios).to.deep.equal(["graph_forge_analyze"]);
     expect(stageForge?.missingScenarios).to.deep.equal(["graph_state_autosave"]);
+    expect(stageForge?.calls).to.deep.equal(["graph_forge_analyze"]);
+    expect(stageForge?.missingCalls).to.deep.equal([
+      "graph_state_autosave:start",
+      "graph_state_autosave:stop",
+    ]);
     expect(stageForge?.methods).to.deep.equal(["tools/call"]);
     expect(stageForge?.missingMethods).to.deep.equal([]);
     expect(stageForge?.notes).to.include("scénarios manquants: graph_state_autosave");
+    expect(stageForge?.notes).to.include(
+      "appels manquants: graph_state_autosave:start, graph_state_autosave:stop",
+    );
     expect(stageForge?.eventSequenceMonotonic).to.equal(null);
 
     const stageChildren = result.findings.stages.find((stage) => stage.id === "05");
@@ -951,6 +959,7 @@ describe("validation final report", () => {
     expect(summaryRaw).to.include("séquence non monotone");
     expect(summaryRaw).to.include("Taille totale des artefacts");
     expect(summaryRaw).to.include("scénarios manquants");
+    expect(summaryRaw).to.include("appels manquants: graph_state_autosave:start, graph_state_autosave:stop");
     expect(summaryRaw).to.include("child_attach, child_kill, child_set_limits");
     expect(summaryRaw).to.include("plan_cancel, plan_pause, plan_resume, plan_run_reactive, plan_status");
     expect(summaryRaw).to.include("bb_get, bb_query, bb_set, bb_watch, bb_watch_poll");
