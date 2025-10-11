@@ -21,14 +21,23 @@ import { MemoryHttpResponse, createJsonRpcRequest } from "../helpers/http.js";
 describe("child conversational tools", () => {
   const logger = new StructuredLogger();
   let originalFeatures: FeatureToggles;
+  const originalEnv: Record<string, string | undefined> = {};
 
   before(() => {
     originalFeatures = getRuntimeFeatures();
     configureRuntimeFeatures({ ...originalFeatures, enableChildOpsFine: true, enableEventsBus: true });
+
+    originalEnv.MCP_HTTP_STATELESS = process.env.MCP_HTTP_STATELESS;
+    // The CI environment does not ship an actual Codex child binary which means spawning a
+    // process-backed runtime would block until the ready handshake times out.  Opting into the
+    // HTTP loopback mode gives us a logical child whose pending payloads are still routed through
+    // the full JSON-RPC stack without depending on an external executable.
+    process.env.MCP_HTTP_STATELESS = "yes";
   });
 
   after(async () => {
     configureRuntimeFeatures(originalFeatures);
+    process.env.MCP_HTTP_STATELESS = originalEnv.MCP_HTTP_STATELESS;
     await childSupervisor.disposeAll();
   });
 
