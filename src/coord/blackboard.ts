@@ -1,4 +1,5 @@
-import { EventEmitter } from "events";
+import { EventEmitter } from "node:events";
+// NOTE: Node built-in modules are imported with the explicit `node:` prefix to guarantee ESM resolution in Node.js.
 
 /** Options accepted by {@link BlackboardStore}. */
 export interface BlackboardStoreOptions {

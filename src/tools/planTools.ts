@@ -1,8 +1,9 @@
-import { randomUUID } from "crypto";
-import { writeFile } from "fs/promises";
-import { setTimeout as delay } from "timers/promises";
+import { randomUUID } from "node:crypto";
+import { writeFile } from "node:fs/promises";
+import { setTimeout as delay } from "node:timers/promises";
 import { runtimeTimers, type TimeoutHandle } from "../runtime/timers.js";
 import { z } from "zod";
+// NOTE: Node built-in modules are imported with the explicit `node:` prefix to guarantee ESM resolution in Node.js.
 
 import { ChildCollectedOutputs, ChildRuntimeMessage } from "../childRuntime.js";
 import { ChildSupervisor } from "../childSupervisor.js";

@@ -1,4 +1,5 @@
-import process from "process";
+import process from "node:process";
+// NOTE: Node built-in modules are imported with the explicit `node:` prefix to guarantee ESM resolution in Node.js.
 
 /**
  * Minimal runtime-dependent types derived from the Node.js process globals. The

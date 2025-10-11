@@ -1,8 +1,9 @@
-import { Buffer } from "buffer";
-import { createServer, IncomingMessage, ServerResponse } from "http";
+import { Buffer } from "node:buffer";
+import { createServer, IncomingMessage, ServerResponse } from "node:http";
 import { runtimeTimers, type IntervalHandle } from "../runtime/timers.js";
-import { URL } from "url";
+import { URL } from "node:url";
 import { z } from "zod";
+// NOTE: Node built-in modules are imported with the explicit `node:` prefix to guarantee ESM resolution in Node.js.
 
 import { EventStore, OrchestratorEvent } from "../eventStore.js";
 import { GraphState, GraphStateMetrics } from "../graphState.js";

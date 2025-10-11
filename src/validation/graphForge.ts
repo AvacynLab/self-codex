@@ -1,3 +1,4 @@
+// NOTE: Node built-in modules are imported with the explicit `node:` prefix to guarantee ESM resolution in Node.js.
 /**
  * Stage 4 validation helpers covering the Graph Forge tooling and graph state
  * autosave workflow. The module exposes a reusable runner invoked by the CLI so

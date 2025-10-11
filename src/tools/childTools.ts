@@ -1,7 +1,8 @@
-import { Buffer } from "buffer";
-import process from "process";
+import { Buffer } from "node:buffer";
+import process from "node:process";
 import type { Signal } from "../nodePrimitives.js";
 import { z } from "zod";
+// NOTE: Node built-in modules are imported with the explicit `node:` prefix to guarantee ESM resolution in Node.js.
 
 import {
   ChildCollectedOutputs,

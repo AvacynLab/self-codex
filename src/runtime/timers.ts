@@ -1,9 +1,10 @@
 import {
+// NOTE: Node built-in modules are imported with the explicit `node:` prefix to guarantee ESM resolution in Node.js.
   clearInterval as nodeClearInterval,
   clearTimeout as nodeClearTimeout,
   setInterval as nodeSetInterval,
   setTimeout as nodeSetTimeout,
-} from "timers";
+} from "node:timers";
 
 /**
  * Handle returned by {@link runtimeSetTimeout}. The type mirrors the Node.js

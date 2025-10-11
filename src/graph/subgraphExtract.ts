@@ -1,6 +1,7 @@
-import { promises as fs } from "fs";
+import { promises as fs } from "node:fs";
 import type { ErrnoException } from "../nodePrimitives.js";
-import path from "path";
+import path from "node:path";
+// NOTE: Node built-in modules are imported with the explicit `node:` prefix to guarantee ESM resolution in Node.js.
 
 import { ensureDirectory, resolveWithin } from "../paths.js";
 import type { GraphDescriptorPayload } from "../tools/graphTools.js";

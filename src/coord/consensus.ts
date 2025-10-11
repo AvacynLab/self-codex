@@ -1,5 +1,6 @@
-import { EventEmitter } from "events";
+import { EventEmitter } from "node:events";
 import { z } from "zod";
+// NOTE: Node built-in modules are imported with the explicit `node:` prefix to guarantee ESM resolution in Node.js.
 
 /**
  * Single vote cast by an agent. `value` identifies the chosen option while the

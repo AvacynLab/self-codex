@@ -1,8 +1,9 @@
-import { createHash } from 'crypto';
-import { Buffer } from 'buffer';
-import { createReadStream, promises as fs } from 'fs';
-import path from 'path';
+import { createHash } from 'node:crypto';
+import { Buffer } from 'node:buffer';
+import { createReadStream, promises as fs } from 'node:fs';
+import path from 'node:path';
 import type { BufferEncoding, ErrnoException } from './nodePrimitives.js';
+// NOTE: Node built-in modules are imported with the explicit `node:` prefix to guarantee ESM resolution in Node.js.
 
 import {
   childWorkspacePath,

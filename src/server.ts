@@ -1,19 +1,20 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z, type ZodTypeAny } from "zod";
-import { randomUUID } from "crypto";
-import { Buffer } from "buffer";
-import { readFile, writeFile } from "fs/promises";
-import { resolve as resolvePath, basename as pathBasename } from "path";
-import process from "process";
+import { randomUUID } from "node:crypto";
+import { Buffer } from "node:buffer";
+import { readFile, writeFile } from "node:fs/promises";
+import { resolve as resolvePath, basename as pathBasename } from "node:path";
+import process from "node:process";
 import { runtimeTimers, type IntervalHandle } from "./runtime/timers.js";
-import { pathToFileURL } from "url";
+import { pathToFileURL } from "node:url";
 import { GraphState, type ChildSnapshot, type JobSnapshot } from "./graphState.js";
 import { GraphTransactionManager, GraphTransactionError, GraphVersionConflictError } from "./graph/tx.js";
 import { GraphLockManager } from "./graph/locks.js";
 import { LoggerOptions, StructuredLogger, type LogEntry } from "./logger.js";
 import { EventStore, OrchestratorEvent, type EventKind, type EventLevel, type EventSource } from "./eventStore.js";
 import {
+// NOTE: Node built-in modules are imported with the explicit `node:` prefix to guarantee ESM resolution in Node.js.
   EventBus,
   EVENT_CATEGORIES,
   type EventCategory,
@@ -443,6 +444,9 @@ const logJournal = new LogJournal({
   maxFileSizeBytes: 4 * 1024 * 1024,
   maxFileCount: 5,
 });
+
+/** Timestamp captured when the orchestrator module is initialised. */
+const SERVER_STARTED_AT = Date.now();
 
 /** Default feature toggles used before CLI/flags are parsed. */
 const DEFAULT_FEATURE_TOGGLES: FeatureToggles = {
@@ -1894,6 +1898,91 @@ const McpIntrospectionInputSchema = z.object({}).strict();
 const McpIntrospectionInputShape = McpIntrospectionInputSchema.shape;
 
 /**
+ * Payload accepted by the lightweight `health_check` RPC. The optional flag
+ * allows callers to request extended probe details without making the handler
+ * heavyweight for the common case where a simple availability verdict is
+ * enough.
+ */
+const HealthCheckInputSchema = z
+  .object({
+    include_details: z.boolean().optional(),
+  })
+  .strict();
+const HealthCheckInputShape = HealthCheckInputSchema.shape;
+
+/** Status values surfaced by each health check probe. */
+type HealthCheckStatus = "ok" | "error";
+
+/**
+ * Snapshot describing an individual subsystem probe. The handler reports the
+ * execution latency so operators can spot slow dependencies even when they are
+ * technically up.
+ */
+interface HealthCheckProbeResult {
+  name: string;
+  status: HealthCheckStatus;
+  /** Execution latency (milliseconds) recorded for the probe. */
+  elapsed_ms: number;
+  /** Optional structured details exposed when callers opt-in. */
+  detail?: Record<string, unknown> | null;
+  /** Optional error message when the probe fails. */
+  error?: string | null;
+}
+
+/**
+ * Structured payload returned by the `health_check` RPC. Keeping the contract
+ * explicit in TypeScript avoids regressions when new probes are introduced.
+ */
+interface HealthCheckPayload extends Record<string, unknown> {
+  status: HealthCheckStatus;
+  /** ISO-8601 timestamp describing when the health snapshot was produced. */
+  observed_at: string;
+  /** Server uptime (milliseconds) computed from the module initialisation. */
+  uptime_ms: number;
+  server: { name: string; version: string; protocol: string };
+  probes: HealthCheckProbeResult[];
+}
+
+/**
+ * Executes a probe while capturing latency and optional diagnostics. The helper
+ * normalises thrown values into human friendly messages so the JSON-RPC
+ * contract remains stable even when dependencies fail in unexpected ways.
+ */
+function runHealthCheckProbe(
+  name: string,
+  includeDetails: boolean,
+  task: () => Record<string, unknown> | null | void,
+): HealthCheckProbeResult {
+  const startedAt = Date.now();
+  try {
+    const detail = task();
+    const elapsed = Math.max(0, Date.now() - startedAt);
+    const result: HealthCheckProbeResult = {
+      name,
+      status: "ok",
+      elapsed_ms: elapsed,
+    };
+    if (includeDetails && detail !== undefined) {
+      result.detail = detail ?? null;
+    }
+    return result;
+  } catch (error) {
+    const elapsed = Math.max(0, Date.now() - startedAt);
+    const message = error instanceof Error ? error.message : String(error);
+    const result: HealthCheckProbeResult = {
+      name,
+      status: "error",
+      elapsed_ms: elapsed,
+      error: message,
+    };
+    if (includeDetails) {
+      result.detail = { message };
+    }
+    return result;
+  }
+}
+
+/**
  * Input schema guarding the `resources_list` tool. Accepts optional prefix and
  * limit parameters so clients can page deterministically through the registry.
  */
@@ -2927,6 +3016,76 @@ server.registerTool(
     }
     const capabilities = getMcpCapabilities();
     return { content: [{ type: "text", text: j({ format: "json", capabilities }) }] };
+  },
+);
+
+/**
+ * Lightweight RPC used by smoke tests to validate the orchestrator without
+ * invoking domain specific tools. The response aggregates a handful of quick
+ * probes that cover the primary observability surfaces used in production.
+ */
+server.registerTool(
+  "health_check",
+  {
+    title: "Health check",
+    description: "Retourne l'état courant du serveur MCP et de ses sondes clés.",
+    inputSchema: HealthCheckInputShape,
+  },
+  async (input: unknown) => {
+    const parsed = HealthCheckInputSchema.parse(input ?? {});
+    const includeDetails = parsed.include_details ?? false;
+    const observedAt = new Date();
+
+    const probes: HealthCheckProbeResult[] = [
+      runHealthCheckProbe("mcp_info", includeDetails, () => {
+        const info = getMcpInfo();
+        if (!includeDetails) {
+          return undefined;
+        }
+        return {
+          transports: info.mcp.transports.map((transport) => transport.kind),
+          feature_flags: info.features.length,
+        } satisfies Record<string, unknown>;
+      }),
+      runHealthCheckProbe("event_bus", includeDetails, () => {
+        const latest = eventBus.list({ limit: 1 });
+        if (!includeDetails) {
+          return undefined;
+        }
+        const mostRecent = latest.at(-1) ?? null;
+        return {
+          backlog_size: latest.length,
+          latest_seq: mostRecent?.seq ?? null,
+          latest_kind: mostRecent?.kind ?? null,
+        } satisfies Record<string, unknown>;
+      }),
+      runHealthCheckProbe("log_journal", includeDetails, () => {
+        const tail = logJournal.tail({ stream: "server", limit: 1 });
+        if (!includeDetails) {
+          return undefined;
+        }
+        const lastEntry = tail.entries.at(-1) ?? null;
+        return {
+          next_seq: tail.nextSeq,
+          last_level: lastEntry?.level ?? null,
+          last_message: lastEntry?.message ?? null,
+        } satisfies Record<string, unknown>;
+      }),
+    ];
+
+    const status: HealthCheckStatus = probes.some((probe) => probe.status !== "ok") ? "error" : "ok";
+    const payload: HealthCheckPayload = {
+      status,
+      observed_at: observedAt.toISOString(),
+      uptime_ms: Math.max(0, observedAt.getTime() - SERVER_STARTED_AT),
+      server: { name: SERVER_NAME, version: SERVER_VERSION, protocol: MCP_PROTOCOL_VERSION },
+      probes,
+    };
+
+    return {
+      content: [{ type: "text" as const, text: j({ tool: "health_check", result: payload }) }],
+      structuredContent: payload,
+    };
   },
 );
 

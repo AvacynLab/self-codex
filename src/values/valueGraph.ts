@@ -1,5 +1,6 @@
-import { strict as assert } from "assert";
-import { EventEmitter } from "events";
+import { strict as assert } from "node:assert";
+import { EventEmitter } from "node:events";
+// NOTE: Node built-in modules are imported with the explicit `node:` prefix to guarantee ESM resolution in Node.js.
 
 const DEFAULT_THRESHOLD = 0.6;
 

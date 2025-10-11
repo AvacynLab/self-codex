@@ -1,6 +1,7 @@
 import { flatten, type HierGraph } from "../../graph/hierarchy.js";
 import type { GraphNodeRecord } from "../../graph/types.js";
 import {
+// NOTE: Node built-in modules are imported with the explicit `node:` prefix to guarantee ESM resolution in Node.js.
   type BehaviorNodeDefinition,
   type CompiledBehaviorTree,
 } from "./types.js";

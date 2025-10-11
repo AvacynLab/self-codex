@@ -1,5 +1,6 @@
 import { resolve } from "node:path";
 import { ensureDirectory, ensureGitkeep } from "../paths.js";
+// NOTE: Node built-in modules are imported with the explicit `node:` prefix to guarantee ESM resolution in Node.js.
 
 /**
  * Options accepted by {@link initializeValidationRunLayout}. The helper is in

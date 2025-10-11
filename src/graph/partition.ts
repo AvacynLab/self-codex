@@ -1,5 +1,6 @@
 import { GraphAttributeIndex } from "./index.js";
 import { NormalisedGraph } from "./types.js";
+// NOTE: Node built-in modules are imported with the explicit `node:` prefix to guarantee ESM resolution in Node.js.
 
 export type GraphPartitionObjective = "min-cut" | "community";
 

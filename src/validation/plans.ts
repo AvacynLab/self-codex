@@ -1,3 +1,4 @@
+// NOTE: Node built-in modules are imported with the explicit `node:` prefix to guarantee ESM resolution in Node.js.
 /**
  * Stage 6 validation helpers targeting the Behaviour Tree planning workflow.
  *
