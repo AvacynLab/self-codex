@@ -2549,6 +2549,26 @@ const ChildPromptShape = {
 } as const;
 const ChildPromptSchema = z.object(ChildPromptShape);
 type ChildPromptInput = z.infer<typeof ChildPromptSchema>;
+/**
+ * Structured payload emitted by `child_prompt` so operators can reconcile
+ * transcript growth without replaying the entire conversation history.
+ */
+type ChildPromptStructuredPayload = {
+  /** Identifier assigned to the pending reply waiting on the child. */
+  pending_id: string;
+  /** Identifier of the child that received the appended messages. */
+  child_id: string;
+  /** Number of messages appended to the transcript during the call. */
+  appended: number;
+};
+/**
+ * Canonical shape returned by `child_prompt`, exposing the JSON friendly
+ * payload alongside the textual representation required by MCP clients.
+ */
+type ChildPromptToolResult = {
+  content: Array<{ type: "text"; text: string }>;
+  structuredContent: ChildPromptStructuredPayload;
+};
 
 const ChildPushReplyShape = { pending_id: z.string(), content: z.string() } as const;
 const ChildPushReplySchema = z.object(ChildPushReplyShape);
@@ -2597,6 +2617,28 @@ const ChildChatShape = {
 } as const;
 const ChildChatSchema = z.object(ChildChatShape);
 type ChildChatInput = z.infer<typeof ChildChatSchema>;
+/**
+ * Structured payload surfaced by the `child_chat` tool so HTTP clients can
+ * reason about pending replies without parsing the textual JSON blob.
+ */
+type ChildChatStructuredPayload = {
+  /** Identifier assigned to the pending reply waiting on the child. */
+  pending_id: string;
+  /** Identifier of the child that received the prompt. */
+  child_id: string;
+  /** Role associated with the forwarded content (user/system today). */
+  role: "user" | "system";
+  /** Raw textual content forwarded to the child. */
+  content: string;
+};
+/**
+ * Canonical shape returned by `child_chat`, exposing both textual and
+ * structured content to keep JSON-RPC responses backward compatible.
+ */
+type ChildChatToolResult = {
+  content: Array<{ type: "text"; text: string }>;
+  structuredContent: ChildChatStructuredPayload;
+};
 
 const ChildRenameShape = { child_id: z.string(), name: z.string().min(1) } as const;
 const ChildRenameSchema = z.object(ChildRenameShape);
@@ -6957,7 +6999,23 @@ server.registerTool(
 
 
 
-    return { content: [{ type: "text", text: j({ pending_id: pendingId, child_id }) }] };
+    const payload: ChildPromptStructuredPayload = {
+      // Propagate the pending identifier so callers can reference the stream
+      // produced by the child when acknowledgments arrive asynchronously.
+      pending_id: pendingId,
+      // Echo the targeted child identifier to ease debugging on the consumer
+      // side when multiple conversations are active in parallel.
+      child_id,
+      // Advertise how many messages have been appended to the transcript so the
+      // caller can reconcile the expected transcript growth without re-reading
+      // the entire history.
+      appended: messages.length,
+    };
+
+    return {
+      content: [{ type: "text", text: j(payload) }],
+      structuredContent: payload,
+    } satisfies ChildPromptToolResult;
 
   }
 
@@ -7109,7 +7167,8 @@ server.registerTool(
 
 
 
-    const { child_id, content, role = "user" } = input;
+    const { child_id, content, role: requestedRole } = input;
+    const role: ChildChatStructuredPayload["role"] = requestedRole ?? "user";
 
     const child = graphState.getChild(child_id);
 
@@ -7153,7 +7212,23 @@ server.registerTool(
 
 
 
-    return { content: [{ type: "text", text: j({ pending_id: pendingId, child_id }) }] };
+    const payload: ChildChatStructuredPayload = {
+      // Expose the pending identifier so streaming acknowledgments can reference
+      // the correct in-flight reply when the child pushes partial chunks.
+      pending_id: pendingId,
+      // Echo the child identifier to simplify correlation when operators run
+      // multiple conversations in parallel and need to attribute events.
+      child_id,
+      // Surface the role/content that triggered the prompt so downstream
+      // analytics do not need to rehydrate the original request payload.
+      role,
+      content,
+    };
+
+    return {
+      content: [{ type: "text", text: j(payload) }],
+      structuredContent: payload,
+    } satisfies ChildChatToolResult;
 
   }
 
@@ -8012,6 +8087,16 @@ function collectCorrelationFromPayload(payload: unknown): JsonRpcCorrelationSnap
     }
   }
 
+  if (Object.prototype.hasOwnProperty.call(record, "structuredContent")) {
+    const structured = record.structuredContent;
+    if (structured !== undefined) {
+      // Structured tool responses mirror the textual JSON while surfacing fields such as
+      // `child_id` and `run_id`. Propagate those identifiers into the correlation snapshot so
+      // observability logs can attribute results even when callers rely on the richer payload.
+      snapshot = mergeCorrelationSnapshots(snapshot, collectCorrelationFromPayload(structured));
+    }
+  }
+
   return snapshot;
 }
 
@@ -8177,6 +8262,7 @@ function recordJsonRpcObservability(input: JsonRpcObservabilityInput): void {
       runId: input.correlation.runId ?? null,
       opId: input.correlation.opId ?? null,
       childId: input.correlation.childId ?? null,
+      jobId: input.correlation.jobId ?? null,
       component: "jsonrpc",
       stage: payload.msg,
       elapsedMs: payload.elapsed_ms ?? undefined,
