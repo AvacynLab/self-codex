@@ -973,4 +973,83 @@ describe("validation final report", () => {
     const recommendationsRaw = await readFile(result.recommendationsPath, "utf8");
     expect(recommendationsRaw).to.include("quota exceeded");
   });
+
+  it("normalises whitespace-separated autosave call labels before computing coverage", async () => {
+    const autosaveInputs = [
+      {
+        name: "graph_state_autosave start",
+        request: {
+          method: "POST",
+          url: "http://localhost:8765/mcp",
+          headers: { authorization: "Bearer token" },
+          body: {
+            jsonrpc: "2.0",
+            id: "graph_state_autosave_start_stage4",
+            method: "tools/call",
+            params: {
+              name: "graph_state_autosave",
+              arguments: { action: "start", path: "autosave.json", interval_ms: 1500 },
+            },
+          },
+        },
+      },
+      {
+        name: "graph_state_autosave stop",
+        request: {
+          method: "POST",
+          url: "http://localhost:8765/mcp",
+          headers: { authorization: "Bearer token" },
+          body: {
+            jsonrpc: "2.0",
+            id: "graph_state_autosave_stop_stage4",
+            method: "tools/call",
+            params: { name: "graph_state_autosave", arguments: { action: "stop" } },
+          },
+        },
+      },
+    ];
+
+    const autosaveOutputs = [
+      {
+        name: "graph_state_autosave start",
+        startedAt: "2099-01-01T00:00:04Z",
+        durationMs: 120,
+        response: { status: 200, statusText: "OK", headers: {}, body: { result: { ok: true } } },
+      },
+      {
+        name: "graph_state_autosave stop",
+        startedAt: "2099-01-01T00:00:06Z",
+        durationMs: 80,
+        response: { status: 200, statusText: "OK", headers: {}, body: { result: { ok: true } } },
+      },
+    ];
+
+    await writeFile(
+      join(runRoot, "inputs", "04_forge.jsonl"),
+      autosaveInputs.map((entry) => `${JSON.stringify(entry)}\n`).join(""),
+      { encoding: "utf8", flag: "a" },
+    );
+
+    await writeFile(
+      join(runRoot, "outputs", "04_forge.jsonl"),
+      autosaveOutputs.map((entry) => `${JSON.stringify(entry)}\n`).join(""),
+      { encoding: "utf8", flag: "a" },
+    );
+
+    const clock = () => new Date("2099-01-01T12:00:00Z");
+    const result = await runFinalReport(runRoot, {
+      now: clock,
+      packageJsonPath: join(workspaceRoot, "package.json"),
+    });
+
+    const stageForge = result.findings.stages.find((stage) => stage.id === "04");
+    expect(stageForge?.calls).to.deep.equal([
+      "graph_forge_analyze",
+      "graph_state_autosave:start",
+      "graph_state_autosave:stop",
+    ]);
+    expect(stageForge?.missingCalls).to.deep.equal([]);
+    expect(stageForge?.scenarios).to.deep.equal(["graph_forge_analyze", "graph_state_autosave"]);
+    expect(stageForge?.missingScenarios).to.deep.equal([]);
+  });
 });

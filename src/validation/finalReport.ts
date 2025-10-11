@@ -645,6 +645,42 @@ function extractScenarioFromArtefact(entry: unknown): string | null {
 }
 
 /** Attempts to parse a validation scenario name from the recorded call label. */
+/**
+ * Normalises recorded call labels so coverage checks remain resilient to
+ * whitespace variations. Real validation runs sometimes serialise
+ * `graph_state_autosave start` instead of the canonical
+ * `graph_state_autosave:start`, which would otherwise make the Stage 04
+ * coverage hints report a false negative. The helper only rewrites known
+ * aliases so other call names remain untouched for traceability.
+ */
+function normaliseCallName(name: string | null): string | null {
+  if (!name || typeof name !== "string") {
+    return null;
+  }
+
+  const trimmed = name.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  if (trimmed.includes(":")) {
+    return trimmed;
+  }
+
+  const canonical = trimmed.replace(/\s+/g, " ");
+  const lowerCanonical = canonical.toLowerCase();
+
+  if (lowerCanonical === "graph_state_autosave start") {
+    return "graph_state_autosave:start";
+  }
+
+  if (lowerCanonical === "graph_state_autosave stop") {
+    return "graph_state_autosave:stop";
+  }
+
+  return canonical;
+}
+
 function extractScenarioFromName(name: string | null): string | null {
   if (!name) {
     return null;
@@ -1229,7 +1265,7 @@ export async function runFinalReport(runRoot: string, options: FinalReportOption
           : typeof output?.name === "string"
           ? output.name
           : null;
-      const callName = rawCallName && rawCallName.trim().length > 0 ? rawCallName.trim() : null;
+      const callName = normaliseCallName(rawCallName);
       if (callName) {
         stageCalls.add(callName);
       }
