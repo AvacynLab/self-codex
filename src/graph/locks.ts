@@ -1,4 +1,5 @@
-import { randomUUID } from "crypto";
+import { randomUUID } from "node:crypto";
+// NOTE: Node built-in modules are imported with the explicit `node:` prefix to guarantee ESM resolution in Node.js.
 
 /** Function returning the current epoch milliseconds, injectable for tests. */
 type Clock = () => number;

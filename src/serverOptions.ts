@@ -1,4 +1,5 @@
-import { randomUUID } from "crypto";
+import { randomUUID } from "node:crypto";
+// NOTE: Node built-in modules are imported with the explicit `node:` prefix to guarantee ESM resolution in Node.js.
 
 /**
  * Options describing the HTTP exposure of the orchestrator. When `enabled` is

@@ -1,4 +1,5 @@
 import { GraphDescriptorPayload, GraphDescriptorSchema } from "../tools/graphTools.js";
+// NOTE: Node built-in modules are imported with the explicit `node:` prefix to guarantee ESM resolution in Node.js.
 
 /** Options that tweak the DOT serialisation. */
 export interface DotRenderOptions {

@@ -1,7 +1,8 @@
-import { Buffer } from "buffer";
-import { appendFile, mkdir, rename, rm, stat } from "fs/promises";
-import { dirname } from "path";
+import { Buffer } from "node:buffer";
+import { appendFile, mkdir, rename, rm, stat } from "node:fs/promises";
+import { dirname } from "node:path";
 import type { ErrnoException } from "./nodePrimitives.js";
+// NOTE: Node built-in modules are imported with the explicit `node:` prefix to guarantee ESM resolution in Node.js.
 
 /** Default placeholder inserted when a secret token is redacted. */
 const REDACTION_TOKEN = "[REDACTED]";

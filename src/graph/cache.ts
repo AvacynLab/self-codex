@@ -1,4 +1,5 @@
-import { inspect } from "util";
+import { inspect } from "node:util";
+// NOTE: Node built-in modules are imported with the explicit `node:` prefix to guarantee ESM resolution in Node.js.
 
 /**
  * Serialises arbitrary data into a deterministic JSON string so the cache keys

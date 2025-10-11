@@ -1,6 +1,7 @@
 import { flatten, type HierGraph } from "./hierarchy.js";
 import type { NormalisedGraph, GraphEdgeRecord, GraphNodeRecord, GraphAttributeValue } from "./types.js";
 import {
+// NOTE: Node built-in modules are imported with the explicit `node:` prefix to guarantee ESM resolution in Node.js.
   SUBGRAPH_REGISTRY_KEY,
   type SubgraphDescriptor,
   parseSubgraphRegistry,

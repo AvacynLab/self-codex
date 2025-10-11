@@ -1,6 +1,7 @@
 import { MessageRecord } from "./types.js";
 import type { ChildRuntimeLimits } from "./childRuntime.js";
 import { ChildRecordSnapshot } from "./state/childrenIndex.js";
+// NOTE: Node built-in modules are imported with the explicit `node:` prefix to guarantee ESM resolution in Node.js.
 type AttributeValue = string | number | boolean;
 
 type NodeType = "job" | "child" | "message" | "pending" | "subscription" | "event";

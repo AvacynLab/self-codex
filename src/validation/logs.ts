@@ -1,5 +1,6 @@
-import { copyFile, mkdir, readFile, stat } from "fs/promises";
-import { join } from "path";
+import { copyFile, mkdir, readFile, stat } from "node:fs/promises";
+import { join } from "node:path";
+// NOTE: Node built-in modules are imported with the explicit `node:` prefix to guarantee ESM resolution in Node.js.
 
 import { writeJsonFile } from "./runSetup.js";
 

@@ -1,10 +1,11 @@
-import { spawn, type ChildProcessWithoutNullStreams, type SpawnOptions } from "child_process";
-import { EventEmitter } from "events";
-import { createWriteStream, type WriteStream } from "fs";
-import { writeFile } from "fs/promises";
-import process from "process";
+import { spawn, type ChildProcessWithoutNullStreams, type SpawnOptions } from "node:child_process";
+import { EventEmitter } from "node:events";
+import { createWriteStream, type WriteStream } from "node:fs";
+import { writeFile } from "node:fs/promises";
+import process from "node:process";
 import type { ProcessEnv, ResourceUsage, Signal } from "./nodePrimitives.js";
-import { inspect } from "util";
+import { inspect } from "node:util";
+// NOTE: Node built-in modules are imported with the explicit `node:` prefix to guarantee ESM resolution in Node.js.
 
 import { scanArtifacts, type ArtifactManifestEntry } from "./artifacts.js";
 import { childWorkspacePath, ensureDirectory } from "./paths.js";

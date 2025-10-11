@@ -1,4 +1,5 @@
 import { z } from "zod";
+// NOTE: Node built-in modules are imported with the explicit `node:` prefix to guarantee ESM resolution in Node.js.
 
 import { runtimeTimers } from "../../runtime/timers.js";
 

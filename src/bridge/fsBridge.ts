@@ -1,9 +1,10 @@
-import { randomUUID } from "crypto";
-import { promises as fs } from "fs";
-import { join } from "path";
-import process from "process";
+import { randomUUID } from "node:crypto";
+import { promises as fs } from "node:fs";
+import { join } from "node:path";
+import process from "node:process";
 import { runtimeTimers, type IntervalHandle } from "../runtime/timers.js";
-import { pathToFileURL } from "url";
+import { pathToFileURL } from "node:url";
+// NOTE: Node built-in modules are imported with the explicit `node:` prefix to guarantee ESM resolution in Node.js.
 
 import { handleJsonRpc, type JsonRpcRequest, type JsonRpcResponse } from "../server.js";
 

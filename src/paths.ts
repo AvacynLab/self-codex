@@ -1,7 +1,8 @@
-import { mkdirSync } from 'fs';
-import { mkdir, writeFile } from 'fs/promises';
-import path from 'path';
-import process from 'process';
+import { mkdirSync } from 'node:fs';
+import { mkdir, writeFile } from 'node:fs/promises';
+import path from 'node:path';
+import process from 'node:process';
+// NOTE: Node built-in modules are imported with the explicit `node:` prefix to guarantee ESM resolution in Node.js.
 
 /** Maximum number of characters preserved in a sanitised filename. */
 const MAX_FILENAME_LENGTH = 120;

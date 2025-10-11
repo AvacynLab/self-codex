@@ -1,5 +1,6 @@
 import type { NormalisedGraph, GraphAttributeValue } from "./types.js";
 import { ERROR_CODES, type ErrorCode } from "../types.js";
+// NOTE: Node built-in modules are imported with the explicit `node:` prefix to guarantee ESM resolution in Node.js.
 
 /** Violation reported when a graph breaks one of the enforced invariants. */
 export interface GraphInvariantViolation {

@@ -35,7 +35,9 @@
     "validation:security": "node --import tsx scripts/runSecurityPhase.ts",
     "coverage": "npm run build --silent && c8 --reporter=text-summary --reporter=lcov --reporter=html --check-coverage --statements 85 --functions 85 --lines 85 --branches 70 --exclude \"dist/**\" node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --file tests/setup.ts \"tests/**/*.test.ts\"",
     "bench:scheduler": "node --import tsx tests/perf/scheduler.bench.ts",
-    "lint": "tsc --noEmit --pretty false && tsc --noEmit --project graph-forge/tsconfig.json"
+    "lint": "npm run lint:types && npm run lint:node-builtins",
+    "lint:types": "tsc --noEmit --pretty false && tsc --noEmit --project graph-forge/tsconfig.json",
+    "lint:node-builtins": "node --import tsx scripts/checkNodeBuiltins.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.18.1",
@@ -44,7 +46,7 @@
   "devDependencies": {
     "@types/chai": "^4.3.12",
     "@types/mocha": "^10.0.6",
-    "@types/node": "^22.10.1",
+    "@types/node": "^20.11.30",
     "c8": "^9.1.0",
     "chai": "^5.1.1",
     "mocha": "^10.7.0",

@@ -1,5 +1,6 @@
 import type { Signal } from "../nodePrimitives.js";
-import { inspect } from "util";
+import { inspect } from "node:util";
+// NOTE: Node built-in modules are imported with the explicit `node:` prefix to guarantee ESM resolution in Node.js.
 
 import type { ChildRuntimeLimits } from "../childRuntime.js";
 

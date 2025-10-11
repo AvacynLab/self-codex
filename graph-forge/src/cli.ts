@@ -1,5 +1,7 @@
-﻿import process from "node:process";
+import process from "node:process";
 import { readFile } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
+// NOTE: Node built-in modules are imported with the explicit `node:` prefix to guarantee ESM resolution in Node.js.
 import { compileSource } from "./compiler.js";
 import { criticalPath } from "./algorithms/criticalPath.js";
 import { shortestPath } from "./algorithms/dijkstra.js";
@@ -204,7 +206,17 @@ function printUsage(): void {
   console.log("  cli pipeline.gf --analysis criticalPath --format json");
 }
 
-if (import.meta.main) {
+const isCliEntryPoint = (() => {
+  const executedFromCli = process.argv[1];
+  if (!executedFromCli) {
+    return false;
+  }
+
+  const thisModulePath = fileURLToPath(import.meta.url);
+  return thisModulePath === executedFromCli;
+})();
+
+if (isCliEntryPoint) {
   main(process.argv.slice(2)).catch((error) => {
     console.error(error instanceof Error ? error.message : error);
     process.exit(1);

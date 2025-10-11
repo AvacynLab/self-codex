@@ -1,8 +1,9 @@
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { createServer as createHttpServer, Server as NodeHttpServer } from "http";
-import { Buffer } from "buffer";
-import process from "process";
+import { createServer as createHttpServer, Server as NodeHttpServer } from "node:http";
+import { Buffer } from "node:buffer";
+import process from "node:process";
+// NOTE: Node built-in modules are imported with the explicit `node:` prefix to guarantee ESM resolution in Node.js.
 
 import { StructuredLogger } from "./logger.js";
 import { handleJsonRpc, type JsonRpcRequest, type JsonRpcRouteContext } from "./server.js";

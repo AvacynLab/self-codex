@@ -1,5 +1,6 @@
-import { mkdir, writeFile } from "fs/promises";
-import { dirname, join, resolve as resolvePath } from "path";
+import { mkdir, writeFile } from "node:fs/promises";
+import { dirname, join, resolve as resolvePath } from "node:path";
+// NOTE: Node built-in modules are imported with the explicit `node:` prefix to guarantee ESM resolution in Node.js.
 
 /** Structure describing the critical HTTP environment expected by the MCP server. */
 export interface HttpEnvironmentSummary {
