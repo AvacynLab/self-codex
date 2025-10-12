@@ -95,25 +95,31 @@ function parseStructuredTextPayload(result: unknown): unknown | null {
   if (!result || typeof result !== "object") {
     return null;
   }
+
   const record = result as { content?: Array<{ type?: string; text?: string }> };
-  if (!Array.isArray(record.content)) {
+  if (Array.isArray(record.content)) {
+    for (const entry of record.content) {
+      if (!entry || entry.type !== "text" || typeof entry.text !== "string") {
+        continue;
+      }
+      const text = entry.text.trim();
+      if (!text) {
+        continue;
+      }
+      try {
+        return JSON.parse(text);
+      } catch {
+        return null;
+      }
+    }
     return null;
   }
-  for (const entry of record.content) {
-    if (!entry || entry.type !== "text" || typeof entry.text !== "string") {
-      continue;
-    }
-    const text = entry.text.trim();
-    if (!text) {
-      continue;
-    }
-    try {
-      return JSON.parse(text);
-    } catch {
-      return null;
-    }
-  }
-  return null;
+
+  // Modern handlers return structured JSON objects directly.  When the payload
+  // already matches the expected shape we surface it as-is to keep the caller
+  // logic uniform regardless of the transport variant that produced the
+  // response (textual vs direct JSON).
+  return result;
 }
 
 /**

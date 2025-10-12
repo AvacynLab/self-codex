@@ -169,7 +169,7 @@ function wrapConnectionFunction<T extends (...args: any[]) => any>(
   ports: Set<number>,
   allowLoopback: boolean,
 ): T {
-  const wrapped: T = ((...args: unknown[]) => {
+  const wrapped: T = function wrappedConnection(this: unknown, ...args: unknown[]) {
     if (allowLoopback && isAllowedLoopback(deriveConnectionTarget(args), hosts, ports)) {
       return original.apply(this, args as never);
     }
@@ -178,7 +178,7 @@ function wrapConnectionFunction<T extends (...args: any[]) => any>(
     ) as ErrnoException;
     error.code = "E-NETWORK-BLOCKED";
     throw error;
-  }) as T;
+  } as T;
 
   return wrapped;
 }
