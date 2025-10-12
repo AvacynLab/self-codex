@@ -8,6 +8,8 @@ import { describe, it } from "mocha";
 import { expect } from "chai";
 import { Socket } from "node:net";
 
+import { isAllowedLoopback } from "./lib/networkGuard.js";
+
 describe("offline guard", () => {
   it("refuse toute tentative de connexion sortante", () => {
     const socket = new Socket();
@@ -34,6 +36,29 @@ describe("offline guard", () => {
         );
       }
     }
+  });
+
+  it("autorise les ports éphémères sur la boucle locale même lorsque MCP_TEST_ALLOWED_PORTS est défini", () => {
+    const hosts = new Set(["127.0.0.1", "::1", "localhost"]);
+    const restrictedPorts = new Set<number>([8765]);
+
+    expect(
+      isAllowedLoopback(
+        { host: "127.0.0.1", port: 45000 },
+        hosts,
+        restrictedPorts,
+        true,
+      ),
+    ).to.equal(true);
+
+    expect(
+      isAllowedLoopback(
+        { host: "127.0.0.1", port: 45000 },
+        hosts,
+        restrictedPorts,
+        false,
+      ),
+    ).to.equal(false);
   });
 });
 
