@@ -20,16 +20,102 @@
  *    developers can keep using the runtime normally outside of the test suite.
  */
 
-import { after } from "mocha";
+import { after, before } from "mocha";
 import type { ErrnoException } from "../src/nodePrimitives.js";
 import { Agent as HttpAgent } from "node:http";
 import { Agent as HttpsAgent } from "node:https";
 import { Socket } from "node:net";
 import { TLSSocket } from "node:tls";
+import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { resolve as resolvePath } from "node:path";
+import { once } from "node:events";
+import { setTimeout as delay } from "node:timers/promises";
 
-type RestoreHook = () => void;
+import {
+  deriveConnectionTarget,
+  isAllowedLoopback,
+  type ConnectionTarget,
+} from "./lib/networkGuard.js";
+
+type RestoreHook = () => void | Promise<void>;
 
 const restores: RestoreHook[] = [];
+
+/**
+ * Default test environment variables guaranteeing the HTTP harness boots with a
+ * predictable configuration.  The values mirror the checklist expectations so
+ * end-to-end suites can rely on them without having to guard for undefined
+ * `process.env` entries.
+ */
+const TEST_ENV_DEFAULTS: Record<string, string> = {
+  MCP_HTTP_HOST: "127.0.0.1",
+  MCP_HTTP_PORT: "8765",
+  MCP_HTTP_PATH: "/mcp",
+  MCP_HTTP_JSON: "on",
+  MCP_HTTP_STATELESS: "yes",
+  MCP_HTTP_TOKEN: "test-token",
+  MCP_RUNS_ROOT: "runs",
+  MCP_LOG_FILE: "/tmp/self-codex.test.log",
+};
+
+for (const [key, value] of Object.entries(TEST_ENV_DEFAULTS)) {
+  if (!process.env[key] || process.env[key]?.length === 0) {
+    process.env[key] = value;
+  }
+}
+
+/**
+ * Parses a comma-separated list of ports and returns the successfully parsed
+ * integers.  The helper accepts empty strings and silently drops malformed
+ * entries so the guard keeps running even if an environment variable is
+ * misconfigured.
+ */
+function parseAllowedPorts(raw: string | undefined): number[] {
+  if (!raw) {
+    return [];
+  }
+  const ports: number[] = [];
+  for (const token of raw.split(",")) {
+    const trimmed = token.trim();
+    if (!trimmed.length) {
+      continue;
+    }
+    const parsed = Number.parseInt(trimmed, 10);
+    if (Number.isInteger(parsed) && parsed > 0) {
+      ports.push(parsed);
+    }
+  }
+  return ports;
+}
+
+/**
+ * Wraps a network primitive so it throws for disallowed destinations while
+ * still permitting loopback calls needed by the HTTP end-to-end suites.
+ */
+function wrapConnectionFunction<T extends (...args: any[]) => any>(
+  original: T,
+  moduleName: string,
+  hosts: Set<string>,
+  ports: Set<number>,
+  allowLoopback: boolean,
+  allowEphemeralPorts: boolean,
+): T {
+  const wrapped: T = function wrappedConnection(this: unknown, ...args: unknown[]) {
+    if (
+      allowLoopback &&
+      isAllowedLoopback(deriveConnectionTarget(args), hosts, ports, allowEphemeralPorts)
+    ) {
+      return original.apply(this, args as never);
+    }
+    const error = new Error(
+      `network access via ${moduleName} is disabled during tests`,
+    ) as ErrnoException;
+    error.code = "E-NETWORK-BLOCKED";
+    throw error;
+  } as T;
+
+  return wrapped;
+}
 
 /**
  * Public token mirroring the default deterministic seed.  Exported so unit
@@ -87,70 +173,240 @@ function installDeterministicRandom(): void {
  * synchronously which causes immediate rejection for Promise-returning APIs
  * such as `fetch`.
  */
-function blockFunction<T extends (...args: any[]) => any>(
-  target: { [key: string]: unknown },
-  name: string,
-  moduleName: string,
-): void {
-  const original = target[name] as T;
-  const blocker: T = ((..._args: unknown[]) => {
-    const error = new Error(
-      `network access via ${moduleName}.${name} is disabled during tests`,
-    ) as ErrnoException;
-    error.code = "E-NETWORK-BLOCKED";
-    throw error;
-  }) as T;
-
-  target[name] = blocker;
-  restores.push(() => {
-    target[name] = original;
-  });
-}
-
-/**
- * Installs the network guards across Node's classic HTTP clients and the
- * WHATWG `fetch` API.
- */
 function installNetworkGuards(): void {
-  blockFunction(HttpAgent.prototype as Record<string, unknown>, "createConnection", "http.Agent#");
-  blockFunction(HttpsAgent.prototype as Record<string, unknown>, "createConnection", "https.Agent#");
-  blockFunction(Socket.prototype as Record<string, unknown>, "connect", "net.Socket#");
-  blockFunction(TLSSocket.prototype as Record<string, unknown>, "connect", "tls.TLSSocket#");
+  const allowLoopback = (process.env.MCP_TEST_ALLOW_LOOPBACK ?? "no").toLowerCase() !== "no";
+  const allowEphemeralPorts =
+    (process.env.MCP_TEST_ALLOW_EPHEMERAL_PORTS ?? "yes").toLowerCase() !== "no";
+  // Permet aux suites e2e de lier des ports éphémères sur la boucle locale même
+  // lorsque `MCP_TEST_ALLOWED_PORTS` est défini par l'environnement CI.  Les
+  // ports explicitement autorisés restent prioritaires et cette option peut être
+  // forcée à "no" pour désactiver le comportement.
+  const allowedHosts = new Set(["127.0.0.1", "::1", "localhost"]);
+
+  const extraPorts = parseAllowedPorts(process.env.MCP_TEST_ALLOWED_PORTS);
+  const restrictPorts = extraPorts.length > 0;
+  const allowedPorts = new Set<number>();
+
+  if (restrictPorts) {
+    const configuredPort = Number.parseInt(process.env.MCP_HTTP_PORT ?? "", 10);
+    if (Number.isInteger(configuredPort) && configuredPort > 0) {
+      allowedPorts.add(configuredPort);
+    }
+    for (const extra of extraPorts) {
+      allowedPorts.add(extra);
+    }
+  }
+
+  const originalHttpCreate = HttpAgent.prototype.createConnection;
+  HttpAgent.prototype.createConnection = wrapConnectionFunction(
+    originalHttpCreate,
+    "http.Agent#createConnection",
+    allowedHosts,
+    allowedPorts,
+    allowLoopback,
+    allowEphemeralPorts,
+  );
+  restores.push(() => {
+    HttpAgent.prototype.createConnection = originalHttpCreate;
+  });
+
+  const originalHttpsCreate = HttpsAgent.prototype.createConnection;
+  HttpsAgent.prototype.createConnection = wrapConnectionFunction(
+    originalHttpsCreate,
+    "https.Agent#createConnection",
+    allowedHosts,
+    allowedPorts,
+    allowLoopback,
+    allowEphemeralPorts,
+  );
+  restores.push(() => {
+    HttpsAgent.prototype.createConnection = originalHttpsCreate;
+  });
+
+  const originalSocketConnect = Socket.prototype.connect;
+  Socket.prototype.connect = wrapConnectionFunction(
+    originalSocketConnect,
+    "net.Socket#connect",
+    allowedHosts,
+    allowedPorts,
+    allowLoopback,
+    allowEphemeralPorts,
+  );
+  restores.push(() => {
+    Socket.prototype.connect = originalSocketConnect;
+  });
+
+  const originalTlsConnect = TLSSocket.prototype.connect;
+  TLSSocket.prototype.connect = wrapConnectionFunction(
+    originalTlsConnect,
+    "tls.TLSSocket#connect",
+    allowedHosts,
+    allowedPorts,
+    allowLoopback,
+    allowEphemeralPorts,
+  );
+  restores.push(() => {
+    TLSSocket.prototype.connect = originalTlsConnect;
+  });
 
   if (typeof globalThis.fetch === "function") {
     const originalFetch = globalThis.fetch;
-    globalThis.fetch = ((..._args: Parameters<typeof fetch>) => {
-      const error = new Error(
-        "network access via fetch is disabled during tests",
-      ) as ErrnoException;
+    globalThis.fetch = (async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+      const targetUrl = extractRequestUrl(input);
+      if (
+        allowLoopback &&
+        targetUrl &&
+        isAllowedLoopback(
+          {
+            host: targetUrl.hostname,
+            port: inferPortFromUrl(targetUrl),
+          },
+          allowedHosts,
+          allowedPorts,
+          allowEphemeralPorts,
+        )
+      ) {
+        return originalFetch(input, init);
+      }
+      const error = new Error("network access via fetch is disabled during tests") as ErrnoException;
       error.code = "E-NETWORK-BLOCKED";
-      return Promise.reject(error);
+      throw error;
     }) as typeof fetch;
 
     restores.push(() => {
       globalThis.fetch = originalFetch;
     });
   }
+
+  (globalThis as { __OFFLINE_TEST_GUARD__?: string }).__OFFLINE_TEST_GUARD__ = allowLoopback
+    ? "loopback-only"
+    : "network-blocked";
+}
+
+/** Extracts a URL instance from the WHATWG fetch signature. */
+function extractRequestUrl(input: Parameters<typeof fetch>[0]): URL | null {
+  if (typeof input === "string") {
+    try {
+      return new URL(input);
+    } catch {
+      return null;
+    }
+  }
+  if (input instanceof URL) {
+    return input;
+  }
+  if (typeof Request !== "undefined" && input instanceof Request) {
+    return new URL(input.url);
+  }
+  return null;
+}
+
+/**
+ * Infers the numeric port from a URL, accounting for protocol defaults when no
+ * explicit port is present.
+ */
+function inferPortFromUrl(url: URL): number | undefined {
+  if (url.port) {
+    const parsed = Number.parseInt(url.port, 10);
+    return Number.isInteger(parsed) && parsed > 0 ? parsed : undefined;
+  }
+  if (url.protocol === "http:") {
+    return 80;
+  }
+  if (url.protocol === "https:") {
+    return 443;
+  }
+  return undefined;
 }
 
 installDeterministicRandom();
 installNetworkGuards();
 
-/**
- * Signal to higher-level suites that network access has been disabled so they
- * can gracefully opt-out instead of tripping the guard intentionally.  The
- * HTTP end-to-end suites check this flag in their Mocha `before` hooks and
- * call `this.skip()` when the hermetic environment forbids real socket
- * connections.  Keeping the flag in sync with the guard helps the suites make
- * an explicit decision instead of relying on an exception being thrown.
- */
-(globalThis as { __OFFLINE_TEST_GUARD__?: string }).__OFFLINE_TEST_GUARD__ =
-  "network-blocked";
+let autoHttpServer: ChildProcessWithoutNullStreams | null = null;
 
-after(() => {
+/**
+ * Launches the compiled HTTP server in a detached child process when requested
+ * via `MCP_TEST_AUTO_SERVER=yes`.  The harness removes the need for manual
+ * setup before running the end-to-end suites while keeping the default
+ * behaviour (no extra processes) untouched.
+ */
+before(async function () {
+  if ((process.env.MCP_TEST_AUTO_SERVER ?? "no").toLowerCase() !== "yes") {
+    return;
+  }
+
+  const host = process.env.MCP_HTTP_HOST ?? "127.0.0.1";
+  const port = Number.parseInt(process.env.MCP_HTTP_PORT ?? "8765", 10);
+  const path = process.env.MCP_HTTP_PATH ?? "/mcp";
+  const args = [
+    resolvePath("dist/server.js"),
+    "--no-stdio",
+    "--http",
+    "--http-host",
+    host,
+    "--http-port",
+    String(port),
+    "--http-path",
+    path,
+    "--http-json",
+    "--http-stateless",
+  ];
+
+  autoHttpServer = spawn(process.execPath, args, {
+    env: { ...process.env },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+
+  const readinessUrl = new URL(path, `http://${host}:${port}`);
+  try {
+    await waitForHttpServer(readinessUrl);
+  } catch (error) {
+    autoHttpServer.kill("SIGTERM");
+    await once(autoHttpServer, "exit").catch(() => undefined);
+    autoHttpServer = null;
+    throw error;
+  }
+});
+
+/** Polls the HTTP endpoint until the orchestrator responds with JSON-RPC. */
+async function waitForHttpServer(url: URL): Promise<void> {
+  const token = process.env.MCP_HTTP_TOKEN;
+  const headers: Record<string, string> = {
+    "content-type": "application/json",
+    accept: "application/json",
+  };
+  if (token) {
+    headers.authorization = `Bearer ${token}`;
+  }
+
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    try {
+      const response = await fetch(url, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ jsonrpc: "2.0", id: "health-check", method: "mcp_info", params: {} }),
+      });
+      if (response.status === 200 || response.status === 401) {
+        return;
+      }
+    } catch {
+      // Intentionally ignored: the server might not be ready yet.
+    }
+    await delay(100);
+  }
+  throw new Error(`HTTP server at ${url.toString()} did not become ready in time`);
+}
+
+after(async () => {
   while (restores.length > 0) {
     const restore = restores.pop();
-    restore?.();
+    await restore?.();
+  }
+
+  if (autoHttpServer) {
+    autoHttpServer.kill("SIGTERM");
+    await once(autoHttpServer, "exit").catch(() => undefined);
+    autoHttpServer = null;
   }
 });
 

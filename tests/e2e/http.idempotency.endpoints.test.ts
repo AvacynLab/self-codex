@@ -1,19 +1,18 @@
-import { after, afterEach, before, describe, it } from "mocha";
+import { after, before, describe, it } from "mocha";
 import { expect } from "chai";
-import sinon from "sinon";
 import { randomUUID } from "node:crypto";
 
 import { StructuredLogger } from "../../src/logger.js";
 import { startHttpServer, type HttpServerHandle } from "../../src/httpServer.js";
-import {
-  childSupervisor,
-  configureRuntimeFeatures,
-  getRuntimeFeatures,
-  server as mcpServer,
-} from "../../src/server.js";
+import { configureRuntimeFeatures, getRuntimeFeatures, server as mcpServer } from "../../src/server.js";
 import type { FeatureToggles } from "../../src/serverOptions.js";
-import type { ChildRuntimeStatus } from "../../src/childRuntime.js";
-import type { ChildRecordSnapshot } from "../../src/state/childrenIndex.js";
+
+interface ChildSnapshot {
+  child_id: string;
+  idempotent: boolean;
+  idempotency_key: string | null;
+  endpoint: { url: string; headers: Record<string, string> } | null;
+}
 
 interface JsonRpcResponseBody<T> {
   jsonrpc: "2.0";
@@ -61,7 +60,7 @@ describe("http idempotency endpoints", () => {
 
   before(async function () {
     const offlineGuard = (globalThis as { __OFFLINE_TEST_GUARD__?: string }).__OFFLINE_TEST_GUARD__;
-    if (offlineGuard) {
+    if (offlineGuard && offlineGuard !== "loopback-only") {
       this.skip();
     }
 
@@ -99,10 +98,6 @@ describe("http idempotency endpoints", () => {
     configureRuntimeFeatures(originalFeatures);
   });
 
-  afterEach(() => {
-    sinon.restore();
-  });
-
   it("replays tx_begin payloads when the idempotency key is reused", async () => {
     const key = "http-tx-batch";
     const params = {
@@ -123,82 +118,6 @@ describe("http idempotency endpoints", () => {
   });
 
   it("replays child_batch_create payloads when all entries expose idempotency keys", async () => {
-    const now = Date.now();
-    const statusOne: ChildRuntimeStatus = {
-      childId: "child-http-1",
-      pid: 42,
-      command: "node",
-      args: ["child.js"],
-      workdir: "/tmp/child-http-1",
-      startedAt: now,
-      lastHeartbeatAt: null,
-      lifecycle: "running",
-      closed: false,
-      exit: null,
-      resourceUsage: null,
-    };
-    const statusTwo: ChildRuntimeStatus = {
-      ...statusOne,
-      childId: "child-http-2",
-      workdir: "/tmp/child-http-2",
-    };
-
-    const snapshotOne: ChildRecordSnapshot = {
-      childId: statusOne.childId,
-      pid: statusOne.pid,
-      workdir: statusOne.workdir,
-      state: "running",
-      startedAt: statusOne.startedAt,
-      lastHeartbeatAt: null,
-      retries: 0,
-      metadata: { role: "planner" },
-      endedAt: null,
-      exitCode: null,
-      exitSignal: null,
-      forcedTermination: false,
-      stopReason: null,
-      role: "planner",
-      limits: null,
-      attachedAt: statusOne.startedAt,
-    };
-    const snapshotTwo: ChildRecordSnapshot = {
-      ...snapshotOne,
-      childId: statusTwo.childId,
-      workdir: statusTwo.workdir,
-      metadata: { role: "reviewer" },
-      role: "reviewer",
-    };
-
-    const createStub = sinon.stub(childSupervisor, "createChild");
-    createStub
-      .onCall(0)
-      .resolves({
-        childId: statusOne.childId,
-        runtime: {
-          manifestPath: `${statusOne.workdir}/manifest.json`,
-          logPath: `${statusOne.workdir}/log.ndjson`,
-          getStatus: () => statusOne,
-        },
-        index: snapshotOne,
-        readyMessage: null,
-      });
-    createStub
-      .onCall(1)
-      .resolves({
-        childId: statusTwo.childId,
-        runtime: {
-          manifestPath: `${statusTwo.workdir}/manifest.json`,
-          logPath: `${statusTwo.workdir}/log.ndjson`,
-          getStatus: () => statusTwo,
-        },
-        index: snapshotTwo,
-        readyMessage: null,
-      });
-
-    sinon.stub(childSupervisor, "kill").resolves();
-    sinon.stub(childSupervisor, "waitForExit").resolves();
-    sinon.stub(childSupervisor, "gc").callsFake(() => undefined);
-
     const payload = {
       entries: [
         {
@@ -222,7 +141,43 @@ describe("http idempotency endpoints", () => {
     expect(second.status).to.equal(200);
     expect(first.body.error).to.equal(undefined);
     expect(second.body.error).to.equal(undefined);
-    expect(second.body.result).to.deep.equal(first.body.result);
-    expect(createStub.callCount).to.equal(2);
+
+    const firstResult = first.body.result as
+      | { children?: ChildSnapshot[]; created?: number; idempotent_entries?: number }
+      | undefined;
+    const secondResult = second.body.result as
+      | { children?: ChildSnapshot[]; created?: number; idempotent_entries?: number }
+      | undefined;
+
+    expect(firstResult, "missing first batch response").to.not.equal(undefined);
+    expect(secondResult, "missing second batch response").to.not.equal(undefined);
+    if (!firstResult || !secondResult) {
+      throw new Error("child_batch_create did not return payloads");
+    }
+
+    const firstChildren = (firstResult.children ?? []) as ChildSnapshot[];
+    const secondChildren = (secondResult.children ?? []) as ChildSnapshot[];
+
+    expect(firstChildren).to.have.lengthOf(payload.entries.length);
+    expect(secondChildren).to.have.lengthOf(payload.entries.length);
+
+    const firstIds = firstChildren.map((child) => child.child_id);
+    const secondIds = secondChildren.map((child) => child.child_id);
+
+    expect(firstResult.created).to.equal(payload.entries.length);
+    expect(firstResult.idempotent_entries).to.equal(0);
+    for (const child of firstChildren) {
+      expect(child.idempotent).to.equal(false);
+      expect(child.endpoint?.url).to.match(/^http:\/\/(127\.0\.0\.1|0\.0\.0\.0):\d+\/mcp$/);
+      expect(child.idempotency_key).to.be.a("string");
+    }
+
+    expect(secondResult.created).to.equal(0);
+    expect(secondResult.idempotent_entries).to.equal(payload.entries.length);
+    expect(secondIds).to.deep.equal(firstIds);
+    for (const child of secondChildren) {
+      expect(child.idempotent).to.equal(true);
+      expect(child.idempotency_key).to.be.a("string");
+    }
   });
 });

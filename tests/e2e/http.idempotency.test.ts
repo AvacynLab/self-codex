@@ -52,7 +52,7 @@ describe("http idempotency propagation", () => {
 
   before(async function () {
     const offlineGuard = (globalThis as { __OFFLINE_TEST_GUARD__?: string }).__OFFLINE_TEST_GUARD__;
-    if (offlineGuard) {
+    if (offlineGuard && offlineGuard !== "loopback-only") {
       this.skip();
     }
     originalFeatures = getRuntimeFeatures();
