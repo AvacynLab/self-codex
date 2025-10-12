@@ -1,29 +1,55 @@
-# CI workflow to guarantee build, lint, test, and coverage checks across Node versions.
+# This GitHub Actions workflow maintains the guarantee that every change
+# continues to build and pass unit tests on Node.js 20, matching the Cloud
+# environment requirements described in AGENTS.md. Each step is documented to
+# help future maintainers understand the rationale.
 name: CI
 
 on:
   push:
-    branches: ["**"]
+    branches:
+      - main
   pull_request:
-    branches: ["**"]
 
 jobs:
-  node-ci:
-    name: Node.js CI
+  build-and-test:
+    name: Build and unit tests (Node 20)
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        node-version: ["18", "20", "22"]
+    steps:
+      - name: Checkout repository
+        # Ensure the workflow always tests the current revision
+        uses: actions/checkout@v4
+
+      - name: Use Node.js 20.x
+        # Align the CI runtime with the mandated Node >= 20 environment
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20.x'
+          cache: 'npm'
+
+      - name: Install dependencies
+        # npm ci respects the lockfile and installs both prod and dev deps
+        run: npm ci
+
+      - name: Build TypeScript sources
+        # Recreate the official build pipeline exactly as documented
+        run: npm run build
+
+      - name: Run unit test suite
+        # Execute the Mocha-based unit test entry point required by the checklist
+        run: npm run test:unit
+
+  http-e2e:
+    name: HTTP end-to-end (loopback allowed)
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Use Node.js ${{ matrix.node-version }}
+      - name: Use Node.js 20.x
         uses: actions/setup-node@v4
         with:
-          node-version: ${{ matrix.node-version }}
-          cache: "npm"
+          node-version: '20.x'
+          cache: 'npm'
 
       - name: Install dependencies
         run: npm ci
@@ -31,18 +57,5 @@ jobs:
       - name: Build TypeScript sources
         run: npm run build
 
-      - name: Lint TypeScript projects
-        run: npm run lint
-
-      - name: Run unit tests
-        run: npm test
-
-      - name: Generate coverage report
-        run: npm run coverage
-
-      - name: Upload coverage artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: coverage-${{ matrix.node-version }}
-          path: coverage
-          if-no-files-found: error
+      - name: Run HTTP e2e suite
+        run: npm run test:e2e:http

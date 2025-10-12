@@ -14,13 +14,11 @@ interface CapturedInvocation {
   args: Record<string, unknown> | null;
 }
 
-/**
- * Issues a JSON-RPC call against the stateless HTTP endpoint while decorating
- * the request with the headers expected from Codex child sessions.
- */
-async function invokeHttp(
+/** Posts a JSON-RPC payload to the stateless HTTP endpoint. */
+async function postJson(
   url: string,
-  headers: Record<string, string>,
+  body: unknown,
+  headers: Record<string, string> = {},
 ): Promise<{ status: number; json: unknown }> {
   const response = await fetch(url, {
     method: "POST",
@@ -29,14 +27,25 @@ async function invokeHttp(
       accept: "application/json",
       ...headers,
     },
-    body: JSON.stringify({
-      jsonrpc: "2.0",
-      id: randomUUID(),
-      method: "tools/call",
-      params: { name: "child_status", arguments: { child_id: "child-from-http" } },
-    }),
+    body: JSON.stringify(body),
   });
   return { status: response.status, json: await response.json() };
+}
+
+/**
+ * Issues a JSON-RPC call against the stateless HTTP endpoint while decorating
+ * the request with the headers expected from Codex child sessions.
+ */
+async function invokeHttp(
+  url: string,
+  headers: Record<string, string>,
+): Promise<{ status: number; json: unknown }> {
+  return postJson(url, {
+    jsonrpc: "2.0",
+    id: randomUUID(),
+    method: "tools/call",
+    params: { name: "child_status", arguments: { child_id: "child-from-http" } },
+  }, headers);
 }
 
 describe("http child context propagation", () => {
@@ -44,15 +53,18 @@ describe("http child context propagation", () => {
   let handle: HttpServerHandle;
   let baseUrl: string;
   let originalFeatures: FeatureToggles;
+  let originalToken: string | undefined;
   let handlers: Map<string, ToolsCallHandler> | undefined;
   let originalToolsCall: ToolsCallHandler | undefined;
   let captured: CapturedInvocation | null = null;
 
   before(async function () {
     const offlineGuard = (globalThis as { __OFFLINE_TEST_GUARD__?: string }).__OFFLINE_TEST_GUARD__;
-    if (offlineGuard) {
+    if (offlineGuard && offlineGuard !== "loopback-only") {
       this.skip();
     }
+    originalToken = process.env.MCP_HTTP_TOKEN;
+    delete process.env.MCP_HTTP_TOKEN;
     originalFeatures = getRuntimeFeatures();
     configureRuntimeFeatures({ ...originalFeatures, enableChildOpsFine: true });
 
@@ -107,10 +119,31 @@ describe("http child context propagation", () => {
       }
     }
     configureRuntimeFeatures(originalFeatures);
+    if (originalToken === undefined) {
+      delete process.env.MCP_HTTP_TOKEN;
+    } else {
+      process.env.MCP_HTTP_TOKEN = originalToken;
+    }
   });
 
   afterEach(() => {
     captured = null;
+  });
+
+  it("lists the available tools over the stateless HTTP transport", async () => {
+    const { status, json } = await postJson(baseUrl, {
+      jsonrpc: "2.0",
+      id: "stateless-tools",
+      method: "tools/list",
+    });
+
+    expect(status).to.equal(200);
+    const tools = (json as { result?: { tools?: Array<{ name?: string }> } }).result?.tools ?? [];
+    const toolNames = tools
+      .map((entry) => entry?.name)
+      .filter((name): name is string => typeof name === "string");
+    expect(toolNames).to.include("mcp_info");
+    expect(toolNames).to.include("tools/call");
   });
 
   it("forwards child headers and limits to the underlying handler", async () => {

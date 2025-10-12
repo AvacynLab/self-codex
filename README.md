@@ -20,6 +20,63 @@ le dépôt : `npm ci` lorsqu'un lockfile est présent, sinon
 `npm install --omit=dev --no-save --no-package-lock`, puis `npm run build` et
 configuration éventuelle de `~/.codex/config.toml`.
 
+## Build
+
+- **Prerequis** : Node.js ≥ 20 et `npm ci` pour respecter le lockfile existant.
+- **Pipeline officiel** : `npm ci && npm run build` construit `dist/` et `graph-forge/`.
+- **Types Node** : `@types/node` reste dans `dependencies` afin que les conteneurs
+  cloud récupèrent automatiquement les définitions lors d'un `npm ci` minimal.
+- **Fallback portable** : `npm run build:portable` détecte l'absence de `tsc` dans
+  `node_modules/.bin/` et bascule automatiquement sur `npx --yes typescript` pour
+  compiler la racine puis `graph-forge/`.
+- **Setup automatisé** : `scripts/setup-agent-env.sh` neutralise les variables
+  npm (`NPM_CONFIG_PRODUCTION`, `NPM_CONFIG_OMIT`) et relance `npm ci --include=dev`
+  avant de construire. Le script vérifie également la présence de
+  `node_modules/@types/node` et retombe sur `npx typescript` si nécessaire.
+- **Diagnostic environnement** : `node scripts/verify-env.mjs` imprime un JSON
+  récapitulant la version de Node.js, la présence de `@types/node`, de `tsc`, de
+  `tsx`, ainsi que les fichiers `tsconfig.json` et `package-lock.json`. Pratique
+  pour confirmer qu'un conteneur CI respecte les prérequis Node ≥ 20.
+
+## Tests
+
+- `npm run test:unit` exécute l'intégralité de la suite avec un garde-fou
+  réseau qui bloque toute sortie non-loopback. C'est la commande par défaut en
+  CI et pour les revues locales rapides.
+- `npm run test:e2e:http` active automatiquement `MCP_TEST_ALLOW_LOOPBACK=yes`
+  puis relance Mocha avec les scénarios HTTP de bout en bout. Utilisez cette
+  commande lorsque vous souhaitez valider les chemins réseau : elle laisse la
+  garde activée pour l'Internet public, mais autorise `127.0.0.1`/`::1`.
+- Les suites peuvent recevoir des flags Mocha supplémentaires via
+  `npm run test:e2e:http -- --grep "http"` (transmis tel quel au runner).
+
+
+## Environnement Cloud
+
+- **Commandes recommandées** :
+  - `npm ci && npm run build` pour reconstruire l'orchestrateur à partir d'un
+    workspace propre.
+  - `npm run build:portable` lorsque l'image de base ne fournit pas `tsc` dans
+    le `PATH`.
+  - `node scripts/setup-agent-env.sh` dans les jobs CI pour neutraliser les
+    options npm agressives.
+- **Variables utiles** :
+  - `MCP_HTTP_*` : configure l'hôte, le port, le chemin et le mode stateless du
+    transport HTTP (ex. `MCP_HTTP_HOST`, `MCP_HTTP_PORT`, `MCP_HTTP_TOKEN`).
+  - `MCP_LOG_*` : positionne le chemin du log structuré (`MCP_LOG_FILE`), la
+    politique de rotation (`MCP_LOG_ROTATE_SIZE`, `MCP_LOG_ROTATE_KEEP`) et la
+    rédaction (`MCP_LOG_REDACT`).
+  - `MCP_*_ROOT` : `MCP_RUNS_ROOT` et `MCP_CHILDREN_ROOT` redirigent les
+    répertoires d'exécution vers des volumes persistants.
+  - `MCP_QUALITY_*` : active le garde-fou qualité (`MCP_QUALITY_GATE`,
+    `MCP_QUALITY_THRESHOLD`).
+  - `IDEMPOTENCY_TTL_MS` : contrôle la rétention des clés d'idempotence côté
+    serveur pour éviter les replays accidentels.
+- **Observabilité** : `scripts/record-run.mjs` pilote le serveur HTTP, enchaîne
+  `mcp_info`, `tools/list`, les opérations de graphe et le cycle enfant Codex,
+  puis génère un dossier `runs/validation_<date>/` avec les requêtes JSONL,
+  réponses, événements, journaux et rapports synthétiques.
+
 ## Transports disponibles
 
 - **STDIO (par défaut)** — `npm run start` ou `node dist/server.js`. C'est le

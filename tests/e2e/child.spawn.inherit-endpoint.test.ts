@@ -27,7 +27,7 @@ describe("child_spawn_codex (nested http loopback)", () => {
 
   before(async function () {
     const offlineGuard = (globalThis as { __OFFLINE_TEST_GUARD__?: string }).__OFFLINE_TEST_GUARD__;
-    if (offlineGuard) {
+    if (offlineGuard && offlineGuard !== "loopback-only") {
       this.skip();
     }
 

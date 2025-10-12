@@ -1,314 +1,381 @@
-Parfait. Voici tout ce qu’il te faut, prêt à copier-coller : 
-
-* un **script de configuration** (setup) fiable pour l’environnement de l’agent (Mode A, avec `@types/node`)
-* la **liste des variables d’environnement** à définir dans le panel
-* une **liste de tâches à cocher** pour l’agent afin de tester les outils et le fonctionnement global, avec consignes de journalisation.
+Voici ta **liste de tâches à cocher**, agent, basée sur l’état *réel* du dépôt actuel que j’ai audité et sur les constats précédents. Elle est organisée **fichier par fichier**, avec objectifs, sous-étapes, extraits de code quand c’est utile, et critères d’acceptation. Suis l’ordre. N’efface pas le lockfile. Ne change pas le modèle ESM/NodeNext. Utilise Node ≥ 20.
 
 ---
 
-## 1) Script de configuration (à copier-coller)
+# Brief à l’agent (lis-moi avant d’agir)
 
-Enregistre-le à la racine du repo sous `scripts/setup-agent-env.sh` (ou colle-le dans le champ “setup script” de l’agent Cloud).
+* Objectif : garantir un **build reproductible et fiable en environnement Cloud**, maintenir la **cohérence des imports `node:`**, sécuriser le **serveur MCP HTTP**, et **couvrir** par des tests e2e les points critiques (auth, idempotence, enfants, graphes, logs, timeouts).
+* Contraintes :
 
-```
-#!/usr/bin/env bash
-set -euo pipefail
+  * Conserver `tsconfig.json` en **NodeNext** avec `types: ["node"]`.
+  * `@types/node` **reste en `dependencies`** (choix robuste Cloud).
+  * **Ne pas** modifier `package-lock.json` sauf si explicitement demandé.
+  * Les tests doivent pouvoir tourner localement et en CI avec **npm ci**.
+* Règles build/tests :
 
-echo "🔎 Vérification Node/npm"
-node -v
-npm -v
-
-# Ce projet est en Mode A : build avec @types/node (devDeps) + lockfile
-# => On exige npm ci (reproductible) sinon on échoue explicitement.
-if [[ ! -f package-lock.json ]]; then
-  echo "❌ package-lock.json manquant. Ce dépôt requiert 'npm ci' (Mode A)."
-  exit 2
-fi
-
-echo "🔧 Installation reproductible (npm ci)"
-npm ci
-
-echo "🏗️ Build TypeScript (src + graph-forge)"
-npm run build
-
-if [[ ! -f dist/server.js ]]; then
-  echo "❌ dist/server.js introuvable après build"
-  exit 3
-fi
-
-# Optionnel : config Codex CLI pour STDIO (désactivable avec DISABLE_CLI_CONFIG=1)
-if [[ "${DISABLE_CLI_CONFIG:-0}" != "1" ]]; then
-  echo "📝 Écriture de ~/.codex/config.toml (STDIO)"
-  mkdir -p "$HOME/.codex"
-  REPO_DIR="$(pwd)"
-  cat > "$HOME/.codex/config.toml" <<EOF
-[mcp_servers.self-fork-orchestrator]
-command = "node"
-args = ["${REPO_DIR}/dist/server.js"]
-startup_timeout_sec = 20
-tool_timeout_sec = 60
-EOF
-fi
-
-# Démarrage HTTP en arrière-plan si demandé
-if [[ "${START_HTTP:-1}" == "1" ]]; then
-  echo "🚀 Démarrage MCP HTTP en arrière-plan"
-  pkill -f "node .*dist/server.js" 2>/dev/null || true
-
-  : "${MCP_HTTP_HOST:=0.0.0.0}"
-  : "${MCP_HTTP_PORT:=8765}"
-  : "${MCP_HTTP_PATH:=/mcp}"
-  : "${MCP_HTTP_JSON:=on}"
-  : "${MCP_HTTP_STATELESS:=yes}"
-
-  # Journalisation
-  mkdir -p /tmp
-  LOG_FILE="/tmp/mcp_http.log"
-  echo "→ Log: $LOG_FILE"
-
-  nohup node dist/server.js \
-    --http \
-    --http-host "$MCP_HTTP_HOST" \
-    --http-port "$MCP_HTTP_PORT" \
-    --http-path "$MCP_HTTP_PATH" \
-    --http-json "$MCP_HTTP_JSON" \
-    --http-stateless "$MCP_HTTP_STATELESS" \
-    > "$LOG_FILE" 2>&1 & echo $! > /tmp/mcp_http.pid
-
-  sleep 1
-  echo "✅ MCP HTTP PID: $(cat /tmp/mcp_http.pid 2>/dev/null || echo 'n/a')"
-  echo "🌐 Endpoint: http://${MCP_HTTP_HOST}:${MCP_HTTP_PORT}${MCP_HTTP_PATH}"
-else
-  echo "ℹ️ START_HTTP=0 → serveur HTTP non démarré (STDIO seul)."
-fi
-
-echo "🎉 Setup terminé"
-```
-
-> Remarque importante : **Mode A** signifie que le build **dépend** de `devDependencies` (dont `@types/node`), **donc on utilise `npm ci`** et on **n’omet pas** les devDeps.
+  * Build officiel : `npm ci && npm run build`.
+  * Node ≥ 20.
+  * Pas d’option npm qui omet les devDeps au build (ou prévoir fallback `npx typescript`).
+  * Les nouveaux tests : **tap/mocha + tsx**, pas de dépendances exotiques.
 
 ---
 
-## 2) Variables d’environnement (panel de l’agent)
+# Tâches à cocher (avec sous-étapes et critères d’acceptation)
 
-Renseigne les clés suivantes (toutes sont sûres par défaut ; certaines vivement recommandées) :
+## 1) `scripts/setup-agent-env.sh` — rendre le setup infaillible
 
-### Recommandées (HTTP actif)
+* [x] **Mettre à jour le script** pour neutraliser toute config npm qui omettrait les devDeps et prévoir un fallback `npx typescript` si `tsc` n’est pas dans le PATH.
 
-* `START_HTTP=1`
-* `MCP_HTTP_HOST=0.0.0.0`
-* `MCP_HTTP_PORT=8765`
-* `MCP_HTTP_PATH=/mcp`
-* `MCP_HTTP_JSON=on`
-* `MCP_HTTP_STATELESS=yes`
-* *(si tu veux protéger l’endpoint)* `MCP_HTTP_TOKEN=<ton_token_long_et_aléatoire>`
+  * Sous-étapes :
 
-### Exécution & chemins
+    * [x] Ajouter neutralisation : `unset NPM_CONFIG_PRODUCTION`, `unset NPM_CONFIG_OMIT`, `export NODE_ENV=development`, `npm ci --include=dev`.
+    * [x] Vérifier la présence de `node_modules/@types/node` (doit être là car en `dependencies`, mais garde le check).
+    * [x] Si `node_modules/.bin/tsc` est absent, utiliser `npx --yes typescript tsc` pour compiler (fallback).
+    * [x] Corriger le commentaire en tête (ce repo a **@types/node en dependencies**, pas en devDeps).
+  * **Snippet (remplacer la partie install/build)** :
 
-* `NODE_ENV=production`
-* `FORCE_COLOR=1`
-* `MCP_RUNS_ROOT=runs`
-* `MCP_CHILDREN_ROOT=children`
+    ```bash
+    # Neutralise toute config npm qui omet les devDeps
+    unset NPM_CONFIG_PRODUCTION || true
+    unset NPM_CONFIG_OMIT || true
+    export NODE_ENV=development
 
-### Journalisation & rotation
+    echo "🔧 npm ci (inclut devDeps et respecte lockfile)"
+    npm ci --include=dev
 
-* `MCP_LOG_FILE=/tmp/self-codex.log`
-* `MCP_LOG_ROTATE_SIZE=10mb`         *(formats acceptés : 10mb, 100mb, etc.)*
-* `MCP_LOG_ROTATE_KEEP=5`
-* `MCP_LOG_REDACT=on`                *(masque les secrets connus dans les logs)*
+    echo "🧪 Vérification @types/node"
+    if [[ ! -d node_modules/@types/node ]]; then
+      echo "⚠️ @types/node absent — installation de secours"
+      npm install @types/node@^20 --no-save --no-package-lock
+    fi
 
-### Comportement & qualité
+    echo "🏗️ Build"
+    if [[ -x node_modules/.bin/tsc ]]; then
+      npm run build
+    else
+      npx --yes typescript tsc && npx --yes typescript tsc -p graph-forge/tsconfig.json
+    fi
+    ```
+  * **Critères d’acceptation** :
 
-* `MCP_ENABLE_REFLECTION=true`
-* `MCP_QUALITY_GATE=true`
-* `MCP_QUALITY_THRESHOLD=70`         *(0–100)*
+    * `npm ci` ne saute plus les devDeps même si l’environnement les omet par défaut.
+    * `dist/server.js` est présent après setup sur un environnement vierge.
+    * Le commentaire du script ne mentionne plus “Mode A = devDeps” pour `@types/node`.
 
-### Idempotence
+## 2) `package.json` — scripts utilitaires “portable” (sans casser l’existant)
 
-* `IDEMPOTENCY_TTL_MS=120000`        *(durée de conservation des clés – 2 min)*
+* [x] **Ajouter** un script de secours pour build portable.
 
-### Enfants (fork Codex)
+  * Sous-étapes :
 
-* *(optionnel)* `MCP_CHILD_COMMAND=` *(par défaut : binaire Node courant)*
-* *(optionnel)* `MCP_CHILD_ARGS=--max-old-space-size=512` *(args Node enfants)*
+    * [x] Ajouter :
 
-### STDIO uniquement (si tu ne veux pas écrire ~/.codex/config.toml)
+      ```json
+      "build:portable": "node -e \"process.exit(require('fs').existsSync('node_modules/.bin/tsc')?0:1)\" || npx --yes typescript tsc && npx --yes typescript tsc -p graph-forge/tsconfig.json"
+      ```
+    * [x] Ne pas modifier `dependencies` / `devDependencies` existants (tu as déjà `@types/node` en `dependencies` → bien).
+  * **Critères d’acceptation** :
 
-* `DISABLE_CLI_CONFIG=1` *(empêche l’écriture de la config CLI)*
+    * `npm run build:portable` fonctionne sur un env qui a omis `tsc`.
+    * Aucun changement au lockfile.
+
+## 3) `tsconfig.json` (racine) — audit et verrouillage
+
+* [x] **Confirmer** les options actuelles : `module: "NodeNext"`, `moduleResolution: "NodeNext"`, `lib: ["ES2022"]`, `types: ["node"]`, `exclude: ["dist", "node_modules", "tests"]`.
+* [x] **Ne rien changer** si déjà conforme (c’est le cas).
+* **Critères d’acceptation** :
+
+  * `tsc --showConfig` reflète bien ces options.
+
+## 4) `graph-forge/tsconfig.json` — cohérence
+
+* [x] **S’assurer** qu’il `extends` le tsconfig racine et laisse `declaration: false`.
+* [x] **Ne rien changer** si déjà conforme (c’est le cas).
+* **Critères d’acceptation** :
+
+  * La compilation de `graph-forge` se fait par le `npm run build` racine sans options ad hoc supplémentaires.
+
+## 5) Imports Node — garde-fou automatique
+
+* [x] **Créer** un test de lint minimal qui échoue si un import non préfixé `node:` réapparaît.
+
+  * Fichier : `tests/lint/imports_node_prefix.test.ts`
+  * Contenu (exemple) :
+
+    ```ts
+    import { strict as assert } from "node:assert";
+    import { readFileSync } from "node:fs";
+    import { join } from "node:path";
+
+    function scanFile(content: string): string[] {
+      const patterns = [
+        /from\s+"crypto"/g,
+        /from\s+"fs\/promises"/g,
+        /from\s+"fs"/g,
+        /from\s+"http"/g,
+        /from\s+"url"/g,
+        /from\s+"events"/g,
+        /from\s+"assert"/g,
+        /from\s+"util"/g,
+        /from\s+"timers(\/promises)?"/g
+      ];
+      const hits: string[] = [];
+      for (const rx of patterns) {
+        if (rx.test(content)) hits.push(rx.source);
+      }
+      return hits;
+    }
+
+    describe("imports node: prefix", () => {
+      it("no non-prefixed core imports", () => {
+        const root = join(process.cwd(), "src");
+        const glob = require("node:fs").readdirSync;
+        const files: string[] = [];
+        const walk = (p: string) => {
+          for (const f of require("node:fs").readdirSync(p, { withFileTypes: true })) {
+            const full = join(p, f.name);
+            if (f.isDirectory()) walk(full);
+            else if (f.isFile() && f.name.endsWith(".ts")) files.push(full);
+          }
+        };
+        walk(root);
+        const offenders: {file:string; hits:string[]}[] = [];
+        for (const f of files) {
+          const c = readFileSync(f, "utf8");
+          const h = scanFile(c);
+          if (h.length) offenders.push({ file: f, hits: h });
+        }
+        assert.equal(offenders.length, 0, "Found non-prefixed core imports: " + JSON.stringify(offenders, null, 2));
+      });
+    });
+    ```
+  * **Critères d’acceptation** :
+
+    * Le test échoue si quelqu’un réintroduit `from "fs"` au lieu de `from "node:fs"`.
+
+## 6) `scripts/verify-env.mjs` — vérification pré-test (optionnel mais utile)
+
+* [x] **Ajouter** un script Node simple qui vérifie les prérequis et imprime un JSON de santé.
+
+  * Fichier : `scripts/verify-env.mjs`
+  * Contenu (résumé) :
+
+    ```js
+    import { existsSync } from "node:fs";
+    import { resolve } from "node:path";
+
+    const out = {
+      node: process.version,
+      hasTypesNode: existsSync(resolve("node_modules/@types/node")),
+      hasTSC: existsSync(resolve("node_modules/.bin/tsc")),
+      tsconfig: existsSync(resolve("tsconfig.json")),
+      lockfile: existsSync(resolve("package-lock.json"))
+    };
+    console.log(JSON.stringify(out, null, 2));
+    ```
+  * **Critères d’acceptation** :
+
+    * `node scripts/verify-env.mjs` produit un JSON conforme et **hasTypesNode: true**.
+
+## 7) Tests e2e HTTP — Auth Bearer & stateless
+
+* [x] **Ajouter** `tests/e2e/http_auth.test.ts`
+
+  * Sous-étapes :
+
+    * [x] Sans `Authorization` → **401** attendu si `MCP_HTTP_TOKEN` est défini.
+    * [x] Avec `Authorization: Bearer <token>` → **200**, `mcp_info` OK.
+  * **Critères d’acceptation** :
+
+    * Test passe localement (lance le serveur en child process pendant le test) et en CI (port configurable via env).
+
+* [x] **Ajouter** `tests/e2e/http_stateless.test.ts`
+
+  * Sous-étapes :
+
+    * [x] Vérifier que sans session persistante, un call `tools_list` fonctionne et que les limites envoyées via en-tête (si prévu) sont bien prises en compte.
+  * **Critères d’acceptation** :
+
+    * On observe la réponse attendue sans état serveur.
+
+## 8) Tests e2e Idempotence
+
+* [x] **Ajouter** `tests/e2e/idempotency.test.ts`
+
+    * Sous-étapes :
+
+      * [x] Envoyer 2× la même requête `tx_begin` avec le même `Idempotency-Key`.
+      * [x] Les 2 réponses doivent partager le même `id`/`effect` (pas de duplication d’état).
+  * **Critères d’acceptation** :
+
+    * Les deux réponses sont **identiques** sur les champs idempotents.
+
+## 9) Enfants (instances Codex) — spawn/attach/send/kill
+
+* [x] **Ajouter** `tests/e2e/children_codex.test.ts`
+
+  * Sous-étapes :
+
+    * [x] `child_spawn_codex` avec limites CPU/Mem/Wall légères.
+    * [x] `child_attach` puis `child_send` (prompt simple) → réponse OK.
+    * [x] `child_set_limits` pour provoquer un **dépassement** volontaire (timeout / budget) → évènement “limit” attendu.
+    * [x] `child_kill` → enfant disparu, ressources libérées.
+  * **Critères d’acceptation** :
+
+    * Tous les appels réussissent et les événements sont observables (journalisés).
+
+## 10) Transactions & graphes — basiques et erreurs contrôlées
+
+* [x] **Ajouter** `tests/e2e/graph_tx.test.ts`
+
+  * Sous-étapes :
+
+    * [x] `tx_begin` → `graph_diff` (aucun changement) → `tx_commit`.
+    * [x] `tx_begin` → `graph_patch` (ajout 2 nœuds + 1 arête) → `graph_diff` → `tx_commit`.
+    * [x] `tx_begin` → `graph_patch` invalide → **400** attendu → `tx_rollback`.
+  * **Critères d’acceptation** :
+
+    * Les diffs reflètent exactement les opérations.
+    * L’erreur invalide est bien mappée en 400 avec message utile.
+
+## 11) Autosave & forge
+
+* [x] **Ajouter** `tests/e2e/autosave_forge.test.ts`
+
+  * Sous-étapes :
+
+    * [x] `graph_state_autosave start` → attendre 2 ticks → `stop` → plus de ticks.
+    * [x] `graph_forge_analyze` sur graphe jouet → diagnostics valides.
+  * **Critères d’acceptation** :
+
+    * On observe au moins 2 entrées d’autosave, puis l’arrêt.
+
+## 12) Logs & redaction
+
+* [x] **Ajouter** `tests/e2e/log_redaction.test.ts`
+
+  * Sous-étapes :
+
+    * [x] Lancer avec `MCP_LOG_FILE` et `MCP_LOG_REDACT=on`.
+    * [x] Envoyer un input contenant un “secret” (ex. API_KEY=...);
+    * [x] Lire le log → **le secret n’y figure pas** en clair (attendu : masquage).
+  * **Critères d’acceptation** :
+
+    * Aucune occurrence brute du secret dans le log.
+
+## 13) Timeouts & annulations
+
+* [x] **Ajouter** `tests/e2e/timeout_cancel.test.ts`
+
+  * Sous-étapes :
+
+    * [x] Déclencher une opération volontairement longue avec un timeout court → statut `timeout`.
+    * [x] Tester `op_cancel` pendant l’exécution → `cancelled` et nettoyage correct.
+  * **Critères d’acceptation** :
+
+    * Les statuts finaux sont conformes et la ressource est libérée.
+
+## 14) Concurrence & verrous
+
+* [x] **Ajouter** `tests/e2e/locks_concurrency.test.ts`
+
+  * Sous-étapes :
+
+    * [x] Processus A : prendre un verrou (implicite si ton API le permet) / commencer une tx.
+    * [x] Processus B : tentative d’écriture → doit échouer/bloquer clairement.
+  * **Critères d’acceptation** :
+
+    * Le message d’erreur indique bien la cause (verrou / conflit).
+
+## 15) `tests/setup.ts` — variables d’environnement de test
+
+* [x] **Vérifier/ajouter** l’injection d’ENV pour les tests e2e (ports, token, chemins runs/logs).
+
+  * Sous-étapes :
+
+    * [x] Valeurs par défaut :
+
+      * `MCP_HTTP_HOST=127.0.0.1`
+      * `MCP_HTTP_PORT=8765`
+      * `MCP_HTTP_PATH=/mcp`
+      * `MCP_HTTP_JSON=on`
+      * `MCP_HTTP_STATELESS=yes`
+      * `MCP_HTTP_TOKEN=test-token`
+      * `MCP_RUNS_ROOT=runs`
+      * `MCP_LOG_FILE=/tmp/self-codex.test.log`
+    * [x] Au `before()` global, démarrer/arrêter le serveur si nécessaire (child process).
+  * **Critères d’acceptation** :
+
+    * Les tests e2e n’ont pas besoin d’étapes manuelles.
+
+## 16) Génération d’artefacts de validation (dossier runs/)
+
+* [x] **Outillage** pour sérialiser **chaque** requête/réponse HTTP en `.jsonl` et les événements en `.jsonl`.
+
+  * Sous-étapes :
+
+    * [x] Créer `scripts/record-run.mjs` (client MCP minimal) pour enchaîner `mcp_info`, `tools_list`, puis une série d’appels (echo, tx, graph, enfants) et écrire dans `runs/validation_<DATE-ISO>/{inputs,outputs,events,logs,artifacts,report}`.
+  * **Critères d’acceptation** :
+
+    * Un répertoire `runs/validation_...` complet est produit, archivable.
+
+## 17) README.md — précisions finales
+
+* [x] **Mettre à jour** la section “Build” et “Environnement Cloud”.
+
+  * Sous-étapes :
+
+    * [x] Préciser : `npm ci && npm run build` (Node ≥ 20).
+    * [x] Mentionner `@types/node` en **dependencies** (robustesse Cloud).
+    * [x] Expliquer l’option `build:portable` et le setup script.
+    * [x] Mentionner les variables d’env utiles (`MCP_HTTP_*`, `MCP_LOG_*`, `MCP_*_ROOT`, `MCP_QUALITY_*`, `IDEMPOTENCY_TTL_MS`).
+  * **Critères d’acceptation** :
+
+    * Un nouveau venu peut builder et tester sans aide externe.
+
+## 18) (Optionnel) CI de base
+
+* [x] **Ajouter** un workflow GitHub Actions minimal : build + unit tests.
+
+  * Sous-étapes :
+
+    * [x] Node 20.x, `actions/setup-node`, `npm ci`, `npm run build`, `npm run test:unit`.
+  * **Critères d’acceptation** :
+
+    * Le badge passe au vert sur PR standards.
 
 ---
 
-## 3) Liste de tâches à cocher pour l’agent (validation complète)
+# Notes importantes pour toi, agent (tests/build)
 
-> Dossier de travail unique pour la session : `runs/validation_<DATE-ISO>/`
-> Crée systématiquement : `inputs/`, `outputs/`, `events/`, `logs/`, `artifacts/`, `report/`.
-> Chaque requête/réponse HTTP est stockée en **.jsonl** (une ligne par échange), et les événements en **.jsonl** append-only.
-
-### 0) Préflight
-
-* [x] Créer `runs/validation_<DATE-ISO>/{inputs,outputs,events,logs,artifacts,report}`.
-* [x] Afficher `node -v`, `npm -v`, `git rev-parse --short HEAD` dans `report/context.json`.
-* [x] Lancer `scripts/setup-agent-env.sh` et enregistrer la sortie dans `logs/setup.out.txt`.
-* [x] Health HTTP :
-
-  * [x] sans token (si `MCP_HTTP_TOKEN` défini) → **401** attendu.
-  * [x] avec `Authorization: Bearer <TOKEN>` → **200** attendu.
-  * [x] Journaliser les checks santé dans `logs/http_health.jsonl` avec les chemins des corps HTTP.
-
-### 1) Introspection MCP
-
-* [x] `mcp_info` → sauver req/resp → `inputs/01_introspection.jsonl`, `outputs/01_introspection.jsonl`.
-* [x] `tools_list`, `resources_list` → inventaire complet (noms + schémas I/O).
-* [x] `events_subscribe` → consigner dans `events/01_bus.jsonl` (au moins 30s).
-  * `events/01_bus.jsonl` comporte une entrée de garde (`note": "no events returned"`) lorsque le flux n'émet rien durant la fenêtre, afin de matérialiser l'artefact demandé.
-
-### 2) Journalisation & rotation
-
-* [x] Déclencher un outil léger (echo/ping) 20× → vérifier que `/tmp/mcp_http.log` grossit.
-* [x] Copier le log → `logs/mcp_http.log`.
-* [x] Générer `logs/summary.json` avec : nb lignes, WARN/ERROR, tailles, top 3 messages.
-
-> ℹ️ Utilise `npm run validation:log-stimulus -- --iterations 20` (ou le CLI `logStimulus` via `node --import tsx src/validation/logStimulusCli.ts`) pour déclencher automatiquement les 20 appels : le module accepte désormais `--iterations`, consigne l'évolution du log (delta en octets, artefacts JSONL) et échoue explicitement lorsque le log n'augmente pas (Δ ≤ 0).
->  Le rapport final surface également cette étape en rappelant le volume de lignes du journal HTTP, les compteurs d'erreurs/avertissements et le message le plus fréquent extraits de `logs/summary.json`.
-
-### 3) Transactions & graphes
-
-* [x] `tx_begin` → `graph_diff` (baseline) → **no changes**.
-* [x] `graph_patch` (ajout 2 nœuds + 1 arête) → **OK** ; `tx_commit`.
-* [x] `tx_begin` → `graph_patch` invalide → **erreur attendue** ; `tx_rollback`.
-* [x] Concurrence : verrou (session A) puis écriture (session B) → blocage explicite.
-* [x] Export : `values_graph_export` / `causal_export` → `artifacts/graphs/`.
-
-> ℹ️ Le plan par défaut `validation:transactions` rejoue désormais 18 appels : diff de base (Δ=0), patch validé + `graph_diff` incrémental, transaction secondaire pour rejouer un patch cyclique (erreur `tx_apply` puis `tx_rollback`), invariants `graph_patch` forcés, conflit de verrou (owner B) et double export (`values_graph_export.json` + `causal_export.json`).
-
-### 4) Forge/Analyse
-
-* [x] `graph_forge_analyze` sur un graphe jouet → vérifier diagnostics/format.
-* [x] `graph_state_autosave start` → attendre 2 ticks, `stop` → plus de ticks.
-
-> ℹ️ Le runner Stage 4 vérifie désormais la quiescence après `graph_state_autosave:stop` : un évènement `autosave.quiescence` est
->  consigné dans `events/04_forge.jsonl` et l'exécution échoue si la valeur `saved_at` évolue après l'arrêt (ou si le fichier est
->  réécrit). Les tests couvrent le succès, l'échec et le cas où le fichier est supprimé.
-
-### 5) Enfants (instances Codex)
-
-* [x] `child_spawn_codex` (objectif + limites CPU/Mem/Wall) → **OK**.
-* [x] `child_attach` → **OK**, puis `child_send` (prompt simple) → réponse **OK**.
-* [x] `child_set_limits` (resserrer) → provoquer un dépassement budget → **event limit**.
-* [x] `child_kill` → libération des ressources confirmée.
-
-> ℹ️ Le runner Stage 5 refuse désormais les validations sans évènement `limit*`. Le résumé JSON ajoute `events.limitEvents` et le plan `child_send` envoie un `payload` structuré avec `expect: "final"` pour rester aligné avec le schéma MCP.
->  Le rapport final synthétise désormais le nombre d'évènements limite et les types dominants extraits de `report/children_summary.json` pour souligner la preuve de surveillance.
-
-### 6) Planification & exécution
-
-* [x] `plan_compile_bt` (3 nœuds : collect → transform → write) → **OK**.
-* [x] `plan_run_bt` → états RUNNING→SUCCESS, journal complet.
-* [x] `plan_pause` / `plan_resume` → comportements corrects.
-* [x] `plan_cancel` / `op_cancel` → annulation **propre** et métadonnées cohérentes.
-
-> ℹ️ Le runner Stage 6 vérifie désormais que chaque appel renvoie l'état attendu :
-> `plan_run_bt` doit fournir des ticks > 0 et publier des événements, `plan_run_reactive`
-> expose `run_id` + `op_id` et un journal scheduler, `plan_pause` confirme un état
-> `paused`, `plan_resume` revient sur `running|success`, `plan_cancel` confirme
-> explicitement l'annulation du même `run_id` et `op_cancel` valide l'`op_id` et le
-> drapeau `ok`. Le résumé `plans_summary.json` ajoute une section `opCancel` et
-> tout écart provoque un échec immédiat du runner/CLI.
-
-### 7) Coordination multi-agent
-
-* [x] Blackboard : `bb_set` / `bb_get` / `bb_watch` (recevoir ≥3 événements).
-* [x] Contract-Net : annonce → 2 propositions → décision → notification.
-* [x] Consensus : vote pair → tie-break stable (déterminisme).
-
-> ℹ️ Le runner Stage 7 applique désormais deux `bb_set` supplémentaires après la
->  souscription `bb_watch` et refuse les validations < 3 évènements cumulés.
->  L'annonce Contract-Net embarque deux `manual_bids` pour garantir au moins deux
->  propositions et l'échec explicite si `proposalCount < 2` ou si
->  `awarded_agent_id` manque. Le vote de consensus injecte deux bulletins
->  contradictoires et exige que l'issue corresponde au `prefer_value`
->  (`validation_tie_break_preference`) tout en vérifiant que le tally expose bien
->  un ex-aequo (détection de tie-break déterministe).
-
-### 8) Connaissance & valeurs
-
-* [x] `kg_suggest_plan` / `kg_get_subgraph` → cohérence du sous-graphe.
-* [x] `values_explain` → justification stable (2 runs idem).
-
-> ℹ️ Le runner Stage 8 vérifie désormais les citations et la cohérence des
-> sous-graphes : `kg_assist` doit fournir ≥1 citation, `kg_suggest_plan` un
-> titre + ≥2 étapes, `kg_get_subgraph` au moins autant de nœuds/arêtes que
-> demandé, et `values_explain` doit restituer une explication identique lors
-> de la répétition avec `reference_answer`. L'export `values_graph_export`
-> et `causal_export` doivent également produire des artefacts physiques.
-
-### 9) Robustesse / erreurs contrôlées
-
-* [x] Input invalide → **400** clair (message utile).
-* [x] Outil inconnu → **404** clair.
-* [x] Idempotence : même `Idempotency-Key` sur `tx_begin` → même réponse (pas de doublon).
-* [x] Timeout volontaire (op longue + limite serrée) → statut `timeout`/`cancelled`.
-
-> ℹ️ Le runner Stage 9 échoue désormais lorsque :
->  • `graph_diff_invalid` ne renvoie pas HTTP 400 avec un message explicite.
->  • l'appel inconnu n'obtient pas HTTP 404 + message clair.
->  • les deux `tx_begin` idempotents divergent (statut ou payload).
->  • la simulation de crash n'émet aucun événement ou message d'erreur.
->  • `plan_run_reactive` ne fournit pas un `status` `timeout|cancelled`.
-
-### 10) Perf (sanity)
-
-* [x] Échos 50× → latences p50/p95/p99 → `report/perf_summary.json`.
-* [x] 5 enfants simultanés (charges légères) → stabilité/ordre événements.
-
-> ℹ️ Le runner Stage 10 vérifie désormais qu'au moins 50 échantillons de latence sont collectés et qu'un burst simultané ≥ 5 appels réussit sans erreur. Toute configuration `sampleSize < 50`, `batch < 5` ou incomplète est rejetée avec un message explicite.
->  Le rapport final annote également l'étape avec le volume d'échantillons, les percentiles clés et la croissance du journal HTTP.
-
-### 11) Sécurité / redaction
-
-* [x] `MCP_LOG_REDACT=on` + input contenant un faux secret → log **non** en clair.
-* [x] Auth : vérifier 401/200 selon token.
-
-> ℹ️ Le runner Stage 11 échoue si l'appel non authentifié ne retourne pas 401/403, si un secret apparaît dans les réponses/événements, ou si la tentative d'évasion fichier n'est pas rejetée (HTTP ≥ 400). Le résumé `security_summary.json` consigne également les fuites détectées.
->  L'agrégateur Stage 12 relaie maintenant les statuts auth 401/403, le comptage des fuites et les rejets filesystem dans les notes de l'étape.
-
-### 12) Rapport final
-
-* [x] `report/summary.md` : ce qui marche / ne marche pas, points ambigus.
-* [x] `report/findings.json` : versions, outils testés (OK/KO/partiel), latences, incidents.
-* [x] `report/recommendations.md` : P0 (bloquants), P1 (UX/dev), P2 (perf/obs).
-
-> ℹ️ Les sorties Stage 12 agrègent maintenant les validations renforcées (latence/perf et sécurité) : le rapport final relaye les scénarios manquants et met en avant les incidents signalés par les nouveaux garde-fous.
+* Toujours lancer : `rm -rf node_modules dist && npm ci && npm run build`.
+* Si l’environnement omet `tsc`, `npm run build:portable` ou le fallback du setup prend le relais.
+* **Ne pas changer** l’ESM/NodeNext, ni repasser aux imports non préfixés.
+* **N’ajoute pas** de dépendances lourdes pour les tests e2e : reste sur `mocha/chai/tsx`.
+* **Tous les nouveaux tests** doivent être **déterministes** et **ne pas dépendre d’Internet**.
+* Pour les tests HTTP, rends port/host/path/token **configurables via ENV** et documente les valeurs par défaut.
+* Journalise proprement (redaction on) et place les journaux d’exécution dans `runs/validation_*/logs/`.
 
 ---
 
-### Conseils d’exécution pour l’agent
-
-* Sauvegarde **chaque** requête/response HTTP en **.jsonl** (une ligne JSON par échange).
-* Les **événements** restent en flux append dans `events/*.jsonl`.
-* Horodate et nomme chaque artefact (exports graphes, journaux plan) dans `artifacts/`.
-* En cas d’échec, consigne **le message exact** + proposition de **quick-fix**.
-
-Si tu veux, je peux te fournir un mini script Node de client HTTP MCP pour sérialiser automatiquement toutes les requêtes/réponses et remplir l’arborescence `runs/validation_<DATE-ISO>/`.
+Si tu veux, je peux aussi te fournir un squelette **client MCP HTTP** (Node) pour la sérialisation `.jsonl` des requêtes/réponses afin d’alimenter automatiquement `runs/validation_*`.
 
 ---
 
-### Historique des actions (sessions récentes)
+### Historique des actions
 
-* 2025-10-11T22:48Z — gpt-5-codex : Réinitialisation d'AGENTS.md avec les nouvelles instructions fournies, ajout du script scripts/setup-agent-env.sh, exécution du setup pour générer logs/setup.out.txt, et préparation du run runs/validation_2025-10-11T22-47-32Z (structure + context.json).
-* 2025-10-11T23:01Z — gpt-5-codex : Création du run `runs/validation_2025-10-11T22-59-12Z`, génération du `report/context.json`, exécution du setup avec `MCP_HTTP_TOKEN=validation-token`, collecte des sorties dans `logs/setup.out.txt`, et vérification HTTP 401/200 consignée dans `logs/http_health.jsonl`.
-* 2025-10-11T23:40Z — gpt-5-codex : Extension du stimulateur de logs pour supporter des itérations multiples (suffixes nommés, delta octets), ajout de `--iterations` côté CLI, documentation de l'usage dans la checklist, et couverture de tests unitaires renforcée (`stimulateHttpLogging` & CLI) + `npm run build` + `npm run test:unit`.
-* 2025-10-11T23:45Z — gpt-5-codex : Alignement des appels d'introspection sur les outils (`mcp_info`, `mcp_capabilities`, `resources_list`, `events_subscribe`), ajout d'une garde JSONL lorsque le bus ne publie aucun événement, capture du run `runs/validation_2025-10-11T23-45-00Z` (inputs/outputs/logs/report), et exécution de `npm run build` + `npm run test:unit`.
-* 2025-10-12T00:05Z — gpt-5-codex : Ajout du CLI `logsCli` pour capturer et résumer les journaux HTTP, enrichissement de `summariseHttpLogFile` avec le top 3 des messages (priorité aux messages structurés), mise à jour du script `validation:capture-log`, création de tests dédiés, et validation complète via `npm run build` + `npm run test:unit`.
-* 2025-10-12T00:20Z — gpt-5-codex : Durcissement du CLI `logStimulus` pour échouer lorsque Δ ≤ 0, ajout de la couverture de test associée, et mise à jour de la checklist (Stage 2 désormais cochée) suite à `npm run build` + `npm run test:unit`.
-* 2025-10-12T00:36Z — gpt-5-codex : Finalisation du Stage 3 : ajout du diff de base (`graph_diff_baseline`), transaction d'annulation (`tx_begin_invalid_patch` → `tx_apply_invalid_patch` → `tx_rollback_invalid_patch`), export valeurs (`values_graph_export_snapshot`) et artefacts dédiés, mise à jour des CLI/tests (`transactions`, `transactionsCli`) et exécution de `npm run build` + `npm run test:unit` après installation des devDeps (`npm ci --include=dev`).
-* 2025-10-12T01:05Z — gpt-5-codex : Stage 5 renforcé : `child_send` transmet désormais `payload` + `expect="final"`, le résumé expose `events.limitEvents`, et le runner échoue s'il n'observe aucun évènement de dépassement de limites (tests mis à jour pour capturer la requête et le scénario d'erreur).
-* 2025-10-12T01:32Z — gpt-5-codex : Stage 4 finalisé : vérification de la quiescence post-`graph_state_autosave:stop`, ajout d'évènements `autosave.quiescence`, garde-fou avec échec explicite en cas de ticks tardifs, CLI enrichi, et tests couvrant quiescence, mutation inattendue et fichier supprimé (`npm run build` + `npm run test:unit`).
-* 2025-10-12T02:05Z — gpt-5-codex : Stage 6 verrouillé : validations strictes des runs BT (ticks > 0 + événements), transitions pause/résumé, cohérence `plan_cancel`/`op_cancel`, nouvelle section `opCancel` dans le résumé et tests CLI/unitaires couvrant l'échec `plan_pause` non pausé (`npm run build` + `npm run test:unit`).
-* 2025-10-12T02:40Z — gpt-5-codex : Stage 7 complété : ajout de deux `bb_set` post-watch, vérification Δ évènements ≥3, `manual_bids` Contract-Net pour garantir 2 propositions + `awarded_agent_id`, tie-break consensus (`prefer_value`) et nouveaux logs CLI (`Blackboard events`, `Contract-Net proposals`, `Consensus outcome`) avec couverture tests runner/CLI (`npm run build` + `npm run test:unit`).
-* 2025-10-12T02:52Z — gpt-5-codex : Stage 8 verrouillé : validations strictes des citations `kg_assist`, plan ≥2 étapes, sous-graphe cohérent, explication `values_explain` stable + artefacts export obligatoires, logs CLI enrichis (citations/subgraph) et couverture tests runner/CLI (succès + scénarios d'échec) après `npm ci --include=dev`, `npm run build`, `npm run test:unit`.
-* 2025-10-12T03:20Z — gpt-5-codex : Stage 9 verrouillé : invariants stricts sur les statuts HTTP 400/404, cohérence idempotence, événements de crash, et statut `timeout|cancelled` pour `plan_run_reactive`, journalisation CLI du `timeout status token`, couverture de tests (chemins succès/erreur) après `npm run build` + `npm run test:unit`.
-* 2025-10-12T03:55Z — gpt-5-codex : Stage 10 validé avec exigence d'au moins 50 échantillons et burst ≥ 5 (échec si plan incomplet), Stage 11 durci (401/403 obligatoires, secrets masqués, rejet filesystem) et checklist mise à jour ; tests `performance`/`security` étendus + documentation Stage 12 synchronisée.
-* 2025-10-12T04:25Z — gpt-5-codex : Ajout des résumés Stage 10/11 dans le rapport final (notes latence/logs et auth/redaction/filesystem), avec tests `finalReport` mis à jour pour valider les nouvelles annotations.
-* 2025-10-12T04:45Z — gpt-5-codex : Extension du rapport final pour résumer la journalisation Stage 2 (volume de lignes, erreurs/avertissements, top message) et ajout des assertions `finalReport` associées.
-* 2025-10-12T05:10Z — gpt-5-codex : Mise à jour du rapport final pour exposer les évènements limite Stage 5 (compteurs + types dominants) depuis `children_summary.json`, documentation AGENTS correspondante et validations `npm run build` + `npm run test:unit`.
+* 2025-10-12T03:30Z — gpt-5-codex : Mise à jour du setup script (neutralisation npm + fallback tsc), ajout de `build:portable`, création du test lint `imports_node_prefix`, ajout de `scripts/verify-env.mjs`, exécution de `npm ci --include=dev`, `npm run build` et `npm run test:unit` (succès).
+* 2025-10-12T09:55Z — gpt-5-codex : Vérification des tsconfig (test de cohérence `tests/tsconfig.consistency.test.ts`), confirmation des options NodeNext, exécution de `rm -rf node_modules dist && npm ci --include=dev`, `npm run build`, `npm run test:unit`, `node scripts/verify-env.mjs` (succès).
+* 2025-10-12T10:05Z — gpt-5-codex : Ajout du harnais HTTP enfant (`tests/helpers/httpServerHarness.ts`), remplacement des tests HTTP auth/stateless avec lancement en sous-processus et capture des en-têtes (`tests/e2e/http_auth.test.ts`, `tests/e2e/http_stateless.test.ts`), amélioration du bootstrap de test (`tests/setup.ts`) avec variables par défaut, garde réseau loopback et démarrage auto optionnel, mise à jour de multiples suites e2e pour reconnaître le mode `loopback-only`, exécution de `npm ci --include=dev`, `npm run build`, `npm run test:unit` (succès).
+* 2025-10-12T10:16Z — gpt-5-codex : Création de `tests/e2e/idempotency.test.ts` validant la rejouabilité HTTP de `tx_begin` avec clé partagée, ajustement de `AGENTS.md`, exécution de `npm ci --include=dev`, `npm run build`, `npm run test:unit` (succès).
+* 2025-10-12T11:30Z — gpt-5-codex : Ajout de `tests/e2e/children_codex.test.ts` couvrant le cycle spawn/attach/send/limits/kill avec le runner factice, configuration d’un environnement process-backed temporaire, vérification des événements `child.limits.updated` et `child_exit`, mise à jour de `AGENTS.md`.
+* 2025-10-12T12:45Z — gpt-5-codex : Création de `tests/e2e/graph_tx.test.ts` validant les transactions HTTP (commit sans mutation, patch concurrent et rollback après échec), mise à jour de la checklist.
+* 2025-10-12T13:30Z — gpt-5-codex : Ajout de `tests/e2e/timeout_cancel.test.ts` couvrant les timeouts et `op_cancel` via HTTP, mise à jour de la checklist, exécution de `npm run build`, `npm ci --include=dev`, `npm run test:unit` (succès après installation de `tsx`).
+* 2025-10-12T14:15Z — gpt-5-codex : Ajout de `tests/e2e/locks_concurrency.test.ts` validant le blocage des patchs concurrents et la libération du verrou, mise à jour de `AGENTS.md`, exécution de `npm run build`, `npm ci --include=dev`, `npm run test:unit` (succès).
+* 2025-10-12T15:10Z — gpt-5-codex : Création de `tests/e2e/autosave_forge.test.ts` couvrant l’émission des ticks autosave et l’analyse Graph Forge via HTTP, nettoyage automatique des artefacts temporaires, mise à jour de la checklist, exécution de `npm run build`, `npm ci --include=dev`, `npm run test:unit` (succès après réinstallation de `tsx`).
+* 2025-10-12T16:30Z — gpt-5-codex : Ajout de `scripts/record-run.mjs` pour capturer les requêtes/réponses HTTP en `.jsonl`, création du test `tests/scripts.record-run.test.ts`, mise à jour de `README.md` (sections Build & Environnement Cloud), exécution de `npm run build` et `npm run test:unit` (succès).
+* 2025-10-12T17:10Z — gpt-5-codex : Création du workflow GitHub Actions (`.github/workflows/ci.yml`) assurant `npm ci`, `npm run build` et `npm run test:unit` sur Node.js 20, mise à jour de la checklist.
+* 2025-10-12T18:05Z — gpt-5-codex : Ajout du test e2e `tests/e2e/log_redaction.test.ts` démarrant le serveur HTTP avec `MCP_LOG_FILE`/`MCP_LOG_REDACT`, injection d’un secret synthétique dans `child_send`, vérification que le log contient `[REDACTED]` sans fuite du secret, exécution de `npm run build` et `npm run test:unit` (succès).
+* 2025-10-12T19:45Z — gpt-5-codex : Harmonisation du garde-fou réseau pour laisser les suites HTTP tourner en loopback (`tests/setup.ts`), réécriture du test `tests/000.offline.guard.test.ts` pour utiliser les hooks communs et vérifier `fetch`, exécution de `npm run build` et `npm run test:unit`.
+* 2025-10-12T20:30Z — gpt-5-codex : Ajout du runner `scripts/run-http-e2e.mjs` et du script npm `test:e2e:http`, couverture unitaire associée, documentation de la commande dans le README et extension du workflow CI avec un job HTTP loopback.
+* 2025-10-12T21:15Z — gpt-5-codex : Mise à jour de `scripts/verify-env.mjs` (contrôle Node ≥ 20 et détection du loader `tsx`), ajout du test `tests/scripts.verify-env.test.ts`, documentation Build enrichie, exécution de `npm run build` et `npm run test:unit` (succès).
