@@ -143,7 +143,7 @@ describe("http child context propagation", () => {
       .map((entry) => entry?.name)
       .filter((name): name is string => typeof name === "string");
     expect(toolNames).to.include("mcp_info");
-    expect(toolNames).to.include("tools/call");
+    expect(toolNames).to.include("child_spawn_codex");
   });
 
   it("forwards child headers and limits to the underlying handler", async () => {

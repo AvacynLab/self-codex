@@ -79,32 +79,78 @@ function extractToolError(result: unknown): ToolErrorPayload | null {
   if (!result || typeof result !== "object") {
     return null;
   }
-  const record = result as { isError?: unknown; ok?: unknown; content?: unknown };
-  const flagged = record.isError === true || record.ok === false;
+  const record = result as {
+    isError?: unknown;
+    ok?: unknown;
+    error?: unknown;
+    message?: unknown;
+    hint?: unknown;
+    details?: unknown;
+    content?: unknown;
+  };
+  const flagged = record.isError === true || record.ok === false || typeof record.error === "string";
   if (!flagged) {
     return null;
   }
-  const content = record.content;
-  if (Array.isArray(content)) {
-    for (const entry of content) {
-      if (!entry || typeof entry !== "object") {
-        continue;
-      }
-      const text = (entry as { text?: unknown }).text;
-      if (typeof text !== "string" || text.trim().length === 0) {
-        continue;
-      }
-      try {
-        const parsed = JSON.parse(text);
-        if (parsed && typeof parsed === "object") {
-          return parsed as ToolErrorPayload;
+
+  const payload: ToolErrorPayload = {};
+  if (typeof record.error === "string") {
+    payload.error = record.error;
+  }
+  if (typeof record.message === "string") {
+    payload.message = record.message;
+  }
+  if (typeof record.hint === "string") {
+    payload.hint = record.hint;
+  }
+  if (Object.prototype.hasOwnProperty.call(record, "details")) {
+    payload.details = record.details;
+  }
+
+  if (!payload.error || !payload.message || payload.details === undefined || payload.hint === undefined) {
+    const content = record.content;
+    if (Array.isArray(content)) {
+      for (const entry of content) {
+        if (!entry || typeof entry !== "object") {
+          continue;
         }
-      } catch {
-        // Ignore malformed fragments and continue scanning the content array.
+        const text = (entry as { text?: unknown }).text;
+        if (typeof text !== "string" || text.trim().length === 0) {
+          continue;
+        }
+        try {
+          const parsed = JSON.parse(text);
+          if (parsed && typeof parsed === "object") {
+            const parsedPayload = parsed as ToolErrorPayload;
+            if (payload.error === undefined && typeof parsedPayload.error === "string") {
+              payload.error = parsedPayload.error;
+            }
+            if (payload.message === undefined && typeof parsedPayload.message === "string") {
+              payload.message = parsedPayload.message;
+            }
+            if (payload.hint === undefined && typeof parsedPayload.hint === "string") {
+              payload.hint = parsedPayload.hint;
+            }
+            if (payload.details === undefined && Object.prototype.hasOwnProperty.call(parsedPayload, "details")) {
+              payload.details = parsedPayload.details;
+            }
+          }
+        } catch {
+          // Ignore malformed fragments and continue scanning the content array.
+        }
       }
     }
   }
-  return null;
+
+  if (
+    payload.error === undefined &&
+    payload.message === undefined &&
+    payload.hint === undefined &&
+    payload.details === undefined
+  ) {
+    return null;
+  }
+  return payload;
 }
 
 /**
@@ -226,7 +272,7 @@ describe("HTTP plan timeouts and cancellation", function () {
     const cancelResult =
       rawResult && typeof rawResult === "object"
         ? ((rawResult as { structuredContent?: { outcome: string; op_id: string; reason: string | null } }).structuredContent ??
-          undefined)
+          rawResult)
         : undefined;
     expect(cancelResult, "expected op_cancel to return structured content").to.not.equal(undefined);
     expect(cancelResult?.op_id).to.equal(opId);

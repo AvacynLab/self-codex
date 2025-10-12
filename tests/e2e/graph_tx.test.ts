@@ -102,36 +102,78 @@ function extractToolError(result: unknown): ToolErrorPayload | null {
   if (!result || typeof result !== "object") {
     return null;
   }
-  const record = result as { isError?: unknown; ok?: unknown; content?: unknown };
-  const flagged = record.isError === true || record.ok === false;
+  const record = result as {
+    isError?: unknown;
+    ok?: unknown;
+    error?: unknown;
+    message?: unknown;
+    hint?: unknown;
+    details?: unknown;
+    content?: unknown;
+  };
+  const flagged = record.isError === true || record.ok === false || typeof record.error === "string";
   if (!flagged) {
     return null;
   }
 
-  if (Array.isArray(record.content)) {
-    for (const entry of record.content) {
-      if (!entry || typeof entry !== "object") {
-        continue;
-      }
-      const text = (entry as { text?: unknown }).text;
-      if (typeof text !== "string" || text.trim().length === 0) {
-        continue;
-      }
-      try {
-        const parsed = JSON.parse(text);
-        if (parsed && typeof parsed === "object") {
-          const payload = parsed as ToolErrorPayload;
-          if (typeof payload.error === "string") {
-            return payload;
-          }
+  const payload: ToolErrorPayload = {};
+  if (typeof record.error === "string") {
+    payload.error = record.error;
+  }
+  if (typeof record.message === "string") {
+    payload.message = record.message;
+  }
+  if (typeof record.hint === "string") {
+    payload.hint = record.hint;
+  }
+  if (Object.prototype.hasOwnProperty.call(record, "details")) {
+    payload.details = record.details;
+  }
+
+  if (!payload.error || !payload.message || payload.details === undefined || payload.hint === undefined) {
+    const content = record.content;
+    if (Array.isArray(content)) {
+      for (const entry of content) {
+        if (!entry || typeof entry !== "object") {
+          continue;
         }
-      } catch {
-        // Ignore malformed JSON snippets and continue scanning the content entries.
+        const text = (entry as { text?: unknown }).text;
+        if (typeof text !== "string" || text.trim().length === 0) {
+          continue;
+        }
+        try {
+          const parsed = JSON.parse(text);
+          if (parsed && typeof parsed === "object") {
+            const parsedPayload = parsed as ToolErrorPayload;
+            if (payload.error === undefined && typeof parsedPayload.error === "string") {
+              payload.error = parsedPayload.error;
+            }
+            if (payload.message === undefined && typeof parsedPayload.message === "string") {
+              payload.message = parsedPayload.message;
+            }
+            if (payload.hint === undefined && typeof parsedPayload.hint === "string") {
+              payload.hint = parsedPayload.hint;
+            }
+            if (payload.details === undefined && Object.prototype.hasOwnProperty.call(parsedPayload, "details")) {
+              payload.details = parsedPayload.details;
+            }
+          }
+        } catch {
+          // Ignore malformed JSON snippets and continue scanning the content entries.
+        }
       }
     }
   }
 
-  return { error: undefined, message: undefined };
+  if (
+    payload.error === undefined &&
+    payload.message === undefined &&
+    payload.hint === undefined &&
+    payload.details === undefined
+  ) {
+    return { error: undefined, message: undefined };
+  }
+  return payload;
 }
 
 /**
@@ -191,10 +233,10 @@ function makeBaseGraph(graphId: string) {
     graph_version: 1,
     name: "Transaction baseline",
     nodes: [
-      { id: "ingest", label: "Ingest" },
-      { id: "process", label: "Process" },
+      { id: "ingest", label: "Ingest", attributes: {} },
+      { id: "process", label: "Process", attributes: {} },
     ],
-    edges: [{ from: "ingest", to: "process", label: "next" }],
+    edges: [{ from: "ingest", to: "process", label: "next", attributes: {} }],
     metadata: { owner: "graph-e2e" },
   } as const;
 }
@@ -342,18 +384,38 @@ describe("graph transactions over HTTP", function () {
     const beginResult = begin.envelope.result;
     expect(beginResult).to.not.equal(undefined);
 
-    const patchOps = [
-      { op: "add", path: "/nodes/-", value: { id: "alpha", label: "Alpha" } },
-      { op: "add", path: "/nodes/-", value: { id: "beta", label: "Beta" } },
-      { op: "add", path: "/edges/-", value: { from: "alpha", to: "beta", label: "flow" } },
-    ] as const;
+    const upgradedGraph = {
+      ...descriptor,
+      graph_version: descriptor.graph_version + 1,
+      nodes: [
+        ...descriptor.nodes,
+        { id: "alpha", label: "Alpha", attributes: {} },
+        { id: "beta", label: "Beta", attributes: {} },
+      ],
+      edges: [
+        ...descriptor.edges,
+        { from: "alpha", to: "beta", label: "flow", attributes: {} },
+      ],
+    } as const;
+
+    const diffForPatch = await invokeJsonRpc<GraphDiffResult>(baseUrl, "graph_diff", {
+      graph_id: graphId,
+      from: { latest: true },
+      to: { graph: upgradedGraph },
+    });
+
+    expect(diffForPatch.status).to.equal(200);
+    expect(diffForPatch.envelope.error).to.equal(undefined);
+    const patchOperations = diffForPatch.envelope.result?.operations ?? [];
+    expect(patchOperations).to.have.lengthOf.above(0);
+    const operationsCount = patchOperations.length;
 
     const patch = await invokeJsonRpc<GraphPatchResult>(baseUrl, "graph_patch", {
       graph_id: graphId,
       base_version: beginResult?.base_version,
       owner: "graph-e2e",
       note: "append alpha/beta segment",
-      patch: patchOps,
+      patch: patchOperations,
     });
 
     expect(patch.status).to.equal(200);
@@ -361,7 +423,7 @@ describe("graph transactions over HTTP", function () {
     const patchResult = patch.envelope.result;
     expect(patchResult).to.not.equal(undefined);
     expect(patchResult?.committed_version).to.equal((beginResult?.base_version ?? 0) + 1);
-    expect(patchResult?.operations_applied).to.equal(3);
+    expect(patchResult?.operations_applied).to.equal(operationsCount);
     const nodeIds = patchResult?.graph.nodes.map((node) => node.id) ?? [];
     expect(nodeIds).to.include.members(["alpha", "beta"]);
 
@@ -420,7 +482,7 @@ describe("graph transactions over HTTP", function () {
     const invalidError = extractToolError(invalidPatch.envelope.result);
     expect(invalidError).to.not.equal(null);
     expect(invalidError?.error).to.equal("E-PATCH-APPLY");
-    expect(invalidError?.message ?? "").to.include("path '/nodes/99'");
+    expect(invalidError?.message ?? "").to.include("index '99' is out of bounds");
 
     const rollback = await invokeJsonRpc<TxRollbackResult>(baseUrl, "tx_rollback", {
       tx_id: beginResult?.tx_id,

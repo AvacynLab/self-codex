@@ -59,6 +59,7 @@ export class HttpServerHarness {
       this.options.path,
       "--http-json",
       "--http-stateless",
+      "--enable-child-ops-fine",
     ];
 
     this.child = spawn(process.execPath, args, {

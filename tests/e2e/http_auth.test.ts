@@ -21,8 +21,10 @@ describe("http bearer authentication", function () {
       this.skip();
     }
 
+    const harnessHost = "127.0.0.1";
+
     harness = new HttpServerHarness({
-      host: process.env.MCP_HTTP_HOST ?? "127.0.0.1",
+      host: harnessHost,
       port: Number.parseInt(process.env.MCP_HTTP_PORT ?? "8765", 10),
       path: process.env.MCP_HTTP_PATH ?? "/mcp",
       token,

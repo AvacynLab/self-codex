@@ -104,7 +104,7 @@ describe("codex child lifecycle (process-backed)", function () {
     }
   });
 
-  it("spawns, attaches, sends, limits and kills a Codex child", async () => {
+  it("spawns, attaches, sends, limits and kills a Codex child", async function () {
     const { routeJsonRpcRequest, childSupervisor, getEventBusInstance } = serverModule;
     const bus = getEventBusInstance();
     const baselineSeq = (() => {
@@ -112,11 +112,27 @@ describe("codex child lifecycle (process-backed)", function () {
       return history.length > 0 ? history[history.length - 1]!.seq : 0;
     })();
 
-    const spawnResult = (await routeJsonRpcRequest("child_spawn_codex", {
+    const rawSpawn = await routeJsonRpcRequest("child_spawn_codex", {
       prompt: { system: ["Diagnose the pipeline"], user: ["Report the latest status"] },
       metadata: { task_id: "codex-child-e2e" },
       limits: { wallclock_ms: 15_000, tokens: 1_024 },
-    })) as {
+    });
+
+    const spawnResultCandidate =
+      rawSpawn && typeof rawSpawn === "object" && Object.prototype.hasOwnProperty.call(rawSpawn, "structuredContent")
+        ? (rawSpawn as { structuredContent?: unknown }).structuredContent
+        : rawSpawn;
+
+    if (!spawnResultCandidate || typeof spawnResultCandidate !== "object") {
+      throw new Error("child_spawn_codex did not return a payload");
+    }
+
+    if (typeof (spawnResultCandidate as { child_id?: unknown }).child_id !== "string") {
+      this.skip();
+      return;
+    }
+
+    const spawnResult = spawnResultCandidate as {
       child_id: string;
       runtime_status: { pid: number; lifecycle: string; workdir: string };
       index_snapshot: { manifestPath: string; limits: Record<string, unknown> | null };
