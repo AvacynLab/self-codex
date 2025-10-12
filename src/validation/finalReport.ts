@@ -244,6 +244,7 @@ const STAGE_COVERAGE_RULES: readonly StageCoverageRule[] = [
       "plan_pause",
       "plan_resume",
       "plan_cancel",
+      "op_cancel",
     ],
   },
   {
@@ -296,7 +297,7 @@ const STAGE_COVERAGE_RULES: readonly StageCoverageRule[] = [
   {
     stageId: "11",
     expectedScenarios: ["auth", "filesystem", "redaction"],
-    expectedMethods: ["mcp/info", "tools/call"],
+    expectedMethods: ["mcp_info", "tools/call"],
   },
 ];
 
@@ -863,13 +864,141 @@ function appendStageSpecificDetails(
   if (!summaryDocument || typeof summaryDocument !== "object") {
     return note;
   }
+  if (stageId === "02") {
+    const logDetails = describeLogSummaryDiagnostics(summaryDocument);
+    if (logDetails) {
+      return `${note}; ${logDetails}`;
+    }
+  }
   if (stageId === "05") {
+    let enrichedNote = note;
     const spawnOutcome = describeChildrenSpawnOutcome(summaryDocument);
     if (spawnOutcome) {
-      return `${note}; ${spawnOutcome}`;
+      enrichedNote = `${enrichedNote}; ${spawnOutcome}`;
+    }
+    const limitDiagnostics = describeChildrenLimitDiagnostics(summaryDocument);
+    if (limitDiagnostics) {
+      enrichedNote = `${enrichedNote}; ${limitDiagnostics}`;
+    }
+    return enrichedNote;
+  }
+  if (stageId === "10") {
+    const performanceDetails = describePerformanceDiagnostics(summaryDocument);
+    if (performanceDetails) {
+      return `${note}; ${performanceDetails}`;
+    }
+  }
+  if (stageId === "11") {
+    const securityDetails = describeSecurityDiagnostics(summaryDocument);
+    if (securityDetails) {
+      return `${note}; ${securityDetails}`;
     }
   }
   return note;
+}
+
+/** Formats HTTP log message excerpts so the final report remains concise. */
+function formatLogExcerptForSummary(value: string): string {
+  const normalised = value.replace(/\s+/g, " ").trim();
+  if (normalised.length <= 80) {
+    return normalised;
+  }
+  return `${normalised.slice(0, 79)}…`;
+}
+
+/**
+ * Extracts diagnostics from the Stage 02 HTTP log summary so the aggregated
+ * report highlights the observed volume, error counters and most frequent
+ * message.  The helper intentionally tolerates partially populated summaries so
+ * operators still receive partial insight when some metrics were unavailable.
+ */
+function describeLogSummaryDiagnostics(summaryDocument: unknown): string | null {
+  if (!summaryDocument || typeof summaryDocument !== "object") {
+    return null;
+  }
+
+  const record = summaryDocument as {
+    totalLines?: unknown;
+    errorLines?: unknown;
+    warnLines?: unknown;
+    infoLines?: unknown;
+    parseFailures?: unknown;
+    topMessages?: unknown;
+  };
+
+  const totalLines = typeof record.totalLines === "number" && Number.isFinite(record.totalLines)
+    ? record.totalLines
+    : null;
+  const errorLines = typeof record.errorLines === "number" && Number.isFinite(record.errorLines)
+    ? record.errorLines
+    : null;
+  const warnLines = typeof record.warnLines === "number" && Number.isFinite(record.warnLines)
+    ? record.warnLines
+    : null;
+  const infoLines = typeof record.infoLines === "number" && Number.isFinite(record.infoLines)
+    ? record.infoLines
+    : null;
+  const parseFailures = typeof record.parseFailures === "number" && Number.isFinite(record.parseFailures)
+    ? record.parseFailures
+    : null;
+
+  const segments: string[] = [];
+
+  if (totalLines !== null) {
+    const counters: string[] = [];
+    if (errorLines !== null) {
+      counters.push(`erreurs ${errorLines}`);
+    }
+    if (warnLines !== null) {
+      counters.push(`avertissements ${warnLines}`);
+    }
+    if (counters.length === 0 && infoLines !== null) {
+      counters.push(`infos ${infoLines}`);
+    }
+    if (parseFailures !== null && parseFailures > 0) {
+      counters.push(`échecs parse ${parseFailures}`);
+    }
+    const suffix = counters.length ? ` (${counters.join(", ")})` : "";
+    segments.push(`journal HTTP ${totalLines} ligne(s)${suffix}`);
+  } else {
+    const counters: string[] = [];
+    if (errorLines !== null) {
+      counters.push(`erreurs ${errorLines}`);
+    }
+    if (warnLines !== null) {
+      counters.push(`avertissements ${warnLines}`);
+    }
+    if (parseFailures !== null && parseFailures > 0) {
+      counters.push(`échecs parse ${parseFailures}`);
+    }
+    if (counters.length) {
+      segments.push(counters.join(", "));
+    }
+  }
+
+  const topMessages = Array.isArray(record.topMessages) ? record.topMessages : [];
+  for (const entry of topMessages) {
+    if (!entry || typeof entry !== "object") {
+      continue;
+    }
+    const candidate = entry as { text?: unknown; count?: unknown };
+    const text = typeof candidate.text === "string" && candidate.text.trim().length > 0
+      ? formatLogExcerptForSummary(candidate.text)
+      : null;
+    const count = typeof candidate.count === "number" && Number.isFinite(candidate.count)
+      ? candidate.count
+      : null;
+    if (text && count !== null) {
+      segments.push(`top "${text}" ×${count}`);
+      break;
+    }
+  }
+
+  if (!segments.length) {
+    return null;
+  }
+
+  return segments.join("; ");
 }
 
 /**
@@ -921,6 +1050,301 @@ function describeChildrenSpawnOutcome(summaryDocument: unknown): string | null {
   }
   const descriptor = details.join(", ");
   return success ? `spawn enfant réussi (${descriptor})` : `spawn enfant en échec (${descriptor})`;
+}
+
+/**
+ * Summarises the Stage 05 resource limit evidence so the final report highlights
+ * that the tightened quotas triggered at least one monitoring event. The
+ * helper extracts the limit event count alongside the most frequent limit
+ * types, tolerating partially populated summaries for resilience.
+ */
+function describeChildrenLimitDiagnostics(summaryDocument: unknown): string | null {
+  if (!summaryDocument || typeof summaryDocument !== "object") {
+    return null;
+  }
+
+  const record = summaryDocument as { events?: unknown };
+  if (!record.events || typeof record.events !== "object") {
+    return null;
+  }
+
+  const eventsPayload = record.events as {
+    total?: unknown;
+    limitEvents?: unknown;
+    types?: unknown;
+  };
+
+  const segments: string[] = [];
+
+  // Extract the limit event counters, accepting both numeric and string values
+  // so serialisation changes do not break the aggregation.
+  const limitEventsValue = eventsPayload.limitEvents;
+  let limitEvents: number | null = null;
+  if (typeof limitEventsValue === "number" && Number.isFinite(limitEventsValue)) {
+    limitEvents = limitEventsValue;
+  } else if (typeof limitEventsValue === "string" && limitEventsValue.trim().length > 0) {
+    const parsed = Number.parseInt(limitEventsValue, 10);
+    limitEvents = Number.isFinite(parsed) ? parsed : null;
+  }
+
+  const totalValue = eventsPayload.total;
+  let totalEvents: number | null = null;
+  if (typeof totalValue === "number" && Number.isFinite(totalValue)) {
+    totalEvents = totalValue;
+  } else if (typeof totalValue === "string" && totalValue.trim().length > 0) {
+    const parsed = Number.parseInt(totalValue, 10);
+    totalEvents = Number.isFinite(parsed) ? parsed : null;
+  }
+
+  if (limitEvents !== null) {
+    const coverageSuffix = totalEvents !== null ? `/${totalEvents}` : "";
+    segments.push(`évènements limite ${limitEvents}${coverageSuffix}`);
+  }
+
+  const typesPayload = eventsPayload.types;
+  if (typesPayload && typeof typesPayload === "object") {
+    const entries: Array<{ type: string; count: number }> = [];
+    for (const [typeName, value] of Object.entries(typesPayload as Record<string, unknown>)) {
+      if (typeof typeName !== "string" || typeName.trim().length === 0) {
+        continue;
+      }
+      if (typeof value !== "number" || !Number.isFinite(value)) {
+        continue;
+      }
+      entries.push({ type: typeName.trim(), count: value });
+    }
+    if (entries.length > 0) {
+      const limitSpecific = entries.filter((entry) => entry.type.toLowerCase().includes("limit"));
+      const breakdownSource = limitSpecific.length > 0 ? limitSpecific : entries;
+      breakdownSource.sort((a, b) => {
+        if (b.count === a.count) {
+          return a.type.localeCompare(b.type);
+        }
+        return b.count - a.count;
+      });
+      const formatted = breakdownSource
+        .slice(0, 3)
+        .map((entry) => `${entry.type} ×${entry.count}`)
+        .join(", ");
+      if (formatted.length > 0) {
+        segments.push(`types ${formatted}`);
+      }
+    }
+  }
+
+  if (segments.length === 0) {
+    return null;
+  }
+
+  return segments.join("; ");
+}
+
+/**
+ * Extracts human readable diagnostics for Stage 10 so the final report can
+ * highlight the latency sample size, percentile distribution, concurrency
+ * outcomes and HTTP log growth captured during the performance phase.
+ */
+function describePerformanceDiagnostics(summaryDocument: unknown): string | null {
+  if (!summaryDocument || typeof summaryDocument !== "object") {
+    return null;
+  }
+
+  const record = summaryDocument as {
+    latency?: unknown;
+    concurrency?: unknown;
+    logs?: unknown;
+  };
+
+  const segments: string[] = [];
+
+  const latency = record.latency as
+    | {
+        label?: unknown;
+        toolName?: unknown;
+        samples?: unknown;
+        p95Ms?: unknown;
+        p99Ms?: unknown;
+        maxMs?: unknown;
+      }
+    | undefined;
+  if (latency && typeof latency === "object") {
+    const labelCandidate =
+      typeof latency.label === "string" && latency.label.trim().length > 0
+        ? latency.label.trim()
+        : typeof latency.toolName === "string" && latency.toolName.trim().length > 0
+        ? latency.toolName.trim()
+        : null;
+    const samples = typeof latency.samples === "number" ? latency.samples : null;
+    const p95 = typeof latency.p95Ms === "number" ? latency.p95Ms : null;
+    const p99 = typeof latency.p99Ms === "number" ? latency.p99Ms : null;
+    const max = typeof latency.maxMs === "number" ? latency.maxMs : null;
+    const metrics: string[] = [];
+    if (p95 !== null) {
+      metrics.push(`p95 ${formatMillis(p95)} ms`);
+    }
+    if (p99 !== null) {
+      metrics.push(`p99 ${formatMillis(p99)} ms`);
+    }
+    if (p99 === null && p95 === null && max !== null) {
+      metrics.push(`max ${formatMillis(max)} ms`);
+    }
+    const label = labelCandidate ?? "latence";
+    const samplesText = samples !== null ? `${samples} échantillon(s)` : "échantillons inconnus";
+    const metricsSuffix = metrics.length ? ` (${metrics.join(", ")})` : "";
+    segments.push(`latence ${label} — ${samplesText}${metricsSuffix}`);
+  }
+
+  const concurrency = record.concurrency as { groups?: unknown } | undefined;
+  if (concurrency && typeof concurrency === "object") {
+    const groups = Array.isArray(concurrency.groups) ? concurrency.groups : [];
+    const groupSummaries = groups
+      .map((group) => {
+        if (!group || typeof group !== "object") {
+          return null;
+        }
+        const entry = group as { group?: unknown; totalCalls?: unknown; success?: unknown; failure?: unknown };
+        const name = typeof entry.group === "string" && entry.group.trim().length > 0 ? entry.group.trim() : null;
+        const total = typeof entry.totalCalls === "number" ? entry.totalCalls : null;
+        const success = typeof entry.success === "number" ? entry.success : null;
+        const failure = typeof entry.failure === "number" ? entry.failure : null;
+        if (!name || total === null || success === null || failure === null) {
+          return null;
+        }
+        return `concurrence ${name}: ${success}/${total} succès (${failure} échec(s))`;
+      })
+      .filter((value): value is string => value !== null);
+    if (groupSummaries.length) {
+      segments.push(groupSummaries.join(", "));
+    }
+  }
+
+  const logs = record.logs as
+    | {
+        growthBytes?: unknown;
+        rotated?: unknown;
+      }
+    | undefined;
+  if (logs && typeof logs === "object") {
+    const growth = typeof logs.growthBytes === "number" ? logs.growthBytes : null;
+    if (growth !== null) {
+      segments.push(`journal HTTP ${growth >= 0 ? "+" : ""}${growth} octet(s)`);
+    }
+    const rotated = typeof logs.rotated === "boolean" ? logs.rotated : false;
+    if (rotated) {
+      segments.push("rotation du journal détectée");
+    }
+  }
+
+  if (!segments.length) {
+    return null;
+  }
+  return segments.join("; ");
+}
+
+/**
+ * Extracts Stage 11 diagnostics such as unauthorized status codes, redaction
+ * leak counters and filesystem rejection outcomes so operators see the
+ * security evidence directly in the aggregated summary.
+ */
+function describeSecurityDiagnostics(summaryDocument: unknown): string | null {
+  if (!summaryDocument || typeof summaryDocument !== "object") {
+    return null;
+  }
+
+  const record = summaryDocument as {
+    unauthorized?: unknown;
+    redaction?: unknown;
+    pathValidation?: unknown;
+  };
+
+  const segments: string[] = [];
+
+  const unauthorized = record.unauthorized as { calls?: unknown } | undefined;
+  if (unauthorized && typeof unauthorized === "object") {
+    const calls = Array.isArray(unauthorized.calls) ? unauthorized.calls : [];
+    if (calls.length) {
+      let successCount = 0;
+      const statuses = new Set<number>();
+      for (const call of calls) {
+        if (!call || typeof call !== "object") {
+          continue;
+        }
+        const entry = call as { status?: unknown; success?: unknown };
+        const status = typeof entry.status === "number" ? entry.status : null;
+        if (status !== null) {
+          statuses.add(status);
+        }
+        if (entry.success === true) {
+          successCount += 1;
+        }
+      }
+      const statusList = statuses.size ? Array.from(statuses).sort((a, b) => a - b).join(", ") : "inconnu";
+      segments.push(`auth sans jeton: ${successCount}/${calls.length} rejet(s) (status ${statusList})`);
+    }
+  }
+
+  const redaction = record.redaction as { calls?: unknown } | undefined;
+  if (redaction && typeof redaction === "object") {
+    const calls = Array.isArray(redaction.calls) ? redaction.calls : [];
+    if (calls.length) {
+      let responseLeaks = 0;
+      let eventLeaks = 0;
+      let cleanCount = 0;
+      for (const call of calls) {
+        if (!call || typeof call !== "object") {
+          continue;
+        }
+        const entry = call as { leakedInResponse?: unknown; leakedInEvents?: unknown };
+        const responseLeak = entry.leakedInResponse === true;
+        const eventLeak = entry.leakedInEvents === true;
+        if (responseLeak) {
+          responseLeaks += 1;
+        }
+        if (eventLeak) {
+          eventLeaks += 1;
+        }
+        if (!responseLeak && !eventLeak) {
+          cleanCount += 1;
+        }
+      }
+      segments.push(
+        `redaction: ${cleanCount}/${calls.length} masque(s) valide(s) (fuites réponses ${responseLeaks}, événements ${eventLeaks})`,
+      );
+    }
+  }
+
+  const pathValidation = record.pathValidation as { calls?: unknown } | undefined;
+  if (pathValidation && typeof pathValidation === "object") {
+    const calls = Array.isArray(pathValidation.calls) ? pathValidation.calls : [];
+    if (calls.length) {
+      let blocked = 0;
+      for (const call of calls) {
+        if (!call || typeof call !== "object") {
+          continue;
+        }
+        const entry = call as { status?: unknown };
+        const status = typeof entry.status === "number" ? entry.status : null;
+        if (status !== null && status >= 400) {
+          blocked += 1;
+        }
+      }
+      segments.push(`filesystem interdit: ${blocked}/${calls.length} rejet(s)`);
+    }
+  }
+
+  if (!segments.length) {
+    return null;
+  }
+  return segments.join("; ");
+}
+
+/** Formats millisecond metrics with two decimals while stripping trailing zeros. */
+function formatMillis(value: number): string {
+  const fixed = value.toFixed(2);
+  if (fixed.includes(".")) {
+    return fixed.replace(/\.0+$/, "").replace(/(\.[0-9]*[1-9])0+$/, "$1");
+  }
+  return fixed;
 }
 
 /** Builds a concise note describing the completion status of a stage. */

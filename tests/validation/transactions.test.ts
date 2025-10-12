@@ -199,6 +199,7 @@ describe("transactions phase runner", () => {
 
     const responses = [
       { jsonrpc: "2.0", result: { tx_id: "tx-1", graph_id: baseGraph.graph_id, graph: baseGraph, base_version: 1 } },
+      { jsonrpc: "2.0", result: { changed: false, operations: [] } },
       { jsonrpc: "2.0", result: { tx_id: "tx-1", graph: committedGraph } },
       { jsonrpc: "2.0", result: { tx_id: "tx-1", version: 2, graph: committedGraph } },
       { jsonrpc: "2.0", result: { changed: true, operations: [{ op: "test", path: "/metadata/status", value: "committed" }] } },
@@ -217,6 +218,16 @@ describe("transactions phase runner", () => {
       },
       { jsonrpc: "2.0", result: { committed_version: 3, graph: patchedGraph, events: [{ seq: 5, type: "patched" }] } },
       { jsonrpc: "2.0", result: { changed: true, operations: cycleOperations } },
+      { jsonrpc: "2.0", result: { tx_id: "tx-2", graph_id: baseGraph.graph_id, graph: patchedGraph, base_version: 3 } },
+      {
+        jsonrpc: "2.0",
+        error: {
+          code: 422,
+          message: "cycle detected in transaction",
+          data: { error: "E-TX-CYCLE", operation: 0 },
+        },
+      },
+      { jsonrpc: "2.0", result: { tx_id: "tx-2", rolled_back: true, reason: "abort invalid patch replay" } },
       {
         jsonrpc: "2.0",
         error: { code: 123, message: "cycle detected", data: { error: "E-PATCH-CYCLE" } },
@@ -242,6 +253,7 @@ describe("transactions phase runner", () => {
           expires_at: null,
         },
       },
+      { jsonrpc: "2.0", result: { total: 1, values: [{ id: "v-1", type: "control" }] } },
       {
         jsonrpc: "2.0",
         result: {
@@ -264,19 +276,31 @@ describe("transactions phase runner", () => {
 
     const outcomes = await runTransactionsPhase(runRoot, environment, buildDefaultTransactionCalls());
 
-    expect(outcomes).to.have.lengthOf(13);
-    expect(capturedRequests).to.have.lengthOf(13);
+    expect(outcomes).to.have.lengthOf(18);
+    expect(capturedRequests).to.have.lengthOf(18);
 
-    const patchRequest = parseRequestBody(capturedRequests[6]?.init) as { params?: { patch?: unknown } };
+    const baselineDiff = parseRequestBody(capturedRequests[1]?.init) as { params?: { from?: unknown; to?: unknown } };
+    expect(baselineDiff?.params?.from).to.deep.equal({ graph: baseGraph });
+    expect(baselineDiff?.params?.to).to.deep.equal({ graph: baseGraph });
+
+    const patchRequest = parseRequestBody(capturedRequests[7]?.init) as { params?: { patch?: unknown } };
     expect(patchRequest?.params?.patch).to.deep.equal(patchOperations);
 
-    const invalidPatchRequest = parseRequestBody(capturedRequests[8]?.init) as { params?: { patch?: unknown } };
+    const invalidPatchRequest = parseRequestBody(capturedRequests[12]?.init) as { params?: { patch?: unknown } };
     expect(invalidPatchRequest?.params?.patch).to.deep.equal(cycleOperations);
 
-    const conflictingPatchRequest = parseRequestBody(capturedRequests[10]?.init) as { params?: { owner?: string } };
+    const transactionalApply = parseRequestBody(capturedRequests[10]?.init) as { params?: { tx_id?: string; operations?: unknown } };
+    expect(transactionalApply?.params?.tx_id).to.equal("tx-2");
+    expect(transactionalApply?.params?.operations).to.deep.equal(cycleOperations);
+
+    const rollbackRequest = parseRequestBody(capturedRequests[11]?.init) as { params?: { tx_id?: string; reason?: string } };
+    expect(rollbackRequest?.params?.tx_id).to.equal("tx-2");
+    expect(rollbackRequest?.params?.reason).to.equal("abort invalid patch replay");
+
+    const conflictingPatchRequest = parseRequestBody(capturedRequests[14]?.init) as { params?: { owner?: string } };
     expect(conflictingPatchRequest?.params?.owner).to.equal("validation-harness-b");
 
-    const unlockRequest = parseRequestBody(capturedRequests[11]?.init) as { params?: { lock_id?: string } };
+    const unlockRequest = parseRequestBody(capturedRequests[15]?.init) as { params?: { lock_id?: string } };
     expect(unlockRequest?.params?.lock_id).to.equal("lock-1");
 
     const eventsContent = await readFile(join(runRoot, TRANSACTIONS_JSONL_FILES.events), "utf8");
@@ -286,11 +310,17 @@ describe("transactions phase runner", () => {
 
     const outputsContent = await readFile(join(runRoot, TRANSACTIONS_JSONL_FILES.outputs), "utf8");
     const outputLines = outputsContent.trim().split("\n");
-    expect(outputLines).to.have.lengthOf(13);
+    expect(outputLines).to.have.lengthOf(18);
 
     const parsedOutputs = outputLines.map((line) => JSON.parse(line)) as Array<{ name: string; response: { body?: unknown } }>;
     const invariantOutput = parsedOutputs.find((entry) => entry.name === "graph_patch_invariant_violation");
     expect(invariantOutput?.response.body?.error?.data?.error).to.equal("E-PATCH-CYCLE");
+
+    const transactionalError = parsedOutputs.find((entry) => entry.name === "tx_apply_invalid_patch");
+    expect(transactionalError?.response.body?.error?.data?.error).to.equal("E-TX-CYCLE");
+
+    const baselineOutput = parsedOutputs.find((entry) => entry.name === "graph_diff_baseline");
+    expect(baselineOutput?.response.body?.result?.changed).to.equal(false);
 
     const conflictOutput = parsedOutputs.find((entry) => entry.name === "graph_patch_conflicting_holder");
     expect(conflictOutput?.response.body?.error?.data?.error).to.equal("E-LOCK-HELD");
@@ -298,5 +328,9 @@ describe("transactions phase runner", () => {
     const causalArtefact = await readFile(join(runRoot, "artifacts/graphs/causal_export.json"), "utf8");
     const causalPayload = JSON.parse(causalArtefact);
     expect(causalPayload.total).to.equal(1);
+
+    const valuesArtefact = await readFile(join(runRoot, "artifacts/graphs/values_graph_export.json"), "utf8");
+    const valuesPayload = JSON.parse(valuesArtefact);
+    expect(valuesPayload.total).to.equal(1);
   });
 });

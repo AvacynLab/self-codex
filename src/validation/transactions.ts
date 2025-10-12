@@ -59,6 +59,9 @@ const GRAPH_ARTIFACTS_DIR = "artifacts/graphs";
 /** Filename persisted when the `causal_export` tool succeeds. */
 const CAUSAL_EXPORT_ARTIFACT = "causal_export.json";
 
+/** Filename persisted when the `values_graph_export` tool succeeds. */
+const VALUES_GRAPH_ARTIFACT = "values_graph_export.json";
+
 /** Snapshot describing the context forwarded to dynamic parameter factories. */
 export interface TransactionCallContext {
   /** HTTP environment used to contact the MCP server. */
@@ -440,6 +443,22 @@ async function persistCausalExportArtefact(runRoot: string, outcome: Transaction
 }
 
 /**
+ * Persists the payload returned by the `values_graph_export` tool so operators
+ * can inspect the knowledge values attached to the transactional graph.
+ */
+async function persistValuesGraphExportArtefact(
+  runRoot: string,
+  outcome: TransactionCallOutcome,
+): Promise<void> {
+  const result = extractJsonRpcResult(outcome.check.response.body);
+  if (!result) {
+    return;
+  }
+  const target = join(runRoot, GRAPH_ARTIFACTS_DIR, VALUES_GRAPH_ARTIFACT);
+  await writeJsonFile(target, result);
+}
+
+/**
  * Derives the sequence of JSON-RPC calls required to fulfil section 3 of the
  * validation playbook (transactions, diff/patch, invariant violation).
  */
@@ -456,6 +475,16 @@ export function buildDefaultTransactionCalls(): TransactionCallSpec[] {
         ttl_ms: 5_000,
         graph: DEFAULT_BASE_GRAPH,
       },
+    },
+    {
+      scenario: "nominal",
+      name: "graph_diff_baseline",
+      method: "graph_diff",
+      params: () => ({
+        graph_id: DEFAULT_GRAPH_ID,
+        from: { graph: DEFAULT_BASE_GRAPH },
+        to: { graph: DEFAULT_BASE_GRAPH },
+      }),
     },
     {
       scenario: "nominal",
@@ -576,6 +605,67 @@ export function buildDefaultTransactionCalls(): TransactionCallSpec[] {
     },
     {
       scenario: "error",
+      name: "tx_begin_invalid_patch",
+      method: "tx_begin",
+      params: ({ previousCalls }: TransactionCallContext) => {
+        const patchResult = requireResult(previousCalls, "graph_patch_success");
+        const patchedGraph = extractGraph(patchResult);
+        if (!patchedGraph) {
+          throw new Error("graph_patch_success did not expose the patched graph");
+        }
+        const version = patchResult.committed_version ?? patchResult.version;
+        if (typeof version !== "number") {
+          throw new Error("graph_patch_success did not expose a committed version");
+        }
+        return {
+          graph_id: DEFAULT_GRAPH_ID,
+          owner: DEFAULT_LOCK_HOLDER,
+          note: "prepare invalid patch replay inside transaction",
+          ttl_ms: 5_000,
+          graph: patchedGraph,
+          base_version: version,
+        };
+      },
+    },
+    {
+      scenario: "error",
+      name: "tx_apply_invalid_patch",
+      method: "tx_apply",
+      params: ({ previousCalls }: TransactionCallContext) => {
+        const beginResult = requireResult(previousCalls, "tx_begin_invalid_patch");
+        const diffResult = requireResult(previousCalls, "graph_diff_cycle_plan");
+        const txId = beginResult.tx_id;
+        if (typeof txId !== "string" || !txId) {
+          throw new Error("tx_apply_invalid_patch requires tx_begin to return a tx_id");
+        }
+        const operations = diffResult.operations;
+        if (!Array.isArray(operations) || operations.length === 0) {
+          throw new Error("graph_diff_cycle_plan did not produce operations to replay");
+        }
+        return {
+          tx_id: txId,
+          operations,
+        };
+      },
+    },
+    {
+      scenario: "error",
+      name: "tx_rollback_invalid_patch",
+      method: "tx_rollback",
+      params: ({ previousCalls }: TransactionCallContext) => {
+        const beginResult = requireResult(previousCalls, "tx_begin_invalid_patch");
+        const txId = beginResult.tx_id;
+        if (typeof txId !== "string" || !txId) {
+          throw new Error("tx_rollback_invalid_patch requires tx_begin to return a tx_id");
+        }
+        return {
+          tx_id: txId,
+          reason: "abort invalid patch replay",
+        };
+      },
+    },
+    {
+      scenario: "error",
       name: "graph_patch_invariant_violation",
       method: "graph_patch",
       params: ({ previousCalls }: TransactionCallContext) => {
@@ -658,6 +748,16 @@ export function buildDefaultTransactionCalls(): TransactionCallSpec[] {
         }
         return { lock_id: lockId };
       },
+    },
+    {
+      scenario: "export",
+      name: "values_graph_export_snapshot",
+      method: "values_graph_export",
+      params: {},
+      afterExecute: async ({ runRoot, outcome }) => {
+        await persistValuesGraphExportArtefact(runRoot, outcome);
+      },
+      captureEvents: false,
     },
     {
       scenario: "export",

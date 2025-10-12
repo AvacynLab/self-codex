@@ -82,7 +82,9 @@ export interface KnowledgeCallOutcome {
 
 /** Shared state collected while executing the knowledge workflow. */
 export interface KnowledgePhaseState {
+  /** Absolute path of the persisted `values_graph_export` artefact (when any). */
   valuesGraphExportPath: string | null;
+  /** Absolute path of the persisted `causal_export` artefact (when any). */
   causalExportPath: string | null;
 }
 
@@ -161,6 +163,118 @@ export interface KnowledgeSummary {
 }
 
 /**
+ * Ensures the Stage 8 workflow actually exercised the knowledge & values
+ * invariants requested in the operator checklist. Any missing artefact or
+ * inconsistent payload causes the validation run to fail immediately so the
+ * regression cannot go unnoticed.
+ */
+function enforceKnowledgeExpectations(
+  outcomes: readonly KnowledgeCallOutcome[],
+  state: KnowledgePhaseState,
+): void {
+  const outcomesByName = new Map<string, KnowledgeCallOutcome>();
+  for (const outcome of outcomes) {
+    outcomesByName.set(outcome.call.name, outcome);
+  }
+
+  const assistOutcome = outcomesByName.get("kg_assist_primary");
+  if (!assistOutcome) {
+    throw new Error("Stage 8 validation is missing the `kg_assist_primary` call.");
+  }
+  const assistResult = extractJsonRpcResult(assistOutcome.check.response.body);
+  const assistAnswer = typeof assistResult?.answer === "string" ? assistResult.answer.trim() : "";
+  if (!assistAnswer) {
+    throw new Error("kg_assist_primary must return a non-empty `answer` field.");
+  }
+  const assistCitations = Array.isArray(assistResult?.citations)
+    ? (assistResult!.citations as unknown[]).length
+    : 0;
+  if (assistCitations === 0) {
+    throw new Error("kg_assist_primary must provide at least one citation to support the answer.");
+  }
+
+  const planOutcome = outcomesByName.get("kg_suggest_plan");
+  if (!planOutcome) {
+    throw new Error("Stage 8 validation is missing the `kg_suggest_plan` call.");
+  }
+  const planResult = extractJsonRpcResult(planOutcome.check.response.body);
+  const plan = planResult?.plan as { title?: unknown; steps?: unknown } | undefined;
+  const planTitle = typeof plan?.title === "string" ? plan.title.trim() : "";
+  if (!planTitle) {
+    throw new Error("kg_suggest_plan must return a plan with a readable title.");
+  }
+  const planSteps = Array.isArray(plan?.steps) ? (plan!.steps as unknown[]).length : 0;
+  if (planSteps < 2) {
+    throw new Error("kg_suggest_plan must return at least two plan steps for coverage.");
+  }
+
+  const subgraphOutcome = outcomesByName.get("kg_get_subgraph");
+  if (!subgraphOutcome) {
+    throw new Error("Stage 8 validation is missing the `kg_get_subgraph` call.");
+  }
+  const subgraphResult = extractJsonRpcResult(subgraphOutcome.check.response.body);
+  const subgraphGraph = (subgraphResult?.graph ?? null) as
+    | { nodes?: unknown; edges?: unknown }
+    | null;
+  const nodes = Array.isArray(subgraphGraph?.nodes)
+    ? (subgraphGraph!.nodes as unknown[])
+    : [];
+  const edges = Array.isArray(subgraphGraph?.edges)
+    ? (subgraphGraph!.edges as unknown[])
+    : [];
+  const requestedNodeCount = (() => {
+    const params = subgraphOutcome.call.params as { node_ids?: unknown } | undefined;
+    return Array.isArray(params?.node_ids) ? (params!.node_ids as unknown[]).length : 0;
+  })();
+  const expectedNodeFloor = Math.max(1, requestedNodeCount);
+  if (nodes.length < expectedNodeFloor) {
+    throw new Error(
+      `kg_get_subgraph returned ${nodes.length} nodes but at least ${expectedNodeFloor} are required.`,
+    );
+  }
+  const expectedEdgeFloor = Math.max(1, expectedNodeFloor - 1);
+  if (edges.length < expectedEdgeFloor) {
+    throw new Error(
+      `kg_get_subgraph returned ${edges.length} edges but at least ${expectedEdgeFloor} are required to ensure coherence.`,
+    );
+  }
+
+  const valuesPrimary = outcomesByName.get("values_explain_primary");
+  const valuesRepeat = outcomesByName.get("values_explain_repeat");
+  if (!valuesPrimary || !valuesRepeat) {
+    throw new Error("Stage 8 validation must execute both values_explain calls.");
+  }
+  const primaryResult = extractJsonRpcResult(valuesPrimary.check.response.body);
+  const repeatResult = extractJsonRpcResult(valuesRepeat.check.response.body);
+  const primaryExplanation =
+    typeof primaryResult?.explanation === "string" ? primaryResult.explanation.trim() : "";
+  if (!primaryExplanation) {
+    throw new Error("values_explain must return a non-empty explanation.");
+  }
+  const repeatExplanation =
+    typeof repeatResult?.explanation === "string" ? repeatResult.explanation.trim() : "";
+  if (!repeatExplanation) {
+    throw new Error("values_explain (repeat) must return a non-empty explanation.");
+  }
+  if (primaryExplanation !== repeatExplanation) {
+    throw new Error("values_explain must remain stable between runs when using reference_answer.");
+  }
+  const valuesCitations = Array.isArray(primaryResult?.citations)
+    ? (primaryResult!.citations as unknown[]).length
+    : 0;
+  if (valuesCitations === 0) {
+    throw new Error("values_explain must return supporting citations.");
+  }
+
+  if (!state.valuesGraphExportPath) {
+    throw new Error("values_graph_export did not persist an artefact on disk.");
+  }
+  if (!state.causalExportPath) {
+    throw new Error("causal_export did not persist an artefact on disk.");
+  }
+}
+
+/**
  * Executes the Stage 8 knowledge & values validation call plan while persisting
  * all artefacts expected by the operator checklist.
  */
@@ -226,6 +340,8 @@ export async function runKnowledgePhase(
     }
     outcomes.push(outcome);
   }
+
+  enforceKnowledgeExpectations(outcomes, state);
 
   const summary = buildKnowledgeSummary(runRoot, outcomes, state);
   const summaryPath = join(runRoot, "report", KNOWLEDGE_SUMMARY_FILENAME);

@@ -136,6 +136,8 @@ describe("robustness validation runner", () => {
     expect(result.summary.idempotency?.idempotencyKey).to.equal("robustness-tx");
     expect(result.summary.crashSimulation?.eventCount).to.equal(2);
     expect(result.summary.timeout?.timedOut).to.equal(true);
+    expect(result.summary.timeout?.statusToken).to.equal("timeout");
+    expect(result.summary.timeout?.message).to.equal("Operation timed out");
 
     const inputsLog = await readFile(join(runRoot, ROBUSTNESS_JSONL_FILES.inputs), "utf8");
     const outputsLog = await readFile(join(runRoot, ROBUSTNESS_JSONL_FILES.outputs), "utf8");
@@ -149,6 +151,89 @@ describe("robustness validation runner", () => {
     expect(eventsLog).to.contain("plan.timeout");
     expect(httpLog).to.contain("invalid-schema:graph_diff_invalid");
     expect(summaryDocument.checks).to.have.lengthOf(6);
+  });
+
+  it("fails when required error responses do not expose the expected status codes", async () => {
+    const responses = [
+      { status: 200, payload: { jsonrpc: "2.0", error: { message: "oops" } } },
+      { status: 200, payload: { jsonrpc: "2.0", error: { message: "also bad" } } },
+      { status: 200, payload: { jsonrpc: "2.0", result: {} } },
+      { status: 200, payload: { jsonrpc: "2.0", result: {} } },
+      { status: 500, payload: { jsonrpc: "2.0", error: { message: "crash", data: { events: [{}] } } } },
+      { status: 200, payload: { jsonrpc: "2.0", result: { status: "timeout", events: [] } } },
+    ];
+
+    globalThis.fetch = (async () => {
+      const next = responses.shift() ?? { status: 200, payload: { jsonrpc: "2.0", result: {} } };
+      return new Response(JSON.stringify(next.payload), {
+        status: next.status,
+        headers: { "content-type": "application/json" },
+      });
+    }) as typeof fetch;
+
+    await runRobustnessPhase(runRoot, environment)
+      .then(() => {
+        throw new Error("Expected the robustness phase to fail when HTTP 400 is not returned");
+      })
+      .catch((error: unknown) => {
+        expect((error as Error).message).to.contain("Expected invalid schema request to return HTTP 400");
+      });
+  });
+
+  it("fails when idempotent calls diverge", async () => {
+    const responses = [
+      { status: 400, payload: { jsonrpc: "2.0", error: { message: "Invalid" } } },
+      { status: 404, payload: { jsonrpc: "2.0", error: { message: "Unknown" } } },
+      { status: 200, payload: { jsonrpc: "2.0", result: { idempotency_key: "key" } } },
+      { status: 200, payload: { jsonrpc: "2.0", result: { idempotency_key: "different" } } },
+      { status: 500, payload: { jsonrpc: "2.0", error: { message: "Crash", data: { events: [{}] } } } },
+      { status: 200, payload: { jsonrpc: "2.0", result: { status: "timeout", events: [] } } },
+    ];
+
+    globalThis.fetch = (async () => {
+      const next = responses.shift() ?? { status: 200, payload: { jsonrpc: "2.0", result: {} } };
+      return new Response(JSON.stringify(next.payload), {
+        status: next.status,
+        headers: { "content-type": "application/json" },
+      });
+    }) as typeof fetch;
+
+    await runRobustnessPhase(runRoot, environment)
+      .then(() => {
+        throw new Error("Expected the robustness phase to fail when idempotency diverges");
+      })
+      .catch((error: unknown) => {
+        expect((error as Error).message).to.contain("Idempotency check failed");
+      });
+  });
+
+  it("fails when the timeout scenario does not report a timeout or cancellation", async () => {
+    const responses = [
+      { status: 400, payload: { jsonrpc: "2.0", error: { message: "Invalid" } } },
+      { status: 404, payload: { jsonrpc: "2.0", error: { message: "Unknown" } } },
+      { status: 200, payload: { jsonrpc: "2.0", result: { idempotency_key: "key" } } },
+      { status: 200, payload: { jsonrpc: "2.0", result: { idempotency_key: "key" } } },
+      { status: 500, payload: { jsonrpc: "2.0", error: { message: "Crash", data: { events: [{}] } } } },
+      { status: 200, payload: { jsonrpc: "2.0", result: { status: "running", events: [] } } },
+    ];
+
+    globalThis.fetch = (async () => {
+      const next = responses.shift() ?? { status: 200, payload: { jsonrpc: "2.0", result: {} } };
+      return new Response(JSON.stringify(next.payload), {
+        status: next.status,
+        headers: { "content-type": "application/json" },
+      });
+    }) as typeof fetch;
+
+    await runRobustnessPhase(runRoot, environment)
+      .then(() => {
+        throw new Error("Expected the robustness phase to fail when timeout evidence is missing");
+      })
+      .catch((error: unknown) => {
+        expect((error as Error).message).to.contain(
+          "Reactive plan did not report a timeout or cancellation status",
+        );
+      });
   });
 
   it("supports overriding defaults when building the call plan", () => {

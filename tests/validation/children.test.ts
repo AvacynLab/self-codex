@@ -103,11 +103,23 @@ describe("children validation runner", () => {
     expect(result.summary.replyText).to.equal("Telemetry captured.");
     expect(result.summary.events.total).to.equal(5);
     expect(result.summary.events.types).to.have.property("child.limit.exceeded", 1);
+    expect(result.summary.events.limitEvents).to.equal(2);
 
     expect(result.conversationPath).to.be.a("string");
     const conversation = JSON.parse(await readFile(result.conversationPath!, "utf8"));
     expect(conversation.request).to.have.property("child_id");
     expect(conversation.response).to.have.property("result");
+
+    const sendRequest = capturedRequests[3]?.init;
+    expect(sendRequest).to.not.equal(undefined);
+    const requestBody = typeof sendRequest?.body === "string" ? sendRequest.body : null;
+    expect(requestBody, "child_send payload").to.be.a("string");
+    const parsedSend = JSON.parse(requestBody!) as { params?: Record<string, unknown> };
+    expect(parsedSend.params).to.deep.include({ child_id: "child-123" });
+    expect(parsedSend.params?.payload).to.deep.equal({
+      role: "user",
+      content: [{ type: "text", text: "Provide a short status update for the validation harness." }],
+    });
 
     const inputsLog = await readFile(join(runRoot, CHILDREN_JSONL_FILES.inputs), "utf8");
     const outputsLog = await readFile(join(runRoot, CHILDREN_JSONL_FILES.outputs), "utf8");
@@ -122,6 +134,7 @@ describe("children validation runner", () => {
     const summaryDocument = JSON.parse(await readFile(result.summaryPath, "utf8"));
     expect(summaryDocument.childId).to.equal("child-123");
     expect(summaryDocument.artefacts.conversation).to.equal(result.conversationPath);
+    expect(summaryDocument.events.limitEvents).to.equal(2);
 
     const headers = capturedRequests[0]?.init?.headers;
     expect(headers).to.satisfy((value: HeadersInit | undefined) => {
@@ -161,7 +174,7 @@ describe("children validation runner", () => {
       });
     }) as typeof fetch;
 
-    const phaseResult = await runChildrenPhase(runRoot, environment);
+    const phaseResult = await runChildrenPhase(runRoot, environment, { requireLimitEvent: false });
     const summary = buildChildrenSummary(runRoot, phaseResult.outcomes, {
       prompt: "Hello child",
       conversationPath: phaseResult.conversationPath,
@@ -170,5 +183,43 @@ describe("children validation runner", () => {
     expect(summary.calls).to.have.lengthOf(phaseResult.outcomes.length);
     expect(summary.goal).to.equal("Hello child");
     expect(summary.artefacts.requestsJsonl).to.equal(join(runRoot, CHILDREN_JSONL_FILES.inputs));
+    expect(summary.events.limitEvents).to.be.a("number").that.is.at.least(0);
+  });
+
+  it("fails fast when no limit-related events are captured", async () => {
+    const responses = [
+      {
+        jsonrpc: "2.0",
+        result: {
+          child: {
+            id: "child-no-limit",
+            goal: "Collect telemetry",
+            limits: { cpu_ms: 4000, memory_mb: 128, wall_ms: 120000 },
+          },
+        },
+      },
+      { jsonrpc: "2.0", result: { attached: true } },
+      { jsonrpc: "2.0", result: { limits: { cpu_ms: 1500, memory_mb: 96, wall_ms: 60000 } } },
+      { jsonrpc: "2.0", result: { reply: { role: "assistant", content: [{ type: "text", text: "ok" }] } } },
+      { jsonrpc: "2.0", result: { terminated: true } },
+    ];
+
+    globalThis.fetch = (async (_url: RequestInfo | URL, init?: RequestInit) => {
+      const payload = responses.shift() ?? { jsonrpc: "2.0", result: {} };
+      return new Response(JSON.stringify(payload), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as typeof fetch;
+
+    let caught: unknown;
+    try {
+      await runChildrenPhase(runRoot, environment);
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).to.be.instanceOf(Error);
+    expect((caught as Error).message).to.contain("limit-related events");
   });
 });

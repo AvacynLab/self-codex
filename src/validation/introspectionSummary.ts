@@ -25,7 +25,7 @@ export interface IntrospectionCallSummary {
 
 /**
  * Captures the analysis performed on the events returned by
- * `events/subscribe`.  The helper verifies whether sequence numbers are
+ * `events_subscribe`.  The helper verifies whether sequence numbers are
  * strictly increasing and records a few sample events for manual inspection.
  */
 export interface IntrospectionEventSummary {
@@ -71,15 +71,15 @@ export interface IntrospectionSummaryDocument {
   generatedAt: string;
   /** One entry per JSON-RPC call executed by the introspection workflow. */
   calls: IntrospectionCallSummary[];
-  /** Optional structured payload returned by `mcp/info`. */
+  /** Optional structured payload returned by `mcp_info`. */
   info?: unknown;
-  /** Optional structured payload returned by `mcp/capabilities`. */
+  /** Optional structured payload returned by `mcp_capabilities`. */
   capabilities?: unknown;
   /** Optional structured payload returned by `tools/list`. */
   tools?: unknown;
-  /** Optional structured payload returned by `resources/list`. */
+  /** Optional structured payload returned by `resources_list`. */
   resources?: unknown;
-  /** Event-related diagnostics derived from the `events/subscribe` response. */
+  /** Event-related diagnostics derived from the `events_subscribe` response. */
   events?: IntrospectionEventSummary;
 }
 
@@ -103,7 +103,7 @@ function extractNumericSequence(event: unknown): number | null {
 }
 
 /**
- * Computes statistics about a set of events returned by `events/subscribe`.
+ * Computes statistics about a set of events returned by `events_subscribe`.
  *
  * The helper focuses on the monotonicity of the `seq` field because it is a
  * critical signal for downstream consumers that rely on event ordering.  Any
@@ -186,7 +186,7 @@ function extractJsonRpcError(body: unknown): unknown {
  *
  * The resulting object focuses on the key playbook artefacts so the validation
  * report can highlight the advertised capabilities without parsing the JSONL
- * files.  Event diagnostics are included when `events/subscribe` returned a
+ * files.  Event diagnostics are included when `events_subscribe` returned a
  * payload with an `events` array.
  */
 export function buildIntrospectionSummary(outcomes: JsonRpcCallOutcome[]): IntrospectionSummaryDocument {

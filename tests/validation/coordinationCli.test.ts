@@ -58,16 +58,52 @@ describe("coordination validation CLI", () => {
       { jsonrpc: "2.0", result: { key: "bb", value: {} } },
       { jsonrpc: "2.0", result: { key: "bb", value: {} } },
       { jsonrpc: "2.0", result: { items: [] } },
-      { jsonrpc: "2.0", result: { watch_id: "watch-1", events: [] } },
+      { jsonrpc: "2.0", result: { watch_id: "watch-1", events: [{ type: "bb.set", seq: 1 }] } },
+      { jsonrpc: "2.0", result: { key: "bb", value: { status: "in-flight" } } },
+      { jsonrpc: "2.0", result: { key: "bb", value: { status: "done" } } },
+      { jsonrpc: "2.0", result: { events: [{ type: "bb.update", seq: 2 }, { type: "bb.update", seq: 3 }] } },
       { jsonrpc: "2.0", result: { events: [] } },
       { jsonrpc: "2.0", result: { mark_id: "mark-1" } },
       { jsonrpc: "2.0", result: { marks: [] } },
       { jsonrpc: "2.0", result: { remaining: [] } },
-      { jsonrpc: "2.0", result: { announcement_id: "announce-1", proposals: [{ id: "proposal-1" }] } },
-      { jsonrpc: "2.0", result: { proposals: [{ id: "proposal-1" }] } },
-      { jsonrpc: "2.0", result: { announcement_id: "announce-1" } },
-      { jsonrpc: "2.0", result: { decision: "plan_a" } },
-      { jsonrpc: "2.0", result: { decision: "plan_a", ballots: [] } },
+      {
+        jsonrpc: "2.0",
+        result: {
+          announcement_id: "announce-1",
+          proposals: [
+            { id: "proposal-1", agent_id: "agent.alpha" },
+            { id: "proposal-2", agent_id: "agent.beta" },
+          ],
+        },
+      },
+      {
+        jsonrpc: "2.0",
+        result: {
+          proposals: [
+            { id: "proposal-1", agent_id: "agent.alpha" },
+            { id: "proposal-2", agent_id: "agent.beta" },
+          ],
+        },
+      },
+      { jsonrpc: "2.0", result: { announcement_id: "announce-1", awarded_agent_id: "agent.alpha" } },
+      {
+        jsonrpc: "2.0",
+        result: {
+          outcome: "validation_tie_break_preference",
+          votes: 2,
+          tie: false,
+          tally: { plan_alpha: 1, plan_beta: 1 },
+        },
+      },
+      {
+        jsonrpc: "2.0",
+        result: {
+          decision: "validation_tie_break_preference",
+          votes: 2,
+          tie: false,
+          tally: { plan_alpha: 1, plan_beta: 1 },
+        },
+      },
     ];
 
     globalThis.fetch = (async () => {
@@ -93,8 +129,9 @@ describe("coordination validation CLI", () => {
     );
 
     expect(runRoot).to.equal(join(workingDir, "validation_cli"));
-    expect(result.summary.blackboard.eventCount).to.equal(0);
-    expect(result.summary.consensus.outcome).to.equal("plan_a");
+    expect(result.summary.blackboard.eventCount).to.equal(3);
+    expect(result.summary.contractNet.proposalCount).to.equal(2);
+    expect(result.summary.consensus.outcome).to.equal("validation_tie_break_preference");
 
     const summaryDocument = JSON.parse(await readFile(result.summaryPath, "utf8"));
     expect(summaryDocument.artefacts.eventsJsonl).to.equal(join(runRoot, COORDINATION_JSONL_FILES.events));
@@ -102,5 +139,8 @@ describe("coordination validation CLI", () => {
     const flattenedLogs = logs.flat().join(" ");
     expect(flattenedLogs).to.contain(COORDINATION_JSONL_FILES.inputs);
     expect(flattenedLogs).to.contain("Summary");
+    expect(flattenedLogs).to.contain("Blackboard events observed");
+    expect(flattenedLogs).to.contain("Contract-Net proposals");
+    expect(flattenedLogs).to.contain("Consensus outcome");
   });
 });

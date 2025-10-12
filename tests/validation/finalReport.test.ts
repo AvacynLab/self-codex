@@ -32,6 +32,40 @@ describe("validation final report", () => {
       "utf8",
     );
 
+    await writeFile(
+      join(runRoot, "logs", "summary.json"),
+      `${JSON.stringify(
+        {
+          generatedAt: "2099-01-01T00:00:01Z",
+          sourcePath: "/tmp/mcp_http.log",
+          fileSizeBytes: 4096,
+          totalLines: 120,
+          emptyLines: 3,
+          parseFailures: 2,
+          levelCounts: { info: 100, warn: 15, error: 5 },
+          errorLines: 5,
+          warnLines: 15,
+          infoLines: 100,
+          topMessages: [
+            { text: "health ok", count: 50 },
+            { text: "warn backlog", count: 10 },
+          ],
+          latency: {
+            samples: 5,
+            fields: ["duration_ms"],
+            min: 12,
+            max: 89,
+            p50: 30,
+            p95: 80,
+            p99: 89,
+          },
+        },
+        null,
+        2,
+      )}\n`,
+      "utf8",
+    );
+
     // Stage 05 — spawn succeeds, send fails to exercise incident reporting.
     await writeFile(
       join(runRoot, "inputs", "02_tx.jsonl"),
@@ -216,6 +250,14 @@ describe("validation final report", () => {
               durationMs: 450,
             },
           ],
+          events: {
+            total: 2,
+            limitEvents: 1,
+            types: {
+              "child.limit.exceeded": 1,
+              "child.spawned": 1,
+            },
+          },
         },
         null,
         2,
@@ -544,7 +586,7 @@ describe("validation final report", () => {
         {
           scenario: "auth",
           name: "unauthorized:mcp_info",
-          method: "mcp/info",
+          method: "mcp_info",
           request: {
             method: "POST",
             url: "http://localhost:8765/mcp",
@@ -552,7 +594,7 @@ describe("validation final report", () => {
             body: {
               jsonrpc: "2.0",
               id: "security-unauthorized",
-              method: "mcp/info",
+              method: "mcp_info",
               params: {},
             },
           },
@@ -569,7 +611,7 @@ describe("validation final report", () => {
         {
           scenario: "auth",
           name: "unauthorized:mcp_info",
-          method: "mcp/info",
+          method: "mcp_info",
           startedAt: "2099-01-01T00:00:10Z",
           durationMs: 33,
           response: {
@@ -608,7 +650,7 @@ describe("validation final report", () => {
             {
               scenario: "auth",
               name: "unauthorized:mcp_info",
-              method: "mcp/info",
+              method: "mcp_info",
               status: 401,
               statusText: "Unauthorized",
               requireAuth: false,
@@ -698,6 +740,14 @@ describe("validation final report", () => {
     expect(result.findings.incidents).to.have.lengthOf(2);
     expect(result.findings.incidents.map((incident) => incident.errorMessage)).to.include("quota exceeded");
 
+    const stageLogs = result.findings.stages.find((stage) => stage.id === "02");
+    expect(stageLogs?.notes).to.include(
+      "journal HTTP 120 ligne(s) (erreurs 5, avertissements 15, échecs parse 2)",
+    );
+    expect(stageLogs?.notes).to.include('top "health ok" ×50');
+    const expectedLogsBytes = (await stat(join(runRoot, "logs", "summary.json"))).size;
+    expect(stageLogs?.artefactBytes).to.equal(expectedLogsBytes);
+
     const stageTransactions = result.findings.stages.find((stage) => stage.id === "03");
     expect(stageTransactions?.scenarios).to.deep.equal(["nominal"]);
     expect(stageTransactions?.missingScenarios).to.deep.equal(["concurrency", "error", "export"]);
@@ -736,6 +786,8 @@ describe("validation final report", () => {
     expect(stageChildren?.notes).to.include("scénarios manquants: attach, limits, teardown");
     expect(stageChildren?.notes).to.include("méthodes manquantes: child_attach, child_kill, child_set_limits");
     expect(stageChildren?.notes).to.include("spawn enfant réussi (statut 200, id child-1)");
+    expect(stageChildren?.notes).to.include("évènements limite 1/2");
+    expect(stageChildren?.notes).to.include("types child.limit.exceeded ×1");
     expect(stageChildren?.eventSequenceMonotonic).to.equal(null);
     expect(stageChildren?.scenarios).to.deep.equal(["interaction", "spawn"]);
     expect(stageChildren?.missingScenarios).to.deep.equal(["attach", "limits", "teardown"]);
@@ -770,6 +822,7 @@ describe("validation final report", () => {
     expect(stagePlans?.missingScenarios).to.deep.equal(["cancellation", "lifecycle", "reactive"]);
     expect(stagePlans?.methods).to.deep.equal(["plan_compile_bt", "plan_run_bt"]);
     expect(stagePlans?.missingMethods).to.deep.equal([
+      "op_cancel",
       "plan_cancel",
       "plan_pause",
       "plan_resume",
@@ -777,7 +830,9 @@ describe("validation final report", () => {
       "plan_status",
     ]);
     expect(stagePlans?.notes).to.include("scénarios manquants: cancellation, lifecycle, reactive");
-    expect(stagePlans?.notes).to.include("méthodes manquantes: plan_cancel");
+    expect(stagePlans?.notes).to.include(
+      "méthodes manquantes: op_cancel, plan_cancel, plan_pause, plan_resume, plan_run_reactive, plan_status",
+    );
 
     const expectedPlansBytes =
       (await stat(join(runRoot, "inputs", "06_plans.jsonl"))).size +
@@ -846,6 +901,8 @@ describe("validation final report", () => {
     expect(stagePerformance?.methods).to.deep.equal(["tools/call"]);
     expect(stagePerformance?.missingMethods).to.deep.equal([]);
     expect(stagePerformance?.notes).to.include("scénarios manquants: concurrency");
+    expect(stagePerformance?.notes).to.include("latence echo latency — 1 échantillon(s) (p95 75 ms");
+    expect(stagePerformance?.notes).to.include("journal HTTP +1024 octet(s)");
     expect(stagePerformance?.eventSequenceMonotonic).to.equal(true);
 
     const expectedPerformanceBytes =
@@ -859,10 +916,11 @@ describe("validation final report", () => {
     const stageSecurity = result.findings.stages.find((stage) => stage.id === "11");
     expect(stageSecurity?.scenarios).to.deep.equal(["auth"]);
     expect(stageSecurity?.missingScenarios).to.deep.equal(["filesystem", "redaction"]);
-    expect(stageSecurity?.methods).to.deep.equal(["mcp/info"]);
+    expect(stageSecurity?.methods).to.deep.equal(["mcp_info"]);
     expect(stageSecurity?.missingMethods).to.deep.equal(["tools/call"]);
     expect(stageSecurity?.notes).to.include("scénarios manquants: filesystem, redaction");
     expect(stageSecurity?.notes).to.include("méthodes manquantes: tools/call");
+    expect(stageSecurity?.notes).to.include("auth sans jeton: 1/1 rejet(s) (status 401)");
     expect(stageSecurity?.eventSequenceMonotonic).to.equal(true);
 
     const expectedSecurityBytes =
@@ -885,6 +943,7 @@ describe("validation final report", () => {
       expectedRobustnessBytes +
       expectedPerformanceBytes +
       expectedSecurityBytes +
+      expectedLogsBytes +
       expectedContextBytes +
       expectedIntrospectionBytes +
       expectedCoordinationBytes;
@@ -897,6 +956,7 @@ describe("validation final report", () => {
     expect(result.findings.kpis.artefactBytes.byStage).to.deep.include({ stageId: "09", bytes: expectedRobustnessBytes });
     expect(result.findings.kpis.artefactBytes.byStage).to.deep.include({ stageId: "10", bytes: expectedPerformanceBytes });
     expect(result.findings.kpis.artefactBytes.byStage).to.deep.include({ stageId: "11", bytes: expectedSecurityBytes });
+    expect(result.findings.kpis.artefactBytes.byStage).to.deep.include({ stageId: "02", bytes: expectedLogsBytes });
     expect(result.findings.kpis.artefactBytes.byStage).to.deep.include({ stageId: "00", bytes: expectedContextBytes });
     expect(result.findings.kpis.artefactBytes.byStage).to.deep.include({ stageId: "01", bytes: expectedIntrospectionBytes });
     expect(result.findings.kpis.artefactBytes.byStage).to.deep.include({ stageId: "07", bytes: expectedCoordinationBytes });
@@ -961,7 +1021,9 @@ describe("validation final report", () => {
     expect(summaryRaw).to.include("scénarios manquants");
     expect(summaryRaw).to.include("appels manquants: graph_state_autosave:start, graph_state_autosave:stop");
     expect(summaryRaw).to.include("child_attach, child_kill, child_set_limits");
-    expect(summaryRaw).to.include("plan_cancel, plan_pause, plan_resume, plan_run_reactive, plan_status");
+    expect(summaryRaw).to.include(
+      "op_cancel, plan_cancel, plan_pause, plan_resume, plan_run_reactive, plan_status",
+    );
     expect(summaryRaw).to.include("bb_get, bb_query, bb_set, bb_watch, bb_watch_poll");
     expect(summaryRaw).to.include("child_spawn_codex, plan_run_reactive, tool_unknown_method, tx_begin");
     expect(summaryRaw).to.include("scénarios manquants: concurrency");

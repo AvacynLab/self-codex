@@ -42,17 +42,30 @@ export interface HttpLogFileSnapshot {
 }
 
 /** Result returned by {@link stimulateHttpLogging}. */
-export interface LogStimulusResult {
-  /** JSON-RPC call executed to trigger log traffic. */
-  call: JsonRpcCallSpec;
-  /** Detailed HTTP artefacts captured during the request. */
+export interface LogStimulusIterationOutcome {
+  /** 1-based position of the iteration. */
+  index: number;
+  /** Logical name associated with the HTTP check (suffix added for uniqueness). */
+  name: string;
+  /** Detailed HTTP artefacts captured for the iteration. */
   check: HttpCheckSnapshot;
-  /** File snapshot gathered immediately before the call. */
+}
+
+export interface LogStimulusResult {
+  /** JSON-RPC call executed to trigger log traffic (without iteration suffix). */
+  call: JsonRpcCallSpec;
+  /** Detailed HTTP artefacts captured during the final iteration (legacy field). */
+  check: HttpCheckSnapshot;
+  /** Aggregated outcomes for every executed iteration. */
+  iterations: LogStimulusIterationOutcome[];
+  /** File snapshot gathered immediately before the call sequence. */
   logBefore: HttpLogFileSnapshot;
-  /** File snapshot gathered immediately after the call. */
+  /** File snapshot gathered immediately after the call sequence. */
   logAfter: HttpLogFileSnapshot;
   /** Absolute path inspected on disk. */
   logPath: string;
+  /** Total delta in bytes observed between both snapshots. */
+  logDeltaBytes: number;
   /** Convenience flag exposing whether the log changed between snapshots. */
   logChanged: boolean;
 }
@@ -63,6 +76,8 @@ export interface LogStimulusOptions {
   call?: JsonRpcCallSpec;
   /** Location of the HTTP log file written by the MCP runtime. */
   logPath?: string;
+  /** Number of times the request should be repeated (defaults to a single probe). */
+  iterations?: number;
 }
 
 /**
@@ -125,9 +140,9 @@ export async function stimulateHttpLogging(
 
   const call = options.call ?? buildDefaultStimulusCall();
   const logPath = options.logPath ?? DEFAULT_HTTP_LOG_PATH;
+  const iterations = Math.max(1, Math.floor(options.iterations ?? 1));
 
   const logBefore = await captureFileSnapshot(logPath);
-
   const headers: Record<string, string> = {
     "content-type": "application/json",
     accept: "application/json",
@@ -136,31 +151,54 @@ export async function stimulateHttpLogging(
     headers.authorization = `Bearer ${environment.token}`;
   }
 
-  const requestBody: Record<string, unknown> = {
-    jsonrpc: "2.0",
-    id: `log_stimulus_${Date.now()}`,
-    method: call.method,
-  };
+  const iterationOutcomes: LogStimulusIterationOutcome[] = [];
 
-  if (call.params !== undefined) {
-    requestBody.params = call.params;
+  for (let iterationIndex = 0; iterationIndex < iterations; iterationIndex += 1) {
+    const requestBody: Record<string, unknown> = {
+      jsonrpc: "2.0",
+      id: `log_stimulus_${Date.now()}_${iterationIndex + 1}`,
+      method: call.method,
+    };
+
+    if (call.params !== undefined) {
+      requestBody.params = call.params;
+    }
+
+    const iterationName = iterations === 1 ? call.name : `${call.name}_${String(iterationIndex + 1).padStart(2, "0")}`;
+    const check = await performHttpCheck(iterationName, {
+      method: "POST",
+      url: environment.baseUrl,
+      headers,
+      body: requestBody,
+    });
+
+    await appendHttpCheckArtefactsToFiles(runRoot, LOG_STIMULUS_TARGETS, check, LOG_STIMULUS_JSONL_FILES.log);
+
+    iterationOutcomes.push({ index: iterationIndex + 1, name: iterationName, check });
   }
-
-  const check = await performHttpCheck(call.name, {
-    method: "POST",
-    url: environment.baseUrl,
-    headers,
-    body: requestBody,
-  });
-
-  await appendHttpCheckArtefactsToFiles(runRoot, LOG_STIMULUS_TARGETS, check, LOG_STIMULUS_JSONL_FILES.log);
 
   const logAfter = await captureFileSnapshot(logPath);
   const logChanged =
     logAfter.exists &&
     (!logBefore.exists || logBefore.size !== logAfter.size || logBefore.mtimeMs !== logAfter.mtimeMs);
 
-  return { call, check, logBefore, logAfter, logPath, logChanged };
+  const logDeltaBytes = logAfter.size - logBefore.size;
+
+  const finalCheck = iterationOutcomes[iterationOutcomes.length - 1]?.check ?? iterationOutcomes[0]?.check;
+  if (!finalCheck) {
+    throw new Error("stimulateHttpLogging executed zero iterations unexpectedly");
+  }
+
+  return {
+    call,
+    check: finalCheck,
+    iterations: iterationOutcomes,
+    logBefore,
+    logAfter,
+    logPath,
+    logDeltaBytes,
+    logChanged,
+  };
 }
 
 /**

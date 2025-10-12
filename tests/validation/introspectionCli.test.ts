@@ -88,7 +88,7 @@ describe("introspection CLI helpers", () => {
     const summaryPath = join(runRoot, "report", "introspection_summary.json");
     const summaryContent = await readFile(summaryPath, "utf8");
 
-    expect(inputsContent).to.contain("mcp/info");
+    expect(inputsContent).to.contain("mcp_info");
     expect(inputsContent).to.contain("tools/list");
     expect(eventsContent).to.contain("ready");
     expect(JSON.parse(summaryContent).info).to.deep.equal({ info: { version: "1.2.3" } });

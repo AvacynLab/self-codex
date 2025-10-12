@@ -35,6 +35,8 @@ export interface HttpLogSummary {
   warnLines: number;
   /** Convenience counter for INFO-level entries. */
   infoLines: number;
+  /** Top messages ranked by frequency (ties broken by recency and lexicographic order). */
+  topMessages: Array<{ text: string; count: number }>;
   /** Latency statistics extracted from structured log fields. */
   latency: {
     /** Number of latency samples successfully extracted. */
@@ -77,6 +79,94 @@ function normaliseLevel(parsedLevel: unknown, rawLine: string): string {
     return "debug";
   }
   return "unknown";
+}
+
+/**
+ * Fields that are typically associated with human-readable log messages.  The
+ * list intentionally covers variations emitted by common logging libraries so
+ * the summary can highlight meaningful excerpts even when the schema changes
+ * slightly across environments.
+ */
+const MESSAGE_FIELD_PRIORITY = ["message", "msg", "text", "description", "detail"];
+
+/** Secondary string fields that occasionally carry a message payload. */
+const MESSAGE_FIELD_SECONDARY = ["error", "warning", "event", "note", "reason"];
+
+/** Keys ignored when scanning for fallback string values. */
+const MESSAGE_FIELD_IGNORED = new Set(["level", "severity", "timestamp", "time", "ts", "category", "logger"]);
+
+/** Maximum length (in characters) preserved for message excerpts. */
+const MESSAGE_PREVIEW_MAX_LENGTH = 200;
+
+/** Normalises whitespace and truncates message excerpts for readability. */
+function normaliseMessagePreview(candidate: string): string {
+  const normalised = candidate.replace(/\s+/g, " ").trim();
+  if (normalised.length <= MESSAGE_PREVIEW_MAX_LENGTH) {
+    return normalised;
+  }
+  return `${normalised.slice(0, MESSAGE_PREVIEW_MAX_LENGTH - 1)}…`;
+}
+
+/**
+ * Attempts to extract a meaningful message from a structured log record.
+ *
+ * The helper explores the record recursively with a shallow depth budget to
+ * avoid expensive traversals while still capturing nested fields such as
+ * `event.message`. It prioritises the standard message fields first, then
+ * checks secondary candidates, and finally falls back to any non-trivial
+ * string that does not look like metadata (level, timestamp, ...).
+ */
+function deriveMessageFromStructuredLog(
+  record: Record<string, unknown>,
+  depth = 0,
+  visited: Set<unknown> = new Set(),
+): string | null {
+  if (visited.has(record) || depth > 4) {
+    return null;
+  }
+
+  visited.add(record);
+
+  for (const field of MESSAGE_FIELD_PRIORITY) {
+    const value = record[field];
+    if (typeof value === "string" && value.trim()) {
+      return normaliseMessagePreview(value);
+    }
+  }
+
+  for (const field of MESSAGE_FIELD_SECONDARY) {
+    const value = record[field];
+    if (typeof value === "string" && value.trim()) {
+      return normaliseMessagePreview(value);
+    }
+    if (value && typeof value === "object") {
+      const nested = Array.isArray(value)
+        ? value.map((entry) => (entry && typeof entry === "object" ? deriveMessageFromStructuredLog(entry as Record<string, unknown>, depth + 1, visited) : null)).find((entry) => entry)
+        : deriveMessageFromStructuredLog(value as Record<string, unknown>, depth + 1, visited);
+      if (nested) {
+        return nested;
+      }
+    }
+  }
+
+  for (const [key, value] of Object.entries(record)) {
+    if (typeof value === "string" && value.trim() && !MESSAGE_FIELD_IGNORED.has(key.toLowerCase())) {
+      return normaliseMessagePreview(value);
+    }
+
+    if (value && typeof value === "object") {
+      const nested = Array.isArray(value)
+        ? value
+            .map((entry) => (entry && typeof entry === "object" ? deriveMessageFromStructuredLog(entry as Record<string, unknown>, depth + 1, visited) : null))
+            .find((entry) => entry)
+        : deriveMessageFromStructuredLog(value as Record<string, unknown>, depth + 1, visited);
+      if (nested) {
+        return nested;
+      }
+    }
+  }
+
+  return null;
 }
 
 /**
@@ -164,10 +254,33 @@ export async function summariseHttpLogFile(sourcePath: string): Promise<HttpLogS
   const levelHistogram = new Map<string, number>();
   const latencySamples: number[] = [];
   const latencyFields = new Set<string>();
+  const messageHistogram = new Map<string, { count: number; lastIndex: number; derivedRank: number }>();
   let parseFailures = 0;
   let emptyLines = 0;
 
-  for (const line of lines) {
+  const registerMessage = (message: string | null, index: number, derived: boolean): void => {
+    if (!message) {
+      return;
+    }
+    const candidate = normaliseMessagePreview(message);
+    if (!candidate) {
+      return;
+    }
+    const rank = derived ? 0 : 1;
+    const current = messageHistogram.get(candidate);
+    if (current) {
+      current.count += 1;
+      current.lastIndex = index;
+      if (rank < current.derivedRank) {
+        current.derivedRank = rank;
+      }
+    } else {
+      messageHistogram.set(candidate, { count: 1, lastIndex: index, derivedRank: rank });
+    }
+  };
+
+  for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
+    const line = lines[lineIndex];
     if (!line) {
       emptyLines += 1;
       continue;
@@ -192,10 +305,36 @@ export async function summariseHttpLogFile(sourcePath: string): Promise<HttpLogS
 
     if (parsed) {
       collectLatencySamples(parsed, latencySamples, latencyFields);
+      const parsedRecord = parsed as Record<string, unknown>;
+      const message = deriveMessageFromStructuredLog(parsedRecord);
+      if (message) {
+        registerMessage(message, lineIndex, true);
+      } else {
+        registerMessage(trimmed, lineIndex, false);
+      }
+    } else {
+      registerMessage(trimmed, lineIndex, false);
     }
   }
 
   latencySamples.sort((a, b) => a - b);
+
+  const topMessages = Array.from(messageHistogram.entries())
+    .map(([text, stats]) => ({ text, count: stats.count, lastIndex: stats.lastIndex, derivedRank: stats.derivedRank }))
+    .sort((a, b) => {
+      if (a.count !== b.count) {
+        return b.count - a.count;
+      }
+      if (a.derivedRank !== b.derivedRank) {
+        return a.derivedRank - b.derivedRank;
+      }
+      if (a.lastIndex !== b.lastIndex) {
+        return b.lastIndex - a.lastIndex;
+      }
+      return a.text.localeCompare(b.text);
+    })
+    .slice(0, 3)
+    .map(({ text, count }) => ({ text, count }));
 
   const summary: HttpLogSummary = {
     generatedAt: new Date().toISOString(),
@@ -208,6 +347,7 @@ export async function summariseHttpLogFile(sourcePath: string): Promise<HttpLogS
     errorLines: levelHistogram.get("error") ?? 0,
     warnLines: levelHistogram.get("warn") ?? 0,
     infoLines: levelHistogram.get("info") ?? 0,
+    topMessages,
     latency: {
       samples: latencySamples.length,
       fields: Array.from(latencyFields.values()).sort(),

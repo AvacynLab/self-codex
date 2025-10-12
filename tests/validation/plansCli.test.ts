@@ -47,7 +47,16 @@ describe("planning validation CLI", () => {
   it("executes the CLI workflow and surfaces artefact locations", async () => {
     const responses = [
       { jsonrpc: "2.0", result: { tree: { id: "bt", root: {} }, graph_id: "validation_plan_bt" } },
-      { jsonrpc: "2.0", result: { status: "success", ticks: 2, run_id: "bt-run", op_id: "bt-op" } },
+      {
+        jsonrpc: "2.0",
+        result: {
+          status: "success",
+          ticks: 2,
+          run_id: "bt-run",
+          op_id: "bt-op",
+          events: [{ type: "bt.tick" }],
+        },
+      },
       {
         jsonrpc: "2.0",
         result: {
@@ -62,6 +71,7 @@ describe("planning validation CLI", () => {
       { jsonrpc: "2.0", result: { state: "paused", supports_resume: true } },
       { jsonrpc: "2.0", result: { state: "running" } },
       { jsonrpc: "2.0", result: { cancelled: true, events: [{ type: "plan.cancelled" }] } },
+      { jsonrpc: "2.0", result: { ok: true, op_id: "reactive-op", run_id: "reactive-run" } },
     ];
 
     globalThis.fetch = (async () => {
@@ -89,6 +99,7 @@ describe("planning validation CLI", () => {
     expect(runRoot).to.equal(join(workingDir, "validation_cli"));
     expect(result.summary.runBt.status).to.equal("success");
     expect(result.summary.runReactive.loopTicks).to.equal(3);
+    expect(result.summary.opCancel.ok).to.equal(true);
 
     const summaryDocument = JSON.parse(await readFile(result.summaryPath, "utf8"));
     expect(summaryDocument.artefacts.requestsJsonl).to.equal(join(runRoot, PLAN_JSONL_FILES.inputs));

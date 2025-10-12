@@ -49,34 +49,53 @@ describe("robustness validation CLI", () => {
 
   it("executes the CLI workflow and surfaces artefact locations", async () => {
     const responses = [
-      { jsonrpc: "2.0", error: { code: -32602, message: "Invalid" } },
-      { jsonrpc: "2.0", error: { code: -32601, message: "Unknown" } },
       {
-        jsonrpc: "2.0",
-        result: { transaction_id: "tx", idempotent: true, idempotency_key: "cli-key" },
+        status: 400,
+        payload: { jsonrpc: "2.0", error: { code: -32602, message: "Invalid" } },
       },
       {
-        jsonrpc: "2.0",
-        result: { transaction_id: "tx", idempotent: true, idempotency_key: "cli-key" },
+        status: 404,
+        payload: { jsonrpc: "2.0", error: { code: -32601, message: "Unknown" } },
       },
       {
-        jsonrpc: "2.0",
-        error: {
-          code: 5001,
-          message: "Crash",
-          data: { events: [{ type: "child.error", seq: 1 }] },
+        status: 200,
+        payload: {
+          jsonrpc: "2.0",
+          result: { transaction_id: "tx", idempotent: true, idempotency_key: "cli-key" },
         },
       },
       {
-        jsonrpc: "2.0",
-        result: { status: "timeout", message: "Timeout", events: [] },
+        status: 200,
+        payload: {
+          jsonrpc: "2.0",
+          result: { transaction_id: "tx", idempotent: true, idempotency_key: "cli-key" },
+        },
+      },
+      {
+        status: 500,
+        payload: {
+          jsonrpc: "2.0",
+          error: {
+            code: 5001,
+            message: "Crash",
+            data: { events: [{ type: "child.error", seq: 1 }] },
+          },
+        },
+      },
+      {
+        status: 200,
+        payload: {
+          jsonrpc: "2.0",
+          result: { status: "timeout", message: "Timeout", events: [] },
+        },
       },
     ];
 
     globalThis.fetch = (async () => {
-      const payload = responses.shift() ?? { jsonrpc: "2.0", result: {} };
-      return new Response(JSON.stringify(payload), {
-        status: 200,
+      const next =
+        responses.shift() ?? { status: 200, payload: { jsonrpc: "2.0", result: {} } };
+      return new Response(JSON.stringify(next.payload), {
+        status: next.status,
         headers: { "content-type": "application/json" },
       });
     }) as typeof fetch;
@@ -105,5 +124,6 @@ describe("robustness validation CLI", () => {
     const flattenedLogs = logs.flat().join(" ");
     expect(flattenedLogs).to.contain(ROBUSTNESS_JSONL_FILES.log);
     expect(flattenedLogs).to.contain("Robustness validation run");
+    expect(flattenedLogs).to.contain("Timeout status token: timeout");
   });
 });

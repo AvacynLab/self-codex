@@ -49,7 +49,7 @@ describe("knowledge validation CLI", () => {
 
   it("executes the CLI workflow and surfaces artefact locations", async () => {
     const responses = [
-      { jsonrpc: "2.0", result: { answer: "Les risques", citations: [] } },
+      { jsonrpc: "2.0", result: { answer: "Les risques", citations: [{ id: "doc-1" }] } },
       {
         jsonrpc: "2.0",
         result: {
@@ -60,12 +60,22 @@ describe("knowledge validation CLI", () => {
         jsonrpc: "2.0",
         result: {
           graph: {
-            nodes: [{ id: "root" }, { id: "values" }],
-            edges: [{ from: "root", to: "values" }],
+            nodes: [{ id: "root" }, { id: "values" }, { id: "knowledge" }],
+            edges: [
+              { from: "root", to: "values" },
+              { from: "values", to: "knowledge" },
+            ],
           },
         },
       },
-      { jsonrpc: "2.0", result: { topic: "gouvernance", explanation: "Stabilité" } },
+      {
+        jsonrpc: "2.0",
+        result: {
+          topic: "gouvernance",
+          explanation: "Stabilité",
+          citations: [{ id: "doc-1" }],
+        },
+      },
       { jsonrpc: "2.0", result: { topic: "gouvernance", explanation: "Stabilité" } },
       { jsonrpc: "2.0", result: { graph: { nodes: [] } } },
       { jsonrpc: "2.0", result: { snapshot: { items: [] } } },
@@ -103,5 +113,7 @@ describe("knowledge validation CLI", () => {
     const flattenedLogs = logs.flat().join(" ");
     expect(flattenedLogs).to.contain(KNOWLEDGE_JSONL_FILES.inputs);
     expect(flattenedLogs).to.contain("Knowledge validation summary");
+    expect(flattenedLogs).to.contain("assist citations");
+    expect(flattenedLogs).to.contain("subgraph:");
   });
 });

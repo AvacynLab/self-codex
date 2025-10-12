@@ -51,6 +51,23 @@ const DEFAULT_CNP_TOPIC = "validation:contract-net";
 /** Identifier used when recording consensus ballots. */
 const DEFAULT_CONSENSUS_TOPIC = "validation:consensus";
 
+/**
+ * Preferred outcome leveraged when demonstrating deterministic tie-breaking
+ * during the consensus validation flow. Keeping the constant close to the
+ * other identifiers makes it easy to override when composing custom scenarios.
+ */
+const DEFAULT_CONSENSUS_PREFERRED_OUTCOME = "validation_tie_break_preference";
+
+/**
+ * Manual bids submitted alongside the Contract-Net announcement to guarantee
+ * that the poll exposes at least two concrete proposals, satisfying the
+ * operator checklist requirements without relying on background heuristics.
+ */
+const DEFAULT_CONTRACT_NET_MANUAL_BIDS = [
+  { agent_id: "agent.alpha", cost: 3.2, metadata: { role: "planner" } },
+  { agent_id: "agent.beta", cost: 4.1, metadata: { role: "executor" } },
+] as const;
+
 /** Snapshot describing the JSON-RPC payloads executed during the validation. */
 export interface CoordinationCallContext {
   /** HTTP environment used to reach the MCP endpoint. */
@@ -155,11 +172,17 @@ export interface CoordinationSummary {
     readonly topic?: string;
     readonly announcementId?: string;
     readonly proposalCount?: number;
+    readonly awardedAgentId?: string;
   };
   readonly consensus: {
     readonly topic?: string;
     readonly outcome?: unknown;
-    readonly ballots?: unknown;
+    readonly votes?: number;
+    readonly tie?: boolean;
+    readonly tally?: Record<string, number> | null;
+    readonly preferredOutcome?: string | null;
+    readonly tieBreaker?: "null" | "first" | "prefer" | undefined;
+    readonly tieDetectedFromTally?: boolean;
   };
 }
 
@@ -233,6 +256,8 @@ export async function runCoordinationPhase(
   const summaryPath = join(runRoot, "report", COORDINATION_SUMMARY_FILENAME);
   await writeJsonFile(summaryPath, summary);
 
+  validateCoordinationExpectations(outcomes, summary);
+
   return { outcomes, summary, summaryPath };
 }
 
@@ -247,6 +272,7 @@ export function buildDefaultCoordinationCalls(
   const stigDomain = options.stigDomain ?? DEFAULT_STIG_DOMAIN;
   const contractTopic = options.contractTopic ?? DEFAULT_CNP_TOPIC;
   const consensusTopic = options.consensusTopic ?? DEFAULT_CONSENSUS_TOPIC;
+  const preferredConsensusOutcome = DEFAULT_CONSENSUS_PREFERRED_OUTCOME;
 
   return [
     {
@@ -294,7 +320,45 @@ export function buildDefaultCoordinationCalls(
     },
     {
       scenario: "blackboard",
-      name: "bb_watch_poll",
+      name: "bb_set_progress_update",
+      method: "bb_set",
+      params: {
+        key: blackboardKey,
+        value: {
+          title: "Validate multi-agent coordination",
+          priority: "high",
+          progress: "in-flight",
+          updated_at: new Date().toISOString(),
+        },
+      },
+    },
+    {
+      scenario: "blackboard",
+      name: "bb_set_final_status",
+      method: "bb_set",
+      params: {
+        key: blackboardKey,
+        value: {
+          title: "Validate multi-agent coordination",
+          priority: "high",
+          status: "complete",
+          completed_at: new Date().toISOString(),
+        },
+      },
+    },
+    {
+      scenario: "blackboard",
+      name: "bb_watch_poll_round_1",
+      method: "bb_watch_poll",
+      params: ({ previousCalls }: CoordinationCallContext) => ({
+        watch_id: requireBlackboardWatchId(previousCalls),
+        max_events: 10,
+        wait_ms: 0,
+      }),
+    },
+    {
+      scenario: "blackboard",
+      name: "bb_watch_poll_round_2",
       method: "bb_watch_poll",
       params: ({ previousCalls }: CoordinationCallContext) => ({
         watch_id: requireBlackboardWatchId(previousCalls),
@@ -340,6 +404,11 @@ export function buildDefaultCoordinationCalls(
           min_capability: "validation",
           priority: 1,
         },
+        manual_bids: DEFAULT_CONTRACT_NET_MANUAL_BIDS.map((bid) => ({
+          agent_id: bid.agent_id,
+          cost: bid.cost,
+          metadata: bid.metadata,
+        })),
       },
     },
     {
@@ -368,9 +437,14 @@ export function buildDefaultCoordinationCalls(
       method: "consensus_vote",
       params: {
         topic: consensusTopic,
-        ballot: {
-          candidate: "validation_approach_v1",
-          rationale: "Align on deterministic validation call plans",
+        votes: [
+          { voter: "agent.alpha", value: "plan_alpha" },
+          { voter: "agent.beta", value: "plan_beta" },
+        ],
+        config: {
+          mode: "majority",
+          tie_breaker: "prefer",
+          prefer_value: preferredConsensusOutcome,
         },
       },
     },
@@ -517,10 +591,15 @@ export function buildCoordinationSummary(
   let announcementTopic: string | undefined;
   let announcementId: string | undefined;
   let proposalCount: number | undefined;
+  let awardedAgentId: string | undefined;
 
   let consensusTopic: string | undefined;
   let consensusOutcome: unknown;
-  let consensusBallots: unknown;
+  let consensusVotes: number | undefined;
+  let consensusTie: boolean | undefined;
+  let consensusTally: Record<string, number> | undefined;
+  let consensusPreferred: string | null | undefined;
+  let consensusTieBreaker: "null" | "first" | "prefer" | undefined;
 
   for (const outcome of outcomes) {
     const result = extractJsonRpcResult(outcome.check.response.body);
@@ -571,28 +650,60 @@ export function buildCoordinationSummary(
         }
         if (Array.isArray(result?.proposals)) {
           proposalCount = result.proposals.length;
+        } else if (Array.isArray(result?.bids)) {
+          proposalCount = result.bids.length;
         }
         break;
       case "cnp_poll":
         if (Array.isArray(result?.proposals)) {
           proposalCount = result.proposals.length;
+        } else if (Array.isArray(result?.bids)) {
+          proposalCount = result.bids.length;
         }
         break;
       case "cnp_award":
         if (typeof result?.announcement_id === "string") {
           announcementId = result.announcement_id;
         }
+        if (typeof result?.awarded_agent_id === "string") {
+          awardedAgentId = result.awarded_agent_id;
+        }
         break;
       case "consensus_vote":
         consensusTopic = (outcome.call.params as { topic?: string })?.topic ?? consensusTopic;
-        consensusBallots = result?.ballots ?? consensusBallots;
-        consensusOutcome = result?.decision ?? consensusOutcome;
+        consensusOutcome = result?.outcome ?? result ?? consensusOutcome;
+        if (typeof result?.votes === "number") {
+          consensusVotes = result.votes;
+        }
+        if (typeof result?.tie === "boolean") {
+          consensusTie = result.tie;
+        }
+        if (result?.tally && typeof result.tally === "object" && !Array.isArray(result.tally)) {
+          consensusTally = result.tally as Record<string, number>;
+        }
+        if (
+          outcome.call.params &&
+          typeof outcome.call.params === "object" &&
+          !Array.isArray(outcome.call.params)
+        ) {
+          const params = outcome.call.params as {
+            config?: { tie_breaker?: "null" | "first" | "prefer"; prefer_value?: string | null };
+          };
+          consensusPreferred = params.config?.prefer_value ?? consensusPreferred;
+          consensusTieBreaker = params.config?.tie_breaker ?? consensusTieBreaker;
+        }
         break;
       case "consensus_status":
         consensusTopic = (outcome.call.params as { topic?: string })?.topic ?? consensusTopic;
         consensusOutcome = result?.decision ?? result ?? consensusOutcome;
-        if (result?.ballots !== undefined) {
-          consensusBallots = result.ballots;
+        if (typeof result?.votes === "number") {
+          consensusVotes = result.votes;
+        }
+        if (typeof result?.tie === "boolean") {
+          consensusTie = result.tie;
+        }
+        if (result?.tally && typeof result.tally === "object" && !Array.isArray(result.tally)) {
+          consensusTally = result.tally as Record<string, number>;
         }
         break;
       default:
@@ -623,11 +734,107 @@ export function buildCoordinationSummary(
       topic: announcementTopic,
       announcementId,
       proposalCount,
+      awardedAgentId,
     },
     consensus: {
       topic: consensusTopic,
       outcome: consensusOutcome,
-      ballots: consensusBallots,
+      votes: consensusVotes,
+      tie: consensusTie,
+      tally: consensusTally ?? null,
+      preferredOutcome: consensusPreferred ?? null,
+      tieBreaker: consensusTieBreaker,
+      tieDetectedFromTally: detectTieFromTally(consensusTally),
     },
   };
+}
+
+/**
+ * Ensures the recorded Stage 07 artefacts satisfy the validation checklist.
+ * The helper raises a descriptive error listing all unmet expectations so the
+ * CLI and unit tests can expose actionable diagnostics to operators.
+ */
+function validateCoordinationExpectations(
+  outcomes: readonly CoordinationCallOutcome[],
+  summary: CoordinationSummary,
+): void {
+  const issues: string[] = [];
+
+  if (summary.blackboard.eventCount < 3) {
+    issues.push(
+      `Blackboard watch emitted ${summary.blackboard.eventCount} event(s); expected ≥ 3 after successive bb_set updates.`,
+    );
+  }
+  if (!summary.blackboard.watchId) {
+    issues.push("Blackboard watch identifier missing from bb_watch response.");
+  }
+
+  if (!summary.contractNet.announcementId) {
+    issues.push("Contract-Net announcement did not return an announcement_id.");
+  }
+  if ((summary.contractNet.proposalCount ?? 0) < 2) {
+    issues.push(
+      `Contract-Net poll exposed ${summary.contractNet.proposalCount ?? 0} proposal(s); expected at least 2 manual bids.`,
+    );
+  }
+  if (!summary.contractNet.awardedAgentId) {
+    issues.push("Contract-Net award did not include the awarded agent identifier.");
+  }
+
+  if (!summary.consensus.topic) {
+    issues.push("Consensus vote did not echo the requested topic.");
+  }
+  if (typeof summary.consensus.votes !== "number" || summary.consensus.votes < 2) {
+    issues.push(
+      `Consensus workflow processed ${summary.consensus.votes ?? 0} vote(s); expected at least two ballots for tie-breaking.`,
+    );
+  }
+  if (summary.consensus.tieBreaker === "prefer") {
+    if (!summary.consensus.preferredOutcome) {
+      issues.push("Consensus tie-breaker configured to 'prefer' but no prefer_value recorded.");
+    } else if (summary.consensus.outcome !== summary.consensus.preferredOutcome) {
+      issues.push(
+        `Consensus outcome ${String(
+          summary.consensus.outcome,
+        )} does not match prefer_value ${summary.consensus.preferredOutcome}.`,
+      );
+    }
+  }
+  if (!summary.consensus.tieDetectedFromTally) {
+    issues.push("Consensus tally did not exhibit a tie between top candidates.");
+  }
+
+  if (issues.length > 0) {
+    const requestIds = outcomes
+      .map((outcome) => {
+        const body = outcome.check.request.body;
+        if (!body || typeof body !== "object") {
+          return undefined;
+        }
+        const candidate = (body as { id?: unknown }).id;
+        return typeof candidate === "string" || typeof candidate === "number" ? candidate : undefined;
+      })
+      .filter((id): id is string | number => id !== undefined);
+    const contextHint = requestIds.length
+      ? `Captured requests: ${requestIds.map((id) => String(id)).join(", ")}`
+      : "No JSON-RPC ids captured.";
+    throw new Error(`Stage 07 validation incomplete: ${issues.join(" ")} ${contextHint}`);
+  }
+}
+
+/**
+ * Detects whether the provided tally contains a tie amongst the highest weight
+ * candidates. Returning `true` confirms that the tie-breaker logic was
+ * exercised while still allowing deterministic outcomes through preferences.
+ */
+function detectTieFromTally(tally: Record<string, number> | undefined): boolean {
+  if (!tally) {
+    return false;
+  }
+  const weights = Object.values(tally).filter((value): value is number => typeof value === "number");
+  if (weights.length <= 1) {
+    return false;
+  }
+  const maxWeight = Math.max(...weights);
+  return weights.filter((value) => value === maxWeight).length >= 2;
 }

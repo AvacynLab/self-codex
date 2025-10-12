@@ -16,6 +16,16 @@ import {
   runSecurityPhase,
 } from "../../src/validation/security.js";
 
+/** Helper capturing rejection expectations without chai-as-promised. */
+async function expectSecurityFailure(action: () => Promise<unknown>, messageFragment: string): Promise<void> {
+  try {
+    await action();
+    expect.fail("Stage 11 validation devait échouer");
+  } catch (error) {
+    expect((error as Error).message).to.contain(messageFragment);
+  }
+}
+
 /**
  * Unit tests covering the Stage 11 security validation workflow. The suite
  * focuses on deterministic artefact generation so operators can quickly
@@ -55,10 +65,7 @@ describe("security validation", () => {
         headers: { "content-type": "application/json" },
         body: {
           jsonrpc: "2.0",
-          result: {
-            ok: true,
-            events: [{ type: "log", message: "probe:SECRET-TOKEN-123" }],
-          },
+          result: { ok: true, events: [{ type: "log", message: "probe:[redacted]" }] },
         },
       },
       {
@@ -101,12 +108,14 @@ describe("security validation", () => {
     const outputLines = outputsContent.trim().split("\n");
     expect(inputLines).to.have.lengthOf(3);
     expect(outputLines).to.have.lengthOf(3);
-    expect(eventsContent).to.contain("probe:SECRET-TOKEN-123");
+    expect(eventsContent).to.contain("probe:[redacted]");
+    expect(eventsContent).not.to.contain("SECRET-TOKEN-123");
 
     expect(result.summaryPath).to.equal(join(runRoot, "report", "security_summary.json"));
     const summaryDocument = JSON.parse(await readFile(result.summaryPath, "utf8"));
     expect(summaryDocument.redaction.secret).to.equal("SECRET-TOKEN-123");
-    expect(summaryDocument.redaction.calls[0].leakedInResponse).to.equal(true);
+    expect(summaryDocument.redaction.calls[0].leakedInResponse).to.equal(false);
+    expect(summaryDocument.redaction.calls[0].leakedInEvents).to.equal(false);
     expect(summaryDocument.unauthorized.calls[0].status).to.equal(401);
     expect(summaryDocument.pathValidation.calls[0].attemptedPath).to.equal("../../etc/passwd");
   });
@@ -126,5 +135,140 @@ describe("security validation", () => {
       arguments: { text: "probe:custom-secret" },
     });
     expect(calls[2]?.pathProbe?.attemptedPath).to.equal("../escape.txt");
+  });
+
+  it("fails when the unauthorized probe is accepted", async () => {
+    const responses = [
+      {
+        status: 200,
+        statusText: "OK",
+        headers: { "content-type": "application/json" },
+        body: { jsonrpc: "2.0", result: { ok: true } },
+      },
+      {
+        status: 200,
+        statusText: "OK",
+        headers: { "content-type": "application/json" },
+        body: { jsonrpc: "2.0", result: { ok: true } },
+      },
+      {
+        status: 403,
+        statusText: "Forbidden",
+        headers: { "content-type": "application/json" },
+        body: { jsonrpc: "2.0", error: { code: 403, message: "path rejected" } },
+      },
+    ];
+
+    let callIndex = 0;
+    const httpCheck = async (
+      name: string,
+      request: HttpCheckRequestSnapshot,
+    ): Promise<HttpCheckSnapshot> => {
+      const snapshot: HttpCheckSnapshot = {
+        name,
+        startedAt: new Date(2024, 0, 2, 0, 0, callIndex).toISOString(),
+        durationMs: 15 + callIndex,
+        request,
+        response: responses[callIndex]!,
+      };
+      callIndex += 1;
+      return snapshot;
+    };
+
+    await expectSecurityFailure(
+      () => runSecurityPhase(runRoot, environment, {}, { httpCheck }),
+      "401/403",
+    );
+  });
+
+  it("fails when the synthetic secret leaks in responses or events", async () => {
+    const responses = [
+      {
+        status: 401,
+        statusText: "Unauthorized",
+        headers: { "content-type": "application/json" },
+        body: { jsonrpc: "2.0", error: { code: 401, message: "missing token" } },
+      },
+      {
+        status: 200,
+        statusText: "OK",
+        headers: { "content-type": "application/json" },
+        body: {
+          jsonrpc: "2.0",
+          result: { ok: true, events: [{ type: "log", message: "probe:SECRET-TOKEN-123" }] },
+        },
+      },
+      {
+        status: 403,
+        statusText: "Forbidden",
+        headers: { "content-type": "application/json" },
+        body: { jsonrpc: "2.0", error: { code: 403, message: "path rejected" } },
+      },
+    ];
+
+    let callIndex = 0;
+    const httpCheck = async (
+      name: string,
+      request: HttpCheckRequestSnapshot,
+    ): Promise<HttpCheckSnapshot> => {
+      const snapshot: HttpCheckSnapshot = {
+        name,
+        startedAt: new Date(2024, 0, 2, 1, 0, callIndex).toISOString(),
+        durationMs: 25 + callIndex,
+        request,
+        response: responses[callIndex]!,
+      };
+      callIndex += 1;
+      return snapshot;
+    };
+
+    await expectSecurityFailure(
+      () => runSecurityPhase(runRoot, environment, {}, { httpCheck }),
+      "secret synthétique",
+    );
+  });
+
+  it("fails when the filesystem probe is not rejected", async () => {
+    const responses = [
+      {
+        status: 401,
+        statusText: "Unauthorized",
+        headers: { "content-type": "application/json" },
+        body: { jsonrpc: "2.0", error: { code: 401, message: "missing token" } },
+      },
+      {
+        status: 200,
+        statusText: "OK",
+        headers: { "content-type": "application/json" },
+        body: { jsonrpc: "2.0", result: { ok: true } },
+      },
+      {
+        status: 200,
+        statusText: "OK",
+        headers: { "content-type": "application/json" },
+        body: { jsonrpc: "2.0", result: { ok: true } },
+      },
+    ];
+
+    let callIndex = 0;
+    const httpCheck = async (
+      name: string,
+      request: HttpCheckRequestSnapshot,
+    ): Promise<HttpCheckSnapshot> => {
+      const snapshot: HttpCheckSnapshot = {
+        name,
+        startedAt: new Date(2024, 0, 2, 2, 0, callIndex).toISOString(),
+        durationMs: 35 + callIndex,
+        request,
+        response: responses[callIndex]!,
+      };
+      callIndex += 1;
+      return snapshot;
+    };
+
+    await expectSecurityFailure(
+      () => runSecurityPhase(runRoot, environment, {}, { httpCheck }),
+      "rejet (>=400)",
+    );
   });
 });

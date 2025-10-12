@@ -160,6 +160,11 @@ export async function executeGraphForgeCli(
   logger.log(`   Analysis DSL: ${result.analysis.dslPath}`);
   logger.log(`   Analysis report: ${result.analysis.resultPath}`);
   logger.log(`   Autosave summary: ${result.autosave.summaryPath}`);
+  logger.log(
+    `   Autosave quiescence: ${result.autosave.quiescence.verified ? "verified" : "FAILED"} (expected=${
+      result.autosave.quiescence.expectedSavedAt ?? "<none>"
+    } observed=${result.autosave.quiescence.observedSavedAt ?? "<none>"})`,
+  );
 
   return { runRoot, result };
 }
