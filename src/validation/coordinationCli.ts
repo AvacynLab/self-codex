@@ -139,6 +139,22 @@ export async function executeCoordinationCli(
   logger.log(`   Events JSONL: ${join(runRoot, COORDINATION_JSONL_FILES.events)}`);
   logger.log(`   HTTP snapshot log: ${join(runRoot, COORDINATION_JSONL_FILES.log)}`);
   logger.log(`   Summary: ${result.summaryPath}`);
+  logger.log(
+    `   Blackboard events observed: ${result.summary.blackboard.eventCount} (watch_id: ${
+      result.summary.blackboard.watchId ?? "n/a"
+    })`,
+  );
+  logger.log(
+    `   Contract-Net proposals: ${result.summary.contractNet.proposalCount ?? 0} (awarded: ${
+      result.summary.contractNet.awardedAgentId ?? "n/a"
+    })`,
+  );
+  logger.log(
+    `   Consensus outcome: ${String(result.summary.consensus.outcome)} ` +
+      `(votes: ${result.summary.consensus.votes ?? 0}, tieDetected: ${
+        result.summary.consensus.tieDetectedFromTally ? "yes" : "no"
+      })`,
+  );
 
   return { runRoot, result };
 }

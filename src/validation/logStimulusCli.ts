@@ -29,6 +29,8 @@ export interface LogStimulusCliOptions {
   runRoot?: string;
   /** Optional override of the MCP HTTP log path. */
   logPath?: string;
+  /** Number of repetitions executed to stimulate the log (defaults to 1). */
+  iterations?: number;
   /** Friendly name used when persisting the HTTP snapshot. */
   callName?: string;
   /** JSON-RPC method to invoke (defaults to `tools/call`). */
@@ -71,6 +73,13 @@ export function parseLogStimulusCliOptions(argv: readonly string[]): LogStimulus
       index += 1;
     } else if (token === "--log-path" && index + 1 < argv.length) {
       options.logPath = argv[index + 1];
+      index += 1;
+    } else if (token === "--iterations" && index + 1 < argv.length) {
+      const value = Number(argv[index + 1]);
+      if (!Number.isFinite(value) || value < 1) {
+        throw new Error("--iterations must be a positive integer");
+      }
+      options.iterations = Math.floor(value);
       index += 1;
     } else if (token === "--call-name" && index + 1 < argv.length) {
       options.callName = argv[index + 1];
@@ -167,17 +176,30 @@ export async function executeLogStimulusCli(
   if (logPath) {
     stimulusOptions.logPath = logPath;
   }
+  if (options.iterations !== undefined) {
+    stimulusOptions.iterations = options.iterations;
+  }
   stimulusOptions.call = call;
 
   const result = await stimulateHttpLogging(runRoot, environment, stimulusOptions);
 
   logger.log(`   HTTP status: ${result.check.response.status}`);
   logger.log(
-    `   Log changed: ${result.logChanged ? "yes" : "no"} (before size ${result.logBefore.size} → after ${result.logAfter.size})`,
+    `   Log changed: ${result.logChanged ? "yes" : "no"} (before size ${result.logBefore.size} → after ${result.logAfter.size}, Δ ${result.logDeltaBytes})`,
   );
+  logger.log(`   Iterations executed: ${result.iterations.length}`);
   logger.log(`   Requests JSONL: ${join(runRoot, LOG_STIMULUS_JSONL_FILES.inputs)}`);
   logger.log(`   Responses JSONL: ${join(runRoot, LOG_STIMULUS_JSONL_FILES.outputs)}`);
   logger.log(`   HTTP snapshot log: ${join(runRoot, LOG_STIMULUS_JSONL_FILES.log)}`);
+
+  // Stage 2 of the validation checklist requires proving that the HTTP log grows.
+  // Fail the command explicitly when the file size does not increase so operators
+  // can react immediately instead of overlooking a silent regression in logging.
+  if (result.logDeltaBytes <= 0) {
+    throw new Error(
+      `Log stimulation did not increase the HTTP log at ${result.logPath}. Observed Δ ${result.logDeltaBytes} bytes; ensure the MCP runtime emits log entries before retrying.`,
+    );
+  }
 
   return { runRoot, result };
 }

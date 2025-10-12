@@ -54,8 +54,8 @@ describe("introspection summary", () => {
 
   it("aggregates the key JSON-RPC payloads and event diagnostics", () => {
     const outcomes: JsonRpcCallOutcome[] = [
-      createOutcome("mcp_info", "mcp/info", { jsonrpc: "2.0", result: { info: { version: "1.2.3" } } }),
-      createOutcome("mcp_capabilities", "mcp/capabilities", {
+      createOutcome("mcp_info", "mcp_info", { jsonrpc: "2.0", result: { info: { version: "1.2.3" } } }),
+      createOutcome("mcp_capabilities", "mcp_capabilities", {
         jsonrpc: "2.0",
         result: { transports: ["http"], streaming: true },
       }),
@@ -63,11 +63,11 @@ describe("introspection summary", () => {
         jsonrpc: "2.0",
         result: { tools: [{ name: "echo" }] },
       }),
-      createOutcome("resources_list", "resources/list", {
+      createOutcome("resources_list", "resources_list", {
         jsonrpc: "2.0",
         result: { resources: [{ name: "sample" }] },
       }),
-      createOutcome("events_subscribe", "events/subscribe", {
+      createOutcome("events_subscribe", "events_subscribe", {
         jsonrpc: "2.0",
         result: {
           events: [
@@ -102,7 +102,7 @@ describe("introspection summary", () => {
   it("persists the summary to the report folder", async () => {
     workingDir = await mkdtemp(join(tmpdir(), "codex-summary-"));
     const outcomes: JsonRpcCallOutcome[] = [
-      createOutcome("mcp_info", "mcp/info", { jsonrpc: "2.0", result: { info: { version: "1.0.0" } } }),
+      createOutcome("mcp_info", "mcp_info", { jsonrpc: "2.0", result: { info: { version: "1.0.0" } } }),
     ];
     const summary = buildIntrospectionSummary(outcomes);
 

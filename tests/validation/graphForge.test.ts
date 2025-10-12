@@ -12,6 +12,7 @@ import {
 import {
   GRAPH_FORGE_JSONL_FILES,
   runGraphForgePhase,
+  verifyAutosaveQuiescence,
   type GraphForgePhaseOptions,
   type AutosaveTickSample,
 } from "../../src/validation/graphForge.js";
@@ -43,7 +44,8 @@ describe("graph forge validation runner", () => {
     await rm(workingDir, { recursive: true, force: true });
   });
 
-  it("persists DSL, analysis report, autosave summary, and JSONL artefacts", async () => {
+  it("persists DSL, analysis report, autosave summary, and JSONL artefacts", async function () {
+    this.timeout(5000);
     const responses = [
       { jsonrpc: "2.0", result: { content: [{ type: "text", text: JSON.stringify({ report: "ok" }) }] } },
       { jsonrpc: "2.0", result: { status: "started" } },
@@ -96,6 +98,7 @@ describe("graph forge validation runner", () => {
       workspaceRoot: workingDir,
       autosaveObserver,
       autosaveObservation: { requiredTicks: 2 },
+      autosaveQuiescence: { pollIntervalMs: 5, durationMs: 50 },
     });
 
     expect(result.analysis.dslPath).to.equal(join(runRoot, "artifacts", "forge", "sample_pipeline.gf"));
@@ -115,6 +118,7 @@ describe("graph forge validation runner", () => {
     const summaryDocument = JSON.parse(await readFile(result.autosave.summaryPath, "utf8"));
     expect(summaryDocument.autosave.observation.completed).to.equal(true);
     expect(summaryDocument.autosave.observation.observedTicks).to.equal(2);
+    expect(summaryDocument.autosave.quiescence.verified).to.equal(true);
 
     const inputsLog = await readFile(join(runRoot, GRAPH_FORGE_JSONL_FILES.inputs), "utf8");
     const outputsLog = await readFile(join(runRoot, GRAPH_FORGE_JSONL_FILES.outputs), "utf8");
@@ -124,6 +128,7 @@ describe("graph forge validation runner", () => {
     expect(inputsLog).to.contain("graph_forge_analyze");
     expect(outputsLog).to.contain("graph_state_autosave");
     expect(eventsLog).to.contain("autosave.tick");
+    expect(eventsLog).to.contain("autosave.quiescence");
     expect(httpLog).to.contain("graph_forge_analyze");
     expect(httpLog).to.contain("graph_state_autosave:start");
     expect(httpLog).to.contain("graph_state_autosave:stop");
@@ -140,5 +145,93 @@ describe("graph forge validation runner", () => {
       const record = headers as Record<string, string>;
       return record.authorization === "Bearer forge-token";
     });
+  });
+
+  it("throws when the autosave artefact changes after stop", async function () {
+    this.timeout(5000);
+    const responses = [
+      { jsonrpc: "2.0", result: { content: [{ type: "text", text: JSON.stringify({ report: "ok" }) }] } },
+      { jsonrpc: "2.0", result: { status: "started" } },
+      { jsonrpc: "2.0", result: { status: "stopped" } },
+    ];
+
+    globalThis.fetch = (async (url: RequestInfo | URL, init?: RequestInit) => {
+      const payload = responses.shift() ?? { jsonrpc: "2.0", result: {} };
+      return new Response(JSON.stringify(payload), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as typeof fetch;
+
+    const autosaveObserver: GraphForgePhaseOptions["autosaveObserver"] = async (path, observerOptions) => {
+      await mkdir(dirname(path), { recursive: true });
+      const samples: AutosaveTickSample[] = [];
+      const required = observerOptions.requiredTicks ?? 2;
+      for (let index = 0; index < required; index += 1) {
+        const savedAt = new Date(Date.now() + index * 1_000).toISOString();
+        const payload = {
+          metadata: { saved_at: savedAt },
+          snapshot: { nodes: [], edges: [] },
+        };
+        const serialised = `${JSON.stringify(payload, null, 2)}\n`;
+        await writeFile(path, serialised, "utf8");
+        samples.push({
+          capturedAt: new Date().toISOString(),
+          savedAt,
+          fileSize: Buffer.byteLength(serialised, "utf8"),
+        });
+      }
+
+      // Mutate the autosave artefact immediately to simulate an unexpected
+      // tick emitted after the `stop` call completes.
+      const mutatedPayload = {
+        metadata: { saved_at: new Date(Date.now() + 9_000).toISOString() },
+        snapshot: { nodes: [], edges: [] },
+      };
+      await writeFile(path, `${JSON.stringify(mutatedPayload, null, 2)}\n`, "utf8");
+
+      return {
+        path,
+        requiredTicks: required,
+        observedTicks: samples.length,
+        durationMs: 25,
+        completed: true,
+        samples,
+      };
+    };
+
+    let error: unknown;
+    try {
+      await runGraphForgePhase(runRoot, environment, {
+        workspaceRoot: workingDir,
+        autosaveObserver,
+        autosaveObservation: { requiredTicks: 2, pollIntervalMs: 5, timeoutMs: 250 },
+        autosaveQuiescence: { pollIntervalMs: 5, durationMs: 40 },
+      });
+    } catch (caught) {
+      error = caught;
+    }
+
+    expect(error).to.be.instanceOf(Error);
+    expect((error as Error).message).to.match(/Autosave did not quiesce/);
+  });
+
+  it("treats a missing autosave file as quiescent", async function () {
+    this.timeout(5000);
+    const directory = await mkdtemp(join(tmpdir(), "codex-quiescence-"));
+    const filePath = join(directory, "autosave.json");
+
+    const checkPromise = verifyAutosaveQuiescence(filePath, "expected", {
+      pollIntervalMs: 5,
+      durationMs: 20,
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    await rm(directory, { recursive: true, force: true });
+
+    const result = await checkPromise;
+    expect(result.verified).to.equal(true);
+    expect(result.fileMissing).to.equal(true);
+    expect(result.observedSavedAt).to.equal(null);
   });
 });

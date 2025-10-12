@@ -157,6 +157,7 @@ export interface RobustnessSummary {
     readonly status: number;
     readonly timedOut: boolean;
     readonly message?: string;
+    readonly statusToken?: string | null;
   };
 }
 
@@ -247,6 +248,7 @@ export async function runRobustnessPhase(
   }
 
   const summary = buildRobustnessSummary(runRoot, outcomes);
+  enforceRobustnessInvariants(outcomes, summary);
   const summaryPath = join(runRoot, "report", ROBUSTNESS_SUMMARY_FILENAME);
   await writeJsonFile(summaryPath, summary);
 
@@ -510,9 +512,13 @@ function computeTimeoutSummary(
   }
   const result = extractJsonRpcResult(timeoutOutcome.check.response.body);
   const error = extractJsonRpcError(timeoutOutcome.check.response.body);
-  const timedOut =
-    Boolean((result as { status?: unknown })?.status === "timeout") ||
-    Boolean((error?.data as { status?: unknown })?.status === "timeout");
+  const statusToken =
+    typeof (result as { status?: unknown })?.status === "string"
+      ? ((result as { status?: string }).status as string)
+      : typeof (error?.data as { status?: unknown })?.status === "string"
+        ? (((error?.data as { status?: string })?.status as string) ?? null)
+        : null;
+  const timedOut = statusToken === "timeout" || statusToken === "cancelled";
   const message =
     (typeof (result as { message?: unknown })?.message === "string"
       ? ((result as { message?: string }).message as string)
@@ -522,6 +528,7 @@ function computeTimeoutSummary(
     status: timeoutOutcome.check.response.status,
     timedOut,
     message,
+    statusToken,
   };
 }
 
@@ -550,4 +557,83 @@ function findLastOutcome(
     }
   }
   return null;
+}
+
+/**
+ * Ensures the Stage 9 robustness workflow observed the expected behaviours.
+ * Throws an explicit error when a requirement is not satisfied so operators
+ * can diagnose regressions rapidly.
+ */
+function enforceRobustnessInvariants(
+  outcomes: readonly RobustnessCallOutcome[],
+  summary: RobustnessSummary,
+): void {
+  const invalidSchema = findOutcomeByName(outcomes, "graph_diff_invalid");
+  if (!invalidSchema) {
+    throw new Error("Robustness validation missing the invalid-schema scenario");
+  }
+  if (invalidSchema.check.response.status !== 400) {
+    throw new Error(
+      `Expected invalid schema request to return HTTP 400, received ${invalidSchema.check.response.status}`,
+    );
+  }
+  const invalidError = extractJsonRpcError(invalidSchema.check.response.body);
+  if (!invalidError?.message || invalidError.message.trim().length === 0) {
+    throw new Error("Invalid schema response must contain a descriptive error message");
+  }
+
+  const unknownTool = findOutcomeByScenario(outcomes, "unknown-tool");
+  if (!unknownTool) {
+    throw new Error("Robustness validation missing the unknown-tool scenario");
+  }
+  if (unknownTool.check.response.status !== 404) {
+    throw new Error(
+      `Expected unknown tool request to return HTTP 404, received ${unknownTool.check.response.status}`,
+    );
+  }
+  const unknownError = extractJsonRpcError(unknownTool.check.response.body);
+  if (!unknownError?.message || unknownError.message.trim().length === 0) {
+    throw new Error("Unknown tool response must contain a descriptive error message");
+  }
+
+  if (!summary.idempotency || summary.idempotency.consistent !== true) {
+    throw new Error("Idempotency check failed: responses for tx_begin were not identical");
+  }
+
+  const crashOutcome = findOutcomeByName(outcomes, CRASH_SCENARIO_NAME);
+  if (!crashOutcome) {
+    throw new Error("Robustness validation missing the child crash simulation scenario");
+  }
+  if (crashOutcome.events.length === 0) {
+    throw new Error("Child crash scenario must emit at least one event to confirm telemetry");
+  }
+  const crashError = extractJsonRpcError(crashOutcome.check.response.body);
+  if (!crashError?.message || crashError.message.trim().length === 0) {
+    throw new Error("Child crash scenario must expose an error message describing the failure");
+  }
+
+  if (!summary.timeout || summary.timeout.timedOut !== true) {
+    throw new Error("Reactive plan did not report a timeout or cancellation status");
+  }
+  if (summary.timeout.statusToken !== "timeout" && summary.timeout.statusToken !== "cancelled") {
+    throw new Error(
+      `Reactive plan reported unexpected status token: ${summary.timeout.statusToken ?? "<missing>"}`,
+    );
+  }
+}
+
+/** Locates an outcome by its logical scenario identifier. */
+function findOutcomeByScenario(
+  outcomes: readonly RobustnessCallOutcome[],
+  scenario: string,
+): RobustnessCallOutcome | null {
+  return outcomes.find((outcome) => outcome.call.scenario === scenario) ?? null;
+}
+
+/** Locates an outcome by its friendly call name. */
+function findOutcomeByName(
+  outcomes: readonly RobustnessCallOutcome[],
+  name: string,
+): RobustnessCallOutcome | null {
+  return outcomes.find((outcome) => outcome.call.name === name) ?? null;
 }

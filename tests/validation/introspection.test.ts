@@ -82,7 +82,7 @@ describe("introspection phase runner", () => {
     expect(eventsContent.trim()).to.contain("events_subscribe");
 
     const firstInputEntry = JSON.parse(inputLines[0]);
-    expect(firstInputEntry.request.body.method).to.equal("mcp/info");
+    expect(firstInputEntry.request.body.method).to.equal("mcp_info");
   });
 
   it("forwards custom params when provided", async () => {

@@ -168,7 +168,7 @@ export function buildDefaultSecurityCalls(
     {
       scenario: "auth",
       name: "without_token",
-      method: options.unauthorizedMethod ?? "mcp/info",
+      method: options.unauthorizedMethod ?? "mcp_info",
       requireAuth: false,
       unauthorizedProbe: true,
       expectedStatus: 401,
@@ -492,8 +492,95 @@ export async function runSecurityPhase(
     outcomes.push(outcome);
   }
 
+  validateSecurityExpectations(outcomes);
+
   const summary = buildSecuritySummary(outcomes);
   const summaryPath = await persistSecuritySummary(runRoot, summary);
 
   return { outcomes, summary, summaryPath };
+}
+
+/**
+ * Ensures the Stage 11 workflow exercised authentication, redaction and
+ * filesystem confinement correctly. The validator inspects the captured
+ * responses/events and surfaces actionable guidance when invariants are
+ * violated.
+ */
+function validateSecurityExpectations(outcomes: readonly SecurityCallOutcome[]): void {
+  if (!outcomes.length) {
+    throw new Error("Stage 11 requiert au moins un appel pour valider la sécurité.");
+  }
+
+  const unauthorizedOutcomes = outcomes.filter((outcome) => outcome.call.unauthorizedProbe);
+  if (!unauthorizedOutcomes.length) {
+    throw new Error(
+      "Stage 11 doit inclure une requête sans jeton pour vérifier la réponse 401/403 du serveur.",
+    );
+  }
+  for (const outcome of unauthorizedOutcomes) {
+    const status = outcome.check.response.status;
+    if (status !== 401 && status !== 403) {
+      throw new Error(
+        `Stage 11 attendait un statut 401/403 pour l'appel sans authentification mais a reçu ${status}.`,
+      );
+    }
+    const expected = outcome.call.expectedStatus;
+    if (
+      typeof expected === "number" &&
+      status !== expected &&
+      !(expected === 401 && status === 403)
+    ) {
+      throw new Error(
+        `Stage 11 a reçu ${status} alors que ${expected} était attendu pour l'appel non authentifié.`,
+      );
+    }
+  }
+
+  const authorisedSuccess = outcomes.some(
+    (outcome) =>
+      outcome.call.requireAuth !== false &&
+      outcome.check.response.status >= 200 &&
+      outcome.check.response.status < 300,
+  );
+  if (!authorisedSuccess) {
+    throw new Error(
+      "Stage 11 doit confirmer qu'au moins un appel authentifié renvoie un statut 2xx.",
+    );
+  }
+
+  const redactionOutcomes = outcomes.filter((outcome) => outcome.call.redactionProbe);
+  if (!redactionOutcomes.length) {
+    throw new Error(
+      "Stage 11 requiert un test de redaction pour vérifier l'absence de secret dans les réponses et événements.",
+    );
+  }
+  for (const outcome of redactionOutcomes) {
+    const secret = outcome.call.redactionProbe?.secret ?? "";
+    if (!secret) {
+      throw new Error(
+        "Stage 11 nécessite un secret synthétique non vide pour valider la redaction des journaux.",
+      );
+    }
+    const leakedInResponse = payloadContainsSecret(outcome.check.response.body, secret);
+    const leakedInEvents = outcome.events.some((event) => payloadContainsSecret(event, secret));
+    if (leakedInResponse || leakedInEvents) {
+      throw new Error(
+        "Stage 11 a détecté le secret synthétique dans la réponse ou les événements. Active MCP_LOG_REDACT ou corrige l'outil cible.",
+      );
+    }
+  }
+
+  const pathOutcomes = outcomes.filter((outcome) => outcome.call.pathProbe);
+  if (!pathOutcomes.length) {
+    throw new Error(
+      "Stage 11 doit inclure une tentative de sortie de bac à sable (path probe) pour vérifier le rejet serveur.",
+    );
+  }
+  for (const outcome of pathOutcomes) {
+    if (outcome.check.response.status < 400) {
+      throw new Error(
+        `Stage 11 attendait un rejet (>=400) pour la tentative d'écriture ${outcome.call.pathProbe?.attemptedPath ?? ""}.`,
+      );
+    }
+  }
 }

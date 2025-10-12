@@ -102,6 +102,17 @@ describe("planning validation runner", () => {
           events: [{ type: "plan.cancelled", seq: 5 }],
         },
       },
+      {
+        jsonrpc: "2.0",
+        result: {
+          ok: true,
+          op_id: "reactive-op",
+          run_id: "reactive-run",
+          outcome: "cancelled",
+          reason: "validation-stage-6",
+          progress: 100,
+        },
+      },
     ];
 
     const capturedBodies: unknown[] = [];
@@ -119,7 +130,7 @@ describe("planning validation runner", () => {
 
     const result = await runPlanPhase(runRoot, environment);
 
-    expect(result.outcomes).to.have.lengthOf(7);
+    expect(result.outcomes).to.have.lengthOf(8);
     expect(result.summary.compile.success).to.equal(true);
     expect(result.summary.graphId).to.equal("validation_plan_bt");
     expect(result.summary.runBt.status).to.equal("success");
@@ -127,6 +138,8 @@ describe("planning validation runner", () => {
     expect(result.summary.runReactive.status).to.equal("success");
     expect(result.summary.runReactive.loopTicks).to.equal(4);
     expect(result.summary.runReactive.cancelled).to.equal(true);
+    expect(result.summary.opCancel.ok).to.equal(true);
+    expect(result.summary.opCancel.opId).to.equal("reactive-op");
     expect(result.summary.events.total).to.equal(5);
     expect(result.summary.events.types).to.have.property("plan.cancelled", 1);
 
@@ -143,6 +156,7 @@ describe("planning validation runner", () => {
     const summaryDocument = JSON.parse(await readFile(result.summaryPath, "utf8"));
     expect(summaryDocument.runBt.runId).to.equal("bt-run");
     expect(summaryDocument.lifecycle.pauseResult?.state).to.equal("paused");
+    expect(summaryDocument.opCancel.reason).to.equal("validation-stage-6");
 
     const compileRequest = capturedBodies[0] as { params?: { graph?: { id?: string } } };
     expect(compileRequest?.params?.graph?.id).to.equal("validation_plan_bt");
@@ -184,5 +198,42 @@ describe("planning validation runner", () => {
     expect(summary.events.total).to.equal(2);
     expect(summary.events.types).to.have.property("phase:start", 1);
     expect(summary.events.types).to.have.property("phase:complete", 1);
+  });
+
+  it("fails when plan_pause does not confirm a paused state", async () => {
+    const responses = [
+      { jsonrpc: "2.0", result: { tree: { id: "bt", root: {} }, graph_id: "validation_plan_bt" } },
+      { jsonrpc: "2.0", result: { status: "success", ticks: 1, run_id: "bt-run", op_id: "bt-op", events: [{ type: "bt.tick" }] } },
+      {
+        jsonrpc: "2.0",
+        result: {
+          status: "success",
+          loop_ticks: 1,
+          run_id: "reactive-run",
+          op_id: "reactive-op",
+          events: [{ type: "scheduler_tick_result" }],
+        },
+      },
+      { jsonrpc: "2.0", result: { state: "running" } },
+      { jsonrpc: "2.0", result: { state: "running" } },
+      { jsonrpc: "2.0", result: { state: "running" } },
+      { jsonrpc: "2.0", result: { cancelled: true } },
+      { jsonrpc: "2.0", result: { ok: true, op_id: "reactive-op" } },
+    ];
+
+    globalThis.fetch = (async () => {
+      const payload = responses.shift() ?? { jsonrpc: "2.0", result: {} };
+      return new Response(JSON.stringify(payload), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as typeof fetch;
+
+    try {
+      await runPlanPhase(runRoot, environment);
+      expect.fail("runPlanPhase should have rejected when plan_pause did not pause");
+    } catch (error) {
+      expect((error as Error).message).to.contain("plan_pause did not confirm a paused state");
+    }
   });
 });

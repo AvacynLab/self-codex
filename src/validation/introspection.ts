@@ -38,13 +38,21 @@ export interface JsonRpcCallSpec {
   params?: unknown;
 }
 
-/** Default set of JSON-RPC calls required to satisfy section 1 of the playbook. */
+/**
+ * Default set of JSON-RPC calls required to satisfy section 1 of the playbook.
+ *
+ * The orchestrator exposes some discovery helpers as first-class tools rather
+ * than traditional JSON-RPC methods (for instance `mcp_info` instead of
+ * `mcp/info`).  Using the tool identifiers keeps the validation workflow aligned
+ * with the actual server interface while still exercising the canonical
+ * `tools/list` endpoint so clients can reconcile both perspectives.
+ */
 export const DEFAULT_INTROSPECTION_CALLS: JsonRpcCallSpec[] = [
-  { name: "mcp_info", method: "mcp/info" },
-  { name: "mcp_capabilities", method: "mcp/capabilities" },
+  { name: "mcp_info", method: "mcp_info" },
+  { name: "mcp_capabilities", method: "mcp_capabilities" },
   { name: "tools_list", method: "tools/list" },
-  { name: "resources_list", method: "resources/list" },
-  { name: "events_subscribe", method: "events/subscribe" },
+  { name: "resources_list", method: "resources_list" },
+  { name: "events_subscribe", method: "events_subscribe" },
 ];
 
 /** Captures the outcome of a JSON-RPC call along with the raw HTTP snapshot. */
@@ -77,14 +85,16 @@ function extractEventsFromResponse(body: unknown): unknown[] {
 
 /** Appends the captured events to the phase-specific `.jsonl` file. */
 async function appendEvents(runRoot: string, source: string, events: unknown[]): Promise<void> {
-  if (!events.length) {
-    return;
-  }
-
   const capturedAt = new Date().toISOString();
-  const payload = events
-    .map((event) => toJsonlLine({ source, capturedAt, event }))
-    .join("");
+  let payload: string;
+
+  if (!events.length) {
+    payload = toJsonlLine({ source, capturedAt, event: null, note: "no events returned" });
+  } else {
+    payload = events
+      .map((event) => toJsonlLine({ source, capturedAt, event }))
+      .join("");
+  }
 
   await writeFile(join(runRoot, INTROSPECTION_JSONL_FILES.events), payload, { encoding: "utf8", flag: "a" });
 }

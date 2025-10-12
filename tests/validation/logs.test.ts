@@ -51,6 +51,13 @@ describe("validation log utilities", () => {
     expect(summary.latency.max).to.equal(50);
     expect(summary.latency.p50).to.equal(20);
     expect(summary.latency.p95).to.be.closeTo(47, 1);
+    expect(summary.topMessages).to.have.lengthOf(3);
+    expect(summary.topMessages[0].text).to.equal("ok");
+    expect(
+      summary.topMessages.some(
+        (entry) => entry.text.includes("Plain WARN line") || entry.text.includes("not-json"),
+      ),
+    ).to.equal(true);
   });
 
   it("copies the log into the run folder and persists the summary", async () => {
@@ -66,5 +73,6 @@ describe("validation log utilities", () => {
     const summary = JSON.parse(summaryContent);
     expect(summary.errorLines).to.equal(1);
     expect(summary.latency.p95).to.equal(123);
+    expect(summary.topMessages[0]).to.deep.equal({ text: '{"level":"error","durationMs":123}', count: 1 });
   });
 });

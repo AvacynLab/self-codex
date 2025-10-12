@@ -188,6 +188,15 @@ export interface PlanPhaseSummaryDocument {
     readonly resumeResult?: Record<string, unknown> | null;
     readonly cancelResult?: Record<string, unknown> | null;
   };
+  readonly opCancel: {
+    readonly ok: boolean;
+    readonly outcome: string | null;
+    readonly reason: string | null;
+    readonly runId: string | null;
+    readonly opId: string | null;
+    readonly progress: number | null;
+    readonly error?: string;
+  };
   readonly events: {
     readonly total: number;
     readonly types: Record<string, number>;
@@ -264,6 +273,8 @@ export async function runPlanPhase(
     }
 
     const outcome: PlanCallOutcome = { call: executedCall, check, events };
+    validatePlanOutcome(outcome, outcomes);
+
     if (spec.afterExecute) {
       await spec.afterExecute({ runRoot, environment, outcome, previousCalls: outcomes });
     }
@@ -345,6 +356,16 @@ export function buildDefaultPlanCalls(options: DefaultPlanOptions = {}): PlanCal
         run_id: requireReactiveRunId(previousCalls),
         op_id: requireReactiveOpId(previousCalls),
       }),
+    },
+    {
+      scenario: "cancellation",
+      name: "op_cancel",
+      method: "op_cancel",
+      params: ({ previousCalls }: PlanCallContext) => ({
+        op_id: requireReactiveOpId(previousCalls),
+        reason: "validation-stage-6",
+      }),
+      captureEvents: false,
     },
   ];
 }
@@ -501,6 +522,13 @@ export function buildPlanSummary(
   let resumeResult: Record<string, unknown> | null | undefined;
   let cancelResult: Record<string, unknown> | null | undefined;
   let compileError: string | undefined;
+  let opCancelOk = false;
+  let opCancelOutcome: string | null = null;
+  let opCancelReason: string | null = null;
+  let opCancelRunId: string | null = null;
+  let opCancelOpId: string | null = null;
+  let opCancelProgress: number | null = null;
+  let opCancelError: string | undefined;
 
   const eventStats: Record<string, number> = {};
   let totalEvents = 0;
@@ -524,6 +552,9 @@ export function buildPlanSummary(
       if (outcome.call.method === "plan_cancel" && error) {
         reactiveCancelled = error.includes("cancelled");
         reactiveCancellationError = error;
+      }
+      if (outcome.call.method === "op_cancel" && error) {
+        opCancelError = error;
       }
       continue;
     }
@@ -558,6 +589,18 @@ export function buildPlanSummary(
       if (typeof result.error === "string") {
         reactiveCancellationError = result.error;
       }
+    } else if (outcome.call.method === "op_cancel") {
+      opCancelOk = result.ok === true;
+      opCancelOutcome = typeof result.outcome === "string" ? result.outcome : opCancelOutcome;
+      opCancelReason = typeof result.reason === "string" ? result.reason : opCancelReason;
+      opCancelRunId = typeof result.run_id === "string" ? result.run_id : opCancelRunId;
+      opCancelOpId = typeof result.op_id === "string" ? result.op_id : opCancelOpId;
+      if (typeof result.progress === "number") {
+        opCancelProgress = result.progress;
+      }
+      if (result.error && typeof result.error === "string") {
+        opCancelError = result.error;
+      }
     }
   }
 
@@ -587,6 +630,15 @@ export function buildPlanSummary(
       pauseResult: pauseResult ?? null,
       resumeResult: resumeResult ?? null,
       cancelResult: cancelResult ?? null,
+    },
+    opCancel: {
+      ok: opCancelOk,
+      outcome: opCancelOutcome,
+      reason: opCancelReason,
+      runId: opCancelRunId,
+      opId: opCancelOpId,
+      progress: opCancelProgress,
+      error: opCancelError,
     },
     events: {
       total: totalEvents,
@@ -628,4 +680,126 @@ function extractEventType(event: unknown): string {
     return `phase:${phase}`;
   }
   return "unknown";
+}
+
+/**
+ * Ensures each call outcome recorded during the planning phase satisfies the
+ * behavioural expectations documented in Stage 6 of the checklist. The
+ * validation intentionally errs on the side of strictness so regressions in the
+ * MCP lifecycle (missing paused state, absent cancellation metadata, …) are
+ * caught immediately when operators replay the workflow.
+ */
+function validatePlanOutcome(outcome: PlanCallOutcome, previousCalls: readonly PlanCallOutcome[]): void {
+  const result = extractJsonRpcResult(outcome.check.response.body);
+  const error = extractJsonRpcError(outcome.check.response.body);
+
+  switch (outcome.call.method) {
+    case "plan_compile_bt": {
+      if (!result) {
+        throw new Error("plan_compile_bt did not return a JSON-RPC result");
+      }
+      const tree = result.tree ?? result;
+      if (!tree || typeof tree !== "object" || Array.isArray(tree)) {
+        throw new Error("plan_compile_bt response did not contain a compiled tree");
+      }
+      break;
+    }
+    case "plan_run_bt": {
+      if (!result) {
+        throw new Error("plan_run_bt failed: expected a JSON-RPC result");
+      }
+      const status = typeof result.status === "string" ? result.status.toLowerCase() : "";
+      if (!status || (status !== "success" && status !== "running")) {
+        throw new Error(`plan_run_bt returned an unexpected status: ${status || "<empty>"}`);
+      }
+      const ticks = typeof result.ticks === "number" ? result.ticks : null;
+      if (ticks === null || ticks <= 0) {
+        throw new Error(`plan_run_bt reported ${ticks ?? "no"} ticks (expected > 0)`);
+      }
+      if (!outcome.events.length) {
+        throw new Error("plan_run_bt did not emit any events (expected scheduler journal)");
+      }
+      break;
+    }
+    case "plan_run_reactive": {
+      if (!result) {
+        throw new Error("plan_run_reactive failed: expected a JSON-RPC result");
+      }
+      const runId = typeof result.run_id === "string" ? result.run_id : "";
+      const opId = typeof result.op_id === "string" ? result.op_id : "";
+      if (!runId) {
+        throw new Error("plan_run_reactive did not expose a run_id for lifecycle calls");
+      }
+      if (!opId) {
+        throw new Error("plan_run_reactive did not expose an op_id for cancellation");
+      }
+      if (!outcome.events.length) {
+        throw new Error("plan_run_reactive did not emit scheduler events");
+      }
+      break;
+    }
+    case "plan_status": {
+      if (!result) {
+        throw new Error("plan_status failed: expected a JSON-RPC result");
+      }
+      const state = typeof result.state === "string" ? result.state : "";
+      if (!state) {
+        throw new Error("plan_status response missing a lifecycle state");
+      }
+      break;
+    }
+    case "plan_pause": {
+      if (!result) {
+        throw new Error("plan_pause failed: expected a JSON-RPC result");
+      }
+      const state = typeof result.state === "string" ? result.state.toLowerCase() : "";
+      const supportsResume = result.supports_resume === true;
+      if (!state.includes("pause") && !supportsResume) {
+        throw new Error(`plan_pause did not confirm a paused state (state=${state || "<empty>"})`);
+      }
+      break;
+    }
+    case "plan_resume": {
+      if (!result) {
+        throw new Error("plan_resume failed: expected a JSON-RPC result");
+      }
+      const state = typeof result.state === "string" ? result.state.toLowerCase() : "";
+      const allowedStates = new Set(["running", "success", "completed"]);
+      if (!allowedStates.has(state)) {
+        throw new Error(`plan_resume returned unexpected state: ${state || "<empty>"}`);
+      }
+      break;
+    }
+    case "plan_cancel": {
+      const expectedRunId = requireReactiveRunId(previousCalls);
+      if (result) {
+        const cancelled = result.cancelled === true || typeof result.status === "string" && result.status.toLowerCase() === "cancelled";
+        const runIdMatches = typeof result.run_id !== "string" || result.run_id === expectedRunId;
+        if (!cancelled) {
+          throw new Error("plan_cancel response did not confirm cancellation");
+        }
+        if (!runIdMatches) {
+          throw new Error("plan_cancel response referenced an unexpected run_id");
+        }
+      } else if (!error || !/cancel/i.test(error)) {
+        throw new Error("plan_cancel failed without providing a cancellation error message");
+      }
+      break;
+    }
+    case "op_cancel": {
+      if (!result) {
+        throw new Error("op_cancel failed: expected a JSON-RPC result");
+      }
+      if (result.ok !== true) {
+        throw new Error("op_cancel did not acknowledge the cancellation request");
+      }
+      const expectedOpId = requireReactiveOpId(previousCalls);
+      if (typeof result.op_id === "string" && result.op_id !== expectedOpId) {
+        throw new Error("op_cancel response referenced a different op_id than plan_run_reactive");
+      }
+      break;
+    }
+    default:
+      break;
+  }
 }

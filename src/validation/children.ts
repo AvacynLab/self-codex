@@ -146,6 +146,8 @@ export interface DefaultChildPlanOptions {
 export interface ChildPhaseOptions {
   readonly calls?: ChildCallSpec[];
   readonly plan?: DefaultChildPlanOptions;
+  /** When true (default), the runner enforces the presence of a limit event. */
+  readonly requireLimitEvent?: boolean;
 }
 
 /** Structured summary document persisted under `report/children_summary.json`. */
@@ -167,6 +169,7 @@ export interface ChildrenPhaseSummaryDocument {
   readonly events: {
     readonly total: number;
     readonly types: Record<string, number>;
+    readonly limitEvents: number;
     readonly samples: unknown[];
   };
   readonly artefacts: {
@@ -250,11 +253,11 @@ export function buildDefaultChildrenCalls(options: DefaultChildPlanOptions = {})
         const childId = requireChildId(previousCalls);
         return {
           child_id: childId,
-          message: {
+          payload: {
             role: "user",
             content: [{ type: "text", text: prompt }],
           },
-          options: { expect_events: true },
+          expect: "final",
         };
       },
       afterExecute: async ({ runRoot, outcome }) => {
@@ -397,6 +400,7 @@ export async function runChildrenPhase(
   }
 
   const calls = options.calls ?? buildDefaultChildrenCalls(options.plan);
+  const requireLimitEvent = options.requireLimitEvent ?? true;
 
   const headers: Record<string, string> = {
     "content-type": "application/json",
@@ -464,6 +468,12 @@ export async function runChildrenPhase(
   const summaryPath = join(runRoot, "report", CHILDREN_SUMMARY_FILENAME);
   await writeJsonFile(summaryPath, summary);
 
+  if (requireLimitEvent && summary.events.limitEvents <= 0) {
+    throw new Error(
+      "Child validation did not capture any limit-related events; tighten limits to trigger an explicit budget notification.",
+    );
+  }
+
   return { outcomes, summary, summaryPath, conversationPath };
 }
 
@@ -527,9 +537,13 @@ export function buildChildrenSummary(
 
   const events = outcomes.flatMap((outcome) => outcome.events);
   const eventStats: Record<string, number> = {};
+  let limitEvents = 0;
   for (const event of events) {
     const type = extractEventType(event);
     eventStats[type] = (eventStats[type] ?? 0) + 1;
+    if (typeof type === "string" && type.toLowerCase().includes("limit")) {
+      limitEvents += 1;
+    }
   }
 
   const calls = outcomes.map((outcome) => ({
@@ -554,6 +568,7 @@ export function buildChildrenSummary(
     events: {
       total: events.length,
       types: eventStats,
+      limitEvents,
       samples: events.slice(0, 5),
     },
     artefacts: {

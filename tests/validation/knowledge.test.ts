@@ -134,4 +134,83 @@ describe("knowledge validation runner", () => {
     const firstCall = capturedBodies[0] as { method?: string };
     expect(firstCall.method).to.equal("kg_assist");
   });
+
+  it("throws when values explanations diverge between runs", async () => {
+    const responses = [
+      { jsonrpc: "2.0", result: { answer: "Analyse", citations: [{ id: "doc-1" }] } },
+      { jsonrpc: "2.0", result: { plan: { title: "Plan", steps: [{ id: "collect" }, { id: "analyser" }] } } },
+      {
+        jsonrpc: "2.0",
+        result: {
+          graph: {
+            nodes: [{ id: "root" }, { id: "values" }, { id: "knowledge" }],
+            edges: [
+              { from: "root", to: "values" },
+              { from: "values", to: "knowledge" },
+            ],
+          },
+        },
+      },
+      { jsonrpc: "2.0", result: { topic: "ethics", explanation: "Première réponse", citations: [{ id: "doc" }] } },
+      { jsonrpc: "2.0", result: { topic: "ethics", explanation: "Deuxième réponse" } },
+      { jsonrpc: "2.0", result: { graph: { nodes: [{ id: "values" }] } } },
+      { jsonrpc: "2.0", result: { snapshot: {} } },
+    ];
+
+    globalThis.fetch = (async () => {
+      const payload = responses.shift() ?? { jsonrpc: "2.0", result: {} };
+      return new Response(JSON.stringify(payload), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as typeof fetch;
+
+    let error: unknown;
+    try {
+      await runKnowledgePhase(runRoot, environment);
+    } catch (err) {
+      error = err;
+    }
+
+    expect(error).to.be.instanceOf(Error);
+    expect((error as Error).message).to.contain("remain stable");
+  });
+
+  it("throws when the knowledge subgraph omits requested nodes", async () => {
+    const responses = [
+      { jsonrpc: "2.0", result: { answer: "Analyse", citations: [{ id: "doc-1" }] } },
+      { jsonrpc: "2.0", result: { plan: { title: "Plan", steps: [{ id: "collect" }, { id: "analyser" }] } } },
+      {
+        jsonrpc: "2.0",
+        result: {
+          graph: {
+            nodes: [{ id: "root" }],
+            edges: [],
+          },
+        },
+      },
+      { jsonrpc: "2.0", result: { topic: "ethics", explanation: "Réponse", citations: [{ id: "doc" }] } },
+      { jsonrpc: "2.0", result: { topic: "ethics", explanation: "Réponse" } },
+      { jsonrpc: "2.0", result: { graph: { nodes: [{ id: "values" }] } } },
+      { jsonrpc: "2.0", result: { snapshot: {} } },
+    ];
+
+    globalThis.fetch = (async () => {
+      const payload = responses.shift() ?? { jsonrpc: "2.0", result: {} };
+      return new Response(JSON.stringify(payload), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as typeof fetch;
+
+    let error: unknown;
+    try {
+      await runKnowledgePhase(runRoot, environment);
+    } catch (err) {
+      error = err;
+    }
+
+    expect(error).to.be.instanceOf(Error);
+    expect((error as Error).message).to.contain("kg_get_subgraph returned");
+  });
 });

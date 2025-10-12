@@ -144,6 +144,11 @@ export async function executeRobustnessCli(
       `   Crash events captured: ${result.summary.crashSimulation.eventCount}`,
     );
   }
+  if (result.summary.timeout) {
+    logger.log(
+      `   Timeout status token: ${result.summary.timeout.statusToken ?? "<missing>"}`,
+    );
+  }
 
   return { runRoot, result };
 }

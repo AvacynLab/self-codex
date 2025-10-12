@@ -128,11 +128,18 @@ export async function executeKnowledgeCli(
 
   logger.log("🧠 Knowledge validation summary:");
   logger.log(`   • assist query: ${result.summary.knowledge.assistQuery ?? "unknown"}`);
+  logger.log(`   • assist citations: ${result.summary.knowledge.citationCount ?? 0}`);
   logger.log(`   • plan steps: ${result.summary.knowledge.planSteps ?? 0}`);
+  logger.log(
+    `   • subgraph: ${result.summary.knowledge.subgraphNodes ?? 0} nodes / ${
+      result.summary.knowledge.subgraphEdges ?? 0
+    } edges`,
+  );
   logger.log(`   • values topic: ${result.summary.values.topic ?? "unknown"}`);
   logger.log(
     `   • explanation consistent: ${result.summary.values.explanationConsistent ? "yes" : "no"}`,
   );
+  logger.log(`   • values citations: ${result.summary.values.citationCount ?? 0}`);
 
   logger.log(`📚 Requests log: ${join(runRoot, KNOWLEDGE_JSONL_FILES.inputs)}`);
   logger.log(`📤 Responses log: ${join(runRoot, KNOWLEDGE_JSONL_FILES.outputs)}`);

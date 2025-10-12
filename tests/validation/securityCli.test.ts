@@ -36,7 +36,7 @@ describe("security validation CLI", () => {
       "--redaction-tool",
       "echo",
       "--unauthorized-method",
-      "mcp/info",
+      "mcp_info",
       "--path-tool",
       "fs/write",
       "--path-attempt",
@@ -49,7 +49,7 @@ describe("security validation CLI", () => {
       runRoot: "explicit/path",
       secretText: "probe",
       redactionTool: "echo",
-      unauthorizedMethod: "mcp/info",
+      unauthorizedMethod: "mcp_info",
       pathTool: "fs/write",
       pathAttempt: "../escape",
     });

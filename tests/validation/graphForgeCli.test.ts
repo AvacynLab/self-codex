@@ -53,7 +53,8 @@ describe("graph forge CLI helpers", () => {
     });
   });
 
-  it("executes the CLI workflow and surfaces artefact locations", async () => {
+  it("executes the CLI workflow and surfaces artefact locations", async function () {
+    this.timeout(5000);
     const responses = [
       { jsonrpc: "2.0", result: { content: [{ type: "text", text: JSON.stringify({ ok: true }) }] } },
       { jsonrpc: "2.0", result: { status: "started" } },
@@ -98,11 +99,19 @@ describe("graph forge CLI helpers", () => {
         MCP_HTTP_TOKEN: "cli-token",
       } as NodeJS.ProcessEnv,
       logger,
-      { phaseOptions: { workspaceRoot: workingDir, autosaveObserver, autosaveObservation: { requiredTicks: 1 } } },
+      {
+        phaseOptions: {
+          workspaceRoot: workingDir,
+          autosaveObserver,
+          autosaveObservation: { requiredTicks: 1 },
+          autosaveQuiescence: { pollIntervalMs: 5, durationMs: 50 },
+        },
+      },
     );
 
     expect(runRoot).to.equal(join(workingDir, "validation_cli"));
     expect(result.autosave.observation.observedTicks).to.equal(1);
+    expect(result.autosave.quiescence.verified).to.equal(true);
 
     const inputsContent = await readFile(join(runRoot, GRAPH_FORGE_JSONL_FILES.inputs), "utf8");
     const outputsContent = await readFile(join(runRoot, GRAPH_FORGE_JSONL_FILES.outputs), "utf8");
@@ -112,5 +121,6 @@ describe("graph forge CLI helpers", () => {
     const flattenedLogs = logs.flat().join(" ");
     expect(flattenedLogs).to.contain(GRAPH_FORGE_JSONL_FILES.inputs);
     expect(flattenedLogs).to.contain("Autosave summary");
+    expect(flattenedLogs).to.contain("Autosave quiescence");
   });
 });

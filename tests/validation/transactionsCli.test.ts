@@ -65,6 +65,7 @@ function buildDefaultResponses() {
 
   return [
     { jsonrpc: "2.0", result: { tx_id: "tx-1", graph_id: baseGraph.graph_id, graph: baseGraph, base_version: 1 } },
+    { jsonrpc: "2.0", result: { changed: false, operations: [] } },
     { jsonrpc: "2.0", result: { tx_id: "tx-1", graph: committedGraph } },
     { jsonrpc: "2.0", result: { tx_id: "tx-1", version: 2, graph: committedGraph } },
     { jsonrpc: "2.0", result: { changed: true, operations: [{ op: "test", path: "/metadata/status", value: "committed" }] } },
@@ -83,6 +84,9 @@ function buildDefaultResponses() {
     },
     { jsonrpc: "2.0", result: { committed_version: 3, graph: patchedGraph } },
     { jsonrpc: "2.0", result: { changed: true, operations: cycleOperations } },
+    { jsonrpc: "2.0", result: { tx_id: "tx-2", graph_id: baseGraph.graph_id, graph: patchedGraph, base_version: 3 } },
+    { jsonrpc: "2.0", error: { code: 422, message: "cycle detected in transaction", data: { error: "E-TX-CYCLE" } } },
+    { jsonrpc: "2.0", result: { tx_id: "tx-2", rolled_back: true } },
     { jsonrpc: "2.0", error: { code: 123, message: "cycle detected", data: { error: "E-PATCH-CYCLE" } } },
     { jsonrpc: "2.0", result: { changed: true, operations: concurrencyOperations } },
     { jsonrpc: "2.0", error: { code: 409, message: "graph locked", data: { error: "E-LOCK-HELD" } } },
@@ -98,6 +102,7 @@ function buildDefaultResponses() {
         expires_at: null,
       },
     },
+    { jsonrpc: "2.0", result: { total: 1, values: [{ id: "v-1", type: "control" }] } },
     {
       jsonrpc: "2.0",
       result: {
@@ -162,16 +167,19 @@ describe("transactions CLI", () => {
 
     const expectedRoot = join(workingDir, "validation_cli");
     expect(result.runRoot).to.equal(expectedRoot);
-    expect(result.outcomes).to.have.lengthOf(13);
+    expect(result.outcomes).to.have.lengthOf(18);
 
     const inputsContent = await readFile(join(expectedRoot, TRANSACTIONS_JSONL_FILES.inputs), "utf8");
     const outputsContent = await readFile(join(expectedRoot, TRANSACTIONS_JSONL_FILES.outputs), "utf8");
 
-    expect(inputsContent.trim().split("\n")).to.have.lengthOf(13);
-    expect(outputsContent.trim().split("\n")).to.have.lengthOf(13);
+    expect(inputsContent.trim().split("\n")).to.have.lengthOf(18);
+    expect(outputsContent.trim().split("\n")).to.have.lengthOf(18);
 
     const causalArtefact = await readFile(join(expectedRoot, "artifacts/graphs/causal_export.json"), "utf8");
     expect(JSON.parse(causalArtefact).total).to.equal(1);
+
+    const valuesArtefact = await readFile(join(expectedRoot, "artifacts/graphs/values_graph_export.json"), "utf8");
+    expect(JSON.parse(valuesArtefact).total).to.equal(1);
 
     expect(capturedLogs.some((line) => line.includes(TRANSACTIONS_JSONL_FILES.inputs))).to.equal(true);
     expect(capturedLogs.some((line) => line.includes(TRANSACTIONS_JSONL_FILES.log))).to.equal(true);

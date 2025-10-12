@@ -44,6 +44,9 @@ const GRAPH_FORGE_ANALYSIS_FILENAME = "analysis_result.json";
 const GRAPH_FORGE_AUTOSAVE_FILENAME = "autosave_snapshot.json";
 const GRAPH_FORGE_AUTOSAVE_SUMMARY = "autosave_summary.json";
 
+/** Event type recorded when the autosave stream is confirmed quiescent. */
+const GRAPH_FORGE_AUTOSAVE_QUIESCENCE_EVENT = "autosave.quiescence";
+
 /**
  * Shape describing the textual content captured for each autosave tick. The
  * samples are written to `events/04_forge.jsonl` so operators can inspect the
@@ -68,6 +71,18 @@ export interface AutosaveObservationOptions {
   readonly timeoutMs?: number;
 }
 
+/** Behavioural knobs used when verifying that autosave stops emitting ticks. */
+export interface AutosaveQuiescenceOptions {
+  /** Polling cadence (milliseconds) while checking the autosave artefact. */
+  readonly pollIntervalMs?: number;
+  /**
+   * Duration (milliseconds) over which the checker must observe a stable state.
+   * The window defaults to a multiple of the observation poll interval so short
+   * fluctuations are smoothed out before raising an error.
+   */
+  readonly durationMs?: number;
+}
+
 /**
  * Result returned by {@link observeAutosaveTicks}. The structure is persisted
  * as JSON so operators can compare the theoretical autosave interval with the
@@ -90,6 +105,30 @@ export interface AutosaveObservationResult {
   readonly samples: AutosaveTickSample[];
 }
 
+/** Summary describing the quiescence check executed after stopping autosave. */
+export interface AutosaveQuiescenceResult {
+  /** Autosave artefact monitored on disk. */
+  readonly path: string;
+  /** Expected timestamp captured during the last observed autosave tick. */
+  readonly expectedSavedAt: string | null;
+  /** Latest timestamp read while verifying that the autosave stream stopped. */
+  readonly observedSavedAt: string | null;
+  /** Size of the autosave file during the final verification attempt. */
+  readonly observedFileSize: number | null;
+  /** Total time spent checking for additional ticks (milliseconds). */
+  readonly durationMs: number;
+  /** Number of polling attempts performed during the quiescence check. */
+  readonly attempts: number;
+  /** Poll interval applied between consecutive checks (milliseconds). */
+  readonly pollIntervalMs: number;
+  /** Whether the artefact remained stable throughout the verification window. */
+  readonly verified: boolean;
+  /** Whether the autosave artefact disappeared (treated as quiescent). */
+  readonly fileMissing: boolean;
+  /** Optional diagnostic captured when filesystem access returned an error. */
+  readonly lastError?: string;
+}
+
 /**
  * Configuration accepted by {@link runGraphForgePhase}. Callers may override
  * the autosave path, interval, or observation strategy to accommodate bespoke
@@ -105,6 +144,8 @@ export interface GraphForgePhaseOptions {
   readonly autosaveIntervalMs?: number;
   /** Behavioural tuning for the autosave observer. */
   readonly autosaveObservation?: AutosaveObservationOptions;
+  /** Behavioural tuning for the post-stop quiescence verification. */
+  readonly autosaveQuiescence?: AutosaveQuiescenceOptions;
   /**
    * Dependency injection hook used by tests to simulate autosave ticks without
    * relying on a running server.
@@ -141,6 +182,8 @@ export interface GraphForgePhaseResult {
     readonly absolutePath: string;
     /** Autosave cadence observation captured during the run. */
     readonly observation: AutosaveObservationResult;
+    /** Result of the quiescence verification executed after stopping autosave. */
+    readonly quiescence: AutosaveQuiescenceResult;
     /** Absolute path of the persisted summary JSON document. */
     readonly summaryPath: string;
   };
@@ -356,6 +399,104 @@ async function appendAutosaveEvents(
 }
 
 /**
+ * Appends the quiescence verification outcome to the shared events JSONL file
+ * so operators can confirm that autosave stopped producing ticks after the
+ * `stop` request completed.
+ */
+async function appendAutosaveQuiescenceEvent(
+  runRoot: string,
+  result: AutosaveQuiescenceResult,
+): Promise<void> {
+  const payload = toJsonlLine({
+    type: GRAPH_FORGE_AUTOSAVE_QUIESCENCE_EVENT,
+    path: result.path,
+    expectedSavedAt: result.expectedSavedAt,
+    observedSavedAt: result.observedSavedAt,
+    observedFileSize: result.observedFileSize,
+    durationMs: result.durationMs,
+    attempts: result.attempts,
+    pollIntervalMs: result.pollIntervalMs,
+    verified: result.verified,
+    fileMissing: result.fileMissing,
+    lastError: result.lastError ?? null,
+  });
+
+  await writeFile(join(runRoot, GRAPH_FORGE_JSONL_FILES.events), payload, { encoding: "utf8", flag: "a" });
+}
+
+/**
+ * Ensures the autosave artefact remains stable once the server acknowledges the
+ * `stop` request. The helper polls the file for a short window and flags any
+ * additional ticks or unexpected payload changes.
+ */
+export async function verifyAutosaveQuiescence(
+  autosavePath: string,
+  expectedSavedAt: string | null,
+  options: AutosaveQuiescenceOptions = {},
+): Promise<AutosaveQuiescenceResult> {
+  const pollIntervalMs = Math.max(options.pollIntervalMs ?? 250, 50);
+  const durationLimit = Math.max(options.durationMs ?? pollIntervalMs * 6, pollIntervalMs);
+
+  let observedSavedAt: string | null = null;
+  let observedFileSize: number | null = null;
+  let attempts = 0;
+  let lastError: string | undefined;
+  let fileMissing = false;
+  let verified = true;
+
+  const startedAt = Date.now();
+
+  do {
+    attempts += 1;
+    try {
+      const content = await readFile(autosavePath, "utf8");
+      observedFileSize = Buffer.byteLength(content, "utf8");
+      const parsed = JSON.parse(content) as { metadata?: { saved_at?: unknown } };
+      observedSavedAt = typeof parsed?.metadata?.saved_at === "string" ? parsed.metadata.saved_at : null;
+      fileMissing = false;
+      lastError = undefined;
+
+      if (observedSavedAt !== expectedSavedAt) {
+        verified = false;
+        break;
+      }
+    } catch (error) {
+      const nodeError = error as NodeJS.ErrnoException;
+      if (nodeError?.code === "ENOENT") {
+        fileMissing = true;
+        observedSavedAt = null;
+        observedFileSize = null;
+        lastError = "ENOENT";
+      } else {
+        lastError = error instanceof Error ? error.message : String(error);
+        verified = false;
+        break;
+      }
+    }
+
+    if (Date.now() - startedAt >= durationLimit) {
+      break;
+    }
+    await delay(pollIntervalMs);
+  } while (Date.now() - startedAt < durationLimit);
+
+  const durationMs = Date.now() - startedAt;
+
+  return {
+    path: autosavePath,
+    expectedSavedAt,
+    observedSavedAt,
+    observedFileSize,
+    durationMs,
+    attempts,
+    pollIntervalMs,
+    verified,
+    fileMissing,
+    lastError,
+  };
+}
+
+/**
  * Executes the Graph Forge validation workflow:
  *
  * 1. Calls `graph_forge_analyze` with a deterministic DSL snippet and persists
@@ -509,12 +650,23 @@ export async function runGraphForgePhase(
 
   await appendHttpCheckArtefactsToFiles(runRoot, GRAPH_FORGE_TARGETS, autosaveStopCheck, GRAPH_FORGE_JSONL_FILES.log);
 
+  const lastObservedSample = observation.samples[observation.samples.length - 1] ?? null;
+  const expectedSavedAt = lastObservedSample?.savedAt ?? null;
+  const quiescenceOptions: AutosaveQuiescenceOptions = {
+    pollIntervalMs: options.autosaveQuiescence?.pollIntervalMs ?? observerPollInterval,
+    durationMs:
+      options.autosaveQuiescence?.durationMs ?? Math.max(options.autosaveIntervalMs ?? 1500, observerPollInterval * 6),
+  };
+  const quiescence = await verifyAutosaveQuiescence(autosaveAbsolute, expectedSavedAt, quiescenceOptions);
+  await appendAutosaveQuiescenceEvent(runRoot, quiescence);
+
   const summaryPayload = {
     capturedAt: new Date().toISOString(),
     autosave: {
       relativePath: autosaveRelative,
       absolutePath: autosaveAbsolute,
       observation,
+      quiescence,
     },
     analysis: {
       dslPath,
@@ -523,6 +675,14 @@ export async function runGraphForgePhase(
   };
   const summaryPath = join(artifactsDir, GRAPH_FORGE_AUTOSAVE_SUMMARY);
   await writeJsonFile(summaryPath, summaryPayload);
+
+  if (!quiescence.verified) {
+    throw new Error(
+      `Autosave did not quiesce: expected saved_at ${quiescence.expectedSavedAt ?? "<none>"} but observed ${
+        quiescence.observedSavedAt ?? "<none>"
+      }`,
+    );
+  }
 
   return {
     analysis: {
@@ -536,6 +696,7 @@ export async function runGraphForgePhase(
       relativePath: autosaveRelative,
       absolutePath: autosaveAbsolute,
       observation,
+      quiescence,
       summaryPath,
     },
   };

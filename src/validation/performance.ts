@@ -353,6 +353,8 @@ export async function runPerformancePhase(
 
   const logAfter = await captureLogSnapshot(logPath);
 
+  validatePerformanceExpectations(state, calls);
+
   const summary = buildPerformanceSummary(runRoot, state, logPath, logBefore, logAfter);
   const summaryPath = join(runRoot, "report", PERFORMANCE_SUMMARY_FILENAME);
   await writeJsonFile(summaryPath, summary);
@@ -627,4 +629,108 @@ function buildJsonRpcId(
 ): string {
   const attemptLabel = context.batchSize > 1 ? `batch${context.attempt}` : `seq${context.attempt}`;
   return `performance_${index}_${call.name}_${attemptLabel}`;
+}
+
+/**
+ * Aggregates the number of latency samples expected from the provided call plan.
+ * The helper mirrors the execution semantics (`repeat` × `batch`) so validation
+ * can flag prematurely aborted runs before producing the final summary.
+ */
+function computeExpectedLatencySamples(calls: readonly PerformanceCallSpec[]): number {
+  let total = 0;
+  for (const spec of calls) {
+    if (!spec.collectLatency) {
+      continue;
+    }
+    const repeat = Math.max(1, spec.repeat ?? 1);
+    const batch = Math.max(1, spec.batch ?? 1);
+    total += repeat * batch;
+  }
+  return total;
+}
+
+/** Snapshot describing the target call volume for a given concurrency group. */
+interface PerformanceConcurrencyExpectation {
+  expectedCalls: number;
+  maxBatch: number;
+}
+
+/**
+ * Builds the expected concurrency footprint for the Stage 10 call plan. Each
+ * group tracks the total number of requests plus the largest simultaneous burst
+ * so the validator can enforce the "5 enfants simultanés" checklist item.
+ */
+function computeConcurrencyExpectations(
+  calls: readonly PerformanceCallSpec[],
+): Map<string, PerformanceConcurrencyExpectation> {
+  const expectations = new Map<string, PerformanceConcurrencyExpectation>();
+  for (const spec of calls) {
+    if (!spec.concurrencyGroup) {
+      continue;
+    }
+    const repeat = Math.max(1, spec.repeat ?? 1);
+    const batch = Math.max(1, spec.batch ?? 1);
+    const expectedCalls = repeat * batch;
+    const entry = expectations.get(spec.concurrencyGroup) ?? { expectedCalls: 0, maxBatch: 0 };
+    entry.expectedCalls += expectedCalls;
+    entry.maxBatch = Math.max(entry.maxBatch, batch);
+    expectations.set(spec.concurrencyGroup, entry);
+  }
+  return expectations;
+}
+
+/**
+ * Ensures the Stage 10 performance workflow honoured the latency and
+ * concurrency requirements from the checklist. Violations are surfaced as
+ * actionable errors so operators immediately understand which probe deviated
+ * from expectations.
+ */
+function validatePerformanceExpectations(
+  state: PerformancePhaseState,
+  calls: readonly PerformanceCallSpec[],
+): void {
+  const expectedLatencySamples = computeExpectedLatencySamples(calls);
+  if (expectedLatencySamples < 50) {
+    throw new Error(
+      `Stage 10 requires au moins 50 échantillons de latence mais le plan courant n'en déclenche que ${expectedLatencySamples}. ` +
+        "Augmente l'option `sampleSize` ou ajoute des répétitions sur les appels instrumentés.",
+    );
+  }
+  if (state.latencySamples.length !== expectedLatencySamples) {
+    throw new Error(
+      `Stage 10 attendait ${expectedLatencySamples} échantillons de latence mais seulement ${state.latencySamples.length} ont été collectés. ` +
+        "Vérifie les réponses HTTP et les erreurs côté serveur.",
+    );
+  }
+
+  const expectations = computeConcurrencyExpectations(calls);
+  if (!expectations.size) {
+    throw new Error(
+      "Stage 10 requiert au moins un burst de concurrence (5 appels simultanés) pour valider la stabilité des enfants.",
+    );
+  }
+
+  for (const [group, expectation] of expectations.entries()) {
+    const counters = state.concurrency.get(group);
+    if (!counters) {
+      throw new Error(
+        `Stage 10 attendait ${expectation.expectedCalls} appel(s) pour le groupe de concurrence "${group}" mais aucun résultat n'a été capturé.`,
+      );
+    }
+    if (expectation.maxBatch < 5) {
+      throw new Error(
+        `Stage 10 requiert au moins 5 appels simultanés pour le groupe "${group}" (batch actuel = ${expectation.maxBatch}).`,
+      );
+    }
+    if (counters.totalCalls !== expectation.expectedCalls) {
+      throw new Error(
+        `Stage 10 attendait ${expectation.expectedCalls} appel(s) sur le groupe "${group}" mais ${counters.totalCalls} ont été journalisés.`,
+      );
+    }
+    if (counters.failure > 0) {
+      throw new Error(
+        `Stage 10 a détecté ${counters.failure} échec(s) dans le groupe de concurrence "${group}". Tous les appels doivent réussir pour valider la stabilité.`,
+      );
+    }
+  }
 }

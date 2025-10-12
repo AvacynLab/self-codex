@@ -63,6 +63,7 @@ describe("stimulateHttpLogging", () => {
     expect(result.logAfter.exists).to.equal(true);
     expect(result.logAfter.size).to.be.greaterThan(result.logBefore.size);
     expect(result.logChanged).to.equal(true);
+    expect(result.iterations.length).to.equal(1);
     expect(typeof observedBodies[0]).to.equal("string");
 
     const inputsContent = await readFile(join(runRoot, LOG_STIMULUS_JSONL_FILES.inputs), "utf8");
@@ -93,6 +94,7 @@ describe("stimulateHttpLogging", () => {
 
     expect(result.logPath).to.equal(logPath);
     expect(result.logChanged).to.equal(true);
+    expect(result.logDeltaBytes).to.be.greaterThan(0);
   });
 
   it("exposes the call override", async () => {
@@ -118,5 +120,36 @@ describe("stimulateHttpLogging", () => {
     expect(result.call.name).to.equal("custom");
     const inputsContent = await readFile(join(runRoot, LOG_STIMULUS_JSONL_FILES.inputs), "utf8");
     expect(inputsContent).to.contain("custom/ping");
+  });
+
+  it("supports multiple iterations and produces distinct artefacts", async () => {
+    const environment = collectHttpEnvironment({
+      MCP_HTTP_HOST: "127.0.0.1",
+      MCP_HTTP_PORT: "8765",
+      MCP_HTTP_PATH: "/mcp",
+    } as NodeJS.ProcessEnv);
+
+    let fetchCount = 0;
+    globalThis.fetch = (async () => {
+      fetchCount += 1;
+      await appendFile(logPath, `{"message":"multi-${fetchCount}"}\n`, "utf8");
+      return new Response(JSON.stringify({ jsonrpc: "2.0", result: { ok: true, index: fetchCount } }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as typeof fetch;
+
+    const result = await stimulateHttpLogging(runRoot, environment, { logPath, iterations: 4 });
+
+    expect(result.iterations.length).to.equal(4);
+    const iterationNames = result.iterations.map((entry) => entry.name);
+    expect(new Set(iterationNames).size).to.equal(4);
+    expect(result.logDeltaBytes).to.be.greaterThan(0);
+
+    const inputsContent = await readFile(join(runRoot, LOG_STIMULUS_JSONL_FILES.inputs), "utf8");
+    const outputsContent = await readFile(join(runRoot, LOG_STIMULUS_JSONL_FILES.outputs), "utf8");
+
+    expect(inputsContent.match(/log_stimulus_echo_/g) ?? []).to.have.lengthOf(4);
+    expect(outputsContent.match(/"ok":true/g) ?? []).to.have.lengthOf(4);
   });
 });
