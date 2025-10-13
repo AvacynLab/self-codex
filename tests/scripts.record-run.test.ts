@@ -46,14 +46,91 @@ describe("record-run utility", function () {
       const responsesLog = await readFile(join(runRoot, "outputs/responses.jsonl"), "utf8");
       const eventsLog = await readFile(join(runRoot, "events/events.jsonl"), "utf8");
       const summaryRaw = await readFile(join(runRoot, "report/summary.json"), "utf8");
+      const summaryMarkdown = await readFile(join(runRoot, "report/summary.md"), "utf8");
+      const eventsSummaryRaw = await readFile(join(runRoot, "report/events-summary.json"), "utf8");
+      const logDiagnosticsRaw = await readFile(join(runRoot, "report/log-diagnostics.json"), "utf8");
+      const anomaliesRaw = await readFile(join(runRoot, "report/anomalies.json"), "utf8");
+      const infoRaw = await readFile(join(runRoot, "outputs/info.json"), "utf8");
+      const toolsRaw = await readFile(join(runRoot, "outputs/tools.json"), "utf8");
+      const resourcesRaw = await readFile(join(runRoot, "outputs/resources.json"), "utf8");
+      const archivedCall = await readFile(join(runRoot, "outputs/calls/mcp_info.json"), "utf8");
+      const childArchive = await readFile(join(runRoot, "outputs/children/child_spawn.json"), "utf8");
+      const childLimitsArchive = await readFile(
+        join(runRoot, "outputs/children/child_set_limits.json"),
+        "utf8",
+      );
+      const childStatusArchive = await readFile(
+        join(runRoot, "outputs/children/child_status_after_gc.json"),
+        "utf8",
+      );
 
       expect(requestsLog.trim().length, "requests log entries").to.be.greaterThan(0);
       expect(responsesLog.trim().length, "responses log entries").to.be.greaterThan(0);
       expect(eventsLog.trim().length, "events log entries").to.be.greaterThan(0);
+      expect(JSON.parse(infoRaw), "info.json content").to.be.an("object");
+      expect(JSON.parse(toolsRaw), "tools.json content").to.be.an("object");
+      expect(JSON.parse(resourcesRaw), "resources.json content").to.be.an("object");
+      expect(JSON.parse(archivedCall), "archived call envelope").to.be.an("object");
+      expect(JSON.parse(childArchive), "child archive payload").to.be.an("object");
+      expect(JSON.parse(childLimitsArchive), "child limit archive payload").to.be.an("object");
+      expect(JSON.parse(childStatusArchive), "child status archive payload").to.be.an("object");
 
-      const summary = JSON.parse(summaryRaw) as { testMode?: boolean; runId?: string };
+      const summary = JSON.parse(summaryRaw) as {
+        testMode?: boolean;
+        runId?: string;
+        archivedOutputs?: string[];
+        latency?: { count?: number };
+        logDiagnostics?: { probe?: { rotated?: boolean } };
+        statusCounts?: Record<string, number>;
+        eventSummary?: {
+          total?: number;
+          autosave?: { count?: number; timestamps?: string[] };
+          limits?: { count?: number };
+        };
+      };
+      const eventsSummary = JSON.parse(eventsSummaryRaw) as {
+        total?: number;
+        autosave?: { count?: number; timestamps?: string[] };
+        limits?: { count?: number; entries?: Array<{ reason?: string | null; limit?: string | null }> };
+      };
+      const logDiagnostics = JSON.parse(logDiagnosticsRaw) as {
+        probe?: { files?: { name: string }[]; rotated?: boolean };
+        server?: { files?: unknown[] };
+      };
+      const anomalies = JSON.parse(anomaliesRaw) as Array<{ status: number; archive?: string }>;
+
       expect(summary.testMode, "summary testMode flag").to.equal(true);
       expect(summary.runId, "summary runId").to.be.a("string").that.includes("validation_");
+      expect(summary.archivedOutputs, "summary archived outputs").to.include("calls/mcp_info.json");
+      expect(summary.latency?.count, "latency count").to.be.a("number").that.is.greaterThan(0);
+      expect(summary.statusCounts?.["401"], "status count for 401").to.equal(1);
+      expect(summary.statusCounts?.["404"], "status count for 404").to.equal(1);
+      expect(summary.logDiagnostics?.probe?.rotated, "probe rotation flag (summary)").to.equal(true);
+      expect(summary.eventSummary?.total, "summary event total").to.equal(3);
+      expect(summary.eventSummary?.autosave?.count, "summary autosave count").to.equal(1);
+      expect(summary.eventSummary?.limits?.count, "summary limit count").to.equal(1);
+
+      expect(summaryMarkdown, "summary markdown header").to.include("# MCP validation summary");
+      expect(summaryMarkdown, "event recap section").to.include("## Event recap");
+      expect(summaryMarkdown, "autosave line").to.include("Autosave ticks: 1");
+      expect(logDiagnostics.probe?.files ?? [], "probe file inventory").to.not.be.empty;
+      expect(anomalies, "anomalies list").to.have.lengthOf(2);
+      expect(anomalies.map((entry) => entry.archive), "anomaly archive references").to.include.members([
+        "errors/unauthorized.json",
+        "children/child_status_after_gc.json",
+      ]);
+
+      expect(eventsSummary.total, "events summary total").to.equal(3);
+      expect(eventsSummary.autosave?.count, "events summary autosave count").to.equal(1);
+      expect(eventsSummary.autosave?.timestamps ?? [], "events summary autosave timestamps").to.have.lengthOf(1);
+      expect(eventsSummary.limits?.count, "events summary limit count").to.equal(1);
+      expect(eventsSummary.limits?.entries?.[0]?.reason, "limit reason").to.equal("wallclock");
+      expect(eventsSummary.limits?.entries?.[0]?.limit, "limit type").to.equal("wallclock_ms");
+
+      const probePrimary = await readFile(join(runRoot, "logs/redaction-rotation-probe.log"), "utf8");
+      const probeRotated = await readFile(join(runRoot, "logs/redaction-rotation-probe.log.1"), "utf8");
+      expect(probePrimary.trim().length, "probe log entries").to.be.greaterThan(0);
+      expect(probeRotated.trim().length, "rotated probe log entries").to.be.greaterThan(0);
     } finally {
       await rm(sandbox, { recursive: true, force: true });
     }
