@@ -164,85 +164,98 @@ export async function run(options = {}) {
     metadata: { owner: "smoke-run" },
   };
 
-  await session.open();
+  const originalStateless = process.env.MCP_HTTP_STATELESS;
+  // Force the HTTP loopback shim during the smoke run so child operations rely on
+  // the in-process descriptor even if previous tests disabled stateless mode.
+  process.env.MCP_HTTP_STATELESS = "yes";
 
   try {
-    await executeStep("mcp_info", () => session.callTool("mcp_info", {}, { phaseId: "smoke" }));
+    await session.open();
 
-    await executeStep("tools/list", () => session.listTools({ limit: 200 }, { phaseId: "smoke" }));
+    try {
+      await executeStep("mcp_info", () => session.callTool("mcp_info", {}, { phaseId: "smoke" }));
 
-    const begin = await executeStep("tx_begin", () =>
-      session.callTool("tx_begin", {
-        graph_id: graphId,
-        owner: "smoke-run",
-        note: "bootstrap baseline",
-        graph: baseGraph,
-      }),
-    );
-    const beginContent = begin.response?.structuredContent ?? {};
-    const txId = typeof beginContent?.tx_id === "string" ? beginContent.tx_id : null;
-    if (!txId) {
-      throw new Error("tx_begin did not return a tx_id");
-    }
+      await executeStep("tools/list", () => session.listTools({ limit: 200 }, { phaseId: "smoke" }));
 
-    await executeStep("tx_commit", () => session.callTool("tx_commit", { tx_id: txId }));
-
-    await executeStep("graph_patch", () =>
-      session.callTool("graph_patch", {
-        graph_id: graphId,
-        base_version: 1,
-        owner: "smoke-run",
-        note: "append gamma node",
-        patch: [
-          {
-            op: "add",
-            path: "/nodes/-",
-            value: { id: "gamma", label: "Gamma", attributes: {} },
-          },
-          {
-            op: "add",
-            path: "/edges/-",
-            value: { from: "beta", to: "gamma", label: "flow", attributes: {} },
-          },
-        ],
-      }),
-    );
-
-    const spawn = await executeStep("child_spawn_codex", () =>
-      session.callTool("child_spawn_codex", {
-        role: "smoke-tester",
-        prompt: {
-          system: ["You are a smoke-test child."],
-          user: ["Acknowledge receipt of this ping."],
-        },
-      }),
-    );
-    const spawnContent = spawn.response?.structuredContent ?? {};
-    const childId = typeof spawnContent?.child_id === "string" ? spawnContent.child_id : null;
-    if (!childId) {
-      throw new Error("child_spawn_codex did not return a child_id");
-    }
-
-    const endpointDescriptor = spawnContent && typeof spawnContent === "object" ? spawnContent.endpoint ?? null : null;
-    if (endpointDescriptor) {
-      recordSkippedStep(
-        "child_send (logical child)",
-        "child exposed HTTP loopback endpoint; direct send skipped",
-      );
-    } else {
-      await executeStep("child_send", () =>
-        session.callTool("child_send", {
-          child_id: childId,
-          payload: { type: "prompt", content: "Provide a short acknowledgement." },
-          expect: "final",
-          timeout_ms: 2_000,
+      const begin = await executeStep("tx_begin", () =>
+        session.callTool("tx_begin", {
+          graph_id: graphId,
+          owner: "smoke-run",
+          note: "bootstrap baseline",
+          graph: baseGraph,
         }),
       );
-    }
+      const beginContent = begin.response?.structuredContent ?? {};
+      const txId = typeof beginContent?.tx_id === "string" ? beginContent.tx_id : null;
+      if (!txId) {
+        throw new Error("tx_begin did not return a tx_id");
+      }
 
-    await executeStep("child_kill", () => session.callTool("child_kill", { child_id: childId }));
+      await executeStep("tx_commit", () => session.callTool("tx_commit", { tx_id: txId }));
+
+      await executeStep("graph_patch", () =>
+        session.callTool("graph_patch", {
+          graph_id: graphId,
+          base_version: 1,
+          owner: "smoke-run",
+          note: "append gamma node",
+          patch: [
+            {
+              op: "add",
+              path: "/nodes/-",
+              value: { id: "gamma", label: "Gamma", attributes: {} },
+            },
+            {
+              op: "add",
+              path: "/edges/-",
+              value: { from: "beta", to: "gamma", label: "flow", attributes: {} },
+            },
+          ],
+        }),
+      );
+
+      const spawn = await executeStep("child_spawn_codex", () =>
+        session.callTool("child_spawn_codex", {
+          role: "smoke-tester",
+          prompt: {
+            system: ["You are a smoke-test child."],
+            user: ["Acknowledge receipt of this ping."],
+          },
+        }),
+      );
+      const spawnContent = spawn.response?.structuredContent ?? {};
+      const childId = typeof spawnContent?.child_id === "string" ? spawnContent.child_id : null;
+      if (!childId) {
+        throw new Error("child_spawn_codex did not return a child_id");
+      }
+
+      const endpointDescriptor = spawnContent && typeof spawnContent === "object" ? spawnContent.endpoint ?? null : null;
+      if (endpointDescriptor) {
+        recordSkippedStep(
+          "child_send (logical child)",
+          "child exposed HTTP loopback endpoint; direct send skipped",
+        );
+      } else {
+        await executeStep("child_send", () =>
+          session.callTool("child_send", {
+            child_id: childId,
+            payload: { type: "prompt", content: "Provide a short acknowledgement." },
+            expect: "final",
+            timeout_ms: 2_000,
+          }),
+        );
+      }
+
+      await executeStep("child_kill", () => session.callTool("child_kill", { child_id: childId }));
+    } finally {
+      await session.close().catch(() => {});
+    }
   } finally {
-    await session.close().catch(() => {});
+    if (originalStateless === undefined) {
+      delete process.env.MCP_HTTP_STATELESS;
+    } else {
+      process.env.MCP_HTTP_STATELESS = originalStateless;
+    }
   }
 
   const durations = operations
