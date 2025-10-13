@@ -30,6 +30,84 @@ type HttpTransportResponse = Parameters<StreamableHTTPServerTransport["handleReq
 const MAX_JSON_RPC_BYTES = 1 * 1024 * 1024;
 /** Event-loop delay budget considered healthy by the `/healthz` probe. */
 const HEALTH_EVENT_LOOP_DELAY_BUDGET_MS = 100;
+/** Default steady-state refill rate (requests per second) for the HTTP limiter. */
+const DEFAULT_RATE_LIMIT_RPS = 10;
+/** Default burst capacity tolerated by the HTTP limiter before throttling. */
+const DEFAULT_RATE_LIMIT_BURST = 20;
+
+/** Runtime representation of the limiter configuration. */
+interface RateLimiterConfig {
+  /** When `true`, all requests bypass throttling regardless of token balance. */
+  disabled: boolean;
+  /** Steady-state refill rate expressed as requests per second. */
+  rps: number;
+  /** Maximum number of tokens stored in the bucket. */
+  burst: number;
+}
+
+/** Default limiter configuration used when no environment overrides are supplied. */
+const DEFAULT_RATE_LIMIT_CONFIG: RateLimiterConfig = {
+  disabled: false,
+  rps: DEFAULT_RATE_LIMIT_RPS,
+  burst: DEFAULT_RATE_LIMIT_BURST,
+};
+
+/** Global limiter configuration shared across all HTTP server instances. */
+let rateLimiterConfig: RateLimiterConfig = DEFAULT_RATE_LIMIT_CONFIG;
+
+/**
+ * Parses the user supplied `number` ensuring NaN/Infinity fall back to the
+ * provided default. Returning the fallback keeps the rest of the code simple
+ * and documents how invalid overrides are handled.
+ */
+function coerceFiniteNumber(value: number | undefined, fallback: number): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+/** Reads a rate-limit tuning parameter from `process.env`, tolerating garbage values. */
+function parseEnvRateLimitSetting(name: string): number | undefined {
+  const raw = process.env[name];
+  if (typeof raw !== "string" || raw.trim() === "") {
+    return undefined;
+  }
+
+  const parsed = Number.parseFloat(raw);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+/**
+ * Applies the supplied overrides on top of the existing limiter configuration.
+ * Returning the updated object makes the helper convenient to use in tests.
+ */
+function configureRateLimiter(overrides: Partial<RateLimiterConfig>): RateLimiterConfig {
+  const nextRps = coerceFiniteNumber(overrides.rps, rateLimiterConfig.rps);
+  const nextBurst = coerceFiniteNumber(overrides.burst, rateLimiterConfig.burst);
+  const explicitDisable = typeof overrides.disabled === "boolean" ? overrides.disabled : rateLimiterConfig.disabled;
+  const shouldDisable = explicitDisable || nextRps <= 0 || nextBurst <= 0;
+
+  rateLimiterConfig = {
+    disabled: shouldDisable,
+    rps: nextRps,
+    burst: nextBurst,
+  };
+  return rateLimiterConfig;
+}
+
+/** Refreshes the limiter configuration from environment variables. */
+function refreshRateLimiterFromEnv(): RateLimiterConfig {
+  const envDisabled = (process.env.MCP_HTTP_RATE_LIMIT_DISABLE ?? "").toLowerCase() === "1";
+  const envRps = parseEnvRateLimitSetting("MCP_HTTP_RATE_LIMIT_RPS");
+  const envBurst = parseEnvRateLimitSetting("MCP_HTTP_RATE_LIMIT_BURST");
+
+  return configureRateLimiter({
+    disabled: envDisabled,
+    rps: coerceFiniteNumber(envRps, DEFAULT_RATE_LIMIT_CONFIG.rps),
+    burst: coerceFiniteNumber(envBurst, DEFAULT_RATE_LIMIT_CONFIG.burst),
+  });
+}
+
+// Initialise the limiter from the current environment as soon as the module loads.
+refreshRateLimiterFromEnv();
 
 export interface HttpServerHandle {
   close: () => Promise<void>;
@@ -327,7 +405,8 @@ function enforceRateLimit(
   logger: StructuredLogger,
   requestId: string,
 ): boolean {
-  if (rateLimitOk(key)) {
+  const config = rateLimiterConfig;
+  if (config.disabled || rateLimitOk(key, config.rps, config.burst)) {
     return true;
   }
 
@@ -533,6 +612,9 @@ export const __httpServerInternals = {
   buildRouteContextFromHeaders,
   handleHealthCheck,
   handleReadyCheck,
+  configureRateLimiter,
+  refreshRateLimiterFromEnv,
+  getRateLimiterConfig: () => rateLimiterConfig,
 };
 
 async function sendJson(
