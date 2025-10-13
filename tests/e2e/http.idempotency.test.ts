@@ -1,27 +1,60 @@
 import { after, afterEach, before, describe, it } from "mocha";
 import { expect } from "chai";
 import { randomUUID } from "node:crypto";
+import { mkdtemp, rm } from "node:fs/promises";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 
-import { startHttpServer, type HttpServerHandle } from "../../src/httpServer.js";
+import { __httpServerInternals, startHttpServer, type HttpServerHandle } from "../../src/httpServer.js";
 import { StructuredLogger } from "../../src/logger.js";
 import { configureRuntimeFeatures, getRuntimeFeatures, server as mcpServer } from "../../src/server.js";
 import type { FeatureToggles } from "../../src/serverOptions.js";
+import { FileIdempotencyStore } from "../../src/infra/idempotencyStore.file.js";
 
-/** Simple descriptor returned by the stubbed `tools/call` handler. */
-interface IdempotentResult {
-  token: string;
+interface TxBeginRequestPayload {
+  graph_id: string;
+  graph: {
+    graph_id: string;
+    graph_version: number;
+    name: string;
+    nodes: Array<{ id: string; label: string; attributes: Record<string, unknown> }>;
+    edges: Array<{ from: string; to: string; label: string; attributes: Record<string, unknown> }>;
+    metadata: Record<string, unknown>;
+  };
+  owner: string;
+  note?: string;
 }
-
-type ToolsCallHandler = (request: any, extra: any) => Promise<unknown> | unknown;
 
 /**
  * Posts a JSON-RPC request to the HTTP endpoint with an optional idempotency
  * key. The response body is returned as-is so callers can compare payloads.
  */
+interface TxBeginResultPayload {
+  tx_id: string;
+  graph_id: string;
+  base_version: number;
+  idempotent: boolean;
+  idempotency_key: string | null;
+}
+
+interface TxBeginEnvelope {
+  jsonrpc: "2.0";
+  id: string | null;
+  result?: TxBeginResultPayload;
+  error?: { code: number; message: string };
+}
+
+interface TxBeginInvocation {
+  status: number;
+  body: TxBeginEnvelope;
+  headers: Record<string, string>;
+}
+
 async function invokeWithIdempotency(
   url: string,
+  payload: TxBeginRequestPayload,
   idempotencyKey?: string,
-): Promise<{ status: number; json: unknown }> {
+): Promise<TxBeginInvocation> {
   const headers: Record<string, string> = {
     "content-type": "application/json",
     accept: "application/json",
@@ -36,10 +69,14 @@ async function invokeWithIdempotency(
       jsonrpc: "2.0",
       id: randomUUID(),
       method: "tx_begin",
-      params: {},
+      // Propagate the idempotency key inside the payload as well so the server
+      // can flag the descriptor accordingly.
+      params: idempotencyKey ? { ...payload, idempotency_key: idempotencyKey } : payload,
     }),
   });
-  return { status: response.status, json: await response.json() };
+  const body = (await response.json()) as TxBeginEnvelope;
+  const responseHeaders = Object.fromEntries(response.headers.entries());
+  return { status: response.status, body, headers: responseHeaders };
 }
 
 describe("http idempotency propagation", () => {
@@ -47,8 +84,9 @@ describe("http idempotency propagation", () => {
   let handle: HttpServerHandle;
   let baseUrl: string;
   let originalFeatures: FeatureToggles;
-  let handlers: Map<string, ToolsCallHandler> | undefined;
-  let originalToolsCall: ToolsCallHandler | undefined;
+  let originalLimiter: { disabled: boolean; rps: number; burst: number };
+  let sandboxDir: string;
+  let idempotencyStore: FileIdempotencyStore | null = null;
 
   before(async function () {
     const offlineGuard = (globalThis as { __OFFLINE_TEST_GUARD__?: string }).__OFFLINE_TEST_GUARD__;
@@ -56,8 +94,17 @@ describe("http idempotency propagation", () => {
       this.skip();
     }
     originalFeatures = getRuntimeFeatures();
-    configureRuntimeFeatures({ ...originalFeatures, enableTransactions: true });
+    configureRuntimeFeatures({
+      ...originalFeatures,
+      enableTx: true,
+      enableIdempotency: true,
+    });
     delete process.env.MCP_HTTP_TOKEN;
+    originalLimiter = { ...__httpServerInternals.getRateLimiterConfig() };
+    __httpServerInternals.configureRateLimiter({ disabled: true });
+
+    sandboxDir = await mkdtemp(join(tmpdir(), "http-idempotency-e2e-"));
+    idempotencyStore = await FileIdempotencyStore.create({ directory: sandboxDir });
 
     handle = await startHttpServer(
       mcpServer,
@@ -69,29 +116,9 @@ describe("http idempotency propagation", () => {
         stateless: true,
       },
       logger,
+      { idempotency: { store: idempotencyStore, ttlMs: 10_000 } },
     );
     baseUrl = `http://127.0.0.1:${handle.port}/mcp`;
-
-    const internal = mcpServer.server as unknown as {
-      _requestHandlers?: Map<string, ToolsCallHandler>;
-    };
-    handlers = internal._requestHandlers;
-    if (!handlers) {
-      throw new Error("MCP handlers map not initialised");
-    }
-    originalToolsCall = handlers.get("tools/call");
-    handlers.set("tools/call", async (request) => {
-      const params = request?.params ?? {};
-      const args =
-        typeof params === "object" && params !== null
-          ? ((params as { arguments?: Record<string, unknown> }).arguments ?? {})
-          : {};
-      const token = typeof (args as { idempotency_key?: unknown }).idempotency_key === "string"
-        ? (args as { idempotency_key: string }).idempotency_key
-        : randomUUID();
-      const result: IdempotentResult = { token };
-      return { content: [], structuredContent: result };
-    });
   });
 
   after(async () => {
@@ -99,37 +126,70 @@ describe("http idempotency propagation", () => {
       return;
     }
     await handle.close();
-    if (handlers) {
-      if (originalToolsCall) {
-        handlers.set("tools/call", originalToolsCall);
-      } else {
-        handlers.delete("tools/call");
-      }
-    }
     configureRuntimeFeatures(originalFeatures);
+    __httpServerInternals.configureRateLimiter(originalLimiter);
+    if (sandboxDir) {
+      await rm(sandboxDir, { recursive: true, force: true });
+    }
   });
   it("returns identical payloads when the idempotency key is reused", async () => {
     const key = "http-idem-key";
 
-    const first = await invokeWithIdempotency(baseUrl, key);
-    const second = await invokeWithIdempotency(baseUrl, key);
+    const payload = makeTxBeginPayload("http-idem-same-key");
+    const first = await invokeWithIdempotency(baseUrl, payload, key);
+    const second = await invokeWithIdempotency(baseUrl, payload, key);
 
     expect(first.status).to.equal(200);
     expect(second.status).to.equal(200);
-    const firstResult = (first.json as { result?: IdempotentResult }).result;
-    const secondResult = (second.json as { result?: IdempotentResult }).result;
-    expect(firstResult).to.deep.equal(secondResult);
-    expect(firstResult?.token).to.equal(key);
+    const firstResult = first.body.result;
+    const secondResult = second.body.result;
+    expect(firstResult).to.not.equal(undefined);
+    expect(secondResult).to.not.equal(undefined);
+    if (!firstResult || !secondResult) {
+      throw new Error("tx_begin did not return a payload");
+    }
+    expect(firstResult.tx_id).to.equal(secondResult.tx_id);
+    expect(firstResult.idempotency_key).to.equal(key);
+    expect(secondResult.idempotent).to.equal(firstResult.idempotent);
+    expect(second.headers["x-idempotency-cache"]).to.equal("hit");
   });
 
   it("emits different payloads when the idempotency key changes", async () => {
-    const first = await invokeWithIdempotency(baseUrl, "key-one");
-    const second = await invokeWithIdempotency(baseUrl, "key-two");
+    const first = await invokeWithIdempotency(baseUrl, makeTxBeginPayload(`http-idem-${randomUUID()}`), "key-one");
+    const second = await invokeWithIdempotency(baseUrl, makeTxBeginPayload(`http-idem-${randomUUID()}`), "key-two");
 
     expect(first.status).to.equal(200);
     expect(second.status).to.equal(200);
-    const firstResult = (first.json as { result?: IdempotentResult }).result;
-    const secondResult = (second.json as { result?: IdempotentResult }).result;
-    expect(firstResult).to.not.deep.equal(secondResult);
+    const firstResult = first.body.result;
+    const secondResult = second.body.result;
+    expect(firstResult).to.not.equal(undefined);
+    expect(secondResult).to.not.equal(undefined);
+    if (!firstResult || !secondResult) {
+      throw new Error("tx_begin did not return a payload");
+    }
+    expect(firstResult.idempotency_key).to.equal("key-one");
+    expect(secondResult.idempotency_key).to.equal("key-two");
+    expect(firstResult.tx_id).to.not.equal(secondResult.tx_id);
+    expect(first.headers["x-idempotency-cache"]).to.equal(undefined);
+    expect(second.headers["x-idempotency-cache"]).to.equal(undefined);
   });
 });
+
+function makeTxBeginPayload(graphId: string): TxBeginRequestPayload {
+  return {
+    graph_id: graphId,
+    graph: {
+      graph_id: graphId,
+      graph_version: 1,
+      name: "Idempotency Test Graph",
+      nodes: [
+        { id: "ingest", label: "Ingest", attributes: {} },
+        { id: "process", label: "Process", attributes: {} },
+      ],
+      edges: [{ from: "ingest", to: "process", label: "flow", attributes: {} }],
+      metadata: { owner: "idempotency-suite" },
+    },
+    owner: "idempotency-suite",
+    note: "seed idempotency graph",
+  };
+}

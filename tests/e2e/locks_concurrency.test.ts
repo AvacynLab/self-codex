@@ -336,6 +336,8 @@ describe("graph lock concurrency over HTTP", function () {
         ...descriptor,
         graph_version: descriptor.graph_version + 1,
         nodes: [...descriptor.nodes, { id: "qa", label: "QA", attributes: {} }],
+        // Connect the new QA stage so the strengthened graph invariants remain satisfied.
+        edges: [...descriptor.edges, { from: "process", to: "qa", label: "handoff", attributes: {} }],
       } as const;
 
       const diffForPatch = await invokeJsonRpc<GraphDiffResult>(baseUrl, "graph_diff", {

@@ -36,6 +36,8 @@ export function createHttpE2ERunner(extraMochaArgs = []) {
     env: {
       ...process.env,
       MCP_TEST_ALLOW_LOOPBACK: "yes",
+      // Disable request throttling to avoid interfering with stress-heavy suites.
+      MCP_HTTP_RATE_LIMIT_DISABLE: "1",
     },
   };
 }

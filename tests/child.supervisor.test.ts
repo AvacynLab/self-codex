@@ -12,6 +12,7 @@ import type { FileSystemGateway } from "../src/gateways/fs.js";
 
 const mockRunnerPath = fileURLToPath(new URL("./fixtures/mock-runner.js", import.meta.url));
 const stubbornRunnerPath = fileURLToPath(new URL("./fixtures/stubborn-runner.js", import.meta.url));
+const neverReadyRunnerPath = fileURLToPath(new URL("./fixtures/never-ready-runner.js", import.meta.url));
 
 describe("child supervisor", () => {
   it("spawns a child, exchanges messages, collects outputs and recycles the workspace", async () => {
@@ -125,6 +126,50 @@ describe("child supervisor", () => {
       const snapshot = supervisor.childrenIndex.getChild(created.childId);
       expect(snapshot?.lastHeartbeatAt).to.be.a("number");
       expect(snapshot?.state).to.equal("idle");
+    } finally {
+      await supervisor.disposeAll();
+      await rm(childrenRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("cleans up runtimes when the ready handshake never arrives", async () => {
+    const childrenRoot = await mkdtemp(path.join(tmpdir(), "supervisor-timeout-"));
+    const supervisor = new ChildSupervisor({
+      childrenRoot,
+      defaultCommand: process.execPath,
+      defaultArgs: [neverReadyRunnerPath],
+      idleTimeoutMs: 50,
+      idleCheckIntervalMs: 25,
+    });
+
+    const childId = "timeout-child";
+
+    try {
+      let failure: unknown;
+      try {
+        await supervisor.createChild({
+          childId,
+          waitForReady: true,
+          readyTimeoutMs: 200,
+        });
+      } catch (error) {
+        failure = error;
+      }
+
+      expect(failure, "createChild should reject when the ready handshake is missing").to.be.instanceOf(Error);
+      expect((failure as Error).message).to.match(/Timed out/i);
+
+      // The supervisor should reap the partial runtime before surfacing the error.
+      const exit = await supervisor.waitForExit(childId, 1000);
+      expect(
+        exit.code === 0 || exit.signal !== null,
+        "child should exit with either a code or a termination signal",
+      ).to.equal(true);
+
+      const snapshot = supervisor.childrenIndex.getChild(childId);
+      expect(snapshot?.state, "index should reflect the failed spawn").to.be.oneOf(["error", "terminated", "killed"]);
+
+      expect(() => supervisor.status(childId), "runtime must be detached after cleanup").to.throw(/Unknown child runtime/);
     } finally {
       await supervisor.disposeAll();
       await rm(childrenRoot, { recursive: true, force: true });

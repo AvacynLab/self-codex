@@ -6,6 +6,7 @@
  */
 import { after, before, describe, it } from "mocha";
 import { expect } from "chai";
+import { z, type ZodTypeAny } from "zod";
 
 import { __httpServerInternals } from "../src/httpServer.js";
 import {
@@ -16,6 +17,7 @@ import {
 } from "../src/server.js";
 import { MemoryHttpResponse, createJsonRpcRequest } from "./helpers/http.js";
 import type { FeatureToggles } from "../src/serverOptions.js";
+import { RPC_METHOD_SCHEMAS } from "../src/rpc/schemas.js";
 
 /** JSON response helper mirroring the shape returned by tool handlers. */
 type ToolCallResult = {
@@ -34,6 +36,7 @@ describe("http json-rpc fast path", () => {
         extra: unknown,
       ) => Promise<unknown> | unknown)
     | undefined;
+  let originalToolSchema: ZodTypeAny | undefined;
 
   before(() => {
     originalFeatures = getRuntimeFeatures();
@@ -46,6 +49,14 @@ describe("http json-rpc fast path", () => {
       throw new Error("MCP server handlers map not initialised");
     }
     originalToolsCall = handlers.get("tools/call");
+    originalToolSchema = RPC_METHOD_SCHEMAS["diagnostics/echo"];
+    // The JSON-RPC middleware validates tool arguments against the central
+    // schema registry before delegating to handlers. Register a minimal schema
+    // for the synthetic `diagnostics/echo` tool used in the assertions so the
+    // middleware accepts the payload and exercises the happy-path plumbing.
+    RPC_METHOD_SCHEMAS["diagnostics/echo"] = z
+      .object({ payload: z.string().min(1, "payload must be provided for echo tests") })
+      .strict();
   });
 
   after(() => {
@@ -56,6 +67,11 @@ describe("http json-rpc fast path", () => {
       } else {
         handlers.delete("tools/call");
       }
+    }
+    if (originalToolSchema) {
+      RPC_METHOD_SCHEMAS["diagnostics/echo"] = originalToolSchema;
+    } else {
+      delete RPC_METHOD_SCHEMAS["diagnostics/echo"];
     }
   });
 

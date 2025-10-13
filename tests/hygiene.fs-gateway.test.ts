@@ -56,11 +56,15 @@ describe('gateway hygiene', () => {
         'src/bridge/fsBridge.ts',
         'src/tools/planTools.ts',
         'src/graph/subgraphExtract.ts',
+        // Graph operation logging persists JSONL audit trails via node:fs.
+        'src/graph/oplog.ts',
         // Validation helpers persist run artefacts on disk by design.
         'src/validation/runSetup.ts',
         'src/validation/introspection.ts',
         'src/validation/logs.ts',
         'src/validation/logStimulus.ts',
+        // Persistent idempotency caches materialise JSONL ledgers on disk.
+        'src/infra/idempotencyStore.file.ts',
         'src/validation/graphForge.ts',
         'src/validation/transactions.ts',
         'src/validation/children.ts',
@@ -80,6 +84,9 @@ describe('gateway hygiene', () => {
       allowList: new Set([
         'src/httpServer.ts',
         'src/monitor/dashboard.ts',
+        // HTTP helpers parse request bodies and manage security headers for the HTTP transport.
+        'src/http/body.ts',
+        'src/http/headers.ts',
       ]),
     },
     {

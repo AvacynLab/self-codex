@@ -56,3 +56,22 @@ export function createJsonRpcRequest(
   stream.url = "/mcp";
   return stream;
 }
+
+/**
+ * Builds an arbitrary HTTP request stream pointing at the provided path. Tests
+ * use the helper to exercise lightweight GET handlers without starting a real
+ * network listener.
+ */
+export function createHttpRequest(
+  method: string,
+  path: string,
+  headers: Record<string, string> = {},
+): IncomingMessage {
+  const stream = Readable.from([]) as unknown as IncomingMessage;
+  stream.method = method.toUpperCase();
+  stream.headers = Object.fromEntries(
+    Object.entries(headers).map(([key, value]) => [key.toLowerCase(), value]),
+  );
+  stream.url = path;
+  return stream;
+}

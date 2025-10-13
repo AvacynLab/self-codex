@@ -308,8 +308,14 @@ describe("idempotency cache integrations", () => {
       graph_id: "graph-1",
       graph_version: 1,
       name: "demo",
-      nodes: [{ id: "alpha" }],
-      edges: [],
+      // Invariant validation now rejects isolated nodes, therefore the seed
+      // descriptor includes a minimal connected pair to keep the begin replay
+      // scenario representative while satisfying the structural rules.
+      nodes: [
+        { id: "alpha", label: "Alpha", attributes: {} },
+        { id: "beta", label: "Beta", attributes: {} },
+      ],
+      edges: [{ from: "alpha", to: "beta", label: "alpha→beta", attributes: {} }],
     } as const;
     const input = TxBeginInputSchema.parse({
       graph_id: graphDescriptor.graph_id,

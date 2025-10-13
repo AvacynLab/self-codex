@@ -2,6 +2,8 @@ import { randomUUID } from "node:crypto";
 // NOTE: Node built-in modules are imported with the explicit `node:` prefix to guarantee ESM resolution in Node.js.
 
 import { ERROR_CODES } from "../types.js";
+import { recordOperation } from "./oplog.js";
+import { assertValidGraph } from "./validate.js";
 import type { NormalisedGraph } from "./types.js";
 
 /** Narrow union describing transaction specific error codes. */
@@ -223,6 +225,17 @@ export class GraphTransactionManager {
     };
     this.transactions.set(txId, record);
 
+    void recordOperation(
+      {
+        kind: "tx_begin",
+        graph_id: graph.graphId,
+        base_version: graph.graphVersion,
+        owner,
+        note,
+      },
+      txId,
+    );
+
     return {
       txId,
       graphId: graph.graphId,
@@ -273,6 +286,9 @@ export class GraphTransactionManager {
     }
 
     const mutated = !this.graphsEqual(record.snapshot, updatedGraph);
+    if (mutated) {
+      assertValidGraph(updatedGraph);
+    }
     const committedAt = mutated ? now : state.committedAt;
     const nextVersion = mutated ? expectedVersion + 1 : state.version;
 
@@ -297,6 +313,17 @@ export class GraphTransactionManager {
     // recover via {@link rollback} when a conflict occurs during validation.
     this.transactions.delete(txId);
 
+    void recordOperation(
+      {
+        kind: "tx_commit",
+        graph_id: record.graphId,
+        version: nextVersion,
+        changed: mutated,
+        committed_at: committedAt,
+      },
+      txId,
+    );
+
     return {
       txId,
       graphId: record.graphId,
@@ -318,6 +345,15 @@ export class GraphTransactionManager {
     this.transactions.delete(txId);
 
     const rolledBackAt = now;
+    void recordOperation(
+      {
+        kind: "tx_rollback",
+        graph_id: record.graphId,
+        base_version: record.baseVersion,
+        rolled_back_at: rolledBackAt,
+      },
+      txId,
+    );
     return {
       txId,
       graphId: record.graphId,

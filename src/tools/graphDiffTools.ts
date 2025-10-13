@@ -2,7 +2,9 @@ import { z } from "zod";
 
 import { diffGraphs, type GraphDiffResult as InternalDiffResult, type JsonPatchOperation } from "../graph/diff.js";
 import { applyGraphPatch } from "../graph/patch.js";
-import { evaluateGraphInvariants, GraphInvariantError, type GraphInvariantReport } from "../graph/invariants.js";
+import type { GraphInvariantReport } from "../graph/invariants.js";
+import { GraphValidationError, validateGraph } from "../graph/validate.js";
+import { recordOperation } from "../graph/oplog.js";
 import type { GraphLockManager } from "../graph/locks.js";
 import {
   GraphTransactionManager,
@@ -146,18 +148,16 @@ export function handleGraphPatch(context: GraphDiffToolContext, input: GraphPatc
     expiresAt: tx.expiresAt,
   });
 
-  let invariants: GraphInvariantReport | null = null;
   let committedResult: ReturnType<GraphTransactionManager["commit"]> | null = null;
   try {
     const patched = applyGraphPatch(committed.graph, input.patch);
     const normalised = normaliseGraphPayload(serialiseNormalisedGraph(patched));
 
-    if (input.enforce_invariants) {
-      invariants = evaluateGraphInvariants(normalised);
-      if (!invariants.ok) {
-        throw new GraphInvariantError(invariants.violations);
-      }
+    const validation = validateGraph(normalised, { enforceInvariants: input.enforce_invariants });
+    if (!validation.ok) {
+      throw new GraphValidationError(validation.violations, validation.invariants);
     }
+    const invariants = validation.invariants;
 
     const diff = diffGraphs(committed.graph, normalised);
     const changed = diff.changed;
@@ -180,6 +180,18 @@ export function handleGraphPatch(context: GraphDiffToolContext, input: GraphPatc
       graph: committedResult.graph,
     });
 
+    void recordOperation(
+      {
+        kind: "graph_patch",
+        graph_id: committedResult.graphId,
+        op_id: opId,
+        operations: input.patch.length,
+        changed,
+        accepted: true,
+      },
+      committedResult.txId,
+    );
+
     return {
       op_id: opId,
       graph_id: committedResult.graphId,
@@ -198,6 +210,18 @@ export function handleGraphPatch(context: GraphDiffToolContext, input: GraphPatc
       void rollbackError;
     }
     context.resources.markGraphSnapshotRolledBack(tx.graphId, tx.txId);
+    void recordOperation(
+      {
+        kind: "graph_patch",
+        graph_id: tx.graphId,
+        op_id: opId,
+        operations: input.patch.length,
+        changed: false,
+        accepted: false,
+        error: error instanceof Error ? error.message : String(error),
+      },
+      tx.txId,
+    );
     throw error;
   }
 }

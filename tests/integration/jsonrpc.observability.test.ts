@@ -1,8 +1,10 @@
 import { beforeEach, describe, it } from "mocha";
 import { expect } from "chai";
+import { z, type ZodTypeAny } from "zod";
 
 import { handleJsonRpc, logJournal, buildLiveEvents, server as mcpServer } from "../../src/server.js";
 import type { JsonRpcResponse } from "../../src/server.js";
+import { RPC_METHOD_SCHEMAS } from "../../src/rpc/schemas.js";
 
 /**
  * Observability regression suite ensuring JSON-RPC requests emit correlated events and logs.
@@ -167,6 +169,12 @@ describe("jsonrpc observability", () => {
       return originalToolsCall(request, extra);
     });
 
+    const previousSchema: ZodTypeAny | undefined = RPC_METHOD_SCHEMAS["structured_test"];
+    // Register a permissive schema for the synthetic tool leveraged in the
+    // regression to ensure the central middleware accepts the payload and the
+    // handler hook receives the request.
+    RPC_METHOD_SCHEMAS["structured_test"] = z.object({}).strict();
+
     try {
       const startSeq = latestEventSeq();
       const response = (await handleJsonRpc(
@@ -192,22 +200,28 @@ describe("jsonrpc observability", () => {
 
       expect(requestEvent, "request event should exist").to.exist;
       expect(responseEvent, "response event should exist").to.exist;
-      expect(responseEvent?.childId).to.equal(childId);
-      expect(responseEvent?.runId).to.equal(runId);
-      expect(responseEvent?.jobId).to.equal(jobId);
+      expect(responseEvent, "response event correlation").to.deep.include({ childId, runId, jobId });
 
       const serverLogs = logJournal.tail({ stream: "server", bucketId: "jsonrpc" });
       const messages = serverLogs.entries.map((entry) => entry.message);
       expect(messages).to.include("jsonrpc_response");
       const responseLog = serverLogs.entries.find((entry) => entry.message === "jsonrpc_response");
-      expect(responseLog?.childId).to.equal(childId);
-      expect(responseLog?.runId).to.equal(runId);
-      expect(responseLog?.jobId).to.equal(jobId);
+      const correlation = responseLog?.data as Record<string, unknown> | undefined;
+      // Logger enrichment now stores correlation identifiers inside the mirrored
+      // JSON log payload (exposed as `data` through the log journal facade).
+      expect(correlation?.child_id).to.equal(childId);
+      expect(correlation?.run_id).to.equal(runId);
+      expect(correlation?.job_id).to.equal(jobId);
     } finally {
       if (originalToolsCall) {
         handlers.set("tools/call", originalToolsCall);
       } else {
         handlers.delete("tools/call");
+      }
+      if (previousSchema) {
+        RPC_METHOD_SCHEMAS["structured_test"] = previousSchema;
+      } else {
+        delete RPC_METHOD_SCHEMAS["structured_test"];
       }
     }
   });

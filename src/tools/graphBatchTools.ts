@@ -5,6 +5,8 @@ import {
   GraphTransactionError,
   GraphVersionConflictError,
 } from "../graph/tx.js";
+import { GraphValidationError, validateGraph } from "../graph/validate.js";
+import { recordOperation } from "../graph/oplog.js";
 import type { GraphLockManager } from "../graph/locks.js";
 import type { ResourceRegistry } from "../resources/registry.js";
 import { IdempotencyRegistry, buildIdempotencyCacheKey } from "../infra/idempotency.js";
@@ -127,6 +129,11 @@ export async function handleGraphBatchMutate(
       const mutation = handleGraphMutate(mutateInput);
       const normalised = normaliseGraphPayload(mutation.graph);
 
+      const validation = validateGraph(normalised);
+      if (!validation.ok) {
+        throw new GraphValidationError(validation.violations, validation.invariants);
+      }
+
       context.locks.assertCanMutate(input.graph_id, input.owner ?? null);
       committedResult = context.transactions.commit(tx.txId, normalised);
 
@@ -145,6 +152,16 @@ export async function handleGraphBatchMutate(
       });
 
       const changed = mutation.applied.some((entry) => entry.changed);
+      void recordOperation(
+        {
+          kind: "graph_batch_mutate",
+          graph_id: committedResult.graphId,
+          op_id: opId,
+          operations: mutation.applied.length,
+          changed,
+        },
+        tx.txId,
+      );
       return {
         op_id: opId,
         graph_id: committedResult.graphId,
@@ -165,6 +182,18 @@ export async function handleGraphBatchMutate(
       } catch {
         // Ignored: the initial error is more relevant for callers.
       }
+      void recordOperation(
+        {
+          kind: "graph_batch_mutate",
+          graph_id: tx.graphId,
+          op_id: opId,
+          operations: input.operations.length,
+          changed: false,
+          accepted: false,
+          error: error instanceof Error ? error.message : String(error),
+        },
+        tx.txId,
+      );
       throw error;
     }
   };

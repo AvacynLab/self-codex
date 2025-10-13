@@ -2,6 +2,8 @@ import { Buffer } from "node:buffer";
 import { appendFile, mkdir, rename, rm, stat } from "node:fs/promises";
 import { dirname } from "node:path";
 import type { ErrnoException } from "./nodePrimitives.js";
+import { getJsonRpcContext } from "./infra/jsonRpcContext.js";
+import { getActiveTraceContext } from "./infra/tracing.js";
 // NOTE: Node built-in modules are imported with the explicit `node:` prefix to guarantee ESM resolution in Node.js.
 
 /** Default placeholder inserted when a secret token is redacted. */
@@ -153,11 +155,12 @@ export class StructuredLogger {
   }
 
   private log(level: LogLevel, message: string, payload?: unknown): void {
+    const enrichedPayload = payload !== undefined ? this.enrichPayload(payload) : undefined;
     const entry: LogEntry = {
       timestamp: new Date().toISOString(),
       level,
       message,
-      ...(payload !== undefined ? { payload } : {})
+      ...(enrichedPayload !== undefined ? { payload: enrichedPayload } : {}),
     };
     const line = `${JSON.stringify(entry)}\n`;
     process.stdout.write(line);
@@ -295,5 +298,69 @@ export class StructuredLogger {
         throw error;
       }
     }
+  }
+
+  /**
+   * Enriches structured payloads with the correlation details exposed by the
+   * JSON-RPC and tracing contexts. The helper keeps user-provided metadata
+   * intact while filling gaps such as `trace_id`, `request_id` or `bytes_out`.
+   */
+  private enrichPayload(payload: unknown): unknown {
+    if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+      return payload;
+    }
+
+    const enriched: Record<string, unknown> = { ...(payload as Record<string, unknown>) };
+    const trace = getActiveTraceContext();
+    if (trace) {
+      if (enriched.trace_id === undefined) {
+        enriched.trace_id = trace.traceId;
+      }
+      if (enriched.span_id === undefined) {
+        enriched.span_id = trace.spanId;
+      }
+      if (enriched.method === undefined && trace.method) {
+        enriched.method = trace.method;
+      }
+      if (enriched.request_id === undefined && trace.requestId !== null) {
+        enriched.request_id = trace.requestId;
+      }
+      if (enriched.child_id === undefined && trace.childId) {
+        enriched.child_id = trace.childId;
+      }
+      const duration = typeof trace.durationMs === "number" && Number.isFinite(trace.durationMs)
+        ? Math.round(Math.max(0, trace.durationMs))
+        : null;
+      if (enriched.duration_ms === undefined && duration !== null) {
+        enriched.duration_ms = duration;
+      }
+      const bytesIn = typeof trace.bytesIn === "number" && Number.isFinite(trace.bytesIn)
+        ? Math.round(Math.max(0, trace.bytesIn))
+        : null;
+      if (enriched.bytes_in === undefined && bytesIn !== null) {
+        enriched.bytes_in = bytesIn;
+      }
+      const bytesOut = typeof trace.bytesOut === "number" && Number.isFinite(trace.bytesOut)
+        ? Math.round(Math.max(0, trace.bytesOut))
+        : null;
+      if (enriched.bytes_out === undefined && bytesOut !== null) {
+        enriched.bytes_out = bytesOut;
+      }
+    }
+
+    const context = getJsonRpcContext();
+    if (context) {
+      if (enriched.request_id === undefined && context.requestId !== undefined) {
+        enriched.request_id = context.requestId ?? null;
+      }
+      if (enriched.child_id === undefined && context.childId !== undefined) {
+        enriched.child_id = context.childId ?? null;
+      }
+      if (enriched.transport === undefined && context.transport !== undefined) {
+        enriched.transport = context.transport ?? null;
+      }
+    }
+
+    return enriched;
   }
 }

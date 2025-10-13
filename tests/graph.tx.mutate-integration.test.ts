@@ -41,7 +41,10 @@ describe("graph transactions - mutate integration", () => {
 
       expect(committed.version).to.equal(begin.baseVersion + 1);
       expect(committed.graph.graphVersion).to.equal(committed.version);
-      expect(committed.graph.metadata.__txCommittedAt).to.equal(12_000);
+      // The commit timestamp is captured after invariant validation which now
+      // performs an additional `Date.now()` call. The metadata therefore
+      // reflects the final sample (13_000) rather than the pre-validation value.
+      expect(committed.graph.metadata.__txCommittedAt).to.equal(13_000);
       expect(committed.graph.nodes.some((node) => node.id === "qa")).to.equal(true);
     } finally {
       restoreNow(originalNow);
