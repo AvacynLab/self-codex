@@ -121,12 +121,16 @@ describe("transaction lifecycle integration", () => {
       context,
       TxApplyInputSchema.parse({
         tx_id: begin.tx_id,
-        operations: [{ op: "add_node", node: { id: "delta", label: "Delta" } }],
+        operations: [
+          { op: "add_node", node: { id: "delta", label: "Delta" } },
+          { op: "add_edge", edge: { from: "beta", to: "delta", label: "beta->delta" } },
+        ],
       }),
     );
 
     expect(recovered.changed).to.equal(true);
     expect(recovered.graph.nodes.map((node) => node.id)).to.include("delta");
+    expect(recovered.graph.edges.some((edge) => edge.from === "beta" && edge.to === "delta")).to.equal(true);
   });
 
   it("revalidates invariants at commit time when the working copy was tampered with", () => {
@@ -139,7 +143,10 @@ describe("transaction lifecycle integration", () => {
       context,
       TxApplyInputSchema.parse({
         tx_id: begin.tx_id,
-        operations: [{ op: "add_node", node: { id: "epsilon", label: "Epsilon" } }],
+        operations: [
+          { op: "add_node", node: { id: "epsilon", label: "Epsilon" } },
+          { op: "add_edge", edge: { from: "beta", to: "epsilon", label: "beta->epsilon" } },
+        ],
       }),
     );
     expect(apply.invariants.ok).to.equal(true);

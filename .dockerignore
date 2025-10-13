@@ -1,0 +1,12 @@
+# Ignore development artefacts and transient run directories.
+node_modules
+runs
+validation_runs
+tests
+coverage
+npm-debug.log*
+.DS_Store
+.git
+.tmp
+.tmp*
+dist

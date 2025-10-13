@@ -131,10 +131,16 @@ describe("transaction tool handlers", () => {
 
     const firstApply = handleTxApply(
       context,
-      TxApplyInputSchema.parse({ tx_id: firstTx.tx_id, operations: [{ op: "remove_edge", from: "alpha", to: "beta" }] }),
+      TxApplyInputSchema.parse({
+        tx_id: firstTx.tx_id,
+        operations: [
+          { op: "add_node", node: { id: "gamma", label: "Gamma" } },
+          { op: "add_edge", edge: { from: "beta", to: "gamma", label: "beta->gamma" } },
+        ],
+      }),
     );
     expect(firstApply.preview_version).to.equal(firstTx.base_version + 1);
-    // The diff summary flags edge removals so downstream previews can stay lightweight.
+    // Adding a connected node ensures invariants remain satisfied while still touching edges.
     expect(firstApply.diff_summary.edgesChanged).to.equal(true);
     handleTxCommit(context, TxCommitInputSchema.parse({ tx_id: firstTx.tx_id }));
 
@@ -158,7 +164,13 @@ describe("transaction tool handlers", () => {
 
     handleTxApply(
       context,
-      TxApplyInputSchema.parse({ tx_id: beginResult.tx_id, operations: [{ op: "remove_node", id: "beta" }] }),
+      TxApplyInputSchema.parse({
+        tx_id: beginResult.tx_id,
+        operations: [
+          { op: "add_node", node: { id: "gamma", label: "Gamma" } },
+          { op: "add_edge", edge: { from: "beta", to: "gamma", label: "beta->gamma" } },
+        ],
+      }),
     );
 
     const rollbackResult = handleTxRollback(context, TxRollbackInputSchema.parse({ tx_id: beginResult.tx_id }));

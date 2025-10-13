@@ -39,7 +39,7 @@ import {
   createContractNetWatcherTelemetryListener,
 } from "./events/bridges.js";
 import { serialiseForSse } from "./events/sse.js";
-import { startHttpServer } from "./httpServer.js";
+import { startHttpServer, type HttpServerExtras, type HttpReadinessReport } from "./httpServer.js";
 import { startDashboardServer } from "./monitor/dashboard.js";
 import { LogJournal, type LogStream } from "./monitor/log.js";
 import { BehaviorTreeStatusRegistry } from "./monitor/btStatusRegistry.js";
@@ -72,10 +72,24 @@ import type { ValueFilterDecision } from "./values/valueGraph.js";
 import { ResourceRegistry, type ResourceWatchResult } from "./resources/registry.js";
 import { renderResourceWatchSseMessages, serialiseResourceWatchResultForSse } from "./resources/sse.js";
 import { IdempotencyRegistry, buildIdempotencyCacheKey } from "./infra/idempotency.js";
+import { FileIdempotencyStore } from "./infra/idempotencyStore.file.js";
+import { resolveIdempotencyDirectory } from "./infra/idempotencyStore.js";
 import { runWithJsonRpcContext } from "./infra/jsonRpcContext.js";
+import { runWithRpcTrace, annotateTraceContext, registerInboundBytes, getActiveTraceContext } from "./infra/tracing.js";
 import { PlanLifecycleRegistry, PlanRunNotFoundError } from "./executor/planLifecycle.js";
 import type { PlanLifecycleSnapshot } from "./executor/planLifecycle.js";
 import { ensureParentDirectory, resolveWorkspacePath, PathResolutionError } from "./paths.js";
+import {
+  normaliseJsonRpcRequest,
+  JsonRpcValidationError,
+  buildJsonRpcErrorResponse,
+} from "./rpc/middleware.js";
+import {
+  JsonRpcTimeoutError,
+  resolveRpcTimeoutBudget,
+  normaliseTimeoutBudget,
+  loadDefaultTimeoutOverride,
+} from "./rpc/timeouts.js";
 import {
   ChildCancelInputShape,
   ChildCancelInputSchema,
@@ -419,9 +433,10 @@ function resolveIdempotencyTtlFromEnv(): number | undefined {
   return parsed;
 }
 
+const IDEMPOTENCY_TTL_OVERRIDE = resolveIdempotencyTtlFromEnv();
 /** Registry replaying cached results for idempotent operations. */
 const idempotencyRegistry = new IdempotencyRegistry({
-  defaultTtlMs: resolveIdempotencyTtlFromEnv(),
+  defaultTtlMs: IDEMPOTENCY_TTL_OVERRIDE,
 });
 /** Shared knowledge graph storing reusable plan patterns. */
 const knowledgeGraph = new KnowledgeGraph();
@@ -444,6 +459,9 @@ const logJournal = new LogJournal({
   maxFileSizeBytes: 4 * 1024 * 1024,
   maxFileCount: 5,
 });
+
+/** Optional default timeout override driven via environment variables. */
+const DEFAULT_RPC_TIMEOUT_OVERRIDE = loadDefaultTimeoutOverride();
 
 /** Timestamp captured when the orchestrator module is initialised. */
 const SERVER_STARTED_AT = Date.now();
@@ -7905,6 +7923,10 @@ export interface JsonRpcRouteContext {
   childLimits?: { cpuMs?: number; memMb?: number; wallMs?: number };
   /** Idempotency key supplied by HTTP callers. */
   idempotencyKey?: string;
+  /** Number of bytes contained in the JSON-RPC request payload. */
+  payloadSizeBytes?: number;
+  /** Timeout budget (milliseconds) applied to the JSON-RPC handler. */
+  timeoutMs?: number;
 }
 
 /** Signature of the internal request handler registered by the MCP SDK. */
@@ -8013,6 +8035,10 @@ export async function routeJsonRpcRequest(
   }
 
   const requestId = context.requestId ?? randomUUID();
+  const timeoutBudget =
+    typeof context.timeoutMs === "number" && Number.isFinite(context.timeoutMs)
+      ? Math.max(0, Math.trunc(context.timeoutMs))
+      : null;
   const abort = new AbortController();
 
   const headersSnapshot = { ...(context.headers ?? {}) };
@@ -8027,6 +8053,9 @@ export async function routeJsonRpcRequest(
   }
   if (context.idempotencyKey) {
     headersSnapshot["idempotency-key"] = context.idempotencyKey;
+  }
+  if (timeoutBudget && timeoutBudget > 0) {
+    headersSnapshot["x-timeout-ms"] = String(timeoutBudget);
   }
 
   if (context.idempotencyKey) {
@@ -8051,8 +8080,8 @@ export async function routeJsonRpcRequest(
     requestInfo: Object.keys(headersSnapshot).length > 0 ? { headers: headersSnapshot } : undefined,
   };
 
-  try {
-    return await runWithJsonRpcContext(context, async () => {
+  const executeInvocation = () =>
+    runWithJsonRpcContext(context, async () => {
       const rawResult = await handler(
         { jsonrpc: "2.0", id: requestId, method: invocation.method, params: invocation.params },
         extra,
@@ -8062,7 +8091,37 @@ export async function routeJsonRpcRequest(
       }
       return rawResult;
     });
+
+  if (!timeoutBudget || timeoutBudget <= 0) {
+    try {
+      return await executeInvocation();
+    } finally {
+      abort.abort();
+    }
+  }
+
+  let timeoutHandle: IntervalHandle | null = null;
+  let timedOut = false;
+  const invocationPromise = executeInvocation();
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeoutHandle = runtimeTimers.setTimeout(() => {
+      timedOut = true;
+      abort.abort();
+      reject(new JsonRpcTimeoutError(timeoutBudget));
+    }, timeoutBudget);
+  });
+
+  try {
+    return await Promise.race([invocationPromise, timeoutPromise]);
+  } catch (error) {
+    if (timedOut) {
+      invocationPromise.catch(() => undefined);
+    }
+    throw error;
   } finally {
+    if (timeoutHandle) {
+      runtimeTimers.clearTimeout(timeoutHandle);
+    }
     abort.abort();
   }
 }
@@ -8323,6 +8382,7 @@ interface JsonRpcObservabilityInput {
   elapsedMs?: number | null;
   errorMessage?: string | null;
   errorCode?: number | null;
+  timeoutMs?: number | null;
 }
 
 interface JsonRpcErrorSnapshot {
@@ -8393,6 +8453,16 @@ function detectJsonRpcErrorResult(result: unknown): JsonRpcErrorSnapshot | null 
 }
 
 function recordJsonRpcObservability(input: JsonRpcObservabilityInput): void {
+  const trace = getActiveTraceContext();
+  const duration = typeof trace?.durationMs === "number" && Number.isFinite(trace.durationMs)
+    ? Math.max(0, trace.durationMs)
+    : null;
+  const bytesIn = typeof trace?.bytesIn === "number" && Number.isFinite(trace.bytesIn)
+    ? Math.max(0, trace.bytesIn)
+    : null;
+  const bytesOut = typeof trace?.bytesOut === "number" && Number.isFinite(trace.bytesOut)
+    ? Math.max(0, trace.bytesOut)
+    : null;
   const payload = {
     msg: `jsonrpc_${input.stage}`,
     method: input.method,
@@ -8404,6 +8474,11 @@ function recordJsonRpcObservability(input: JsonRpcObservabilityInput): void {
       typeof input.elapsedMs === "number" && Number.isFinite(input.elapsedMs)
         ? Math.max(0, Math.round(input.elapsedMs))
         : null,
+    trace_id: trace?.traceId ?? null,
+    span_id: trace?.spanId ?? null,
+    duration_ms: duration !== null ? Math.round(duration) : null,
+    bytes_in: bytesIn !== null ? Math.round(bytesIn) : null,
+    bytes_out: bytesOut !== null ? Math.round(bytesOut) : null,
     run_id: input.correlation.runId ?? null,
     op_id: input.correlation.opId ?? null,
     child_id: input.correlation.childId ?? null,
@@ -8411,6 +8486,10 @@ function recordJsonRpcObservability(input: JsonRpcObservabilityInput): void {
     idempotency_key: input.idempotencyKey ?? null,
     error_message: input.errorMessage ?? null,
     error_code: input.errorCode ?? null,
+    timeout_ms:
+      typeof input.timeoutMs === "number" && Number.isFinite(input.timeoutMs)
+        ? Math.max(0, Math.round(input.timeoutMs))
+        : null,
   } as const;
 
   let envelope: ReturnType<EventBus["publish"]> | undefined;
@@ -8483,57 +8562,124 @@ export async function handleJsonRpc(
   req: JsonRpcRequest,
   context?: JsonRpcRouteContext,
 ): Promise<JsonRpcResponse> {
-  const id = req?.id ?? null;
-  const rawMethod = typeof req?.method === "string" ? req.method : "";
-  const method = rawMethod.trim() || (rawMethod ? rawMethod : "unknown");
-  const toolName = resolveJsonRpcToolName(rawMethod, req?.params);
-  const invocationArgs = extractInvocationArguments(rawMethod, req?.params);
+  const rawId = req?.id ?? null;
+  const requestIdHint = context?.requestId ?? rawId;
+  let sanitizedRequest: JsonRpcRequest;
+  let method = typeof req?.method === "string" ? req.method.trim() || "unknown" : "unknown";
+  let toolName: string | null = null;
+
+  try {
+    const normalised = normaliseJsonRpcRequest(req, { requestId: requestIdHint });
+    sanitizedRequest = normalised.request;
+    method = normalised.method.trim() || (normalised.method ? normalised.method : "unknown");
+    toolName = normalised.toolName ?? resolveJsonRpcToolName(normalised.request.method, normalised.request.params);
+  } catch (error) {
+    if (error instanceof JsonRpcValidationError) {
+      recordJsonRpcObservability({
+        stage: "error",
+        method,
+        toolName: resolveJsonRpcToolName(typeof req?.method === "string" ? req.method : "", req?.params),
+        requestId: rawId,
+        transport: context?.transport,
+        idempotencyKey: context?.idempotencyKey ?? null,
+        correlation: collectCorrelationFromContext(context),
+        status: "error",
+        errorMessage: error.data?.hint ?? error.message,
+        errorCode: error.code,
+      });
+      return buildJsonRpcErrorResponse(rawId, error);
+    }
+    throw error;
+  }
+
+  const id = sanitizedRequest.id ?? null;
+  const request = sanitizedRequest;
+  const rawMethod = typeof request.method === "string" ? request.method : "";
+  const invocationArgs = extractInvocationArguments(rawMethod, request.params);
   let correlation = mergeCorrelationSnapshots(
     collectCorrelationFromContext(context),
     collectCorrelationFromPayload(invocationArgs),
   );
+  const transport = context?.transport ?? null;
+  const childId = context?.childId ?? null;
+  const payloadBytes = context?.payloadSizeBytes ?? 0;
+  const timeoutBudget = normaliseTimeoutBudget(
+    resolveRpcTimeoutBudget(method, toolName ?? null),
+    DEFAULT_RPC_TIMEOUT_OVERRIDE,
+  );
+  const timeoutMs = timeoutBudget.timeoutMs;
 
-  recordJsonRpcObservability({
-    stage: "request",
-    method,
-    toolName,
-    requestId: id,
-    transport: context?.transport,
-    idempotencyKey: context?.idempotencyKey ?? null,
-    correlation,
-    status: "pending",
-  });
-
-  if (!req || req.jsonrpc !== "2.0" || typeof req.method !== "string") {
+  const processRequest = async (): Promise<JsonRpcResponse> => {
     recordJsonRpcObservability({
-      stage: "error",
+      stage: "request",
       method,
       toolName,
       requestId: id,
       transport: context?.transport,
       idempotencyKey: context?.idempotencyKey ?? null,
       correlation,
-      status: "error",
-      errorMessage: "Invalid Request",
-      errorCode: -32600,
+      status: "pending",
+      timeoutMs,
     });
-    return { jsonrpc: "2.0", id, error: { code: -32600, message: "Invalid Request" } };
-  }
 
-  const startedAt = Date.now();
-  try {
-    let result = await routeJsonRpcRequest(req.method, req.params, { ...context, requestId: id });
-    correlation = mergeCorrelationSnapshots(correlation, collectCorrelationFromPayload(result));
-
-    if (shouldHydrateMcpInfo(req, context, result)) {
-      result = getMcpInfo();
+    const startedAt = Date.now();
+    try {
+      let result = await runWithJsonRpcContext(context, async () =>
+        routeJsonRpcRequest(request.method, request.params, { ...context, requestId: id, timeoutMs }),
+      );
       correlation = mergeCorrelationSnapshots(correlation, collectCorrelationFromPayload(result));
-    }
 
-    const elapsedMs = Date.now() - startedAt;
-    const errorSnapshot = detectJsonRpcErrorResult(result);
+      if (shouldHydrateMcpInfo(request, context, result)) {
+        result = getMcpInfo();
+        correlation = mergeCorrelationSnapshots(correlation, collectCorrelationFromPayload(result));
+      }
 
-    if (errorSnapshot) {
+      const elapsedMs = Date.now() - startedAt;
+      const errorSnapshot = detectJsonRpcErrorResult(result);
+
+      if (errorSnapshot) {
+        recordJsonRpcObservability({
+          stage: "error",
+          method,
+          toolName,
+          requestId: id,
+          transport: context?.transport,
+          idempotencyKey: context?.idempotencyKey ?? null,
+          correlation,
+          status: "error",
+          elapsedMs,
+          errorMessage: errorSnapshot.message,
+          errorCode: null,
+          timeoutMs,
+        });
+      } else {
+        recordJsonRpcObservability({
+          stage: "response",
+          method,
+          toolName,
+          requestId: id,
+          transport: context?.transport,
+          idempotencyKey: context?.idempotencyKey ?? null,
+          correlation,
+          status: "ok",
+          elapsedMs,
+          timeoutMs,
+        });
+      }
+
+      return { jsonrpc: "2.0", id, result };
+    } catch (error) {
+      const elapsedMs = Date.now() - startedAt;
+      let message = error instanceof Error ? error.message : String(error);
+      let errorCode = -32000;
+      let errorData: Record<string, unknown> | undefined;
+      if (error instanceof JsonRpcTimeoutError) {
+        message = `JSON-RPC handler exceeded timeout after ${error.timeoutMs}ms`;
+        errorCode = -32001;
+        errorData = { timeout_ms: error.timeoutMs };
+      }
+      correlation = mergeCorrelationSnapshots(correlation, collectCorrelationFromUnknown(error));
+
       recordJsonRpcObservability({
         stage: "error",
         method,
@@ -8544,45 +8690,30 @@ export async function handleJsonRpc(
         correlation,
         status: "error",
         elapsedMs,
-        errorMessage: errorSnapshot.message,
-        errorCode: null,
+        errorMessage: message,
+        errorCode,
+        timeoutMs,
       });
-    } else {
-      recordJsonRpcObservability({
-        stage: "response",
-        method,
-        toolName,
-        requestId: id,
-        transport: context?.transport,
-        idempotencyKey: context?.idempotencyKey ?? null,
-        correlation,
-        status: "ok",
-        elapsedMs,
-      });
+
+      return { jsonrpc: "2.0", id, error: { code: errorCode, message, data: errorData } };
     }
+  };
 
-    return { jsonrpc: "2.0", id, result };
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    correlation = mergeCorrelationSnapshots(correlation, collectCorrelationFromUnknown(error));
-    const elapsedMs = Date.now() - startedAt;
-
-    recordJsonRpcObservability({
-      stage: "error",
-      method,
-      toolName,
-      requestId: id,
-      transport: context?.transport,
-      idempotencyKey: context?.idempotencyKey ?? null,
-      correlation,
-      status: "error",
-      elapsedMs,
-      errorMessage: message,
-      errorCode: -32000,
-    });
-
-    return { jsonrpc: "2.0", id, error: { code: -32000, message } };
+  const activeTrace = getActiveTraceContext();
+  if (activeTrace) {
+    registerInboundBytes(payloadBytes);
+    annotateTraceContext({ method, requestId: id, childId, transport });
+    return processRequest();
   }
+
+  return runWithRpcTrace(
+    { method, requestId: id, childId, transport, bytesIn: 0 },
+    async () => {
+      registerInboundBytes(payloadBytes);
+      annotateTraceContext({ method, requestId: id, childId, transport });
+      return processRequest();
+    },
+  );
 }
 
 // --- Transports ---
@@ -8652,8 +8783,76 @@ if (isMain) {
       enableStdio = false;
     }
 
+    let httpExtras: HttpServerExtras = {};
+    let httpIdempotencyStore: FileIdempotencyStore | null = null;
+    if (options.http.stateless) {
+      try {
+        const store = await FileIdempotencyStore.create();
+        const ttlMs = IDEMPOTENCY_TTL_OVERRIDE ?? 600_000;
+        httpIdempotencyStore = store;
+        httpExtras = { idempotency: { store, ttlMs } };
+        logger.info("http_idempotency_store_ready", {
+          directory: resolveIdempotencyDirectory(),
+          ttl_ms: ttlMs,
+        });
+      } catch (error) {
+        logger.error("http_idempotency_store_failed", {
+          message: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
+    httpExtras = {
+      ...httpExtras,
+      readiness: {
+        check: async (): Promise<HttpReadinessReport> => {
+          const components: HttpReadinessReport["components"] = {
+            graphForge: { ok: true, message: "module loaded" },
+            idempotency: httpIdempotencyStore
+              ? { ok: true, message: "store available" }
+              : { ok: true, message: "idempotency disabled" },
+            eventQueue: { ok: true, usage: eventStore.getEventCount(), capacity: eventStore.getMaxHistory() },
+          };
+          let ok = true;
+
+          try {
+            await loadGraphForge();
+          } catch (error) {
+            ok = false;
+            components.graphForge = {
+              ok: false,
+              message: error instanceof Error ? error.message : String(error),
+            };
+          }
+
+          if (httpIdempotencyStore?.checkHealth) {
+            try {
+              await httpIdempotencyStore.checkHealth();
+            } catch (error) {
+              ok = false;
+              components.idempotency = {
+                ok: false,
+                message: error instanceof Error ? error.message : String(error),
+              };
+            }
+          }
+
+          const capacity = Math.max(1, eventStore.getMaxHistory());
+          const usage = eventStore.getEventCount();
+          const threshold = Math.ceil(capacity * 0.9);
+          const queueHealthy = usage < threshold;
+          components.eventQueue = { ok: queueHealthy, usage, capacity };
+          if (!queueHealthy) {
+            ok = false;
+          }
+
+          return { ok, components };
+        },
+      },
+    };
+
     try {
-      const handle = await startHttpServer(server, options.http, logger);
+      const handle = await startHttpServer(server, options.http, logger, httpExtras);
       cleanup.push(handle.close);
     } catch (error) {
       logger.error("http_start_failed", { message: error instanceof Error ? error.message : String(error) });

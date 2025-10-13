@@ -55,7 +55,10 @@ describe("graph transactions - rewrite integration", () => {
 
       expect(committed.version).to.equal(begin.baseVersion + 1);
       expect(committed.graph.graphVersion).to.equal(committed.version);
-      expect(committed.graph.metadata.__txCommittedAt).to.equal(52_000);
+      // Invariant validation samples the clock once more before the commit is
+      // persisted, hence the recorded timestamp now reflects the final entry
+      // in the deterministic sequence (53_000).
+      expect(committed.graph.metadata.__txCommittedAt).to.equal(53_000);
       expect(result.changed).to.equal(true);
     } finally {
       restoreNow(originalNow);

@@ -118,6 +118,10 @@ describe("graph locks", () => {
             op: "add_node",
             node: { id: "qa", label: "QA" },
           },
+          {
+            op: "add_edge",
+            edge: { from: "build", to: "qa", label: "build->qa" },
+          },
         ],
       }),
     );

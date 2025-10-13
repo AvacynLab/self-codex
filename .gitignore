@@ -2,5 +2,7 @@ node_modules/
 dist/
 runs/
 children/
+!src/children/
+!tests/children/
 .mcp_http.pid
 .mcp_http.out
