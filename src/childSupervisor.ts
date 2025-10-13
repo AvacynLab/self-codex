@@ -840,6 +840,39 @@ export class ChildSupervisor {
       this.supervisionKeyByChild.delete(childId);
       if (runtime) {
         this.runtimes.delete(childId);
+        this.clearIdleWatchdog(childId);
+        this.detachEventBridge(childId);
+        this.detachChildLogRecorder(childId);
+
+        try {
+          this.index.updateState(childId, "stopping");
+        } catch {
+          // Index updates are best effort during teardown to preserve the original error.
+        }
+
+        const shutdownErrors: unknown[] = [];
+        const gracefulSignal: Signal = "SIGTERM";
+        const gracefulTimeout = Math.min(2000, options.readyTimeoutMs ?? 2000);
+        try {
+          await runtime.shutdown({ signal: gracefulSignal, timeoutMs: gracefulTimeout });
+        } catch (shutdownError) {
+          shutdownErrors.push(shutdownError);
+          try {
+            await runtime.shutdown({ signal: "SIGKILL", timeoutMs: 500, force: true });
+          } catch (forceError) {
+            shutdownErrors.push(forceError);
+          }
+        }
+
+        if (shutdownErrors.length > 0 && error instanceof Error) {
+          const existing = (error as Error & { cause?: unknown }).cause;
+          if (existing === undefined && shutdownErrors.length === 1) {
+            (error as Error & { cause?: unknown }).cause = shutdownErrors[0];
+          } else {
+            const aggregated = new AggregateError(shutdownErrors, "child runtime teardown failures");
+            (error as Error & { cause?: unknown }).cause = existing ?? aggregated;
+          }
+        }
       }
       if (!supervisionSettled) {
         try {
