@@ -316,7 +316,13 @@ export async function startHttpServer(
   };
 }
 
-/** Handles `/healthz` by measuring event loop responsiveness and GC availability. */
+/**
+ * Handles `/healthz` by measuring event loop responsiveness while surfacing GC
+ * availability for operators. The probe now treats the absence of an exposed
+ * GC hook (common in production builds without `--expose-gc`) as informative
+ * metadata rather than a failure condition so health checks succeed on
+ * distroless images.
+ */
 async function handleHealthCheck(
   req: HttpTransportRequest,
   res: HttpTransportResponse,
@@ -332,7 +338,7 @@ async function handleHealthCheck(
   await new Promise((resolve) => setImmediate(resolve));
   const delayMs = Date.now() - before;
   const gcAvailable = typeof (globalThis as { gc?: (() => void) | undefined }).gc === "function";
-  const healthy = gcAvailable && delayMs <= HEALTH_EVENT_LOOP_DELAY_BUDGET_MS;
+  const healthy = delayMs <= HEALTH_EVENT_LOOP_DELAY_BUDGET_MS;
   const payload = {
     ok: healthy,
     event_loop_delay_ms: delayMs,
