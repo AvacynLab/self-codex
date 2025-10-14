@@ -1,83 +1,159 @@
-/**
- * Integration tests for the process supervision helpers. The scenarios focus on
- * validating the exponential backoff, circuit breaker transitions and the
- * recovery path after the cooldown window elapses.
- */
+import { strict as assert } from "node:assert";
 import { describe, it } from "mocha";
-import { expect } from "chai";
 
-import { ChildCircuitOpenError, OneForOneSupervisor } from "../../src/children/supervisor.js";
+import {
+  ChildCircuitOpenError,
+  OneForOneSupervisor,
+  type SupervisorEvent,
+} from "../../src/children/supervisor.js";
 
-/** Simple deterministic clock used to drive the supervisor without real timers. */
-function createFakeClock(start = 0) {
-  let now = start;
-  return {
-    /** Returns the current fake timestamp. */
-    now(): number {
-      return now;
+/**
+ * Helper constructing a supervisor with deterministic timing primitives so the
+ * tests can assert precise delays without waiting in real time.
+ */
+function buildSupervisor(
+  overrides: Partial<{
+    failThreshold: number;
+    cooldownMs: number;
+    halfOpenMax: number;
+    minBackoffMs: number;
+    maxBackoffMs: number;
+    backoffFactor: number;
+    maxRestartsPerMinute: number | null;
+  }> = {},
+  onEvent?: (event: SupervisorEvent) => void,
+) {
+  let now = 0;
+  const sleeps: number[] = [];
+  const supervisor = new OneForOneSupervisor({
+    breaker: {
+      failThreshold: overrides.failThreshold ?? 2,
+      cooldownMs: overrides.cooldownMs ?? 1_000,
+      halfOpenMaxInFlight: overrides.halfOpenMax ?? 1,
+      now: () => now,
     },
-    /** Advances the internal clock by the provided offset. */
-    advance(delta: number): void {
-      now += delta;
+    minBackoffMs: overrides.minBackoffMs ?? 10,
+    maxBackoffMs: overrides.maxBackoffMs ?? 160,
+    backoffFactor: overrides.backoffFactor ?? 2,
+    maxRestartsPerMinute: overrides.maxRestartsPerMinute ?? null,
+    now: () => now,
+    sleep: async (ms) => {
+      sleeps.push(ms);
+      now += ms;
     },
-    /** Async helper compatible with the supervisor sleep primitive. */
-    async sleep(delta: number): Promise<void> {
-      now += delta;
-    },
-  };
+    onEvent,
+  });
+  return { supervisor, advance: (ms: number) => (now += ms), getNow: () => now, sleeps };
 }
 
-describe("process supervision", () => {
-  it("applies exponential backoff, opens the breaker and recovers after cooldown", async () => {
-    const clock = createFakeClock();
-    const supervisor = new OneForOneSupervisor({
-      breaker: {
-        failThreshold: 3,
-        cooldownMs: 500,
-        halfOpenMaxInFlight: 1,
-      },
-      minBackoffMs: 100,
-      maxBackoffMs: 400,
-      backoffFactor: 2,
-      now: () => clock.now(),
-      sleep: (ms) => clock.sleep(ms),
+describe("OneForOneSupervisor", () => {
+  it("opens the breaker after repeated failures and emits lifecycle events", async () => {
+    const events: SupervisorEvent[] = [];
+    const { supervisor, advance, getNow, sleeps } = buildSupervisor({}, (event) => {
+      events.push(event);
     });
-    const key = "node::test";
 
-    const attempt1 = await supervisor.acquire(key);
-    expect(clock.now(), "first attempt should not wait").to.equal(0);
-    attempt1.fail();
-    expect(clock.now(), "time does not advance on failure bookkeeping").to.equal(0);
+    const first = await supervisor.acquire("worker");
+    assert.equal(first.state, "closed", "first probe should see a closed breaker");
+    first.fail();
 
-    const attempt2 = await supervisor.acquire(key);
-    expect(clock.now(), "second attempt waits for the initial backoff").to.equal(100);
-    attempt2.fail();
-    expect(clock.now(), "time is preserved after the second failure").to.equal(100);
+    const second = await supervisor.acquire("worker");
+    assert.equal(second.state, "closed", "second probe still sees a closed breaker before tripping");
+    second.fail();
 
-    const attempt3 = await supervisor.acquire(key);
-    expect(clock.now(), "third attempt waits with the doubled backoff").to.equal(300);
-    attempt3.fail();
-    expect(clock.now(), "clock remains at the last scheduled timestamp").to.equal(300);
+    await assert.rejects(
+      supervisor.acquire("worker"),
+      (error: unknown) => {
+        assert.ok(error instanceof ChildCircuitOpenError, "error should reflect an open breaker");
+        assert.equal(error.state, "open");
+        assert.equal(
+          error.retryAt,
+          getNow() + 1_000,
+          "retryAt should be derived from the configured cooldown",
+        );
+        return true;
+      },
+    );
 
-    let rejection: unknown;
-    try {
-      await supervisor.acquire(key);
-    } catch (error) {
-      rejection = error;
-    }
-    expect(rejection, "circuit breaker should reject further attempts").to.be.instanceOf(ChildCircuitOpenError);
-    const openError = rejection as ChildCircuitOpenError;
-    expect(openError.retryAt, "retry timestamp matches cooldown from trip moment").to.equal(800);
-    expect(clock.now(), "rejection does not advance the clock").to.equal(300);
+    advance(1_000);
 
-    clock.advance(500);
+    const third = await supervisor.acquire("worker");
+    assert.equal(third.state, "half-open", "third attempt should probe the half-open state");
+    third.succeed();
 
-    const halfOpen = await supervisor.acquire(key);
-    expect(clock.now(), "probe after cooldown does not wait").to.equal(800);
-    halfOpen.succeed();
+    const types = events.map((event) => event.type);
+    const openEvents = types.filter((type) => type === "breaker_open");
+    assert.ok(
+      openEvents.length >= 2,
+      "open events should be emitted when tripping and when rejecting",
+    );
+    assert.ok(types.includes("breaker_half_open"), "half-open transition should be surfaced");
+    assert.ok(types.includes("breaker_closed"), "closing the breaker should be surfaced");
 
-    const recovered = await supervisor.acquire(key);
-    expect(clock.now(), "closed breaker resets the backoff").to.equal(800);
-    recovered.succeed();
+    const restartEvents = events.filter((event) => event.type === "child_restart");
+    assert.equal(restartEvents.length, 3, "three restart events expected");
+    assert.deepEqual(
+      restartEvents.map((event) => event.at),
+      restartEvents.map((event) => event.at).slice().sort((a, b) => a - b),
+      "restart events should be ordered chronologically",
+    );
+    assert.deepEqual(
+      restartEvents.map((event) => event.attempt),
+      [1, 2, 3],
+      "attempt counters should increment across retries",
+    );
+    assert.deepEqual(
+      restartEvents.map((event) => event.delayMs),
+      [0, 10, 0],
+      "backoff scheduling should surface on restart events",
+    );
+    assert.deepEqual(
+      restartEvents.map((event) => event.backoffWaitMs),
+      [0, 10, 0],
+      "backoff wait metadata should mirror the recorded delays",
+    );
+    assert.deepEqual(
+      restartEvents.map((event) => event.quotaWaitMs),
+      [0, 0, 0],
+      "quota waits remain inactive without a configured limit",
+    );
+    assert.deepEqual(sleeps, [10], "only the second attempt should incur a backoff sleep");
+  });
+
+  it("enforces restart quotas within a one-minute window", async () => {
+    const events: SupervisorEvent[] = [];
+    const { supervisor, sleeps } = buildSupervisor(
+      {
+        failThreshold: 99,
+        minBackoffMs: 0,
+        maxBackoffMs: 0,
+        backoffFactor: 1,
+        maxRestartsPerMinute: 2,
+      },
+      (event) => {
+        events.push(event);
+      },
+    );
+
+    const first = await supervisor.acquire("throttled");
+    first.fail();
+    const second = await supervisor.acquire("throttled");
+    second.fail();
+
+    const third = await supervisor.acquire("throttled");
+    third.succeed();
+
+    assert.ok(
+      sleeps.some((value) => value >= 60_000),
+      "a one-minute sleep should enforce the rate limit",
+    );
+
+    const quotaWaits = events
+      .filter((event): event is Extract<SupervisorEvent, { type: "child_restart" }> => event.type === "child_restart")
+      .map((event) => event.quotaWaitMs);
+    assert.ok(
+      quotaWaits.some((wait) => wait >= 60_000),
+      "restart events should record the quota-imposed delay",
+    );
   });
 });

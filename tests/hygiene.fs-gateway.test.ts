@@ -46,6 +46,13 @@ describe('gateway hygiene', () => {
       staticPattern: /(?:from\s+['"]|require\(['"])(?:node:)?fs(?:\/promises)?['"]/,
       dynamicPattern: /import\(['"](?:node:)?fs(?:\/promises)?['"]\)/,
       allowList: new Set([
+        // Sandbox profiles persist launch wrappers and policy manifests on disk.
+        'src/children/sandbox.ts',
+        // Tool registry stores manifests and reload markers between restarts.
+        'src/mcp/registry.ts',
+        // Layered memory writes durable vector and KG stores to the filesystem.
+        'src/memory/kg.ts',
+        'src/memory/vector.ts',
         'src/paths.ts',
         'src/monitor/log.ts',
         'src/logger.ts',
@@ -56,6 +63,9 @@ describe('gateway hygiene', () => {
         'src/bridge/fsBridge.ts',
         'src/tools/planTools.ts',
         'src/graph/subgraphExtract.ts',
+        // State persistence relies on WAL and snapshot writers for replay.
+        'src/state/snapshot.ts',
+        'src/state/wal.ts',
         // Graph operation logging persists JSONL audit trails via node:fs.
         'src/graph/oplog.ts',
         // Validation helpers persist run artefacts on disk by design.

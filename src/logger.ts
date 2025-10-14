@@ -3,11 +3,41 @@ import { appendFile, mkdir, rename, rm, stat } from "node:fs/promises";
 import { dirname } from "node:path";
 import type { ErrnoException } from "./nodePrimitives.js";
 import { getJsonRpcContext } from "./infra/jsonRpcContext.js";
-import { getActiveTraceContext } from "./infra/tracing.js";
+import { getActiveTraceContext, type TraceContextSnapshot } from "./infra/tracing.js";
+import type { JsonRpcRouteContext } from "./server.js";
 // NOTE: Node built-in modules are imported with the explicit `node:` prefix to guarantee ESM resolution in Node.js.
 
 /** Default placeholder inserted when a secret token is redacted. */
 const REDACTION_TOKEN = "[REDACTED]";
+
+interface CorrelationFields {
+  request_id?: string | number | null;
+  trace_id?: string | null;
+  child_id?: string | null;
+  method?: string;
+  duration_ms?: number;
+  bytes_in?: number;
+  bytes_out?: number;
+  transport?: string | null;
+}
+
+/** Keys whose values are redacted when `MCP_LOG_REDACT=on`. */
+const SENSITIVE_KEYS = new Set([
+  "authorization",
+  "proxy-authorization",
+  "x-api-key",
+  "api-key",
+  "api_key",
+  "token",
+  "access_token",
+  "refresh_token",
+  "cookie",
+  "set-cookie",
+]);
+
+function isRedactionEnabled(): boolean {
+  return (process.env.MCP_LOG_REDACT ?? "").toLowerCase() === "on";
+}
 
 /**
  * Default maximum size (in bytes) of the primary log file before a rotation is
@@ -26,6 +56,13 @@ export interface LogEntry {
   level: LogLevel;
   message: string;
   payload?: unknown;
+  request_id?: string | number | null;
+  trace_id?: string | null;
+  child_id?: string | null;
+  method?: string | null;
+  duration_ms?: number | null;
+  bytes_in?: number | null;
+  bytes_out?: number | null;
 }
 
 export interface LoggerOptions {
@@ -86,6 +123,8 @@ export class StructuredLogger {
   private logDirectoryReady = false;
   /** Optional listener invoked with the structured entry. */
   private readonly entryListener?: (entry: LogEntry) => void;
+  /** Whether automatic header redaction is enabled via environment variable. */
+  private readonly redactionEnabled: boolean;
 
   constructor(options: LoggerOptions = {}) {
     this.logFile = options.logFile ?? undefined;
@@ -93,6 +132,7 @@ export class StructuredLogger {
     this.maxFileCount = Math.max(1, options.maxFileCount ?? DEFAULT_MAX_FILE_COUNT);
     this.redactSecrets = options.redactSecrets ? [...options.redactSecrets] : [];
     this.entryListener = options.onEntry;
+    this.redactionEnabled = isRedactionEnabled();
   }
 
   info(message: string, payload?: unknown): void {
@@ -155,12 +195,25 @@ export class StructuredLogger {
   }
 
   private log(level: LogLevel, message: string, payload?: unknown): void {
-    const enrichedPayload = payload !== undefined ? this.enrichPayload(payload) : undefined;
+    const trace = getActiveTraceContext();
+    const rpcContext = getJsonRpcContext();
+    const correlation = this.collectCorrelationFields(trace, rpcContext);
+    const enrichedPayload =
+      payload !== undefined ? this.enrichPayload(payload, trace, rpcContext) : undefined;
+    const safePayload =
+      enrichedPayload !== undefined ? this.redactStructuredValue(enrichedPayload) : undefined;
     const entry: LogEntry = {
       timestamp: new Date().toISOString(),
       level,
       message,
-      ...(enrichedPayload !== undefined ? { payload: enrichedPayload } : {}),
+      ...(correlation.request_id !== undefined ? { request_id: correlation.request_id } : {}),
+      ...(correlation.trace_id !== undefined ? { trace_id: correlation.trace_id } : {}),
+      ...(correlation.child_id !== undefined ? { child_id: correlation.child_id } : {}),
+      ...(correlation.method !== undefined ? { method: correlation.method } : {}),
+      ...(correlation.duration_ms !== undefined ? { duration_ms: correlation.duration_ms } : {}),
+      ...(correlation.bytes_in !== undefined ? { bytes_in: correlation.bytes_in } : {}),
+      ...(correlation.bytes_out !== undefined ? { bytes_out: correlation.bytes_out } : {}),
+      ...(safePayload !== undefined ? { payload: safePayload } : {}),
     };
     const line = `${JSON.stringify(entry)}\n`;
     process.stdout.write(line);
@@ -305,13 +358,16 @@ export class StructuredLogger {
    * JSON-RPC and tracing contexts. The helper keeps user-provided metadata
    * intact while filling gaps such as `trace_id`, `request_id` or `bytes_out`.
    */
-  private enrichPayload(payload: unknown): unknown {
+  private enrichPayload(
+    payload: unknown,
+    trace: TraceContextSnapshot | undefined,
+    rpcContext: JsonRpcRouteContext | undefined,
+  ): unknown {
     if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
       return payload;
     }
 
     const enriched: Record<string, unknown> = { ...(payload as Record<string, unknown>) };
-    const trace = getActiveTraceContext();
     if (trace) {
       if (enriched.trace_id === undefined) {
         enriched.trace_id = trace.traceId;
@@ -328,39 +384,105 @@ export class StructuredLogger {
       if (enriched.child_id === undefined && trace.childId) {
         enriched.child_id = trace.childId;
       }
-      const duration = typeof trace.durationMs === "number" && Number.isFinite(trace.durationMs)
-        ? Math.round(Math.max(0, trace.durationMs))
-        : null;
+      const duration = this.normaliseMetric(trace.durationMs);
       if (enriched.duration_ms === undefined && duration !== null) {
         enriched.duration_ms = duration;
       }
-      const bytesIn = typeof trace.bytesIn === "number" && Number.isFinite(trace.bytesIn)
-        ? Math.round(Math.max(0, trace.bytesIn))
-        : null;
+      const bytesIn = this.normaliseMetric(trace.bytesIn);
       if (enriched.bytes_in === undefined && bytesIn !== null) {
         enriched.bytes_in = bytesIn;
       }
-      const bytesOut = typeof trace.bytesOut === "number" && Number.isFinite(trace.bytesOut)
-        ? Math.round(Math.max(0, trace.bytesOut))
-        : null;
+      const bytesOut = this.normaliseMetric(trace.bytesOut);
       if (enriched.bytes_out === undefined && bytesOut !== null) {
         enriched.bytes_out = bytesOut;
       }
     }
 
-    const context = getJsonRpcContext();
-    if (context) {
-      if (enriched.request_id === undefined && context.requestId !== undefined) {
-        enriched.request_id = context.requestId ?? null;
+    if (rpcContext) {
+      if (enriched.request_id === undefined && rpcContext.requestId !== undefined) {
+        enriched.request_id = rpcContext.requestId ?? null;
       }
-      if (enriched.child_id === undefined && context.childId !== undefined) {
-        enriched.child_id = context.childId ?? null;
+      if (enriched.child_id === undefined && rpcContext.childId !== undefined) {
+        enriched.child_id = rpcContext.childId ?? null;
       }
-      if (enriched.transport === undefined && context.transport !== undefined) {
-        enriched.transport = context.transport ?? null;
+      if (enriched.transport === undefined && rpcContext.transport !== undefined) {
+        enriched.transport = rpcContext.transport ?? null;
       }
     }
 
     return enriched;
+  }
+
+  private collectCorrelationFields(
+    trace: TraceContextSnapshot | undefined,
+    rpcContext: JsonRpcRouteContext | undefined,
+  ): CorrelationFields {
+    const fields: CorrelationFields = {};
+    if (trace) {
+      fields.trace_id = trace.traceId;
+      fields.request_id = trace.requestId ?? null;
+      fields.child_id = trace.childId ?? null;
+      if (trace.method) {
+        fields.method = trace.method;
+      }
+      const duration = this.normaliseMetric(trace.durationMs);
+      if (duration !== null) {
+        fields.duration_ms = duration;
+      }
+      const bytesIn = this.normaliseMetric(trace.bytesIn);
+      if (bytesIn !== null) {
+        fields.bytes_in = bytesIn;
+      }
+      const bytesOut = this.normaliseMetric(trace.bytesOut);
+      if (bytesOut !== null) {
+        fields.bytes_out = bytesOut;
+      }
+    }
+
+    if (rpcContext) {
+      if (fields.request_id === undefined && rpcContext.requestId !== undefined) {
+        fields.request_id = rpcContext.requestId ?? null;
+      }
+      if (fields.child_id === undefined && rpcContext.childId !== undefined) {
+        fields.child_id = rpcContext.childId ?? null;
+      }
+      if (fields.transport === undefined && rpcContext.transport !== undefined) {
+        fields.transport = rpcContext.transport ?? null;
+      }
+    }
+
+    return fields;
+  }
+
+  private normaliseMetric(value: unknown): number | null {
+    if (typeof value !== "number" || !Number.isFinite(value)) {
+      return null;
+    }
+    return Math.round(Math.max(0, value));
+  }
+
+  private redactStructuredValue<T>(value: T): T {
+    if (!this.redactionEnabled) {
+      return value;
+    }
+    return this.deepRedact(value) as T;
+  }
+
+  private deepRedact(value: unknown): unknown {
+    if (Array.isArray(value)) {
+      return value.map((item) => this.deepRedact(item));
+    }
+    if (value && typeof value === "object") {
+      const result: Record<string, unknown> = {};
+      for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+        if (SENSITIVE_KEYS.has(key.toLowerCase())) {
+          result[key] = REDACTION_TOKEN;
+        } else {
+          result[key] = this.deepRedact(entry);
+        }
+      }
+      return result;
+    }
+    return value;
   }
 }

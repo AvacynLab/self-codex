@@ -1,8 +1,12 @@
 import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { resolve as resolvePath } from "node:path";
 
-import type { IdempotencyStore, PersistedIdempotencyEntry } from "./idempotencyStore.js";
-import { resolveIdempotencyDirectory } from "./idempotencyStore.js";
+import {
+  IdempotencyConflictError,
+  type IdempotencyStore,
+  type PersistedIdempotencyEntry,
+  resolveIdempotencyDirectory,
+} from "./idempotencyStore.js";
 
 /** Options accepted when creating a {@link FileIdempotencyStore}. */
 export interface FileIdempotencyStoreOptions {
@@ -12,6 +16,10 @@ export interface FileIdempotencyStoreOptions {
   fileName?: string;
   /** Override the clock primarily for unit tests. */
   clock?: () => number;
+  /** Default TTL used when callers provide invalid values. */
+  defaultTtlMs?: number;
+  /** Number of live entries tolerated before scheduling a compaction pass. */
+  maxEntriesBeforeCompaction?: number;
 }
 
 /** Internal entry format retained in memory. */
@@ -23,6 +31,17 @@ interface InMemoryEntry {
 
 /** Default TTL (10 minutes) mirroring the in-memory registry. */
 const DEFAULT_TTL_MS = 600_000;
+/** Default compaction threshold keeping the ledger reasonably small. */
+const DEFAULT_COMPACTION_THRESHOLD = 2_000;
+/** Number of hexadecimal characters produced by a SHA-256 digest. */
+const SHA256_HEX_LENGTH = 64;
+
+interface CacheKeyMetadata {
+  method: string;
+  idempotencyKey: string;
+  fingerprint: string;
+  methodKey: string;
+}
 
 /**
  * Persistent idempotency store backed by a JSON Lines ledger on disk. The store
@@ -32,13 +51,21 @@ const DEFAULT_TTL_MS = 600_000;
  */
 export class FileIdempotencyStore implements IdempotencyStore {
   private readonly entries = new Map<string, InMemoryEntry>();
+  private readonly cacheMetadata = new Map<string, CacheKeyMetadata>();
+  private readonly methodKeyIndex = new Map<string, { fingerprint: string; cacheKey: string }>();
   private readonly filePath: string;
   private readonly clock: () => number;
+  private readonly defaultTtlMs: number;
+  private readonly compactionThreshold: number;
   private writeQueue: Promise<void> = Promise.resolve();
+  private compactionPromise: Promise<void> | null = null;
+  private entriesSinceCompaction = 0;
 
-  private constructor(filePath: string, clock: () => number) {
+  private constructor(filePath: string, clock: () => number, defaultTtlMs: number, compactionThreshold: number) {
     this.filePath = filePath;
     this.clock = clock;
+    this.defaultTtlMs = defaultTtlMs > 0 ? defaultTtlMs : DEFAULT_TTL_MS;
+    this.compactionThreshold = compactionThreshold >= 0 ? compactionThreshold : DEFAULT_COMPACTION_THRESHOLD;
   }
 
   /**
@@ -51,8 +78,15 @@ export class FileIdempotencyStore implements IdempotencyStore {
     await mkdir(directory, { recursive: true });
     const fileName = options.fileName ?? "index.jsonl";
     const filePath = resolvePath(directory, fileName);
-    const store = new FileIdempotencyStore(filePath, options.clock ?? (() => Date.now()));
+    const clock = options.clock ?? (() => Date.now());
+    const defaultTtl = normalisePositiveInteger(options.defaultTtlMs, DEFAULT_TTL_MS);
+    const compactionThreshold = normaliseThreshold(options.maxEntriesBeforeCompaction);
+    const store = new FileIdempotencyStore(filePath, clock, defaultTtl, compactionThreshold);
     await store.loadFromDisk();
+    store.entriesSinceCompaction = store.entries.size;
+    if (store.entries.size >= store.compactionThreshold && store.compactionThreshold > 0) {
+      store.scheduleCompaction();
+    }
     return store;
   }
 
@@ -65,6 +99,7 @@ export class FileIdempotencyStore implements IdempotencyStore {
     const now = this.clock();
     if (entry.exp <= now) {
       this.entries.delete(key);
+      this.dropFingerprintForKey(key);
       return null;
     }
     return { status: entry.status, body: entry.body };
@@ -74,11 +109,32 @@ export class FileIdempotencyStore implements IdempotencyStore {
   public async set(key: string, status: number, body: string, ttlMs: number): Promise<void> {
     const ttl = this.normaliseTtl(ttlMs);
     const expiresAt = this.clock() + ttl;
+    const metadata = this.registerMetadata(key);
+    const existing = this.entries.get(key);
+    if (existing && (existing.status !== status || existing.body !== body)) {
+      throw new IdempotencyConflictError(metadata.method, metadata.idempotencyKey);
+    }
+
     this.entries.set(key, { status, body, exp: expiresAt });
-    const record: PersistedIdempotencyEntry = { key, status, body, exp: expiresAt };
-    await this.enqueue(async () => {
-      await appendFile(this.filePath, `${JSON.stringify(record)}\n`, "utf8");
-    });
+    try {
+      await this.enqueue(async () => {
+        const record: PersistedIdempotencyEntry = {
+          key,
+          status,
+          body,
+          exp: expiresAt,
+          meta: { fingerprint: metadata.fingerprint },
+        };
+        await appendFile(this.filePath, `${JSON.stringify(record)}\n`, "utf8");
+      });
+    } catch (error) {
+      this.entries.delete(key);
+      this.dropFingerprintForKey(key);
+      throw error;
+    }
+
+    this.entriesSinceCompaction += 1;
+    this.maybeScheduleCompaction();
   }
 
   /**
@@ -90,12 +146,20 @@ export class FileIdempotencyStore implements IdempotencyStore {
     for (const [key, entry] of this.entries) {
       if (entry.exp <= now) {
         this.entries.delete(key);
+        this.dropFingerprintForKey(key);
       }
     }
 
     const lines: string[] = [];
     for (const [key, entry] of this.entries) {
-      const record: PersistedIdempotencyEntry = { key, status: entry.status, body: entry.body, exp: entry.exp };
+      const metadata = this.cacheMetadata.get(key) ?? extractCacheKeyMetadata(key);
+      const record: PersistedIdempotencyEntry = {
+        key,
+        status: entry.status,
+        body: entry.body,
+        exp: entry.exp,
+        meta: { fingerprint: metadata.fingerprint },
+      };
       lines.push(JSON.stringify(record));
     }
 
@@ -117,6 +181,11 @@ export class FileIdempotencyStore implements IdempotencyStore {
     await this.enqueue(async () => {
       await appendFile(this.filePath, "", "utf8");
     });
+  }
+
+  /** Ensures callers do not reuse an idempotency key with a different payload. */
+  public assertKeySemantics(cacheKey: string): void {
+    this.ensureConsistentFingerprint(cacheKey);
   }
 
   /** Replays existing JSONL entries into the in-memory index. */
@@ -147,7 +216,22 @@ export class FileIdempotencyStore implements IdempotencyStore {
           continue;
         }
         const body = typeof parsed.body === "string" ? parsed.body : JSON.stringify(parsed.body);
-        this.entries.set(parsed.key, { status: parsed.status, body, exp: parsed.exp });
+        try {
+          const metadata = this.registerMetadata(
+            parsed.key,
+            typeof (parsed.meta as { fingerprint?: unknown } | undefined)?.fingerprint === "string"
+              ? ((parsed.meta as { fingerprint?: string }).fingerprint as string)
+              : undefined,
+          );
+          this.entries.set(parsed.key, { status: parsed.status, body, exp: parsed.exp });
+          this.cacheMetadata.set(parsed.key, metadata);
+        } catch (error) {
+          if (error instanceof IdempotencyConflictError) {
+            // Skip conflicting legacy entries while keeping the oldest payload.
+            continue;
+          }
+          throw error;
+        }
       } catch {
         // Ignore malformed lines so a single bad entry does not poison the cache.
         continue;
@@ -157,9 +241,66 @@ export class FileIdempotencyStore implements IdempotencyStore {
 
   private normaliseTtl(ttlMs: number): number {
     if (!Number.isFinite(ttlMs) || ttlMs <= 0) {
-      return DEFAULT_TTL_MS;
+      return this.defaultTtlMs;
     }
     return Math.max(1, Math.floor(ttlMs));
+  }
+
+  private ensureConsistentFingerprint(cacheKey: string): CacheKeyMetadata {
+    const metadata = extractCacheKeyMetadata(cacheKey);
+    const existing = this.methodKeyIndex.get(metadata.methodKey);
+    if (existing && existing.fingerprint !== metadata.fingerprint) {
+      throw new IdempotencyConflictError(metadata.method, metadata.idempotencyKey);
+    }
+    return metadata;
+  }
+
+  private registerMetadata(cacheKey: string, fingerprintOverride?: string): CacheKeyMetadata {
+    const metadata = extractCacheKeyMetadata(cacheKey, fingerprintOverride);
+    const existing = this.methodKeyIndex.get(metadata.methodKey);
+    if (existing && existing.fingerprint !== metadata.fingerprint) {
+      throw new IdempotencyConflictError(metadata.method, metadata.idempotencyKey);
+    }
+    this.methodKeyIndex.set(metadata.methodKey, { fingerprint: metadata.fingerprint, cacheKey });
+    this.cacheMetadata.set(cacheKey, metadata);
+    return metadata;
+  }
+
+  private dropFingerprintForKey(cacheKey: string): void {
+    const metadata = this.cacheMetadata.get(cacheKey);
+    if (!metadata) {
+      return;
+    }
+    this.cacheMetadata.delete(cacheKey);
+    const existing = this.methodKeyIndex.get(metadata.methodKey);
+    if (existing && existing.cacheKey === cacheKey) {
+      this.methodKeyIndex.delete(metadata.methodKey);
+    }
+  }
+
+  private maybeScheduleCompaction(): void {
+    if (this.compactionThreshold <= 0) {
+      return;
+    }
+    if (this.entriesSinceCompaction < this.compactionThreshold) {
+      return;
+    }
+    if (this.compactionPromise) {
+      return;
+    }
+    this.scheduleCompaction();
+  }
+
+  private scheduleCompaction(): void {
+    const pending = this.purge(this.clock());
+    this.compactionPromise = pending
+      .catch(() => {
+        // Errors are surfaced to callers via the returned promise.
+      })
+      .finally(() => {
+        this.compactionPromise = null;
+        this.entriesSinceCompaction = 0;
+      });
   }
 
   private enqueue(operation: () => Promise<void>): Promise<void> {
@@ -170,4 +311,47 @@ export class FileIdempotencyStore implements IdempotencyStore {
     });
     return run;
   }
+}
+
+function extractCacheKeyMetadata(cacheKey: string, fingerprintOverride?: string): CacheKeyMetadata {
+  const trimmed = cacheKey.trim();
+  if (trimmed.length === 0) {
+    return { method: "unknown", idempotencyKey: "", fingerprint: "", methodKey: "unknown:" };
+  }
+
+  const fingerprint =
+    typeof fingerprintOverride === "string" && fingerprintOverride.length === SHA256_HEX_LENGTH
+      ? fingerprintOverride
+      : trimmed.slice(-SHA256_HEX_LENGTH);
+  const hasStructuredSegments = trimmed.length > SHA256_HEX_LENGTH + 1;
+  if (!hasStructuredSegments) {
+    const method = "unknown";
+    const idempotencyKey = trimmed;
+    const methodKey = `${method}:${idempotencyKey}`;
+    return { method, idempotencyKey, fingerprint, methodKey };
+  }
+
+  const prefix = trimmed.slice(0, Math.max(0, trimmed.length - SHA256_HEX_LENGTH - 1));
+  const separatorIndex = prefix.indexOf(":");
+  const method = separatorIndex === -1 ? "unknown" : prefix.slice(0, separatorIndex);
+  const idempotencyKey = separatorIndex === -1 ? prefix : prefix.slice(separatorIndex + 1);
+  const methodKey = `${method}:${idempotencyKey}`;
+  return { method, idempotencyKey, fingerprint, methodKey };
+}
+
+function normalisePositiveInteger(value: number | undefined, fallback: number): number {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+    return fallback;
+  }
+  return Math.floor(value);
+}
+
+function normaliseThreshold(value: number | undefined): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return DEFAULT_COMPACTION_THRESHOLD;
+  }
+  if (value <= 0) {
+    return 0;
+  }
+  return Math.floor(value);
 }

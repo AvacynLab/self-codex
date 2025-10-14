@@ -61,6 +61,9 @@ import { StructuredLogger } from "../logger.js";
 import { OrchestratorSupervisor } from "../agents/supervisor.js";
 import { Autoscaler } from "../agents/autoscaler.js";
 import { ensureDirectory, resolveWithin } from "../paths.js";
+import { parsePlannerPlan, PlannerSchemas, type PlannerPlan } from "../planner/domain.js";
+import { compilePlannerPlan, generatePlanRunId } from "../planner/compileBT.js";
+import type { PlanSchedule } from "../planner/schedule.js";
 import {
   PromptTemplate,
   PromptMessage,
@@ -739,6 +742,42 @@ export const PlanCompileBTInputSchema = z
 export type PlanCompileBTInput = z.infer<typeof PlanCompileBTInputSchema>;
 export type PlanCompileBTResult = z.infer<typeof CompiledBehaviorTreeSchema>;
 export const PlanCompileBTInputShape = PlanCompileBTInputSchema.shape;
+
+/** Input payload accepted by the `plan_compile_execute` tool. */
+export const PlanCompileExecuteInputSchema = z
+  .object({
+    plan: z.union([z.string().trim().min(1), PlannerSchemas.plan]),
+    dry_run: z.boolean().optional(),
+  })
+  .extend(PlanCorrelationHintsSchema.shape)
+  .strict();
+
+export type PlanCompileExecuteInput = z.infer<typeof PlanCompileExecuteInputSchema>;
+export const PlanCompileExecuteInputShape = PlanCompileExecuteInputSchema.shape;
+
+/** Result returned by {@link handlePlanCompileExecute}. */
+export interface PlanCompileExecuteResult extends Record<string, unknown> {
+  run_id: string;
+  op_id: string;
+  plan_id: string;
+  plan_version: string | null;
+  dry_run: boolean;
+  registered: boolean;
+  behavior_tree: CompiledBehaviorTree;
+  schedule: PlanSchedule;
+  variable_bindings: Record<string, unknown>;
+  guard_conditions: Record<string, unknown>;
+  postconditions: Record<string, unknown>;
+  plan: PlannerPlan;
+  stats: {
+    total_tasks: number;
+    phases: number;
+    parallel_phases: number;
+    critical_path_length: number;
+    estimated_duration_ms: number;
+    slacky_tasks: number;
+  };
+}
 
 /**
  * Input payload accepted by the `plan_run_bt` tool.
@@ -2412,6 +2451,110 @@ export function handlePlanCompileBT(
   context.logger.info("plan_compile_bt", { graph_id: input.graph.id });
   const compiled = compileHierGraphToBehaviorTree(input.graph);
   return CompiledBehaviorTreeSchema.parse(compiled);
+}
+
+/**
+ * Compile a structured plan specification into an executable Behaviour Tree,
+ * register a lifecycle run, and expose the scheduling metadata required by
+ * monitoring dashboards.
+ */
+export function handlePlanCompileExecute(
+  context: PlanToolContext,
+  input: PlanCompileExecuteInput,
+): PlanCompileExecuteResult {
+  const plan = parsePlannerPlan(input.plan);
+  const dryRun = input.dry_run ?? true;
+  const opId = resolveOperationId(input.op_id, "plan_compile_execute");
+  const providedRunId = typeof input.run_id === "string" ? input.run_id.trim() : "";
+  const runId = providedRunId.length > 0 ? providedRunId : generatePlanRunId(plan.id);
+
+  const baseCorrelation = extractPlanCorrelationHints(input);
+  const correlationHints: ValueGraphCorrelationHints = {
+    ...(baseCorrelation ?? {}),
+    runId,
+    opId,
+  };
+
+  const compilation = compilePlannerPlan(plan);
+  const schedule = compilation.schedule;
+  const scheduleSnapshot = structuredClone(schedule);
+  const stats = {
+    total_tasks: plan.tasks.length,
+    phases: schedule.phases.length,
+    parallel_phases: schedule.phases.filter((phase) => phase.tasks.length > 1).length,
+    critical_path_length: schedule.criticalPath.length,
+    estimated_duration_ms: schedule.totalEstimatedDurationMs,
+    slacky_tasks: Object.values(schedule.tasks).filter((task) => task.slackMs > 0).length,
+  } as PlanCompileExecuteResult["stats"];
+
+  const estimatedWork = stats.estimated_duration_ms > 0 ? stats.estimated_duration_ms : stats.total_tasks;
+  registerPlanLifecycleRun(context, {
+    runId,
+    opId,
+    mode: "bt",
+    dryRun,
+    correlation: correlationHints,
+    estimatedWork,
+  });
+
+  recordPlanLifecycleEvent(context, runId, "start", {
+    plan_id: plan.id,
+    plan_version: plan.version ?? null,
+    total_tasks: stats.total_tasks,
+    phases: stats.phases,
+    estimated_duration_ms: stats.estimated_duration_ms,
+    dry_run: dryRun,
+  });
+
+  recordPlanLifecycleEvent(context, runId, "complete", {
+    plan_id: plan.id,
+    plan_version: plan.version ?? null,
+    compiled_at: Date.now(),
+    critical_path: schedule.criticalPath,
+  });
+
+  const eventCorrelation = toEventCorrelationHints(correlationHints);
+  context.emitEvent({
+    kind: "PLAN",
+    payload: {
+      event: "plan_compiled",
+      plan_id: plan.id,
+      plan_version: plan.version ?? null,
+      run_id: runId,
+      op_id: opId,
+      total_tasks: stats.total_tasks,
+      phases: stats.phases,
+      critical_path_length: stats.critical_path_length,
+      estimated_duration_ms: stats.estimated_duration_ms,
+    },
+    correlation: eventCorrelation,
+  });
+
+  context.logger.info("plan_compile_execute", {
+    plan_id: plan.id,
+    plan_version: plan.version ?? null,
+    run_id: runId,
+    op_id: opId,
+    dry_run: dryRun,
+    total_tasks: stats.total_tasks,
+    phases: stats.phases,
+  });
+
+  return {
+    run_id: runId,
+    op_id: opId,
+    plan_id: plan.id,
+    plan_version: plan.version ?? null,
+    dry_run: dryRun,
+    registered: Boolean(context.planLifecycle),
+    behavior_tree: compilation.behaviorTree,
+    schedule: scheduleSnapshot,
+    variable_bindings: structuredClone(compilation.variableBindings),
+    guard_conditions: structuredClone(compilation.guardConditions),
+    postconditions: structuredClone(compilation.postconditions),
+    plan: structuredClone(plan),
+    stats,
+  } satisfies PlanCompileExecuteResult;
 }
 
 /**

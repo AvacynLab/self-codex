@@ -1,4 +1,6 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import type { RequestHandlerExtra } from "@modelcontextprotocol/sdk/shared/protocol.js";
+import type { CallToolResult, ServerNotification, ServerRequest } from "@modelcontextprotocol/sdk/types.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z, type ZodTypeAny } from "zod";
 import { randomUUID } from "node:crypto";
@@ -51,6 +53,7 @@ import {
   ChildSafetyOptions,
 } from "./serverOptions.js";
 import { ChildSupervisor, type ChildLogEventSnapshot } from "./childSupervisor.js";
+import { normaliseSandboxProfile } from "./children/sandbox.js";
 import { ChildRecordSnapshot, UnknownChildError } from "./state/childrenIndex.js";
 import { ChildCollectedOutputs, ChildRuntimeStatus } from "./childRuntime.js";
 import { Autoscaler } from "./agents/autoscaler.js";
@@ -58,14 +61,18 @@ import { OrchestratorSupervisor, inferSupervisorIncidentCorrelation } from "./ag
 import { MetaCritic, ReviewKind, ReviewResult } from "./agents/metaCritic.js";
 import { reflect, ReflectionResult } from "./agents/selfReflect.js";
 import { scoreCode, scorePlan, scoreText, ScoreCodeInput, ScorePlanInput, ScoreTextInput } from "./quality/scoring.js";
+import { appendWalEntry } from "./state/wal.js";
+import { ToolRegistry, ToolRegistrationError, type CompositeRegistrationRequest } from "./mcp/registry.js";
 import { SharedMemoryStore } from "./memory/store.js";
+import { PersistentKnowledgeGraph } from "./memory/kg.js";
+import { VectorMemoryIndex } from "./memory/vector.js";
 import { selectMemoryContext } from "./memory/attention.js";
 import { LoopDetector } from "./guard/loopDetector.js";
 import { BlackboardStore } from "./coord/blackboard.js";
 import { ContractNetCoordinator } from "./coord/contractNet.js";
 import { ContractNetWatcherTelemetryRecorder, watchContractNetPheromoneBounds } from "./coord/contractNetWatchers.js";
 import { StigmergyField } from "./coord/stigmergy.js";
-import { KnowledgeGraph, type KnowledgeTripleSnapshot } from "./knowledge/knowledgeGraph.js";
+import type { KnowledgeTripleSnapshot } from "./knowledge/knowledgeGraph.js";
 import { CausalMemory } from "./knowledge/causalMemory.js";
 import { ValueGraph, type ValueGraphConfig } from "./values/valueGraph.js";
 import type { ValueFilterDecision } from "./values/valueGraph.js";
@@ -75,13 +82,31 @@ import { IdempotencyRegistry, buildIdempotencyCacheKey } from "./infra/idempoten
 import { FileIdempotencyStore } from "./infra/idempotencyStore.file.js";
 import { resolveIdempotencyDirectory } from "./infra/idempotencyStore.js";
 import { runWithJsonRpcContext } from "./infra/jsonRpcContext.js";
-import { runWithRpcTrace, annotateTraceContext, registerInboundBytes, getActiveTraceContext } from "./infra/tracing.js";
+import {
+  runWithRpcTrace,
+  annotateTraceContext,
+  registerInboundBytes,
+  getActiveTraceContext,
+  registerRpcError,
+  registerRpcSuccess,
+} from "./infra/tracing.js";
+import {
+  BudgetTracker,
+  BudgetLimits,
+  BudgetConsumption,
+  BudgetCharge,
+  BudgetUsageMetadata,
+  BudgetExceededError,
+  estimateTokenUsage,
+  measureBudgetBytes,
+} from "./infra/budget.js";
 import { PlanLifecycleRegistry, PlanRunNotFoundError } from "./executor/planLifecycle.js";
 import type { PlanLifecycleSnapshot } from "./executor/planLifecycle.js";
 import { ensureParentDirectory, resolveWorkspacePath, PathResolutionError } from "./paths.js";
 import {
   normaliseJsonRpcRequest,
-  JsonRpcValidationError,
+  JsonRpcError,
+  createJsonRpcError,
   buildJsonRpcErrorResponse,
 } from "./rpc/middleware.js";
 import {
@@ -90,6 +115,12 @@ import {
   normaliseTimeoutBudget,
   loadDefaultTimeoutOverride,
 } from "./rpc/timeouts.js";
+import {
+  ToolComposeRegisterInputSchema,
+  ToolComposeRegisterInputShape,
+  ToolsListInputSchema,
+  ToolsListInputShape,
+} from "./rpc/schemas.js";
 import {
   ChildCancelInputShape,
   ChildCancelInputSchema,
@@ -107,6 +138,7 @@ import {
   ChildStreamInputSchema,
   ChildStatusInputShape,
   ChildStatusInputSchema,
+  ChildBudgetManager,
   ChildToolContext,
   ChildSpawnCodexInputShape,
   ChildSpawnCodexInputSchema,
@@ -133,12 +165,20 @@ import {
   handleChildStatus,
 } from "./tools/childTools.js";
 import {
+  MemoryVectorSearchInputSchema,
+  MemoryVectorSearchInputShape,
+  handleMemoryVectorSearch,
+} from "./tools/memoryTools.js";
+import type { MemoryVectorToolContext } from "./tools/memoryTools.js";
+import {
   PlanFanoutInputSchema,
   PlanFanoutInputShape,
   PlanJoinInputSchema,
   PlanJoinInputShape,
   PlanCompileBTInputSchema,
   PlanCompileBTInputShape,
+  PlanCompileExecuteInputSchema,
+  PlanCompileExecuteInputShape,
   PlanRunBTInputSchema,
   PlanRunBTInputShape,
   PlanRunReactiveInputSchema,
@@ -156,6 +196,7 @@ import {
   PlanToolContext,
   handlePlanFanout,
   handlePlanJoin,
+  handlePlanCompileExecute,
   handlePlanCompileBT,
   handlePlanRunBT,
   handlePlanRunReactive,
@@ -433,13 +474,36 @@ function resolveIdempotencyTtlFromEnv(): number | undefined {
   return parsed;
 }
 
+/** Resolves the maximum number of vector documents kept in memory. */
+function resolveVectorIndexCapacity(): number {
+  const raw = process.env.MCP_MEMORY_VECTOR_MAX_DOCS;
+  if (!raw) {
+    return 1024;
+  }
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return 1024;
+  }
+  return parsed;
+}
+
 const IDEMPOTENCY_TTL_OVERRIDE = resolveIdempotencyTtlFromEnv();
 /** Registry replaying cached results for idempotent operations. */
 const idempotencyRegistry = new IdempotencyRegistry({
   defaultTtlMs: IDEMPOTENCY_TTL_OVERRIDE,
 });
-/** Shared knowledge graph storing reusable plan patterns. */
-const knowledgeGraph = new KnowledgeGraph();
+/** Root directory storing the layered memory artefacts (vector + knowledge). */
+const MEMORY_ROOT = resolvePath(process.cwd(), "runs", "memory");
+/** Persistent vector index capturing long form orchestrator artefacts. */
+const vectorMemoryIndex = VectorMemoryIndex.createSync({
+  directory: resolvePath(MEMORY_ROOT, "vector"),
+  maxDocuments: resolveVectorIndexCapacity(),
+});
+/** Durable knowledge graph shared across orchestrator restarts. */
+const knowledgeGraphPersistence = PersistentKnowledgeGraph.createSync({
+  directory: resolvePath(MEMORY_ROOT, "kg"),
+});
+const knowledgeGraph = knowledgeGraphPersistence.graph;
 /** Shared causal memory tracking runtime event relationships. */
 const causalMemory = new CausalMemory();
 /** Shared value graph guarding plan execution against policy violations. */
@@ -810,8 +874,53 @@ function parseDefaultChildArgs(raw: string | undefined): string[] {
   return [];
 }
 
+function parseBudgetLimitEnv(raw: string | undefined): number | null {
+  if (raw === undefined) {
+    return null;
+  }
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value < 0) {
+    return null;
+  }
+  return Math.trunc(value);
+}
+
+function parseChildEnvAllowList(raw: string | undefined): string[] {
+  if (!raw) {
+    return [];
+  }
+  const segments = raw
+    .split(/[,\s]+/)
+    .map((token) => token.trim())
+    .filter(Boolean);
+  const allow = new Set<string>();
+  for (const segment of segments) {
+    if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(segment)) {
+      allow.add(segment);
+    }
+  }
+  return Array.from(allow);
+}
+
+function parseSandboxProfileEnv(raw: string | undefined): string | null {
+  if (!raw) {
+    return null;
+  }
+  return normaliseSandboxProfile(raw, "standard");
+}
+
+const REQUEST_BUDGET_LIMITS: BudgetLimits = {
+  timeMs: parseBudgetLimitEnv(process.env.MCP_REQUEST_BUDGET_TIME_MS),
+  tokens: parseBudgetLimitEnv(process.env.MCP_REQUEST_BUDGET_TOKENS),
+  toolCalls: parseBudgetLimitEnv(process.env.MCP_REQUEST_BUDGET_TOOL_CALLS),
+  bytesIn: parseBudgetLimitEnv(process.env.MCP_REQUEST_BUDGET_BYTES_IN),
+  bytesOut: parseBudgetLimitEnv(process.env.MCP_REQUEST_BUDGET_BYTES_OUT),
+};
+
 const defaultChildCommand = process.env.MCP_CHILD_COMMAND ?? process.execPath;
 const defaultChildArgs = parseDefaultChildArgs(process.env.MCP_CHILD_ARGS);
+const sandboxDefaultProfile = parseSandboxProfileEnv(process.env.MCP_CHILD_SANDBOX_PROFILE ?? undefined);
+const sandboxAllowEnv = parseChildEnvAllowList(process.env.MCP_CHILD_ENV_ALLOW ?? undefined);
 
 const childSupervisor = new ChildSupervisor({
   childrenRoot: CHILDREN_ROOT,
@@ -822,6 +931,10 @@ const childSupervisor = new ChildSupervisor({
     maxChildren: runtimeChildSafety.maxChildren,
     memoryLimitMb: runtimeChildSafety.memoryLimitMb,
     cpuPercent: runtimeChildSafety.cpuPercent,
+  },
+  sandbox: {
+    defaultProfile: sandboxDefaultProfile ?? undefined,
+    allowEnv: sandboxAllowEnv,
   },
   eventBus,
   recordChildLogEntry: (childId, entry: ChildLogEventSnapshot) => {
@@ -931,6 +1044,38 @@ const orchestratorSupervisor = new OrchestratorSupervisor({
     },
   },
 });
+
+const childBudgetTrackers = new Map<string, BudgetTracker>();
+
+const childBudgetManager: ChildBudgetManager = {
+  registerChildBudget(childId, limits) {
+    if (!limits) {
+      return;
+    }
+    const normalised: BudgetLimits = { ...limits };
+    const existing = childBudgetTrackers.get(childId);
+    if (existing) {
+      return;
+    }
+    childBudgetTrackers.set(childId, new BudgetTracker(normalised));
+  },
+  consumeChildBudget(childId, consumption, metadata) {
+    const tracker = childBudgetTrackers.get(childId);
+    if (!tracker) {
+      return null;
+    }
+    return tracker.consume(consumption, metadata);
+  },
+  refundChildBudget(childId, charge) {
+    const tracker = childBudgetTrackers.get(childId);
+    if (tracker && charge) {
+      tracker.refund(charge);
+    }
+  },
+  releaseChildBudget(childId) {
+    childBudgetTrackers.delete(childId);
+  },
+};
 
 function extractMetadataGoals(metadata: Record<string, unknown> | undefined): string[] {
   if (!metadata) {
@@ -1360,6 +1505,7 @@ function getChildToolContext(): ChildToolContext {
     contractNet,
     supervisorAgent: orchestratorSupervisor,
     idempotency: runtimeFeatures.enableIdempotency ? idempotencyRegistry : undefined,
+    budget: childBudgetManager,
   };
 }
 
@@ -1453,6 +1599,80 @@ function getKnowledgeToolContext(): KnowledgeToolContext {
   return { knowledgeGraph, logger };
 }
 
+function getMemoryVectorToolContext(): MemoryVectorToolContext {
+  return { vectorIndex: vectorMemoryIndex, logger };
+}
+
+interface ChildCollectMemoryPayload {
+  childId: string;
+  summaryText: string;
+  tags: string[];
+  reviewScore: number;
+  artifactCount: number;
+  reflection: ReflectionResult | null;
+}
+
+async function maybeIndexChildCollectMemory(payload: ChildCollectMemoryPayload): Promise<void> {
+  const trimmed = payload.summaryText.trim();
+  if (trimmed.length < 160) {
+    return;
+  }
+
+  let documentId: string | null = null;
+  try {
+    const document = await vectorMemoryIndex.upsert({
+      text: trimmed,
+      tags: Array.from(new Set([...payload.tags, `child:${payload.childId}`])),
+      metadata: {
+        child_id: payload.childId,
+        review_score: payload.reviewScore,
+        artifact_count: payload.artifactCount,
+        reflection: payload.reflection
+          ? {
+              insights: payload.reflection.insights.slice(0, 3),
+              next_steps: payload.reflection.nextSteps.slice(0, 3),
+            }
+          : null,
+        source: "child_collect",
+      },
+    });
+    documentId = document.id;
+  } catch (error) {
+    logger.warn("memory_vector_index_failed", {
+      child_id: payload.childId,
+      message: error instanceof Error ? error.message : String(error),
+    });
+    return;
+  }
+
+  const features = getRuntimeFeatures();
+  if (!features.enableKnowledge || !documentId) {
+    return;
+  }
+
+  try {
+    await knowledgeGraphPersistence.upsert({
+      subject: `memory:${documentId}`,
+      predicate: "describes_child",
+      object: `child:${payload.childId}`,
+      source: "child_collect",
+      confidence: normaliseConfidence(payload.reviewScore / 100),
+    });
+  } catch (error) {
+    logger.warn("memory_kg_index_failed", {
+      child_id: payload.childId,
+      message: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
+function normaliseConfidence(value: number | null | undefined): number {
+  if (value === undefined || value === null || Number.isNaN(value)) {
+    return 0.5;
+  }
+  return Math.max(0.05, Math.min(1, value));
+}
+
 function getCausalToolContext(): CausalToolContext {
   return { causalMemory, logger };
 }
@@ -1465,6 +1685,13 @@ function snapshotKnowledgeGraph(): KnowledgeTripleSnapshot[] {
 /** Replace the knowledge graph entries with the provided snapshots. */
 function restoreKnowledgeGraph(snapshots: KnowledgeTripleSnapshot[]): void {
   knowledgeGraph.restore(snapshots);
+  knowledgeGraphPersistence
+    .persist()
+    .catch((error) =>
+      logger.warn("knowledge_persist_failed", {
+        message: error instanceof Error ? error.message : String(error),
+      }),
+    );
 }
 
 function getValueToolContext(): ValueToolContext {
@@ -2976,7 +3203,41 @@ updateMcpRuntimeSnapshot({
   server: { name: SERVER_NAME, version: SERVER_VERSION, protocol: MCP_PROTOCOL_VERSION },
 });
 
+async function invokeToolForRegistry(
+  tool: string,
+  args: unknown,
+  extra: RequestHandlerExtra<ServerRequest, ServerNotification>,
+): Promise<CallToolResult> {
+  const headers: Record<string, string> | undefined = extra.requestInfo?.headers
+    ? Object.fromEntries(
+        Object.entries(extra.requestInfo.headers).flatMap(([key, value]) => {
+          if (typeof value === "string") {
+            return [[key, value]];
+          }
+          if (Array.isArray(value)) {
+            return [[key, value.join(", ")]];
+          }
+          return [] as Array<[string, string]>;
+        }),
+      )
+    : undefined;
+  const result = await routeJsonRpcRequest(tool, args, {
+    headers,
+    transport: "tool-os",
+  });
+  return result as CallToolResult;
+}
+
 const server = new McpServer({ name: SERVER_NAME, version: SERVER_VERSION });
+
+const toolRegistry = await ToolRegistry.create({
+  server,
+  logger,
+  runsRoot: process.env.MCP_RUNS_ROOT,
+  clock: () => new Date(),
+  invokeTool: invokeToolForRegistry,
+});
+process.once("exit", () => toolRegistry.close());
 
 // Keep the MCP capabilities export in sync with the tools registered on the
 // underlying `McpServer` instance. The SDK stores registrations in a private
@@ -3034,6 +3295,26 @@ server.registerTool(
     }
     const capabilities = getMcpCapabilities();
     return { content: [{ type: "text", text: j({ format: "json", capabilities }) }] };
+  },
+);
+
+server.registerTool(
+  "tools_list",
+  {
+    title: "Tools list",
+    description: "Répertorie les manifests dynamiques exposés via le Tool-OS.",
+    inputSchema: ToolsListInputShape,
+  },
+  async (input: unknown) => {
+    const parsed = ToolsListInputSchema.parse(input ?? {});
+    const manifests = toolRegistry.list();
+    const byName = parsed.names ? manifests.filter((manifest) => parsed.names!.includes(manifest.name)) : manifests;
+    const filtered = parsed.kinds ? byName.filter((manifest) => parsed.kinds!.includes(manifest.kind)) : byName;
+    const payload = { generated_at: new Date().toISOString(), tools: filtered };
+    return {
+      content: [{ type: "text", text: j({ tool: "tools_list", result: payload }) }],
+      structuredContent: payload,
+    };
   },
 );
 
@@ -3104,6 +3385,52 @@ server.registerTool(
       content: [{ type: "text" as const, text: j({ tool: "health_check", result: payload }) }],
       structuredContent: payload,
     };
+  },
+);
+
+server.registerTool(
+  "tool_compose_register",
+  {
+    title: "Tool compose register",
+    description: "Assemble un pipeline de tools et persiste le manifest composite.",
+    inputSchema: ToolComposeRegisterInputShape,
+  },
+  async (input: unknown) => {
+    try {
+      const parsed = ToolComposeRegisterInputSchema.parse(input);
+      const request: CompositeRegistrationRequest = {
+        name: parsed.name,
+        title: parsed.title,
+        description: parsed.description,
+        tags: parsed.tags ?? [],
+        steps: parsed.steps.map((step) => ({
+          id: step.id,
+          tool: step.tool,
+          arguments: step.arguments ?? undefined,
+          capture: step.capture ?? undefined,
+        })),
+      };
+      const manifest = await toolRegistry.registerComposite(request);
+      const payload = { tool: manifest.name, manifest };
+      return {
+        content: [{ type: "text", text: j({ tool: "tool_compose_register", result: payload }) }],
+        structuredContent: payload,
+      };
+    } catch (error) {
+      if (error instanceof ToolRegistrationError) {
+        logger.warn("tool_compose_register_failed", { message: error.message });
+        return {
+          isError: true,
+          content: [
+            {
+              type: "text",
+              text: j({ error: "TOOL_REGISTRATION_FAILED", message: error.message }),
+            },
+          ],
+        };
+      }
+      throw error;
+    }
   },
 );
 
@@ -4767,6 +5094,34 @@ server.registerTool(
 );
 
 server.registerTool(
+  "memory_vector_search",
+  {
+    title: "Memory vector search",
+    description: "Recherche des artefacts textuels en mémoire vectorielle (cosine).",
+    inputSchema: MemoryVectorSearchInputShape,
+  },
+  async (
+    input: unknown,
+    _extra: RequestHandlerExtra<ServerRequest, ServerNotification>,
+  ) => {
+    const disabled = ensureKnowledgeEnabled("memory_vector_search");
+    if (disabled) {
+      return disabled;
+    }
+    try {
+      const parsed = MemoryVectorSearchInputSchema.parse(input);
+      const result = handleMemoryVectorSearch(getMemoryVectorToolContext(), parsed);
+      return {
+        content: [{ type: "text" as const, text: j({ tool: "memory_vector_search", result }) }],
+        structuredContent: result,
+      };
+    } catch (error) {
+      return knowledgeToolError(logger, "memory_vector_search", error);
+    }
+  },
+);
+
+server.registerTool(
   "kg_insert",
   {
     title: "Knowledge insert",
@@ -4781,12 +5136,39 @@ server.registerTool(
     try {
       const parsed = KgInsertInputSchema.parse(input);
       const result = handleKgInsert(getKnowledgeToolContext(), parsed);
+      await knowledgeGraphPersistence.persist();
       return {
         content: [{ type: "text" as const, text: j({ tool: "kg_insert", result }) }],
         structuredContent: result,
       };
     } catch (error) {
       return knowledgeToolError(logger, "kg_insert", error);
+    }
+  },
+);
+
+server.registerTool(
+  "kg_upsert",
+  {
+    title: "Knowledge upsert",
+    description: "Alias de kg_insert garantissant la persistance immédiate du graphe.",
+    inputSchema: KgInsertInputShape,
+  },
+  async (input: unknown) => {
+    const disabled = ensureKnowledgeEnabled("kg_upsert");
+    if (disabled) {
+      return disabled;
+    }
+    try {
+      const parsed = KgInsertInputSchema.parse(input);
+      const result = handleKgInsert(getKnowledgeToolContext(), parsed);
+      await knowledgeGraphPersistence.persist();
+      return {
+        content: [{ type: "text" as const, text: j({ tool: "kg_upsert", result }) }],
+        structuredContent: result,
+      };
+    } catch (error) {
+      return knowledgeToolError(logger, "kg_upsert", error);
     }
   },
 );
@@ -5875,6 +6257,30 @@ server.registerTool(
       };
     } catch (error) {
       return planToolError(logger, "plan_reduce", error);
+    }
+  },
+);
+
+server.registerTool(
+  "plan_compile_execute",
+  {
+    title: "Plan compile & schedule",
+    description: "Compile un plan YAML/JSON en Behaviour Tree et planning critique.",
+    inputSchema: PlanCompileExecuteInputShape,
+  },
+  async (input) => {
+    try {
+      const parsed = PlanCompileExecuteInputSchema.parse(input);
+      const result = handlePlanCompileExecute(getPlanToolContext(), parsed);
+      return {
+        content: [{ type: "text" as const, text: j({ tool: "plan_compile_execute", result }) }],
+        structuredContent: result,
+      };
+    } catch (error) {
+      return planToolError(logger, "plan_compile_execute", error, {}, {
+        defaultCode: "E-PLAN-INVALID",
+        invalidInputCode: "E-PLAN-INVALID",
+      });
     }
   },
 );
@@ -7006,6 +7412,15 @@ server.registerTool(
         payload.needs_revision = qualityAssessment.gate.needs_revision;
       }
 
+      await maybeIndexChildCollectMemory({
+        childId: parsed.child_id,
+        summaryText: summary.text,
+        tags: Array.from(tags),
+        reviewScore: review.overall,
+        artifactCount: result.outputs.artifacts.length,
+        reflection: reflectionSummary,
+      });
+
       return {
         content: [{ type: "text" as const, text: j({ tool: "child_collect", result: payload }) }],
         structuredContent: payload,
@@ -7927,6 +8342,8 @@ export interface JsonRpcRouteContext {
   payloadSizeBytes?: number;
   /** Timeout budget (milliseconds) applied to the JSON-RPC handler. */
   timeoutMs?: number;
+  /** Budget tracker attached to the current request lifecycle. */
+  budget?: BudgetTracker;
 }
 
 /** Signature of the internal request handler registered by the MCP SDK. */
@@ -8492,6 +8909,12 @@ function recordJsonRpcObservability(input: JsonRpcObservabilityInput): void {
         : null,
   } as const;
 
+  if (input.stage === "error") {
+    registerRpcError(input.errorCode ?? null);
+  } else if (input.stage === "response") {
+    registerRpcSuccess();
+  }
+
   let envelope: ReturnType<EventBus["publish"]> | undefined;
   try {
     envelope = eventBus.publish({
@@ -8558,12 +8981,170 @@ function recordJsonRpcObservability(input: JsonRpcObservabilityInput): void {
     );
   }
 }
+/** Configuration describing how to persist a WAL entry for an idempotent mutation. */
+interface IdempotentWalConfig {
+  /** Logical channel receiving the append-only entry (tx, graph, child, ...). */
+  readonly topic: string;
+  /** Semantic label stored alongside the payload to ease replay filtering. */
+  readonly event: string;
+}
+
+/**
+ * Lookup table enumerating JSON-RPC methods that must append an invocation to the
+ * write-ahead log whenever an idempotent HTTP request is executed. The keys are
+ * normalised to lowercase so callers can safely trim/transform method names
+ * before querying the table.
+ */
+const IDEMPOTENT_MUTATION_WAL_MAP = new Map<string, IdempotentWalConfig>([
+  ["graph_mutate", { topic: "graph", event: "graph_mutate" }],
+  ["graph_batch_mutate", { topic: "graph", event: "graph_batch_mutate" }],
+  ["graph_patch", { topic: "graph", event: "graph_patch" }],
+  ["graph_rewrite_apply", { topic: "graph", event: "graph_rewrite_apply" }],
+  ["tx_begin", { topic: "tx", event: "tx_begin" }],
+  ["tx_apply", { topic: "tx", event: "tx_apply" }],
+  ["tx_commit", { topic: "tx", event: "tx_commit" }],
+  ["tx_rollback", { topic: "tx", event: "tx_rollback" }],
+  ["child_create", { topic: "child", event: "child_create" }],
+  ["child_batch_create", { topic: "child", event: "child_batch_create" }],
+  ["child_spawn_codex", { topic: "child", event: "child_spawn_codex" }],
+  ["child_set_role", { topic: "child", event: "child_set_role" }],
+  ["child_set_limits", { topic: "child", event: "child_set_limits" }],
+  ["child_send", { topic: "child", event: "child_send" }],
+  ["child_cancel", { topic: "child", event: "child_cancel" }],
+  ["child_kill", { topic: "child", event: "child_kill" }],
+]);
+
+/** Normalises a method/tool name before probing {@link IDEMPOTENT_MUTATION_WAL_MAP}. */
+function normaliseWalMethodName(name: string | null | undefined): string | null {
+  if (typeof name !== "string") {
+    return null;
+  }
+  const trimmed = name.trim();
+  if (trimmed.length === 0) {
+    return null;
+  }
+  return trimmed.toLowerCase();
+}
+
+/**
+ * Resolves the WAL configuration associated with the provided JSON-RPC
+ * invocation. The helper first inspects the logical tool name (when available)
+ * and falls back to the raw method, which keeps `tools/call` invocations
+ * compatible with the lookup table.
+ */
+function resolveIdempotentWalConfig(method: string, toolName: string | null): IdempotentWalConfig | null {
+  const byTool = normaliseWalMethodName(toolName);
+  if (byTool) {
+    const config = IDEMPOTENT_MUTATION_WAL_MAP.get(byTool);
+    if (config) {
+      return config;
+    }
+  }
+
+  const byMethod = normaliseWalMethodName(method);
+  if (!byMethod) {
+    return null;
+  }
+  return IDEMPOTENT_MUTATION_WAL_MAP.get(byMethod) ?? null;
+}
+
+/**
+ * Best-effort serialisation guard used before persisting JSON-RPC parameters in
+ * the WAL. Structured cloning keeps the payload compact while avoiding
+ * accidental references to mutable objects shared with the live request.
+ */
+function serialiseWalPayload(value: unknown): unknown {
+  try {
+    // Using JSON as an intermediary avoids pulling `structuredClone` into the
+    // runtime bundle while still guaranteeing deterministic snapshots.
+    return JSON.parse(JSON.stringify(value));
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    return { non_serialisable: true, reason };
+  }
+}
+
+/**
+ * Appends an invocation snapshot to the WAL before executing the underlying
+ * handler. Failures are logged but never propagated to keep the request flow
+ * resilient: observability should not compromise availability.
+ */
+async function recordIdempotentWalInvocation(
+  config: IdempotentWalConfig,
+  request: JsonRpcRequest,
+  context: JsonRpcRouteContext | undefined,
+  toolName: string | null,
+): Promise<void> {
+  const idempotencyKey = context?.idempotencyKey;
+  if (!idempotencyKey) {
+    return;
+  }
+
+  const rawMethod = typeof request.method === "string" ? request.method : String(request.method ?? "");
+  const cacheKey = buildIdempotencyCacheKey(rawMethod, idempotencyKey, request.params);
+
+  try {
+    await appendWalEntry(config.topic, config.event, {
+      cache_key: cacheKey,
+      method: rawMethod,
+      tool: toolName ?? null,
+      idempotency_key: idempotencyKey,
+      request_id: request.id ?? null,
+      http_request_id: context?.requestId ?? null,
+      transport: context?.transport ?? null,
+      child_id: context?.childId ?? null,
+      params: serialiseWalPayload(request.params ?? null),
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    logger.warn("wal_append_failed", {
+      topic: config.topic,
+      event: config.event,
+      method: rawMethod,
+      idempotency_key: idempotencyKey,
+      message,
+    });
+  }
+}
+
+/**
+ * Convenience wrapper exposed to transports so they can append WAL entries when
+ * the fast-path bypasses {@link handleJsonRpc}. Callers can optionally provide
+ * the already normalised method/tool names to avoid duplicate computation.
+ */
+export async function maybeRecordIdempotentWalEntry(
+  request: JsonRpcRequest,
+  context: JsonRpcRouteContext | undefined,
+  overrides: { method?: string; toolName?: string | null } = {},
+): Promise<void> {
+  const explicitMethod = overrides.method;
+  const method =
+    typeof explicitMethod === "string" && explicitMethod.trim().length > 0
+      ? explicitMethod
+      : typeof request.method === "string"
+        ? request.method
+        : "";
+  const toolName =
+    overrides.toolName !== undefined
+      ? overrides.toolName
+      : resolveJsonRpcToolName(method, request.params);
+  const config = resolveIdempotentWalConfig(method, toolName ?? null);
+  if (!config) {
+    return;
+  }
+  await recordIdempotentWalInvocation(config, request, context, toolName ?? null);
+}
+
+
 export async function handleJsonRpc(
   req: JsonRpcRequest,
   context?: JsonRpcRouteContext,
 ): Promise<JsonRpcResponse> {
   const rawId = req?.id ?? null;
-  const requestIdHint = context?.requestId ?? rawId;
+  const runtimeContext: JsonRpcRouteContext = context ? { ...context } : {};
+  const requestIdHint = runtimeContext.requestId ?? rawId;
+  const requestBudget = new BudgetTracker(REQUEST_BUDGET_LIMITS);
+  runtimeContext.budget = requestBudget;
   let sanitizedRequest: JsonRpcRequest;
   let method = typeof req?.method === "string" ? req.method.trim() || "unknown" : "unknown";
   let toolName: string | null = null;
@@ -8574,15 +9155,15 @@ export async function handleJsonRpc(
     method = normalised.method.trim() || (normalised.method ? normalised.method : "unknown");
     toolName = normalised.toolName ?? resolveJsonRpcToolName(normalised.request.method, normalised.request.params);
   } catch (error) {
-    if (error instanceof JsonRpcValidationError) {
+    if (error instanceof JsonRpcError) {
       recordJsonRpcObservability({
         stage: "error",
         method,
         toolName: resolveJsonRpcToolName(typeof req?.method === "string" ? req.method : "", req?.params),
         requestId: rawId,
-        transport: context?.transport,
-        idempotencyKey: context?.idempotencyKey ?? null,
-        correlation: collectCorrelationFromContext(context),
+        transport: runtimeContext?.transport,
+        idempotencyKey: runtimeContext?.idempotencyKey ?? null,
+        correlation: collectCorrelationFromContext(runtimeContext),
         status: "error",
         errorMessage: error.data?.hint ?? error.message,
         errorCode: error.code,
@@ -8597,39 +9178,80 @@ export async function handleJsonRpc(
   const rawMethod = typeof request.method === "string" ? request.method : "";
   const invocationArgs = extractInvocationArguments(rawMethod, request.params);
   let correlation = mergeCorrelationSnapshots(
-    collectCorrelationFromContext(context),
+    collectCorrelationFromContext(runtimeContext),
     collectCorrelationFromPayload(invocationArgs),
   );
-  const transport = context?.transport ?? null;
-  const childId = context?.childId ?? null;
-  const payloadBytes = context?.payloadSizeBytes ?? 0;
+  const transport = runtimeContext?.transport ?? null;
+  const childId = runtimeContext?.childId ?? null;
+  const payloadBytes = runtimeContext?.payloadSizeBytes ?? 0;
   const timeoutBudget = normaliseTimeoutBudget(
     resolveRpcTimeoutBudget(method, toolName ?? null),
     DEFAULT_RPC_TIMEOUT_OVERRIDE,
   );
   const timeoutMs = timeoutBudget.timeoutMs;
-
   const processRequest = async (): Promise<JsonRpcResponse> => {
+    try {
+      requestBudget.consume(
+        {
+          toolCalls: 1,
+          tokens: estimateTokenUsage(invocationArgs),
+          bytesIn: payloadBytes,
+        },
+        { actor: "transport", operation: method, stage: "ingress" },
+      );
+    } catch (error) {
+      if (error instanceof BudgetExceededError) {
+        const budgetError = createJsonRpcError("BUDGET_EXCEEDED", "Request budget exhausted", {
+          requestId: id,
+          hint: `request budget exceeded on ${error.dimension}`,
+          meta: {
+            dimension: error.dimension,
+            remaining: error.remaining,
+            attempted: error.attempted,
+            limit: error.limit,
+          },
+          status: 429,
+        });
+        recordJsonRpcObservability({
+          stage: "error",
+          method,
+          toolName,
+          requestId: id,
+          transport: runtimeContext?.transport,
+          idempotencyKey: runtimeContext?.idempotencyKey ?? null,
+          correlation,
+          status: "error",
+          timeoutMs,
+          errorMessage: budgetError.data?.hint ?? budgetError.message,
+          errorCode: budgetError.code,
+        });
+        return buildJsonRpcErrorResponse(id, budgetError);
+      }
+      throw error;
+    }
+
     recordJsonRpcObservability({
       stage: "request",
       method,
       toolName,
       requestId: id,
-      transport: context?.transport,
-      idempotencyKey: context?.idempotencyKey ?? null,
+      transport: runtimeContext?.transport,
+      idempotencyKey: runtimeContext?.idempotencyKey ?? null,
       correlation,
       status: "pending",
       timeoutMs,
     });
 
+    await maybeRecordIdempotentWalEntry(request, runtimeContext, { method, toolName });
+
     const startedAt = Date.now();
     try {
-      let result = await runWithJsonRpcContext(context, async () =>
-        routeJsonRpcRequest(request.method, request.params, { ...context, requestId: id, timeoutMs }),
+      let result = await runWithJsonRpcContext(runtimeContext, async () =>
+        routeJsonRpcRequest(request.method, request.params, { ...runtimeContext, requestId: id, timeoutMs }),
       );
       correlation = mergeCorrelationSnapshots(correlation, collectCorrelationFromPayload(result));
 
-      if (shouldHydrateMcpInfo(request, context, result)) {
+      if (shouldHydrateMcpInfo(request, runtimeContext, result)) {
         result = getMcpInfo();
         correlation = mergeCorrelationSnapshots(correlation, collectCorrelationFromPayload(result));
       }
@@ -8638,18 +9260,20 @@ export async function handleJsonRpc(
       const errorSnapshot = detectJsonRpcErrorResult(result);
 
       if (errorSnapshot) {
+        const normalisedErrorCode =
+          typeof errorSnapshot.code === "number" ? errorSnapshot.code : null;
         recordJsonRpcObservability({
           stage: "error",
           method,
           toolName,
           requestId: id,
-          transport: context?.transport,
-          idempotencyKey: context?.idempotencyKey ?? null,
+          transport: runtimeContext?.transport,
+          idempotencyKey: runtimeContext?.idempotencyKey ?? null,
           correlation,
           status: "error",
           elapsedMs,
           errorMessage: errorSnapshot.message,
-          errorCode: null,
+          errorCode: normalisedErrorCode,
           timeoutMs,
         });
       } else {
@@ -8658,13 +9282,58 @@ export async function handleJsonRpc(
           method,
           toolName,
           requestId: id,
-          transport: context?.transport,
-          idempotencyKey: context?.idempotencyKey ?? null,
+          transport: runtimeContext?.transport,
+          idempotencyKey: runtimeContext?.idempotencyKey ?? null,
           correlation,
           status: "ok",
           elapsedMs,
           timeoutMs,
         });
+      }
+
+      try {
+        requestBudget.consume(
+          {
+            timeMs: elapsedMs,
+            bytesOut: measureBudgetBytes(result),
+            tokens: estimateTokenUsage(result),
+          },
+          {
+            actor: "transport",
+            operation: method,
+            stage: errorSnapshot ? "egress_error" : "egress",
+          },
+        );
+      } catch (error) {
+        if (error instanceof BudgetExceededError) {
+          const budgetError = createJsonRpcError("BUDGET_EXCEEDED", "Request budget exhausted", {
+            requestId: id,
+            hint: `response budget exceeded on ${error.dimension}`,
+            meta: {
+              dimension: error.dimension,
+              remaining: error.remaining,
+              attempted: error.attempted,
+              limit: error.limit,
+            },
+            status: 429,
+          });
+          recordJsonRpcObservability({
+            stage: "error",
+            method,
+            toolName,
+            requestId: id,
+            transport: runtimeContext?.transport,
+            idempotencyKey: runtimeContext?.idempotencyKey ?? null,
+            correlation,
+            status: "error",
+            elapsedMs,
+            errorMessage: budgetError.data?.hint ?? budgetError.message,
+            errorCode: budgetError.code,
+            timeoutMs,
+          });
+          return buildJsonRpcErrorResponse(id, budgetError);
+        }
+        throw error;
       }
 
       return { jsonrpc: "2.0", id, result };
@@ -8685,8 +9354,8 @@ export async function handleJsonRpc(
         method,
         toolName,
         requestId: id,
-        transport: context?.transport,
-        idempotencyKey: context?.idempotencyKey ?? null,
+        transport: runtimeContext?.transport,
+        idempotencyKey: runtimeContext?.idempotencyKey ?? null,
         correlation,
         status: "error",
         elapsedMs,
@@ -8695,7 +9364,49 @@ export async function handleJsonRpc(
         timeoutMs,
       });
 
-      return { jsonrpc: "2.0", id, error: { code: errorCode, message, data: errorData } };
+      const errorPayload = { code: errorCode, message, data: errorData };
+      try {
+        requestBudget.consume(
+          {
+            timeMs: elapsedMs,
+            bytesOut: measureBudgetBytes(errorPayload),
+            tokens: estimateTokenUsage(errorPayload),
+          },
+          { actor: "transport", operation: method, stage: "egress_error" },
+        );
+      } catch (budgetError) {
+        if (budgetError instanceof BudgetExceededError) {
+          const jsonRpcError = createJsonRpcError("BUDGET_EXCEEDED", "Request budget exhausted", {
+            requestId: id,
+            hint: `response budget exceeded on ${budgetError.dimension}`,
+            meta: {
+              dimension: budgetError.dimension,
+              remaining: budgetError.remaining,
+              attempted: budgetError.attempted,
+              limit: budgetError.limit,
+            },
+            status: 429,
+          });
+          recordJsonRpcObservability({
+            stage: "error",
+            method,
+            toolName,
+            requestId: id,
+            transport: runtimeContext?.transport,
+            idempotencyKey: runtimeContext?.idempotencyKey ?? null,
+            correlation,
+            status: "error",
+            elapsedMs,
+            errorMessage: jsonRpcError.data?.hint ?? jsonRpcError.message,
+            errorCode: jsonRpcError.code,
+            timeoutMs,
+          });
+          return buildJsonRpcErrorResponse(id, jsonRpcError);
+        }
+        throw budgetError;
+      }
+
+      return { jsonrpc: "2.0", id, error: errorPayload };
     }
   };
 

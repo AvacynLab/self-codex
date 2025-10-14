@@ -34,6 +34,13 @@ export interface IdempotencyStore {
   purge?(now?: number): Promise<void>;
 
   /**
+   * Optional semantic guard ensuring callers do not reuse the same idempotency
+   * key with different payloads. Implementations should throw an
+   * {@link IdempotencyConflictError} when a mismatch is detected.
+   */
+  assertKeySemantics?(cacheKey: string): Promise<void> | void;
+
+  /**
    * Optional readiness probe used by health endpoints. Implementations should
    * resolve when the backing store can accept writes and reject when the
    * orchestrator should temporarily refuse idempotent requests.
@@ -67,3 +74,29 @@ export type PersistedIdempotencyEntry = {
   /** Optional diagnostic payload reserved for future features. */
   meta?: unknown;
 };
+
+/**
+ * Error raised when a persisted idempotency record detects conflicting inputs
+ * for the same logical key. The HTTP transport translates the failure into a
+ * `409 Conflict` response to inform clients that the original payload must be
+ * retried verbatim.
+ */
+export class IdempotencyConflictError extends Error {
+  /** HTTP status associated with the semantic conflict. */
+  readonly status = 409;
+  /** Stable error identifier consumed by higher level middlewares. */
+  readonly code = "IDEMPOTENCY_CONFLICT" as const;
+  /** JSON-RPC method targeted by the conflicting request. */
+  readonly method: string;
+  /** User supplied idempotency key that triggered the conflict. */
+  readonly idempotencyKey: string;
+
+  constructor(method: string, idempotencyKey: string, message?: string) {
+    const hint =
+      message ??
+      `Idempotency key '${idempotencyKey}' for method '${method}' was reused with different parameters.`;
+    super(hint);
+    this.method = method;
+    this.idempotencyKey = idempotencyKey;
+  }
+}

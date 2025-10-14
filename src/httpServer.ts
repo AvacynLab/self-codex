@@ -6,22 +6,27 @@ import process from "node:process";
 // NOTE: Node built-in modules are imported with the explicit `node:` prefix to guarantee ESM resolution in Node.js.
 
 import { StructuredLogger } from "./logger.js";
-import { handleJsonRpc, type JsonRpcRequest, type JsonRpcRouteContext } from "./server.js";
+import { handleJsonRpc, maybeRecordIdempotentWalEntry, type JsonRpcRequest, type JsonRpcRouteContext } from "./server.js";
 import { HttpRuntimeOptions, createHttpSessionId } from "./serverOptions.js";
 import { applySecurityHeaders, ensureRequestId } from "./http/headers.js";
 import { rateLimitOk } from "./http/rateLimit.js";
 import { readJsonBody } from "./http/body.js";
 import { tokenOk } from "./http/auth.js";
 import { buildIdempotencyCacheKey } from "./infra/idempotency.js";
-import type { IdempotencyStore } from "./infra/idempotencyStore.js";
+import { IdempotencyConflictError, type IdempotencyStore } from "./infra/idempotencyStore.js";
 import {
   runWithRpcTrace,
   annotateTraceContext,
-  registerInboundBytes,
   registerOutboundBytes,
   getActiveTraceContext,
   renderMetricsSnapshot,
 } from "./infra/tracing.js";
+import {
+  buildJsonRpcErrorResponse,
+  createJsonRpcError,
+  type JsonRpcErrorCategory,
+  type JsonRpcErrorOptions,
+} from "./rpc/middleware.js";
 
 type HttpTransportRequest = Parameters<StreamableHTTPServerTransport["handleRequest"]>[0];
 type HttpTransportResponse = Parameters<StreamableHTTPServerTransport["handleRequest"]>[1];
@@ -43,6 +48,18 @@ interface RateLimiterConfig {
   rps: number;
   /** Maximum number of tokens stored in the bucket. */
   burst: number;
+}
+
+/** Metadata attached to HTTP guard failures for structured logging. */
+interface HttpErrorMeta {
+  /** High-resolution timestamp captured when the HTTP request reached the server. */
+  startedAt?: bigint;
+  /** Bytes observed on the wire for the offending request, if any. */
+  bytesIn?: number;
+  /** JSON-RPC method inferred from the payload when available. */
+  method?: string;
+  /** JSON-RPC identifier extracted from the request. */
+  jsonrpcId?: string | number | null;
 }
 
 /** Default limiter configuration used when no environment overrides are supplied. */
@@ -175,11 +192,16 @@ export async function startHttpServer(
     const request = req as HttpTransportRequest;
     const response = res as HttpTransportResponse;
     applySecurityHeaders(response);
+    const requestStartedAt = process.hrtime.bigint();
     const requestUrl = request.url ? new URL(request.url, `http://${request.headers.host ?? "localhost"}`) : null;
     const requestId = ensureRequestId(request, response);
+    const remoteAddress = request.socket?.remoteAddress ?? "unknown";
+    const guardMeta: HttpErrorMeta = { startedAt: requestStartedAt };
 
     if (!requestUrl) {
-      response.writeHead(400, { "Content-Type": "application/json" }).end(JSON.stringify({ error: "BAD_REQUEST" }));
+      await respondWithJsonRpcError(response, 400, "VALIDATION_ERROR", "Invalid Request", logger, requestId, guardMeta, {
+        code: -32600,
+      });
       return;
     }
 
@@ -194,10 +216,10 @@ export async function startHttpServer(
     }
 
     if (requestUrl.pathname === "/metrics") {
-      if (!enforceRateLimit(`${request.socket.remoteAddress ?? "unknown"}:${requestUrl.pathname}`, response, logger, requestId)) {
+      if (!enforceRateLimit(`${remoteAddress}:${requestUrl.pathname}`, response, logger, requestId, guardMeta)) {
         return;
       }
-      if (!enforceBearerToken(request, response, logger, requestId)) {
+      if (!enforceBearerToken(request, response, logger, requestId, guardMeta)) {
         return;
       }
 
@@ -205,24 +227,31 @@ export async function startHttpServer(
       response.statusCode = 200;
       response.setHeader("Content-Type", "text/plain; charset=utf-8");
       response.end(body, "utf8");
+      const durationMs = computeDurationMs(requestStartedAt);
+      const bytesOut = Buffer.byteLength(body, "utf8");
+      registerOutboundBytes(bytesOut);
       logger.info("http_metrics_served", {
         request_id: requestId,
-        bytes_out: Buffer.byteLength(body, "utf8"),
+        trace_id: getActiveTraceContext()?.traceId ?? null,
+        bytes_out: bytesOut,
+        duration_ms: durationMs,
       });
       return;
     }
 
     if (requestUrl.pathname !== options.path) {
-      response.writeHead(404, { "Content-Type": "application/json" }).end(JSON.stringify({ error: "NOT_FOUND" }));
+      await respondWithJsonRpcError(response, 404, "VALIDATION_ERROR", "Method not found", logger, requestId, guardMeta, {
+        code: -32601,
+      });
       return;
     }
 
-    const clientKey = `${request.socket.remoteAddress ?? "unknown"}:${requestUrl.pathname}`;
-    if (!enforceRateLimit(clientKey, response, logger, requestId)) {
+    const clientKey = `${remoteAddress}:${requestUrl.pathname}`;
+    if (!enforceRateLimit(clientKey, response, logger, requestId, guardMeta)) {
       return;
     }
 
-    if (!enforceBearerToken(request, response, logger, requestId)) {
+    if (!enforceBearerToken(request, response, logger, requestId, guardMeta)) {
       return;
     }
 
@@ -238,7 +267,10 @@ export async function startHttpServer(
         request_id: requestId,
       });
       if (!response.headersSent) {
-        response.writeHead(500, { "Content-Type": "application/json" }).end(JSON.stringify({ error: "INTERNAL_ERROR" }));
+        await respondWithJsonRpcError(response, 500, "INTERNAL", "Internal error", logger, requestId, {
+          ...guardMeta,
+          method: "transport",
+        });
       } else {
         response.end();
       }
@@ -284,7 +316,13 @@ export async function startHttpServer(
   };
 }
 
-/** Handles `/healthz` by measuring event loop responsiveness and GC availability. */
+/**
+ * Handles `/healthz` by measuring event loop responsiveness while surfacing GC
+ * availability for operators. The probe now treats the absence of an exposed
+ * GC hook (common in production builds without `--expose-gc`) as informative
+ * metadata rather than a failure condition so health checks succeed on
+ * distroless images.
+ */
 async function handleHealthCheck(
   req: HttpTransportRequest,
   res: HttpTransportResponse,
@@ -300,7 +338,7 @@ async function handleHealthCheck(
   await new Promise((resolve) => setImmediate(resolve));
   const delayMs = Date.now() - before;
   const gcAvailable = typeof (globalThis as { gc?: (() => void) | undefined }).gc === "function";
-  const healthy = gcAvailable && delayMs <= HEALTH_EVENT_LOOP_DELAY_BUDGET_MS;
+  const healthy = delayMs <= HEALTH_EVENT_LOOP_DELAY_BUDGET_MS;
   const payload = {
     ok: healthy,
     event_loop_delay_ms: delayMs,
@@ -373,6 +411,7 @@ function enforceBearerToken(
   res: HttpTransportResponse,
   logger: StructuredLogger,
   requestId: string,
+  meta: HttpErrorMeta = {},
 ): boolean {
   const requiredToken = process.env.MCP_HTTP_TOKEN ?? "";
   if (!requiredToken) {
@@ -381,7 +420,7 @@ function enforceBearerToken(
 
   const header = req.headers["authorization"];
   const provided = Array.isArray(header) ? header[0] : header;
-  const token = typeof provided === "string" && provided.startsWith("Bearer ") ? provided.slice(7) : undefined;
+  const token = typeof provided === "string" ? provided.replace(/^Bearer\s+/, "") : undefined;
   const valid = typeof token === "string" && tokenOk(token, requiredToken);
 
   if (valid) {
@@ -389,9 +428,12 @@ function enforceBearerToken(
   }
 
   logger.warn("http_auth_rejected", { reason: "missing_or_invalid_token", request_id: requestId });
-  res.statusCode = 401;
-  res.setHeader("Content-Type", "application/json");
-  res.end(JSON.stringify({ jsonrpc: "2.0", id: null, error: { code: 401, message: "E-MCP-AUTH" } }), "utf8");
+  void respondWithJsonRpcError(res, 401, "AUTH_REQUIRED", "Authentication required", logger, requestId, meta, {
+    hint: "Missing or invalid bearer token",
+    // Keep the legacy E-MCP-AUTH marker in metadata so downstream scrapers and
+    // assertions that rely on the historical flag remain compatible.
+    meta: { code: "E-MCP-AUTH" },
+  });
   return false;
 }
 
@@ -404,6 +446,7 @@ function enforceRateLimit(
   res: HttpTransportResponse,
   logger: StructuredLogger,
   requestId: string,
+  meta: HttpErrorMeta = {},
 ): boolean {
   const config = rateLimiterConfig;
   if (config.disabled || rateLimitOk(key, config.rps, config.burst)) {
@@ -411,10 +454,9 @@ function enforceRateLimit(
   }
 
   logger.warn("http_rate_limited", { key, request_id: requestId });
-  res.writeHead(429, { "Content-Type": "application/json" }).end(
-    JSON.stringify({ jsonrpc: "2.0", id: null, error: { code: 429, message: "Too Many Requests" } }),
-    "utf8",
-  );
+  void respondWithJsonRpcError(res, 429, "RATE_LIMITED", "Rate limit exceeded", logger, requestId, meta, {
+    hint: "Rate limit exceeded",
+  });
   return false;
 }
 
@@ -431,6 +473,7 @@ async function tryHandleJsonRpc(
   delegateParam?: (request: JsonRpcRequest, context?: JsonRpcRouteContext) => Promise<unknown>,
   idempotency?: HttpIdempotencyConfig,
 ): Promise<boolean> {
+  const startedAt = process.hrtime.bigint();
   let requestId: string | undefined;
   let delegate: (request: JsonRpcRequest, context?: JsonRpcRouteContext) => Promise<unknown> = handleJsonRpc;
 
@@ -452,10 +495,14 @@ async function tryHandleJsonRpc(
 
   let parsed: JsonRpcRequest;
   let requestBytes = 0;
+  let methodName = "unknown";
+  let jsonrpcId: string | number | null = null;
   try {
     const body = await readJsonBody<JsonRpcRequest>(req, MAX_JSON_RPC_BYTES);
     parsed = body.parsed;
     requestBytes = body.bytes;
+    jsonrpcId = typeof parsed?.id === "string" || typeof parsed?.id === "number" ? parsed.id : null;
+    methodName = typeof parsed?.method === "string" ? parsed.method : "unknown";
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     const status = typeof (error as { status?: number } | undefined)?.status === "number" ? (error as any).status : 400;
@@ -465,11 +512,23 @@ async function tryHandleJsonRpc(
       request_id: requestId,
     });
 
-    const payload =
+    const errorDetails =
       status === 413
-        ? { jsonrpc: "2.0" as const, id: null, error: { code: -32600, message: "Payload Too Large" } }
-        : { jsonrpc: "2.0" as const, id: null, error: { code: -32700, message: "Parse error" } };
-    await sendJson(res, status, payload, false, logger, requestId, undefined, idempotency);
+        ? createJsonRpcError("VALIDATION_ERROR", "Payload Too Large", { code: -32600, requestId: jsonrpcId })
+        : createJsonRpcError("VALIDATION_ERROR", "Parse error", { code: -32700, requestId: jsonrpcId });
+    const payload = buildJsonRpcErrorResponse(null, errorDetails);
+    const bytesOut = await sendJson(res, status, payload, false, logger, requestId, undefined, idempotency);
+    logJsonRpcOutcome(logger, "warn", {
+      httpRequestId: requestId,
+      startedAt,
+      bytesIn: requestBytes,
+      bytesOut,
+      method: methodName,
+      jsonrpcId,
+      status,
+      cacheStatus: "bypass",
+          errorCode: typeof payload.error?.code === "number" ? payload.error.code : undefined,
+    });
     return true;
   }
 
@@ -483,28 +542,69 @@ async function tryHandleJsonRpc(
   if (idempotency && idempotencyKey && typeof parsed?.method === "string") {
     cacheKey = buildIdempotencyCacheKey(parsed.method, idempotencyKey, parsed.params);
     try {
-      const replay = await idempotency.store.get(cacheKey);
-      if (replay) {
-        logger.info("http_idempotency_replayed", {
-          request_id: requestId,
-          cache_key: cacheKey,
-          status: replay.status,
+      await Promise.resolve(idempotency.store.assertKeySemantics?.(cacheKey));
+    } catch (assertionError) {
+      if (assertionError instanceof IdempotencyConflictError || (assertionError as { status?: number })?.status === 409) {
+        const conflict = createJsonRpcError("IDEMPOTENCY_CONFLICT", "Idempotency conflict", {
+          requestId: jsonrpcId,
+          hint: "Idempotency key was reused with different parameters.",
         });
-        res.statusCode = replay.status;
-        res.setHeader("Content-Type", "application/json");
-        res.setHeader("x-idempotency-cache", "hit");
-        res.end(replay.body, "utf8");
+        const payload = buildJsonRpcErrorResponse(jsonrpcId, conflict);
+        const bytesOut = await sendJson(res, 409, payload, false, logger, requestId, undefined, idempotency);
+        logJsonRpcOutcome(logger, "warn", {
+          httpRequestId: requestId,
+          startedAt,
+          bytesIn: requestBytes,
+          bytesOut,
+          method: methodName,
+          jsonrpcId,
+          status: 409,
+          cacheStatus: "conflict",
+          errorCode: conflict.code,
+        });
         return true;
       }
-    } catch (lookupError) {
-      const message = lookupError instanceof Error ? lookupError.message : String(lookupError);
-      logger.warn("http_idempotency_lookup_failed", { request_id: requestId, cache_key: cacheKey, message });
+      const message = assertionError instanceof Error ? assertionError.message : String(assertionError);
+      logger.warn("http_idempotency_assert_failed", { request_id: requestId, cache_key: cacheKey, message });
+      cacheKey = null;
+    }
+
+    if (cacheKey) {
+      try {
+        const replay = await idempotency.store.get(cacheKey);
+        if (replay) {
+          logger.info("http_idempotency_replayed", {
+            request_id: requestId,
+            cache_key: cacheKey,
+            status: replay.status,
+          });
+          res.statusCode = replay.status;
+          res.setHeader("Content-Type", "application/json");
+          res.setHeader("x-idempotency-cache", "hit");
+          res.end(replay.body, "utf8");
+          const bytesOut = Buffer.byteLength(replay.body, "utf8");
+          registerOutboundBytes(bytesOut);
+          logJsonRpcOutcome(logger, "info", {
+            httpRequestId: requestId,
+            startedAt,
+            bytesIn: requestBytes,
+            bytesOut,
+            method: methodName,
+            jsonrpcId,
+            status: replay.status,
+            cacheStatus: "hit",
+          });
+          return true;
+        }
+      } catch (lookupError) {
+        const message = lookupError instanceof Error ? lookupError.message : String(lookupError);
+        logger.warn("http_idempotency_lookup_failed", { request_id: requestId, cache_key: cacheKey, message });
+      }
     }
   }
 
   const transport = context.transport ?? "http";
-  const requestIdentifier = typeof parsed?.id === "string" || typeof parsed?.id === "number" ? parsed.id : null;
-  const methodName = typeof parsed?.method === "string" ? parsed.method : "unknown";
+  const requestIdentifier = jsonrpcId;
 
   await runWithRpcTrace(
     {
@@ -512,7 +612,7 @@ async function tryHandleJsonRpc(
       requestId: requestIdentifier,
       childId: context.childId ?? null,
       transport,
-      bytesIn: 0,
+      bytesIn: requestBytes,
     },
     async () => {
       annotateTraceContext({
@@ -521,11 +621,11 @@ async function tryHandleJsonRpc(
         childId: context.childId ?? null,
         transport,
       });
-      registerInboundBytes(requestBytes);
 
       try {
+        await maybeRecordIdempotentWalEntry(parsed, context, { method: methodName });
         const response = await delegate(parsed, context);
-        await sendJson(
+        const bytesOut = await sendJson(
           res,
           200,
           response,
@@ -535,21 +635,46 @@ async function tryHandleJsonRpc(
           cacheKey ?? undefined,
           idempotency,
         );
+        logJsonRpcOutcome(logger, "info", {
+          httpRequestId: requestId,
+          startedAt,
+          bytesIn: requestBytes,
+          bytesOut,
+          method: methodName,
+          jsonrpcId,
+          status: 200,
+          cacheStatus: cacheKey ? "miss" : "bypass",
+        });
       } catch (error) {
         logger.error("http_jsonrpc_failure", {
           message: error instanceof Error ? error.message : String(error),
           request_id: requestId,
         });
-        await sendJson(
+        const failure = buildJsonRpcErrorResponse(
+          parsed?.id ?? null,
+          createJsonRpcError("INTERNAL", "Internal error", { requestId: jsonrpcId }),
+        );
+        const bytesOut = await sendJson(
           res,
           500,
-          { jsonrpc: "2.0" as const, id: parsed?.id ?? null, error: { code: -32000, message: "Internal error" } },
+          failure,
           cacheKey !== null,
           logger,
           requestId,
           cacheKey ?? undefined,
           idempotency,
         );
+        logJsonRpcOutcome(logger, "error", {
+          httpRequestId: requestId,
+          startedAt,
+          bytesIn: requestBytes,
+          bytesOut,
+          method: methodName,
+          jsonrpcId,
+          status: 500,
+          cacheStatus: cacheKey ? "miss" : "bypass",
+          errorCode: failure.error?.code,
+        });
       }
     },
   );
@@ -617,6 +742,76 @@ export const __httpServerInternals = {
   getRateLimiterConfig: () => rateLimiterConfig,
 };
 
+type JsonRpcLogLevel = "info" | "warn" | "error";
+
+interface JsonRpcOutcomeDetails extends HttpErrorMeta {
+  /** Structured HTTP request identifier propagated via `x-request-id`. */
+  httpRequestId?: string | undefined;
+  /** HTTP status code returned to the caller. */
+  status: number;
+  /** Number of bytes emitted in the response body. */
+  bytesOut: number;
+  /** Cache outcome for the request (hit/miss/bypass/conflict). */
+  cacheStatus?: "hit" | "miss" | "bypass" | "conflict";
+  /** Optional JSON-RPC error code when an error is returned. */
+  errorCode?: number | null;
+}
+
+async function respondWithJsonRpcError(
+  res: HttpTransportResponse,
+  status: number,
+  category: JsonRpcErrorCategory,
+  message: string,
+  logger: StructuredLogger,
+  httpRequestId: string | undefined,
+  meta: HttpErrorMeta = {},
+  options: JsonRpcErrorOptions = {},
+): Promise<number> {
+  const jsonId = typeof meta.jsonrpcId === "string" || typeof meta.jsonrpcId === "number" ? meta.jsonrpcId : null;
+  const enrichedOptions: JsonRpcErrorOptions = {
+    ...options,
+    requestId: jsonId,
+    status: options.status ?? status,
+  };
+  const error = createJsonRpcError(category, message, enrichedOptions);
+  const payload = buildJsonRpcErrorResponse(jsonId, error);
+  const bytesOut = await sendJson(res, status, payload, false, logger, httpRequestId, undefined, undefined);
+  logJsonRpcOutcome(logger, status >= 500 ? "error" : "warn", {
+    ...meta,
+    httpRequestId,
+    status,
+    bytesOut,
+    cacheStatus: "bypass",
+    errorCode: error.code,
+  });
+  return bytesOut;
+}
+
+function logJsonRpcOutcome(logger: StructuredLogger, level: JsonRpcLogLevel, details: JsonRpcOutcomeDetails): void {
+  const trace = getActiveTraceContext();
+  const log = logger[level].bind(logger) as (event: string, payload: Record<string, unknown>) => void;
+  log("http_jsonrpc_completed", {
+    request_id: details.httpRequestId ?? null,
+    trace_id: trace?.traceId ?? null,
+    jsonrpc_id: details.jsonrpcId ?? null,
+    method: details.method ?? "unknown",
+    status: details.status,
+    duration_ms: computeDurationMs(details.startedAt),
+    bytes_in: Math.max(0, details.bytesIn ?? 0),
+    bytes_out: Math.max(0, details.bytesOut),
+    cache_status: details.cacheStatus ?? null,
+    error_code: details.errorCode ?? null,
+  });
+}
+
+function computeDurationMs(startedAt?: bigint): number {
+  if (!startedAt) {
+    return 0;
+  }
+  const elapsed = process.hrtime.bigint() - startedAt;
+  return Number(elapsed / 1_000_000n);
+}
+
 async function sendJson(
   res: HttpTransportResponse,
   status: number,
@@ -626,7 +821,7 @@ async function sendJson(
   requestId: string | undefined,
   cacheKey: string | undefined,
   idempotency?: HttpIdempotencyConfig,
-): Promise<void> {
+): Promise<number> {
   const body = JSON.stringify(payload);
   res.statusCode = status;
   res.setHeader("Content-Type", "application/json");
@@ -635,10 +830,11 @@ async function sendJson(
     res.setHeader("x-trace-id", trace.traceId);
   }
   res.end(body, "utf8");
-  registerOutboundBytes(Buffer.byteLength(body, "utf8"));
+  const bytesOut = Buffer.byteLength(body, "utf8");
+  registerOutboundBytes(bytesOut);
 
   if (!shouldPersist || !idempotency || !cacheKey) {
-    return;
+    return bytesOut;
   }
 
   try {
@@ -647,5 +843,6 @@ async function sendJson(
     const message = error instanceof Error ? error.message : String(error);
     logger.warn("http_idempotency_store_failed", { request_id: requestId, cache_key: cacheKey, message });
   }
+  return bytesOut;
 }
 

@@ -1,12 +1,25 @@
-# Ignore development artefacts and transient run directories.
+# Minimise the Docker build context by excluding development artefacts and transient outputs.
 node_modules
 runs
 validation_runs
-tests
+validation
 coverage
+coverage-*
+logs
 npm-debug.log*
+*.lcov
 .DS_Store
 .git
+.gitignore
 .tmp
 .tmp*
+tmp
+.tmp_* 
+*.swp
+# Generated build artefacts are recreated inside the container during the builder stage.
 dist
+graph-forge/dist
+# Local test fixtures and reports are unnecessary in runtime images.
+tests
+**/*.test.ts
+reports

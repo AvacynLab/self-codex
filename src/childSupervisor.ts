@@ -6,6 +6,11 @@ import process from "node:process";
 import type { ProcessEnv, Signal } from "./nodePrimitives.js";
 
 import { defaultFileSystemGateway, type FileSystemGateway } from "./gateways/fs.js";
+import {
+  prepareChildSandbox,
+  type ChildSandboxRequest,
+  type ChildSandboxSupervisorOptions,
+} from "./children/sandbox.js";
 
 import {
   ChildCollectedOutputs,
@@ -24,7 +29,12 @@ import { bridgeChildRuntimeEvents, type ChildRuntimeBridgeContext } from "./even
 import { extractCorrelationHints, mergeCorrelationHints, type EventCorrelationHints } from "./events/correlation.js";
 import { ChildrenIndex, ChildRecordSnapshot } from "./state/childrenIndex.js";
 import { childWorkspacePath, ensureDirectory } from "./paths.js";
-import { OneForOneSupervisor } from "./children/supervisor.js";
+import {
+  ChildCircuitOpenError,
+  OneForOneSupervisor,
+  type SupervisionTicket,
+  type SupervisorEvent,
+} from "./children/supervisor.js";
 
 /**
  * Options used to bootstrap a {@link ChildSupervisor} instance.
@@ -86,6 +96,8 @@ export interface ChildSupervisorOptions {
   fileSystem?: FileSystemGateway;
   /** Optional tuning knobs for the restart supervision strategy. */
   supervision?: ChildSupervisorSupervisionOptions;
+  /** Optional defaults applied to sandboxed children. */
+  sandbox?: ChildSandboxSupervisorOptions;
 }
 
 /** Snapshot persisted when forwarding child logs to downstream observers. */
@@ -153,12 +165,25 @@ export interface ChildSupervisionBreakerOptions {
   cooldownMs?: number;
   /** Maximum number of in-flight attempts allowed during half-open probing. */
   halfOpenMaxInFlight?: number;
+  /** Optional snake_case alias for {@link cooldownMs}. */
+  cooldown_ms?: number;
+  /** Optional snake_case alias for {@link halfOpenMaxInFlight}. */
+  half_open_max?: number;
 }
 
 /** Container for all supervision-related tuning knobs. */
 export interface ChildSupervisorSupervisionOptions {
   breaker?: ChildSupervisionBreakerOptions;
   backoff?: ChildSupervisionBackoffOptions;
+  policies?: ChildSupervisionPolicyOptions;
+}
+
+/** Additional policy tuning options enforced by the supervisor. */
+export interface ChildSupervisionPolicyOptions {
+  /** Maximum number of restarts tolerated per minute (`null` disables the quota). */
+  maxRestartsPerMinute?: number | null;
+  /** Snake_case alias accepted for compatibility with checklist wording. */
+  "max_restarts_per_min"?: number | null;
 }
 
 /** Descriptor persisted for logical HTTP children managed without spawning processes. */
@@ -288,6 +313,8 @@ export interface CreateChildOptions {
   readyType?: string;
   /** Maximum duration granted to the ready handshake. */
   readyTimeoutMs?: number;
+  /** Declarative sandbox configuration for the child runtime. */
+  sandbox?: ChildSandboxRequest | null;
 }
 
 /**
@@ -353,10 +380,12 @@ export class ChildSupervisor {
   private readonly idleCheckIntervalMs: number;
   private readonly runtimeSupervisor: OneForOneSupervisor;
   private readonly supervisionKeyByChild = new Map<string, string>();
+  private readonly supervisionMaxRestartsPerMinute: number | null;
   private maxChildren: number | null = null;
   private memoryLimitMb: number | null = null;
   private cpuPercent: number | null = null;
   private baseLimitsTemplate: ChildRuntimeLimits | null = null;
+  private readonly sandboxDefaults: ChildSandboxSupervisorOptions;
 
   constructor(options: ChildSupervisorOptions) {
     this.childrenRoot = options.childrenRoot;
@@ -383,15 +412,16 @@ export class ChildSupervisor {
       typeof breakerOptions.failThreshold === "number" && Number.isFinite(breakerOptions.failThreshold) && breakerOptions.failThreshold > 0
         ? Math.trunc(breakerOptions.failThreshold)
         : 3;
+    const cooldownCandidate =
+      breakerOptions.cooldownMs ?? breakerOptions.cooldown_ms;
     const cooldownMs =
-      typeof breakerOptions.cooldownMs === "number" && Number.isFinite(breakerOptions.cooldownMs) && breakerOptions.cooldownMs >= 0
-        ? Math.trunc(breakerOptions.cooldownMs)
+      typeof cooldownCandidate === "number" && Number.isFinite(cooldownCandidate) && cooldownCandidate >= 0
+        ? Math.trunc(cooldownCandidate)
         : 15_000;
+    const halfOpenCandidate = breakerOptions.halfOpenMaxInFlight ?? breakerOptions.half_open_max;
     const halfOpenMaxInFlight =
-      typeof breakerOptions.halfOpenMaxInFlight === "number" &&
-      Number.isFinite(breakerOptions.halfOpenMaxInFlight) &&
-      breakerOptions.halfOpenMaxInFlight > 0
-        ? Math.trunc(breakerOptions.halfOpenMaxInFlight)
+      typeof halfOpenCandidate === "number" && Number.isFinite(halfOpenCandidate) && halfOpenCandidate > 0
+        ? Math.trunc(halfOpenCandidate)
         : 1;
     const minBackoffMs =
       typeof backoffOptions.minMs === "number" && Number.isFinite(backoffOptions.minMs) && backoffOptions.minMs >= 0
@@ -409,6 +439,17 @@ export class ChildSupervisor {
         ? backoffOptions.factor
         : 2;
 
+    const policies = supervision.policies ?? {};
+    const rawMaxRestarts =
+      policies.maxRestartsPerMinute ?? policies["max_restarts_per_min"] ?? undefined;
+    let maxRestartsPerMinute: number | null = 6;
+    if (rawMaxRestarts === null) {
+      maxRestartsPerMinute = null;
+    } else if (typeof rawMaxRestarts === "number" && Number.isFinite(rawMaxRestarts)) {
+      maxRestartsPerMinute = rawMaxRestarts > 0 ? Math.trunc(rawMaxRestarts) : null;
+    }
+    this.supervisionMaxRestartsPerMinute = maxRestartsPerMinute;
+
     this.runtimeSupervisor = new OneForOneSupervisor({
       breaker: {
         failThreshold,
@@ -418,9 +459,17 @@ export class ChildSupervisor {
       minBackoffMs,
       maxBackoffMs,
       backoffFactor,
+      maxRestartsPerMinute,
+      onEvent: (event) => {
+        this.handleSupervisionEvent(event);
+      },
     });
 
     this.configureSafety(options.safety ?? {});
+    this.sandboxDefaults = {
+      defaultProfile: options.sandbox?.defaultProfile ?? null,
+      allowEnv: options.sandbox?.allowEnv ? [...options.sandbox.allowEnv] : null,
+    };
   }
 
   /** Returns the safety guardrails currently enforced by the supervisor. */
@@ -767,12 +816,45 @@ export class ChildSupervisor {
 
     const command = options.command ?? this.defaultCommand;
     const args = options.args ? [...options.args] : [...this.defaultArgs];
-    const env = { ...this.defaultEnv, ...(options.env ?? {}) };
+    const resolvedLimits = this.resolveChildLimits(options.limits ?? null);
+    const baseEnv: ProcessEnv = { ...this.defaultEnv, ...(options.env ?? {}) };
+    const sandbox = await prepareChildSandbox({
+      childId,
+      childrenRoot: this.childrenRoot,
+      baseEnv,
+      request: options.sandbox ?? null,
+      defaults: this.sandboxDefaults,
+      memoryLimitMb: this.resolveSandboxMemoryLimit(resolvedLimits),
+    });
+    const env = sandbox.env;
     const supervisionKey = options.supervisionKey ?? this.buildSupervisionKey(command, args);
-    const supervisionTicket = await this.runtimeSupervisor.acquire(supervisionKey);
+    let supervisionTicket: SupervisionTicket | null = null;
+    try {
+      supervisionTicket = await this.runtimeSupervisor.acquire(supervisionKey);
+    } catch (error) {
+      if (error instanceof ChildCircuitOpenError && error.retryAt !== null) {
+        const retryDelay = Math.max(0, error.retryAt - Date.now());
+        if (retryDelay > 0) {
+          await new Promise<void>((resolve) => {
+            const handle = runtimeTimers.setTimeout(() => {
+              resolve();
+            }, retryDelay);
+            const maybeHandle = handle as { unref?: () => void };
+            if (typeof maybeHandle.unref === "function") {
+              maybeHandle.unref();
+            }
+          });
+        }
+        supervisionTicket = await this.runtimeSupervisor.acquire(supervisionKey);
+      } else {
+        throw error;
+      }
+    }
+    if (!supervisionTicket) {
+      throw new Error("Failed to acquire supervision ticket");
+    }
     let supervisionSettled = false;
 
-    const resolvedLimits = this.resolveChildLimits(options.limits ?? null);
     const resolvedRole = options.role ?? (typeof options.metadata?.role === "string" ? String(options.metadata.role) : null);
 
     const metadata: Record<string, unknown> = { ...(options.metadata ?? {}) };
@@ -782,6 +864,7 @@ export class ChildSupervisor {
     if (resolvedLimits) {
       metadata.limits = structuredClone(resolvedLimits);
     }
+    metadata.sandbox = sandbox.metadata;
 
     let runtime: ChildRuntime | null = null;
     let readyMessage: ChildRuntimeMessage | null = null;
@@ -1327,6 +1410,23 @@ export class ChildSupervisor {
   }
 
   /**
+   * Resolves the effective memory limit (in megabytes) enforced by the sandbox
+   * when computing NODE_OPTIONS. Caller-provided limits take precedence over
+   * the supervisor-wide ceiling so idempotent requests can tighten resources
+   * for specific children without relaxing the global policy.
+   */
+  private resolveSandboxMemoryLimit(limits: ChildRuntimeLimits | null): number | null {
+    const requested = limits?.["memory_mb"];
+    if (typeof requested === "number" && Number.isFinite(requested) && requested > 0) {
+      return Math.trunc(requested);
+    }
+    if (this.memoryLimitMb !== null) {
+      return this.memoryLimitMb;
+    }
+    return null;
+  }
+
+  /**
    * Merges configured safety limits with caller-provided overrides while
    * guarding against attempts to exceed the configured ceilings.
    */
@@ -1420,6 +1520,69 @@ export class ChildSupervisor {
     if (timer) {
       runtimeTimers.clearInterval(timer);
       this.watchdogs.delete(childId);
+    }
+  }
+
+  /**
+   * Forwards supervision lifecycle events to the optional event bus so
+   * observability backends and downstream tooling can trace breaker state
+   * transitions alongside restart attempts.
+   */
+  private handleSupervisionEvent(event: SupervisorEvent): void {
+    if (!this.eventBus) {
+      return;
+    }
+    const relatedChildren = [] as string[];
+    for (const [childId, key] of this.supervisionKeyByChild.entries()) {
+      if (key === event.key) {
+        relatedChildren.push(childId);
+      }
+    }
+    const baseData = {
+      event,
+      relatedChildren,
+      maxRestartsPerMinute: this.supervisionMaxRestartsPerMinute,
+    };
+    const base = {
+      cat: "child" as const,
+      component: "child_supervisor",
+      stage: "supervision",
+      childId: relatedChildren.length === 1 ? relatedChildren[0] : null,
+      data: baseData,
+    };
+    switch (event.type) {
+      case "child_restart":
+        this.eventBus.publish({
+          ...base,
+          level: "info",
+          kind: "CHILD_RESTART",
+          msg: "child.restart.scheduled",
+        });
+        break;
+      case "breaker_open":
+        this.eventBus.publish({
+          ...base,
+          level: "warn",
+          kind: "BREAKER_OPEN",
+          msg: "child.breaker.open",
+        });
+        break;
+      case "breaker_half_open":
+        this.eventBus.publish({
+          ...base,
+          level: "info",
+          kind: "BREAKER_HALF_OPEN",
+          msg: "child.breaker.half_open",
+        });
+        break;
+      case "breaker_closed":
+        this.eventBus.publish({
+          ...base,
+          level: "info",
+          kind: "BREAKER_CLOSED",
+          msg: "child.breaker.closed",
+        });
+        break;
     }
   }
 

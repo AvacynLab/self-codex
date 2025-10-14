@@ -20,4 +20,7 @@ COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/graph-forge/dist ./graph-forge/dist
 COPY --from=builder /app/package.json ./package.json
-ENTRYPOINT ["node", "dist/server.js"]
+# Distroless Node images expose the runtime binary at /nodejs/bin/node instead of
+# adding it to PATH. Use the absolute location so docker run works without
+# overriding the entrypoint.
+ENTRYPOINT ["/nodejs/bin/node", "/app/dist/server.js"]

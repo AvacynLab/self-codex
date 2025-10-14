@@ -15,6 +15,7 @@ import type { NormalisedGraph } from "../graph/types.js";
 import { GraphValidationError, validateGraph, assertValidGraph } from "../graph/validate.js";
 import type { GraphInvariantReport } from "../graph/invariants.js";
 import { recordOperation } from "../graph/oplog.js";
+import { fireAndForgetGraphWal } from "../graph/wal.js";
 import { diffGraphs } from "../graph/diff.js";
 import { ERROR_CODES } from "../types.js";
 import { resolveOperationId } from "./operationIds.js";
@@ -184,6 +185,17 @@ export function handleTxBegin(context: TxToolContext, input: TxBeginInput): TxBe
       expiresAt: opened.expiresAt,
     });
 
+    fireAndForgetGraphWal("tx_begin_tool", {
+      tx_id: opened.txId,
+      graph_id: opened.graphId,
+      op_id: opId,
+      base_version: opened.baseVersion,
+      owner: opened.owner,
+      note: opened.note,
+      expires_at: opened.expiresAt,
+      idempotency_key: input.idempotency_key ?? null,
+    });
+
     return formatBeginResult(opened, opId);
   };
 
@@ -237,6 +249,16 @@ export function handleTxApply(context: TxToolContext, input: TxApplyInput): TxAp
     input.tx_id,
   );
 
+  fireAndForgetGraphWal("tx_apply", {
+    tx_id: input.tx_id,
+    graph_id: metadata.graphId,
+    op_id: opId,
+    operations: input.operations.length,
+    changed,
+    owner: metadata.owner,
+    note: metadata.note,
+  });
+
   return {
     op_id: opId,
     tx_id: input.tx_id,
@@ -279,6 +301,16 @@ export function handleTxCommit(context: TxToolContext, input: TxCommitInput): Tx
     graph: committed.graph,
   });
 
+  fireAndForgetGraphWal("tx_commit_tool", {
+    tx_id: committed.txId,
+    graph_id: committed.graphId,
+    op_id: opId,
+    committed_version: committed.version,
+    committed_at: committed.committedAt,
+    owner: metadata.owner,
+    note: metadata.note,
+  });
+
   return {
     op_id: opId,
     tx_id: committed.txId,
@@ -294,6 +326,14 @@ export function handleTxRollback(context: TxToolContext, input: TxRollbackInput)
   const opId = resolveOperationId(input.op_id, "tx_rollback_op");
   const rolled = context.transactions.rollback(input.tx_id);
   context.resources.markGraphSnapshotRolledBack(rolled.graphId, rolled.txId);
+
+  fireAndForgetGraphWal("tx_rollback_tool", {
+    tx_id: rolled.txId,
+    graph_id: rolled.graphId,
+    op_id: opId,
+    base_version: rolled.version,
+    rolled_back_at: rolled.rolledBackAt,
+  });
   return {
     op_id: opId,
     tx_id: rolled.txId,
