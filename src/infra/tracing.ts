@@ -225,7 +225,8 @@ function buildBudgetMetricKey(parts: {
   return `${parts.method}|${parts.stage}|${parts.actor}|${normaliseMetricLabel(parts.dimension, "unknown")}`;
 }
 
-function collectBudgetMetrics(): BudgetMetricSnapshot[] {
+/** Returns a snapshot of the budget metrics captured so far (exposed for tests). */
+export function collectBudgetMetrics(): BudgetMetricSnapshot[] {
   const snapshots: BudgetMetricSnapshot[] = [];
   for (const [key, record] of budgetMetrics.entries()) {
     const [method, stage, actor, dimension] = key.split("|");

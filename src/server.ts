@@ -62,7 +62,14 @@ import { MetaCritic, ReviewKind, ReviewResult } from "./agents/metaCritic.js";
 import { reflect, ReflectionResult } from "./agents/selfReflect.js";
 import { scoreCode, scorePlan, scoreText, ScoreCodeInput, ScorePlanInput, ScoreTextInput } from "./quality/scoring.js";
 import { appendWalEntry } from "./state/wal.js";
-import { ToolRegistry, ToolRegistrationError, type CompositeRegistrationRequest } from "./mcp/registry.js";
+import {
+  ToolRegistry,
+  ToolRegistrationError,
+  type CompositeRegistrationRequest,
+  type ToolBudgets,
+  type ToolManifest,
+} from "./mcp/registry.js";
+import { evaluateToolDeprecation, logToolDeprecation } from "./mcp/deprecations.js";
 import { SharedMemoryStore } from "./memory/store.js";
 import { PersistentKnowledgeGraph } from "./memory/kg.js";
 import { VectorMemoryIndex } from "./memory/vector.js";
@@ -164,6 +171,19 @@ import {
   handleChildStream,
   handleChildStatus,
 } from "./tools/childTools.js";
+import { registerIntentRouteTool } from "./tools/intent_route.js";
+import { registerArtifactWriteTool } from "./tools/artifact_write.js";
+import { registerArtifactReadTool } from "./tools/artifact_read.js";
+import { registerArtifactSearchTool } from "./tools/artifact_search.js";
+import { registerToolsHelpTool } from "./tools/tools_help.js";
+import { registerProjectScaffoldRunTool } from "./tools/project_scaffold_run.js";
+import { registerGraphApplyChangeSetTool } from "./tools/graph_apply_change_set.js";
+import { registerGraphSnapshotTimeTravelTool } from "./tools/graph_snapshot_time_travel.js";
+import { registerPlanCompileExecuteTool } from "./tools/plan_compile_execute.js";
+import { registerMemoryUpsertTool } from "./tools/memory_upsert.js";
+import { registerMemorySearchTool } from "./tools/memory_search.js";
+import { registerChildOrchestrateTool } from "./tools/child_orchestrate.js";
+import { registerRuntimeObserveTool } from "./tools/runtime_observe.js";
 import {
   MemoryVectorSearchInputSchema,
   MemoryVectorSearchInputShape,
@@ -177,8 +197,6 @@ import {
   PlanJoinInputShape,
   PlanCompileBTInputSchema,
   PlanCompileBTInputShape,
-  PlanCompileExecuteInputSchema,
-  PlanCompileExecuteInputShape,
   PlanRunBTInputSchema,
   PlanRunBTInputShape,
   PlanRunReactiveInputSchema,
@@ -3239,6 +3257,62 @@ const toolRegistry = await ToolRegistry.create({
 });
 process.once("exit", () => toolRegistry.close());
 
+await registerToolsHelpTool(toolRegistry, { logger });
+await registerIntentRouteTool(toolRegistry, { logger });
+await registerRuntimeObserveTool(toolRegistry, { logger });
+await registerProjectScaffoldRunTool(toolRegistry, {
+  logger,
+  workspaceRoot: process.cwd(),
+  idempotency: runtimeFeatures.enableIdempotency ? idempotencyRegistry : undefined,
+});
+await registerArtifactWriteTool(toolRegistry, {
+  logger,
+  childrenRoot: CHILDREN_ROOT,
+  idempotency: runtimeFeatures.enableIdempotency ? idempotencyRegistry : undefined,
+});
+await registerArtifactReadTool(toolRegistry, {
+  logger,
+  childrenRoot: CHILDREN_ROOT,
+});
+await registerArtifactSearchTool(toolRegistry, {
+  logger,
+  childrenRoot: CHILDREN_ROOT,
+});
+await registerGraphApplyChangeSetTool(toolRegistry, {
+  logger,
+  transactions: graphTransactions,
+  locks: graphLocks,
+  resources,
+  idempotency: runtimeFeatures.enableIdempotency ? idempotencyRegistry : undefined,
+});
+await registerGraphSnapshotTimeTravelTool(toolRegistry, {
+  logger,
+  transactions: graphTransactions,
+  locks: graphLocks,
+  resources,
+  idempotency: runtimeFeatures.enableIdempotency ? idempotencyRegistry : undefined,
+  runsRoot: process.env.MCP_RUNS_ROOT,
+});
+await registerPlanCompileExecuteTool(toolRegistry, {
+  plan: getPlanToolContext(),
+  logger,
+  idempotency: runtimeFeatures.enableIdempotency ? idempotencyRegistry : undefined,
+});
+await registerChildOrchestrateTool(toolRegistry, {
+  supervisor: childSupervisor,
+  logger,
+  idempotency: runtimeFeatures.enableIdempotency ? idempotencyRegistry : undefined,
+});
+await registerMemoryUpsertTool(toolRegistry, {
+  vectorIndex: vectorMemoryIndex,
+  logger,
+  idempotency: runtimeFeatures.enableIdempotency ? idempotencyRegistry : undefined,
+});
+await registerMemorySearchTool(toolRegistry, {
+  vectorIndex: vectorMemoryIndex,
+  logger,
+});
+
 // Keep the MCP capabilities export in sync with the tools registered on the
 // underlying `McpServer` instance. The SDK stores registrations in a private
 // field therefore we rely on a defensive cast to access the internal map.
@@ -3307,7 +3381,7 @@ server.registerTool(
   },
   async (input: unknown) => {
     const parsed = ToolsListInputSchema.parse(input ?? {});
-    const manifests = toolRegistry.list();
+    const manifests = toolRegistry.listVisible(parsed.mode, parsed.pack);
     const byName = parsed.names ? manifests.filter((manifest) => parsed.names!.includes(manifest.name)) : manifests;
     const filtered = parsed.kinds ? byName.filter((manifest) => parsed.kinds!.includes(manifest.kind)) : byName;
     const payload = { generated_at: new Date().toISOString(), tools: filtered };
@@ -6262,30 +6336,6 @@ server.registerTool(
 );
 
 server.registerTool(
-  "plan_compile_execute",
-  {
-    title: "Plan compile & schedule",
-    description: "Compile un plan YAML/JSON en Behaviour Tree et planning critique.",
-    inputSchema: PlanCompileExecuteInputShape,
-  },
-  async (input) => {
-    try {
-      const parsed = PlanCompileExecuteInputSchema.parse(input);
-      const result = handlePlanCompileExecute(getPlanToolContext(), parsed);
-      return {
-        content: [{ type: "text" as const, text: j({ tool: "plan_compile_execute", result }) }],
-        structuredContent: result,
-      };
-    } catch (error) {
-      return planToolError(logger, "plan_compile_execute", error, {}, {
-        defaultCode: "E-PLAN-INVALID",
-        invalidInputCode: "E-PLAN-INVALID",
-      });
-    }
-  },
-);
-
-server.registerTool(
   "plan_compile_bt",
   {
     title: "Plan compile Behaviour Tree",
@@ -8344,6 +8394,8 @@ export interface JsonRpcRouteContext {
   timeoutMs?: number;
   /** Budget tracker attached to the current request lifecycle. */
   budget?: BudgetTracker;
+  /** Request-level tracker used by the transport to enforce ingress/egress quotas. */
+  requestBudget?: BudgetTracker;
 }
 
 /** Signature of the internal request handler registered by the MCP SDK. */
@@ -9136,6 +9188,43 @@ export async function maybeRecordIdempotentWalEntry(
 }
 
 
+/** Converts manifest budgets into multi-dimensional limits understood by {@link BudgetTracker}. */
+function normaliseToolBudgetLimits(budgets: ToolBudgets | undefined): BudgetLimits | undefined {
+  if (!budgets) {
+    return undefined;
+  }
+  const limits: BudgetLimits = {};
+  let applied = false;
+
+  if (typeof budgets.time_ms === "number" && Number.isFinite(budgets.time_ms) && budgets.time_ms >= 0) {
+    limits.timeMs = Math.trunc(budgets.time_ms);
+    applied = true;
+  }
+  if (typeof budgets.tool_calls === "number" && Number.isFinite(budgets.tool_calls) && budgets.tool_calls >= 0) {
+    limits.toolCalls = Math.trunc(budgets.tool_calls);
+    applied = true;
+  }
+  if (typeof budgets.bytes_out === "number" && Number.isFinite(budgets.bytes_out) && budgets.bytes_out >= 0) {
+    limits.bytesOut = Math.trunc(budgets.bytes_out);
+    applied = true;
+  }
+
+  return applied ? limits : undefined;
+}
+
+/** Builds a dedicated budget tracker for the provided tool manifest when available. */
+function createToolBudgetTracker(toolName: string | null): BudgetTracker | null {
+  if (!toolName) {
+    return null;
+  }
+  const manifest: ToolManifest | undefined = toolRegistry.get(toolName);
+  if (!manifest) {
+    return null;
+  }
+  return new BudgetTracker(normaliseToolBudgetLimits(manifest.budgets));
+}
+
+
 export async function handleJsonRpc(
   req: JsonRpcRequest,
   context?: JsonRpcRouteContext,
@@ -9144,7 +9233,8 @@ export async function handleJsonRpc(
   const runtimeContext: JsonRpcRouteContext = context ? { ...context } : {};
   const requestIdHint = runtimeContext.requestId ?? rawId;
   const requestBudget = new BudgetTracker(REQUEST_BUDGET_LIMITS);
-  runtimeContext.budget = requestBudget;
+  runtimeContext.requestBudget = requestBudget;
+  runtimeContext.budget = undefined;
   let sanitizedRequest: JsonRpcRequest;
   let method = typeof req?.method === "string" ? req.method.trim() || "unknown" : "unknown";
   let toolName: string | null = null;
@@ -9173,6 +9263,9 @@ export async function handleJsonRpc(
     throw error;
   }
 
+  const toolBudgetTracker = createToolBudgetTracker(toolName);
+  runtimeContext.budget = toolBudgetTracker ?? runtimeContext.budget;
+
   const id = sanitizedRequest.id ?? null;
   const request = sanitizedRequest;
   const rawMethod = typeof request.method === "string" ? request.method : "";
@@ -9181,6 +9274,37 @@ export async function handleJsonRpc(
     collectCorrelationFromContext(runtimeContext),
     collectCorrelationFromPayload(invocationArgs),
   );
+  const deprecation = toolName ? evaluateToolDeprecation(toolName, undefined, new Date()) : null;
+  if (deprecation?.metadata && toolName) {
+    const logPayload = { name: toolName, metadata: deprecation.metadata, ageDays: deprecation.ageDays };
+    if (deprecation.forceRemoval) {
+      logToolDeprecation(logger, "warn", "tool_deprecated_blocked", logPayload);
+      const replacementHint = deprecation.metadata.replace_with
+        ? `utilise '${deprecation.metadata.replace_with}' à la place`
+        : "mets à jour ton intégration";
+      const removalError = createJsonRpcError("VALIDATION_ERROR", "Tool retired", {
+        requestId: id,
+        hint: `l'outil '${toolName}' est retiré (${deprecation.metadata.since}); ${replacementHint}.`,
+        status: 410,
+        meta: { tool: toolName, since: deprecation.metadata.since },
+      });
+      recordJsonRpcObservability({
+        stage: "error",
+        method,
+        toolName,
+        requestId: id,
+        transport: runtimeContext?.transport,
+        idempotencyKey: runtimeContext?.idempotencyKey ?? null,
+        correlation,
+        status: "error",
+        timeoutMs: null,
+        errorMessage: removalError.data?.hint ?? removalError.message,
+        errorCode: removalError.code,
+      });
+      return buildJsonRpcErrorResponse(id, removalError);
+    }
+    logToolDeprecation(logger, "warn", "tool_deprecated_invoked", logPayload);
+  }
   const transport = runtimeContext?.transport ?? null;
   const childId = runtimeContext?.childId ?? null;
   const payloadBytes = runtimeContext?.payloadSizeBytes ?? 0;
@@ -9629,6 +9753,7 @@ if (isMain) {
  */
 export {
   server,
+  toolRegistry,
   graphState,
   childSupervisor,
   resources,

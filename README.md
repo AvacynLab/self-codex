@@ -62,7 +62,9 @@ configuration éventuelle de `~/.codex/config.toml`.
     options npm agressives.
 - **Variables utiles** :
   - `MCP_HTTP_*` : configure l'hôte, le port, le chemin et le mode stateless du
-    transport HTTP (ex. `MCP_HTTP_HOST`, `MCP_HTTP_PORT`, `MCP_HTTP_TOKEN`).
+    transport HTTP (ex. `MCP_HTTP_HOST`, `MCP_HTTP_PORT`). Définir
+    `MCP_HTTP_TOKEN` active la protection Bearer requise par `/readyz` et
+    `/metrics`.
   - `MCP_LOG_*` : positionne le chemin du log structuré (`MCP_LOG_FILE`), la
     politique de rotation (`MCP_LOG_ROTATE_SIZE`, `MCP_LOG_ROTATE_KEEP`) et la
     rédaction (`MCP_LOG_REDACT`).
@@ -70,6 +72,13 @@ configuration éventuelle de `~/.codex/config.toml`.
     répertoires d'exécution vers des volumes persistants.
   - `MCP_QUALITY_*` : active le garde-fou qualité (`MCP_QUALITY_GATE`,
     `MCP_QUALITY_THRESHOLD`).
+  - `MCP_TOOLS_MODE` et `MCP_TOOL_PACK` sélectionnent respectivement le mode
+    d'exposition (`basic` vs `pro`) et le pack (`basic`, `authoring`, `ops`,
+    `all`) pour les façades listées par le registre MCP.
+  - `MCP_TOOLS_BUDGET_*` (optionnel) permet d'augmenter les plafonds imposés par
+    les manifestes des façades lorsque vous devez autoriser des réponses plus
+    volumineuses ou de longues orchestrations. Utilisez la forme
+    `MCP_TOOLS_BUDGET_<NOM_OUTIL>_{TIME_MS|TOOL_CALLS|BYTES_OUT}` (ex. `MCP_TOOLS_BUDGET_PLAN_COMPILE_EXECUTE_TIME_MS=240000`).
   - `IDEMPOTENCY_TTL_MS` : contrôle la rétention des clés d'idempotence côté
     serveur pour éviter les replays accidentels.
 - **Observabilité** : `scripts/record-run.mjs` pilote le serveur HTTP, enchaîne
@@ -83,6 +92,269 @@ configuration éventuelle de `~/.codex/config.toml`.
   mode attendu par Codex CLI.
 - **HTTP optionnel** — `npm run start:http` active le transport streamable HTTP
   (`--no-stdio`). À réserver aux scénarios cloud avec reverse proxy MCP.
+
+## Façades haut niveau
+
+Les façades MCP exposées en mode `basic` encapsulent les primitives internes en
+appliquant automatiquement les budgets (temps, appels d'outils, octets) et les
+timeouts définis dans `src/rpc/timeouts.ts`. Chaque appel renvoie un triplet
+`ok`/`summary`/`details` homogène et consomme un budget avant d'accéder aux
+composants sous-jacents. Les exemples suivants utilisent directement la forme
+JSON-RPC `tools/call` — adaptez la commande (`curl`, CLI MCP, SDK) selon votre
+transport.
+
+### Façades métier (mode `basic`)
+
+- **project_scaffold_run** — Prépare un workspace projet (inputs/outputs/logs)
+  de manière idempotente.
+
+  Exemple minimal :
+
+  ```json
+  {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "tools/call",
+    "params": {
+      "name": "project_scaffold_run",
+      "arguments": {
+        "workspace_root": "runs/demo",
+        "iso_date": "2025-10-14"
+      }
+    }
+  }
+  ```
+
+- **artifact_write** — Écrit un artefact texte/binaire dans l'outbox d'un
+  enfant avec suivi d'empreinte SHA-256.
+
+  ```json
+  {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "tools/call",
+    "params": {
+      "name": "artifact_write",
+      "arguments": {
+        "child_id": "codex-1",
+        "path": "reports/summary.md",
+        "mime_type": "text/markdown",
+        "content": "# Rapport"
+      }
+    }
+  }
+  ```
+
+- **artifact_read** — Lit un artefact existant (texte ou base64) en respectant
+  les budgets d'octets.
+
+  ```json
+  {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "tools/call",
+    "params": {
+      "name": "artifact_read",
+      "arguments": {
+        "child_id": "codex-1",
+        "path": "reports/summary.md"
+      }
+    }
+  }
+  ```
+
+- **artifact_search** — Liste les artefacts d'un enfant selon une requête ou un
+  filtre MIME.
+
+  ```json
+  {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "tools/call",
+    "params": {
+      "name": "artifact_search",
+      "arguments": {
+        "child_id": "codex-1",
+        "query": "summary"
+      }
+    }
+  }
+  ```
+
+- **graph_apply_change_set** — Applique un patch RFC 6902 sur le graphe courant
+  (avec validation/invariants avant commit).
+
+  ```json
+  {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "tools/call",
+    "params": {
+      "name": "graph_apply_change_set",
+      "arguments": {
+        "changes": [
+          {
+            "op": "add",
+            "path": ["nodes", "task-1"],
+            "value": { "id": "task-1", "label": "Initialisation" }
+          }
+        ],
+        "dry_run": true
+      }
+    }
+  }
+  ```
+
+- **graph_snapshot_time_travel** — Prévisualise ou restaure un snapshot de
+  graphe précédemment persisté.
+
+  ```json
+  {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "tools/call",
+    "params": {
+      "name": "graph_snapshot_time_travel",
+      "arguments": {
+        "graph_id": "main",
+        "mode": "list",
+        "limit": 5
+      }
+    }
+  }
+  ```
+
+- **plan_compile_execute** — Compile un plan déclaratif et renvoie un résumé du
+  schedule, du behavior tree et des liaisons.
+
+  ```json
+  {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "tools/call",
+    "params": {
+      "name": "plan_compile_execute",
+      "arguments": {
+        "plan": {
+          "id": "demo-plan",
+          "tasks": [
+            { "id": "prepare", "tool": "bb_set" },
+            { "id": "execute", "tool": "wait", "depends_on": ["prepare"] }
+          ]
+        },
+        "dry_run": true
+      }
+    }
+  }
+  ```
+
+- **child_orchestrate** — Gère le cycle de vie complet d'un enfant Codex (spawn,
+  échanges, arrêt) avec idempotence intégrée.
+
+  ```json
+  {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "tools/call",
+    "params": {
+      "name": "child_orchestrate",
+      "arguments": {
+        "initial_payload": { "type": "prompt", "content": "bonjour" },
+        "shutdown": { "mode": "cancel" }
+      }
+    }
+  }
+  ```
+
+- **runtime_observe** — Collecte un snapshot d'observabilité (métriques,
+  ressources, files) pour diagnostiquer l'orchestrateur.
+
+  ```json
+  {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "tools/call",
+    "params": {
+      "name": "runtime_observe",
+      "arguments": {
+        "include_metrics": true
+      }
+    }
+  }
+  ```
+
+- **memory_upsert** — Insère ou met à jour une entrée de mémoire vectorielle ou
+  clé-valeur suivant la configuration active.
+
+  ```json
+  {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "tools/call",
+    "params": {
+      "name": "memory_upsert",
+      "arguments": {
+        "namespace": "research",
+        "record": {
+          "id": "note-1",
+          "text": "Analyse du jeu de données"
+        }
+      }
+    }
+  }
+  ```
+
+- **memory_search** — Recherche dans la mémoire configurée (embedding ou
+  métadonnées) avec prise en compte du budget de tokens.
+
+  ```json
+  {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "tools/call",
+    "params": {
+      "name": "memory_search",
+      "arguments": {
+        "namespace": "research",
+        "query": "jeu de données"
+      }
+    }
+  }
+  ```
+
+- **tools_help** — Produit une fiche synthétique des façades visibles (résumé,
+  budgets, tags) pour faciliter l'onboarding.
+
+  ```json
+  {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "tools/call",
+    "params": {
+      "name": "tools_help",
+      "arguments": {}
+    }
+  }
+  ```
+
+### Routeur d'intention
+
+- **intent_route** — Mappe une intention en langage naturel vers la façade la
+  plus pertinente ou suggère un ensemble réduit de candidats.
+
+  ```json
+  {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "tools/call",
+    "params": {
+      "name": "intent_route",
+      "arguments": {
+        "natural_language_goal": "applique un patch sur le graphe"
+      }
+    }
+  }
+  ```
 
 ## Introspection MCP & négociation
 
