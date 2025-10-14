@@ -9,6 +9,7 @@ import {
   ChildKillInputSchema,
   ChildSendInputSchema,
   ChildSetLimitsInputSchema,
+  ChildSetLimitsInputShape,
   ChildSetRoleInputSchema,
   ChildSpawnCodexInputSchema,
   ChildStatusInputSchema,
@@ -20,6 +21,9 @@ import {
   PlanJoinInputSchema,
   PlanReduceInputSchema,
   PlanCompileBTInputSchema,
+  PlanCompileBTInputShape,
+  PlanCompileExecuteInputSchema,
+  PlanCompileExecuteInputShape,
   PlanRunBTInputSchema,
   PlanRunReactiveInputSchema,
   PlanDryRunInputSchema,
@@ -42,7 +46,7 @@ import {
   CnpWatcherTelemetryInputSchema,
   ConsensusVoteInputSchema,
 } from "../tools/coordTools.js";
-import { GraphDiffInputSchema, GraphPatchInputSchema } from "../tools/graphDiffTools.js";
+import { GraphDiffInputSchema, GraphPatchInputSchema, GraphPatchInputShape } from "../tools/graphDiffTools.js";
 import { GraphLockInputSchema, GraphUnlockInputSchema } from "../tools/graphLockTools.js";
 import { GraphBatchMutateInputSchema } from "../tools/graphBatchTools.js";
 import { TxBeginInputSchema, TxApplyInputSchema, TxCommitInputSchema, TxRollbackInputSchema } from "../tools/txTools.js";
@@ -69,7 +73,13 @@ import {
   ValuesFilterInputSchema,
   ValuesExplainInputSchema,
 } from "../tools/valueTools.js";
-import { KgInsertInputSchema, KgQueryInputSchema, KgExportInputSchema, KgSuggestPlanInputSchema } from "../tools/knowledgeTools.js";
+import {
+  KgInsertInputSchema,
+  KgQueryInputSchema,
+  KgExportInputSchema,
+  KgSuggestPlanInputSchema,
+} from "../tools/knowledgeTools.js";
+import { MemoryVectorSearchInputSchema } from "../tools/memoryTools.js";
 import { CausalExportInputSchema, CausalExplainInputSchema } from "../tools/causalTools.js";
 import { AgentAutoscaleSetInputSchema } from "../tools/agentTools.js";
 
@@ -362,12 +372,84 @@ export const ToolsCallEnvelopeSchema = z
   })
   .strict();
 
+export const ToolsListInputSchema = z
+  .object({
+    names: z.array(z.string().trim().min(1).max(200)).max(50).optional(),
+    kinds: z.array(z.enum(["dynamic", "composite", "native"])).max(3).optional(),
+  })
+  .strict();
+export const ToolsListInputShape = ToolsListInputSchema.shape;
+
+export const ToolComposeStepSchema = z
+  .object({
+    id: z.string().trim().min(1).max(120),
+    tool: z.string().trim().min(1).max(200),
+    arguments: z.record(z.unknown()).optional(),
+    capture: z.boolean().optional(),
+  })
+  .strict();
+
+export const ToolComposeRegisterInputSchema = z
+  .object({
+    name: z.string().trim().min(1).max(200),
+    title: z.string().trim().min(1).max(200),
+    description: z.string().trim().max(2000).optional(),
+    tags: z.array(z.string().trim().min(1).max(50)).max(16).optional(),
+    steps: z.array(ToolComposeStepSchema).min(1).max(32),
+  })
+  .strict();
+export const ToolComposeRegisterInputShape = ToolComposeRegisterInputSchema.shape;
+export const MemoryVectorSearchInputShape = MemoryVectorSearchInputSchema.shape;
+
 export type RpcMethodSchemaRegistry = Record<string, ZodTypeAny>;
+
+type StrictZodShape = Record<string, ZodTypeAny>;
+
+function mergeStrictShapes(
+  base: StrictZodShape,
+  overrides?: StrictZodShape | undefined,
+): StrictZodShape {
+  return Object.assign({}, base, overrides ?? {});
+}
+
+/**
+ * Builder returning a fresh strict schema compatible with {@link GraphPatchInputSchema}.
+ * Callers can optionally override individual fields (for instance to narrow
+ * accepted operation types) without mutating the canonical registry version.
+ */
+export function buildGraphPatchInputSchema(
+  overrides?: StrictZodShape,
+) {
+  return z.object(mergeStrictShapes(GraphPatchInputShape, overrides)).strict();
+}
+
+/**
+ * Builder used by composite tools to customise child limit updates without
+ * modifying the original schema exported by the child tool suite.
+ */
+export function buildChildSetLimitsInputSchema(
+  overrides?: StrictZodShape,
+) {
+  return z.object(mergeStrictShapes(ChildSetLimitsInputShape, overrides)).strict();
+}
+
+/**
+ * Builder mirroring {@link PlanCompileBTInputSchema} that downstream planners
+ * can extend (for example to toggle experimental knobs) while preserving the
+ * base validation rules expected by the orchestrator.
+ */
+export function buildPlanCompileBtInputSchema(
+  overrides?: StrictZodShape,
+) {
+  return z.object(mergeStrictShapes(PlanCompileBTInputShape, overrides)).strict();
+}
 
 export const RPC_METHOD_SCHEMAS: RpcMethodSchemaRegistry = {
   mcp_info: McpIntrospectionInputSchema,
   mcp_capabilities: McpIntrospectionInputSchema,
   health_check: HealthCheckInputSchema,
+  tools_list: ToolsListInputSchema,
+  tool_compose_register: ToolComposeRegisterInputSchema,
   resources_list: ResourceListInputSchema,
   resources_read: ResourceReadInputSchema,
   resources_watch: ResourceWatchInputSchema,
@@ -396,9 +478,11 @@ export const RPC_METHOD_SCHEMAS: RpcMethodSchemaRegistry = {
   conversation_view: ConversationViewInputSchema,
   events_view: EventsViewInputSchema,
   kg_insert: KgInsertInputSchema,
+  kg_upsert: KgInsertInputSchema,
   kg_query: KgQueryInputSchema,
   kg_export: KgExportInputSchema,
   kg_suggest_plan: KgSuggestPlanInputSchema,
+  memory_vector_search: MemoryVectorSearchInputSchema,
   values_set: ValuesSetInputSchema,
   values_score: ValuesScoreInputSchema,
   values_filter: ValuesFilterInputSchema,
@@ -474,3 +558,12 @@ export const RPC_METHOD_SCHEMAS: RpcMethodSchemaRegistry = {
   aggregate: AggregateInputSchema,
   kill: KillInputSchema,
 };
+
+/**
+ * Output schemas mirroring {@link RPC_METHOD_SCHEMAS}. They currently fall back
+ * to `z.unknown()` and act as placeholders so transports can attach result
+ * validators incrementally as handlers adopt structured responses.
+ */
+export const RPC_METHOD_RESPONSE_SCHEMAS: RpcMethodSchemaRegistry = Object.freeze(
+  Object.fromEntries(Object.keys(RPC_METHOD_SCHEMAS).map((method) => [method, z.unknown()])),
+);

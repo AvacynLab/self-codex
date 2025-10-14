@@ -7,6 +7,7 @@ import {
 } from "../graph/tx.js";
 import { GraphValidationError, validateGraph } from "../graph/validate.js";
 import { recordOperation } from "../graph/oplog.js";
+import { recordGraphWal } from "../graph/wal.js";
 import type { GraphLockManager } from "../graph/locks.js";
 import type { ResourceRegistry } from "../resources/registry.js";
 import { IdempotencyRegistry, buildIdempotencyCacheKey } from "../infra/idempotency.js";
@@ -162,6 +163,17 @@ export async function handleGraphBatchMutate(
         },
         tx.txId,
       );
+      await recordGraphWal("graph_batch_mutate_applied", {
+        tx_id: tx.txId,
+        graph_id: committedResult.graphId,
+        op_id: opId,
+        committed_version: committedResult.version,
+        committed_at: committedResult.committedAt,
+        operations_applied: mutation.applied.length,
+        changed,
+        owner: tx.owner,
+        note: tx.note,
+      });
       return {
         op_id: opId,
         graph_id: committedResult.graphId,
@@ -194,6 +206,15 @@ export async function handleGraphBatchMutate(
         },
         tx.txId,
       );
+      await recordGraphWal("graph_batch_mutate_failed", {
+        tx_id: tx.txId,
+        graph_id: tx.graphId,
+        op_id: opId,
+        operations: input.operations.length,
+        owner: tx.owner,
+        note: tx.note,
+        error: error instanceof Error ? error.message : String(error),
+      });
       throw error;
     }
   };

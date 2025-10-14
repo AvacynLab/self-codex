@@ -45,6 +45,8 @@ describe("validation smoke script", function () {
     expect(summaryContents).to.contain("| Operation | Duration (ms) | Status | Trace ID |");
     expect(summaryContents).to.include("mcp_info");
     expect(summaryContents).to.include("child_spawn_codex");
+    expect(summaryContents).to.match(/p99:/);
+    expect(summaryContents).to.match(/error rate:/);
 
     // The smoke harness should capture at least inputs, outputs and logs while
     // creating the remaining directories for optional artefacts.

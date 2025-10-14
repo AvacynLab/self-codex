@@ -5,6 +5,7 @@ import { applyGraphPatch } from "../graph/patch.js";
 import type { GraphInvariantReport } from "../graph/invariants.js";
 import { GraphValidationError, validateGraph } from "../graph/validate.js";
 import { recordOperation } from "../graph/oplog.js";
+import { fireAndForgetGraphWal } from "../graph/wal.js";
 import type { GraphLockManager } from "../graph/locks.js";
 import {
   GraphTransactionManager,
@@ -192,6 +193,18 @@ export function handleGraphPatch(context: GraphDiffToolContext, input: GraphPatc
       committedResult.txId,
     );
 
+    fireAndForgetGraphWal("graph_patch_applied", {
+      tx_id: committedResult.txId,
+      graph_id: committedResult.graphId,
+      op_id: opId,
+      committed_version: committedResult.version,
+      committed_at: committedResult.committedAt,
+      changed,
+      operations_applied: input.patch.length,
+      owner: tx.owner,
+      note: tx.note,
+    });
+
     return {
       op_id: opId,
       graph_id: committedResult.graphId,
@@ -222,6 +235,15 @@ export function handleGraphPatch(context: GraphDiffToolContext, input: GraphPatc
       },
       tx.txId,
     );
+    fireAndForgetGraphWal("graph_patch_failed", {
+      tx_id: tx.txId,
+      graph_id: tx.graphId,
+      op_id: opId,
+      operations: input.patch.length,
+      owner: tx.owner,
+      note: tx.note,
+      error: error instanceof Error ? error.message : String(error),
+    });
     throw error;
   }
 }

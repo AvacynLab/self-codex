@@ -32,7 +32,16 @@ describe("observability logs", () => {
     });
 
     expect(entries).to.have.lengthOf(1);
-    const payload = entries[0]?.payload as Record<string, unknown>;
+    const entry = entries[0]!;
+    expect(entry.request_id).to.equal("req-123");
+    expect(entry.trace_id).to.be.a("string");
+    expect(entry.child_id).to.equal("child-9");
+    expect(entry.method).to.equal("graph_patch");
+    expect(entry.duration_ms).to.be.a("number");
+    expect(entry.bytes_in).to.be.a("number");
+    expect(entry.bytes_out).to.be.a("number");
+
+    const payload = entry.payload as Record<string, unknown>;
     expect(payload).to.not.be.undefined;
     expect(payload.custom).to.equal(true);
     expect(payload.trace_id).to.be.a("string");
@@ -43,6 +52,39 @@ describe("observability logs", () => {
     expect(payload.duration_ms).to.be.a("number");
     expect(payload.bytes_in).to.be.a("number");
     expect(payload.bytes_out).to.be.a("number");
+  });
+
+  it("redacts sensitive headers when MCP_LOG_REDACT is enabled", async () => {
+    const previous = process.env.MCP_LOG_REDACT;
+    process.env.MCP_LOG_REDACT = "on";
+
+    try {
+      const entries: LogEntry[] = [];
+      const logger = new StructuredLogger({
+        onEntry(entry) {
+          entries.push(entry);
+        },
+      });
+
+      await runWithRpcTrace({ method: "token_test", requestId: "req-456", bytesIn: 0 }, async () => {
+        logger.info("sensitive_payload", {
+          headers: {
+            authorization: "Bearer secret-value",
+            "x-api-key": "super-secret",
+          },
+        });
+      });
+
+      const payload = entries[0]?.payload as { headers?: Record<string, string> };
+      expect(payload?.headers?.authorization).to.equal("[REDACTED]");
+      expect(payload?.headers?.["x-api-key"]).to.equal("[REDACTED]");
+    } finally {
+      if (previous === undefined) {
+        delete process.env.MCP_LOG_REDACT;
+      } else {
+        process.env.MCP_LOG_REDACT = previous;
+      }
+    }
   });
 });
 

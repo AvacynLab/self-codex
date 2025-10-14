@@ -72,8 +72,12 @@ describe("http limits", () => {
     const allowed = __httpServerInternals.enforceRateLimit(key, throttledResponse as any, logger as any, "rid");
     expect(allowed, "21st attempt should be throttled").to.equal(false);
     expect(throttledResponse.statusCode, "HTTP status").to.equal(429);
-    const throttledBody = JSON.parse(throttledResponse.body) as { error?: { message?: string } };
-    expect(throttledBody.error?.message, "error message").to.equal("Too Many Requests");
+    const throttledBody = JSON.parse(throttledResponse.body) as {
+      error?: { message?: string; data?: { category?: string; hint?: string } };
+    };
+    expect(throttledBody.error?.message, "error message").to.equal("Rate limit exceeded");
+    expect(throttledBody.error?.data?.category, "error category").to.equal("RATE_LIMITED");
+    expect(throttledBody.error?.data?.hint, "error hint").to.match(/rate limit/i);
   });
 
   it("bypasses throttling when the limiter is disabled at runtime", () => {

@@ -5,13 +5,6 @@ import sinon from "sinon";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 
-import {
-  server,
-  graphState,
-  childSupervisor,
-  configureRuntimeFeatures,
-  getRuntimeFeatures,
-} from "../src/server.js";
 import type { ChildCollectedOutputs, ChildRuntimeMessage } from "../src/childRuntime.js";
 
 /**
@@ -23,6 +16,17 @@ import type { ChildCollectedOutputs, ChildRuntimeMessage } from "../src/childRun
 describe("events subscribe cognitive correlation", () => {
   it("streams correlated cognitive review and reflection events", async function () {
     this.timeout(15000);
+
+    // Use a dynamic import here so tsx keeps the module in ESM mode – bundling the server
+    // with CommonJS output would choke on the top-level await initialisers we rely on in
+    // production. This keeps the test portable while matching the real runtime behaviour.
+    const {
+      server,
+      graphState,
+      childSupervisor,
+      configureRuntimeFeatures,
+      getRuntimeFeatures,
+    } = await import("../src/server.js");
 
     const baselineGraphSnapshot = graphState.serialize();
     const baselineChildrenIndex = childSupervisor.childrenIndex.serialize();

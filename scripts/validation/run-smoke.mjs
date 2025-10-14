@@ -263,6 +263,13 @@ export async function run(options = {}) {
     .filter((value) => typeof value === "number");
   const p50 = computePercentile(durations, 50);
   const p95 = computePercentile(durations, 95);
+  const p99 = computePercentile(durations, 99);
+
+  const consideredOperations = operations.filter((op) => op.status !== "skipped");
+  const errorCount = consideredOperations.filter((op) => op.status === "error").length;
+  const errorRate = consideredOperations.length
+    ? (errorCount / consideredOperations.length) * 100
+    : 0;
 
   const summaryLines = [
     `# Smoke Validation Run — ${runId}`,
@@ -270,6 +277,8 @@ export async function run(options = {}) {
     "## Latency Summary",
     p50 !== null ? `- p50: ${p50.toFixed(2)} ms` : "- p50: n/a",
     p95 !== null ? `- p95: ${p95.toFixed(2)} ms` : "- p95: n/a",
+    p99 !== null ? `- p99: ${p99.toFixed(2)} ms` : "- p99: n/a",
+    `- error rate: ${errorRate.toFixed(2)}% (${errorCount}/${consideredOperations.length || 0})`,
     "",
     "## Operations",
     formatSummaryTable(operations),

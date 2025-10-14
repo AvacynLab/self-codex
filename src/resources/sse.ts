@@ -235,7 +235,7 @@ function resolveMaxBufferedMessages(override?: number): number {
   if (override && override > 0) {
     return override;
   }
-  const envValue = process.env.MCP_SSE_MAX_BUFFERED_MESSAGES;
+  const envValue = process.env.MCP_SSE_MAX_BUFFER;
   return parsePositiveInteger(envValue, DEFAULT_MAX_BUFFERED_MESSAGES);
 }
 
@@ -310,7 +310,11 @@ export interface ResourceWatchSseBufferOptions extends RenderSseMessageOptions {
   clientId: string;
   /** Structured logger used to surface warnings when backpressure kicks in. */
   logger: Pick<StructuredLogger, "warn">;
-  /** Maximum number of messages retained before discarding the oldest ones. */
+  /**
+   * Maximum number of messages retained before discarding the oldest ones. If
+   * omitted, the helper falls back to `MCP_SSE_MAX_BUFFER` or the default
+   * bounded capacity.
+   */
   maxBufferedMessages?: number;
   /** Maximum time spent awaiting a downstream flush before the frame is dropped. */
   emitTimeoutMs?: number;
