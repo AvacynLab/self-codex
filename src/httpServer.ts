@@ -424,6 +424,9 @@ function enforceBearerToken(
   logger.warn("http_auth_rejected", { reason: "missing_or_invalid_token", request_id: requestId });
   void respondWithJsonRpcError(res, 401, "AUTH_REQUIRED", "Authentication required", logger, requestId, meta, {
     hint: "Missing or invalid bearer token",
+    // Keep the legacy E-MCP-AUTH marker in metadata so downstream scrapers and
+    // assertions that rely on the historical flag remain compatible.
+    meta: { code: "E-MCP-AUTH" },
   });
   return false;
 }

@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { mkdirSync, readFileSync, existsSync } from "node:fs";
 import { dirname, resolve as resolvePath } from "node:path";
@@ -52,7 +53,9 @@ export class PersistentKnowledgeGraph {
   /** Persists the current knowledge graph snapshot to disk. */
   async persist(): Promise<void> {
     const snapshots = this.graph.exportAll();
-    const tmpPath = `${this.filePath}.tmp`;
+    // Use a unique temporary file per persist call so concurrent upserts cannot
+    // delete another writer's staging file before it is renamed into place.
+    const tmpPath = `${this.filePath}.${randomUUID()}.tmp`;
     await mkdir(dirname(this.filePath), { recursive: true });
     await writeFile(tmpPath, JSON.stringify(snapshots, null, 2), "utf8");
     await rename(tmpPath, this.filePath);
