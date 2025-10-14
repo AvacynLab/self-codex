@@ -10,6 +10,17 @@ import type { JsonRpcRouteContext } from "./server.js";
 /** Default placeholder inserted when a secret token is redacted. */
 const REDACTION_TOKEN = "[REDACTED]";
 
+interface CorrelationFields {
+  request_id?: string | number | null;
+  trace_id?: string | null;
+  child_id?: string | null;
+  method?: string;
+  duration_ms?: number;
+  bytes_in?: number;
+  bytes_out?: number;
+  transport?: string | null;
+}
+
 /** Keys whose values are redacted when `MCP_LOG_REDACT=on`. */
 const SENSITIVE_KEYS = new Set([
   "authorization",
@@ -405,8 +416,8 @@ export class StructuredLogger {
   private collectCorrelationFields(
     trace: TraceContextSnapshot | undefined,
     rpcContext: JsonRpcRouteContext | undefined,
-  ): Record<string, unknown> {
-    const fields: Record<string, unknown> = {};
+  ): CorrelationFields {
+    const fields: CorrelationFields = {};
     if (trace) {
       fields.trace_id = trace.traceId;
       fields.request_id = trace.requestId ?? null;
@@ -434,6 +445,9 @@ export class StructuredLogger {
       }
       if (fields.child_id === undefined && rpcContext.childId !== undefined) {
         fields.child_id = rpcContext.childId ?? null;
+      }
+      if (fields.transport === undefined && rpcContext.transport !== undefined) {
+        fields.transport = rpcContext.transport ?? null;
       }
     }
 

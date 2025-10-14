@@ -476,7 +476,9 @@ export async function handleChildCreate(
       });
     }
     const snapshot = hit.value as ChildCreateSnapshot;
-    registerChildBudgetIfAny(context, snapshot.child_id, input.budget);
+    if (typeof snapshot.child_id === "string" && snapshot.child_id.length > 0) {
+      registerChildBudgetIfAny(context, snapshot.child_id, input.budget);
+    }
     return {
       ...snapshot,
       op_id: snapshot.op_id ?? opId,
@@ -486,7 +488,9 @@ export async function handleChildCreate(
   }
 
   const result = await execute();
-  registerChildBudgetIfAny(context, result.child_id, input.budget);
+  if (typeof result.child_id === "string" && result.child_id.length > 0) {
+    registerChildBudgetIfAny(context, result.child_id, input.budget);
+  }
   return { ...result, op_id: opId, idempotent: false, idempotency_key: key } as ChildCreateResult;
 }
 

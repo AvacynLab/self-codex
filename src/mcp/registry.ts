@@ -2,16 +2,14 @@ import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 
-import {
-  McpServer,
-  type CallToolResult,
-  type RegisteredTool,
-  type RequestHandlerExtra,
-  type ServerNotification,
-  type ServerRequest,
-  type ToolAnnotations,
-  type ToolCallback,
-} from "@modelcontextprotocol/sdk/server/mcp.js";
+import { McpServer, type RegisteredTool, type ToolCallback } from "@modelcontextprotocol/sdk/server/mcp.js";
+import type { RequestHandlerExtra } from "@modelcontextprotocol/sdk/shared/protocol.js";
+import type {
+  CallToolResult,
+  ServerNotification,
+  ServerRequest,
+  ToolAnnotations,
+} from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 
 import { StructuredLogger } from "../logger.js";
@@ -286,9 +284,21 @@ export class ToolRegistry {
       ? options.manifestPath ?? path.join(this.manifestsDir, `${sanitizeFilename(trimmedName)}.json`)
       : options.manifestPath;
 
-    const handler: ToolCallback<z.ZodRawShape | undefined> = options.inputSchema
-      ? (async (args, extra) => implementation(args, extra))
-      : (async (extra) => implementation(undefined, extra));
+    let handler: ToolCallback<z.ZodRawShape | undefined>;
+    if (options.inputSchema) {
+      handler = (async (
+        args: Record<string, unknown>,
+        extra: RequestHandlerExtra<ServerRequest, ServerNotification>,
+      ): Promise<CallToolResult> => implementation(args, extra)) as unknown as ToolCallback<
+        z.ZodRawShape | undefined
+      >;
+    } else {
+      handler = (async (
+        extra: RequestHandlerExtra<ServerRequest, ServerNotification>,
+      ): Promise<CallToolResult> => implementation(undefined, extra)) as unknown as ToolCallback<
+        z.ZodRawShape | undefined
+      >;
+    }
 
     const registeredTool = this.server.registerTool(
       trimmedName,
@@ -300,7 +310,10 @@ export class ToolRegistry {
         annotations: options.annotations,
         _meta: { ...options.meta, tool_kind: manifest.kind },
       },
-      handler as ToolCallback,
+      handler as unknown as (
+        args: Record<string, unknown>,
+        extra: RequestHandlerExtra<ServerRequest, ServerNotification>,
+      ) => Promise<CallToolResult>,
     );
 
     const storedSchema = options.inputSchema ? z.object(options.inputSchema).strict() : undefined;

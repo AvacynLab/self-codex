@@ -519,6 +519,8 @@ function scheduleOtlpExport(
     return;
   }
 
+  const activeConfig = otlpConfig;
+
   const startTime = context.startedAtEpochNs;
   const endTime = startTime + elapsedNs;
   const attributes = buildOtlpAttributes(context, errored, errorCode);
@@ -556,9 +558,9 @@ function scheduleOtlpExport(
   otlpQueue = otlpQueue
     .then(async () => {
       try {
-        await fetch(otlpConfig.endpoint, {
+        await fetch(activeConfig.endpoint, {
           method: "POST",
-          headers: otlpConfig.headers,
+          headers: activeConfig.headers,
           body: JSON.stringify(payload),
         });
       } catch (error) {

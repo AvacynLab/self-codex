@@ -35,6 +35,7 @@ export interface MemoryVectorSearchHit {
 
 /** Result returned by {@link handleMemoryVectorSearch}. */
 export interface MemoryVectorSearchResult {
+  [key: string]: unknown;
   query: string;
   hits: MemoryVectorSearchHit[];
   total: number;

@@ -1,10 +1,6 @@
-import {
-  McpServer,
-  type CallToolResult,
-  type RequestHandlerExtra,
-  type ServerNotification,
-  type ServerRequest,
-} from "@modelcontextprotocol/sdk/server/mcp.js";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import type { RequestHandlerExtra } from "@modelcontextprotocol/sdk/shared/protocol.js";
+import type { CallToolResult, ServerNotification, ServerRequest } from "@modelcontextprotocol/sdk/types.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z, type ZodTypeAny } from "zod";
 import { randomUUID } from "node:crypto";
@@ -3212,7 +3208,19 @@ async function invokeToolForRegistry(
   args: unknown,
   extra: RequestHandlerExtra<ServerRequest, ServerNotification>,
 ): Promise<CallToolResult> {
-  const headers = extra.requestInfo?.headers ? { ...extra.requestInfo.headers } : undefined;
+  const headers: Record<string, string> | undefined = extra.requestInfo?.headers
+    ? Object.fromEntries(
+        Object.entries(extra.requestInfo.headers).flatMap(([key, value]) => {
+          if (typeof value === "string") {
+            return [[key, value]];
+          }
+          if (Array.isArray(value)) {
+            return [[key, value.join(", ")]];
+          }
+          return [] as Array<[string, string]>;
+        }),
+      )
+    : undefined;
   const result = await routeJsonRpcRequest(tool, args, {
     headers,
     transport: "tool-os",
@@ -5092,7 +5100,10 @@ server.registerTool(
     description: "Recherche des artefacts textuels en mémoire vectorielle (cosine).",
     inputSchema: MemoryVectorSearchInputShape,
   },
-  async (input: unknown) => {
+  async (
+    input: unknown,
+    _extra: RequestHandlerExtra<ServerRequest, ServerNotification>,
+  ) => {
     const disabled = ensureKnowledgeEnabled("memory_vector_search");
     if (disabled) {
       return disabled;
@@ -9249,6 +9260,8 @@ export async function handleJsonRpc(
       const errorSnapshot = detectJsonRpcErrorResult(result);
 
       if (errorSnapshot) {
+        const normalisedErrorCode =
+          typeof errorSnapshot.code === "number" ? errorSnapshot.code : null;
         recordJsonRpcObservability({
           stage: "error",
           method,
@@ -9260,7 +9273,7 @@ export async function handleJsonRpc(
           status: "error",
           elapsedMs,
           errorMessage: errorSnapshot.message,
-          errorCode: errorSnapshot.code ?? null,
+          errorCode: normalisedErrorCode,
           timeoutMs,
         });
       } else {

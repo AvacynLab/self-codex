@@ -20,6 +20,7 @@ export const JSON_RPC_ERROR_TAXONOMY = {
   AUTH_REQUIRED: { code: -32001, message: "Authentication required" },
   RATE_LIMITED: { code: -32002, message: "Rate limit exceeded" },
   IDEMPOTENCY_CONFLICT: { code: -32080, message: "Idempotency conflict" },
+  BUDGET_EXCEEDED: { code: -32004, message: "Budget exhausted" },
   TIMEOUT: { code: -32003, message: "Request timeout" },
   INTERNAL: { code: -32000, message: "Internal error" },
 } as const;

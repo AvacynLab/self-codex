@@ -742,8 +742,8 @@ interface JsonRpcOutcomeDetails extends HttpErrorMeta {
   status: number;
   /** Number of bytes emitted in the response body. */
   bytesOut: number;
-  /** Cache outcome for the request (hit/miss/bypass). */
-  cacheStatus?: "hit" | "miss" | "bypass";
+  /** Cache outcome for the request (hit/miss/bypass/conflict). */
+  cacheStatus?: "hit" | "miss" | "bypass" | "conflict";
   /** Optional JSON-RPC error code when an error is returned. */
   errorCode?: number | null;
 }
@@ -812,7 +812,7 @@ async function sendJson(
   requestId: string | undefined,
   cacheKey: string | undefined,
   idempotency?: HttpIdempotencyConfig,
-): Promise<void> {
+): Promise<number> {
   const body = JSON.stringify(payload);
   res.statusCode = status;
   res.setHeader("Content-Type", "application/json");
