@@ -1,393 +1,379 @@
-Remet à zero le fichier AGENTS.md et importe la liste des taches fournit ci dessous ainsi que les informations (au mot près) dans le fichier. Une fois effectué, commence l'implementation, et prend ton temps. 
-
 ----------
-Voici ta **feuille de route** exhaustive, agent. Elle s’appuie sur la dernière version du dépôt (celle que je viens d’auditer), sur ce qui est déjà en place (auth HTTP, limites, idempotence persistée, supervision enfants, middleware JSON-RPC, observabilité, build Node20/ESM) et sur les améliorations “game-changer” proposées (Tool-OS, planner compilé, WAL/snapshots, mémoire multi-calques, sandbox, budgets).
-Tu exécutes ces tâches **dans l’ordre proposé**. Chaque point liste les fichiers à modifier/créer, les sous-étapes, les extraits critiques, puis les tests associés. À la fin, tu trouveras les **règles build/tests** et les **critères d’acceptation**.
+Très bien, agent — voici ta **feuille de route détaillée et vérifiable** pour la version actuelle du dépôt. Elle s’appuie sur mon dernier audit (version la plus récente que j’ai extraite et analysée) et vise deux objectifs clairs :
+
+1. **Réduire le nombre d’outils exposés** sans perdre de capacités (façades stables qui encapsulent les primitives).
+2. **Fluidifier le processus d’utilisation** (routing par intention, budgets/timeout par défaut, erreurs homogènes, observabilité).
+
+Lis d’abord le brief, puis exécute les tâches **dans l’ordre**. Chaque tâche mentionne **les fichiers exacts à créer/modifier**, les **sous-étapes** (avec cases à cocher), **snippets** quand nécessaire, et les **tests** à écrire. Termine par les **règles build/tests** et les **critères d’acceptation**.
 
 ---
 
-# Brief objectifs (lis-moi avant d’implémenter)
+## Brief objectifs (résumé pour toi)
 
-* Garantir un serveur MCP **robuste** (HTTP sécurisé, idempotence persistée, supervision enfants), **observable** (traces, métriques, logs corrélés), **scalable** (backpressure, timeouts/budgets).
-* Donner à l’agent un **Tool-OS** (registry dynamique, tools composites) et un **planner** neuro-symbolique compilé en BT/graph.
-* Ajout d’un **WAL** transactionnel + **snapshots** pour replay/debug et d’une **mémoire multi-calques** (vector store + KG).
-* Durcir l’exécution enfants (sandbox/policies) et mesurer la qualité (harness d’**évaluation continue**).
+* Exposer ~12 **façades** “haut niveau” qui couvrent 90% des usages (création projet/artefacts, graphe, planification/exécution, enfants Codex, observation, mémoire).
+* Basculer toutes les **primitives** en `hidden:true` (mode pro uniquement).
+* Ajouter un **intent router** qui mappe un but naturel → façade.
+* Appliquer **budgets** et **timeouts** par façade, **idempotence** par défaut, et **erreurs JSON-RPC** homogènes.
+* Renforcer **observabilité** (logs corrélés, métriques/latences, /metrics).
+* Garder la compatibilité **Node 20 + ESM + @types/node en dependencies** (c’est ce qui a stabilisé le build Cloud).
 
-**Contraintes à respecter pendant toute l’implémentation**
+**Rappels de contraintes**
 
-* **Imports core Node uniquement via `from "node:..."`**, jamais nus.
-* **ESM/Node 20** partout, `tsconfig` en `module: "NodeNext", moduleResolution: "NodeNext"`.
-* `@types/node` disponibles, `lib: ["ES2022"]`, `types: ["node"]`.
-* Tous les endpoints/handlers JSON-RPC renvoient des erreurs **homogènes** via le middleware central.
-
----
-
-# Liste de tâches à cocher (fichier par fichier, avec sous-étapes)
-
-## 1) HTTP durci et homogénéisé
-
-### 1.1 `src/httpServer.ts` – sécurisation et unification
-
-* [x] Injecter systématiquement :
-
-  * [x] `applySecurityHeaders(res)` et `ensureRequestId(req,res)` dès l’entrée de handler.
-  * [x] `rateLimitOk(key)` (clé = IP + path) → 429 si refus.
-  * [x] `tokenOk(req.headers["authorization"]?.replace(/^Bearer\s+/,""), requiredToken)` → 401 si KO.
-  * [x] `readJsonBody(req, MAX_BYTES)` pour le body, avec 413 si trop gros.
-* [x] Router additionnel :
-
-  * [x] `GET /healthz` (no-auth) → `{ ok: true }`.
-  * [x] `GET /readyz` (auth) → vérifie charge `graph-forge`, idempotency store, queue événements.
-  * [x] `GET /metrics` (auth) → métriques texte simple (latences p50/p95/p99, counts, erreurs).
-* [x] Tous les retours d’erreur passent par le **middleware JSON-RPC** (pas d’objets ad-hoc).
-* [x] Journaliser `request_id`, `trace_id`, tailles in/out, durée, méthode JSON-RPC.
-
-### 1.2 Tests
-
-* [x] `tests/http/auth.test.ts` : 200 si bon token / 401 sinon / temps constant.
-* [x] `tests/http/limits.test.ts` : 413 au-delà de `MAX_BYTES` / 429 en rafale.
-* [x] `tests/http/headers.test.ts` : présence `x-request-id` + headers sécurité.
-* [x] `tests/ops/health_ready.test.ts` : `/healthz` no-auth OK, `/readyz` dépendances OK/KO.
+* Imports cœur Node **uniquement** `from "node:..."`.
+* `tsconfig`: `module: "NodeNext"`, `moduleResolution: "NodeNext"`, `target: "ES2022"`, `lib: ["ES2022"]`, `types: ["node"]`.
+* Middleware JSON-RPC **unique** pour la validation (zod) et les erreurs.
 
 ---
 
-## 2) Idempotence **persistée** (déjà en place, compléter)
+## À FAIRE — Tâches à cocher, fichier par fichier
 
-### 2.1 `src/infra/idempotencyStore.file.ts`
+### 0) Pré-vol (cohérence de base)
 
-* [x] Ajouter une **compaction** périodique (optionnelle V1) si le fichier index dépasse N entrées.
-* [x] Paramétrer TTL via `IDEMPOTENCY_TTL_MS` (défaut 600_000).
-* [x] Renvoyer une **erreur 409** claire si conflit de sémantique (même clé, params divergents).
+* [x] `package.json`
 
-### 2.2 `src/server.ts`
+  * [x] Confirme `@types/node` en **dependencies** (pas dev) — nécessaire en setup Cloud.
+  * [x] Scripts présents : `build`, `start:http`, `start:stdio`, `test`, `coverage`.
+* [x] `tsconfig.json`
 
-* [x] Wrap **toutes** les méthodes à effet (tx, patch, commit, spawn/kill child, write artefact) avec get/set idempotence.
-* [x] Écrire dans un **WAL** (cf. §5) en plus de l’idempotence (ordre: WAL → exécution → set store).
-
-### 2.3 Tests
-
-* [x] `tests/int/idempotency.http.test.ts` : deux POST avec même `Idempotency-Key` → même corps, latence plus faible.
-* [x] `tests/infra/idempotencyStore.file.test.ts` : persistance/reload, TTL expiré, compaction.
+  * [x] Vérifie `module: "NodeNext"`, `moduleResolution: "NodeNext"`, `types: ["node"]`, `skipLibCheck: true`.
 
 ---
 
-## 3) Supervision enfants & circuit breaker (présents, intégrer plus loin)
+### 1) Registre/manifest des tools (centraliser, tagger, packs)
 
-### 3.1 `src/children/supervisor.ts`
+**Fichiers** : `src/mcp/registry.ts` (modifier/créer), `src/rpc/schemas.ts` (ajouts mineurs)
 
-* [x] Implémenter **backoff exponentiel** borné (min/max).
-* [x] Ajouter **politiques** : `max_restarts_per_min`, `cooldown_ms`, `half_open_max`.
-* [x] Émettre des **événements** supervisés : `child_restart`, `breaker_open`, `breaker_half_open`, `breaker_closed`.
+* [x] Étendre le **type de manifest** pour gérer catégories, tags, visibilité, dépréciation, budgets :
 
-### 3.2 `src/childSupervisor.ts`
+  * [x] `category: "project"|"artifact"|"graph"|"plan"|"child"|"runtime"|"memory"|"admin"`.
+  * [x] `tags?: string[]` (ex : `"facade"`, `"authoring"`, `"ops"`).
+  * [x] `hidden?: boolean` (primitives non exposées en mode basic).
+  * [x] `deprecated?: { since: string; replace_with?: string }`.
+  * [x] `budgets?: { time_ms?: number; tool_calls?: number; bytes_out?: number }`.
 
-* [x] Utiliser le breaker pour bloquer `spawn` si open.
-* [x] Sur fermeture breaker, tenter un **spawn contrôlé** (half-open).
+**Snippet — registre (extrait)**
 
-### 3.3 Tests
+```ts
+// src/mcp/registry.ts
+export interface ToolManifest {
+  name: string;
+  version: string;
+  category: string;
+  tags?: string[];
+  hidden?: boolean;
+  deprecated?: { since: string; replace_with?: string };
+  input_schema: unknown;
+  output_schema: unknown;
+  budgets?: { time_ms?: number; tool_calls?: number; bytes_out?: number };
+}
 
-* [x] `tests/children/supervisor.test.ts` : enchaînement d’échecs → open; cooldown → half-open → closed.
+export function listVisible(all: ToolManifest[], mode: "basic"|"pro", pack: "basic"|"authoring"|"ops"|"all") {
+  let out = all;
+  if (mode === "basic") out = out.filter(t => !t.hidden || t.tags?.includes("facade"));
+  if (pack === "basic") out = out.filter(t => t.tags?.includes("facade"));
+  if (pack === "authoring") out = out.filter(t => ["facade","authoring"].some(tag => t.tags?.includes(tag)));
+  if (pack === "ops") out = out.filter(t => ["facade","ops"].some(tag => t.tags?.includes(tag)));
+  return out;
+}
+```
 
----
+* [x] Lire les **env vars** (voir § 10) pour filtrer l’exposé : `MCP_TOOLS_MODE`, `MCP_TOOL_PACK`.
+* [x] Mettre à jour l’enregistrement de **tous les outils existants** :
 
-## 4) Observabilité complète (traces + métriques + logs)
+  * [x] Façades → `tags:["facade"]`, `hidden:false`.
+  * [x] Primitives → `hidden:true` + (si remplacées) `deprecated`.
 
-### 4.1 `src/infra/tracing.ts`
+**Tests** :
 
-* [x] Instruments :
-
-  * [x] Création `trace_id`/`span_id` par requête JSON-RPC.
-  * [x] Histogrammes latence p50/p95/p99 par méthode.
-  * [x] Compteurs erreurs par code.
-  * [x] Option **OTLP** si `OTEL_EXPORTER_OTLP_ENDPOINT` est défini.
-* [x] Export `/metrics` et join des stats.
-
-### 4.2 `src/logger.ts`
-
-* [x] Ajouter champs : `request_id`, `trace_id`, `child_id`, `method`, `duration_ms`, `bytes_in/out`.
-* [x] Respecter `MCP_LOG_REDACT=on` pour masquer tokens/headers sensibles.
-* [x] Rotation stable (max taille + max fichiers).
-
-### 4.3 Tests
-
-* [x] `tests/obs/metrics.test.ts` : compteurs/histo après rafale synthétique.
-* [x] `tests/obs/logs.test.ts` : schema JSON log (golden sample).
-
----
-
-## 5) Journalisation transactionnelle (WAL) + snapshots
-
-### 5.1 `src/state/wal.ts` (nouveau)
-
-* [x] Append-only JSONL par “topic” (`graph`, `tx`, `child`, `tool`) dans `runs/wal/<topic>/YYYY-MM-DD.log`.
-* [x] Ligne = `{ ts, topic, event, payload, checksum }` (checksum = sha256 du JSON).
-
-### 5.2 `src/state/snapshot.ts` (nouveau)
-
-* [x] snapshots incrémentaux (toutes les K opérations ou M minutes) dans `runs/snapshots/…`.
-* [x] `snapshot_take()` / `snapshot_list()` / `snapshot_load()`.
-
-### 5.3 `src/server.ts` / `src/graph/*.ts`
-
-* [x] Émettre dans WAL pour toute mutation.
-* [x] Hook snapshots à la **validation commit** (voir §6).
-
-### 5.4 Tests
-
-* [x] `tests/state/wal.test.ts` : append + checksum + rotation.
-* [x] `tests/state/snapshot.test.ts` : save/load + replay minimal.
+* [x] `tests/mcp/registry.listVisible.test.ts` : modes basic/pro, packs basic/authoring/ops.
 
 ---
 
-## 6) Graphes : invariants forts + op-log (tu as déjà une base, durcir)
+### 2) Réduction d’outils — créer **12 façades** et masquer les primitives
 
-### 6.1 `src/graph/validate.ts`
+**Fichiers à CRÉER** dans `src/tools/` (façades) :
 
-* [x] **Invariants** : types valides, pas d’arêtes orphelines, contraintes de cardinalité, tailles bornées.
-* [x] Erreur claire : code/raison/noeud fautif.
+* [x] `project_scaffold_run.ts`
+* [x] `artifact_write.ts` / [x] `artifact_read.ts` / [x] `artifact_search.ts`
+* [x] `graph_apply_change_set.ts`
+* [x] `graph_snapshot_time_travel.ts`
+* [x] `plan_compile_execute.ts`
+* [x] `child_orchestrate.ts`
+* [x] `runtime_observe.ts`
+* [x] `memory_upsert.ts` / [x] `memory_search.ts` (si mémoire activée)
+* [x] `tools_help.ts`
+* [x] `intent_route.ts`
 
-### 6.2 `src/graph/oplog.ts`
+**Exigences communes** (pour chaque façade)
 
-* [x] Append JSONL de chaque opération de patch/tx (distinct du WAL global, plus “métier”).
+* [x] Déclarer `manifest` avec `tags:["facade"]`, `budgets` par défaut.
+* [x] Valider l’**input/output** via `zod` (placer schémas partagés dans `src/rpc/schemas.ts`).
+* [x] Journaliser `request_id`/`trace_id` + **consommer budgets** avant action.
+* [x] Gérer **idempotence** (clé fournie ou auto-générée).
+* [x] Retour cohérent : `ok` (bool), `summary`, `details` (structuré).
 
-### 6.3 `src/graph/tx.ts` (ou équivalent)
+**Snippets clés**
 
-* [x] Appeler `validateGraph()` avant `commit`. Refuser si KO (400 / -32602).
-* [x] Écrire `oplog` et `wal` en plus de l’idempotence.
+* `graph_apply_change_set.ts`
 
-### 6.4 Tests
+```ts
+import { z } from "zod";
+const Change = z.object({ op: z.enum(["add","update","remove"]), path: z.array(z.string()), value: z.any().optional() });
+export const Input = z.object({ changes: z.array(Change), rationale: z.string().optional(), dry_run: z.boolean().optional() });
 
-* [x] `tests/graph/invariants.test.ts` : cas OK/KO.
-* [x] `tests/graph/oplog.test.ts` : contenu, rotation.
+export async function run(input: z.infer<typeof Input>, ctx: Ctx) {
+  ctx.budget.consume("tool_calls", 1) || ctx.failBudget("tool_calls");
+  const tx = await ctx.graph.begin();
+  const diff = await tx.apply(input.changes);
+  const valid = await tx.validate();
+  if (!valid.ok) return { ok:false, summary:"invalid graph", details: valid.errors };
+  if (!input.dry_run) await tx.commit();
+  return { ok: !input.dry_run, summary: "change-set applied", details: { diff } };
+}
+```
 
----
+* `intent_route.ts` (V1 heuristique, upgradable)
 
-## 7) Backpressure & streaming SSE (compléter)
+```ts
+export async function run({ natural_language_goal }: { natural_language_goal: string }) {
+  const s = natural_language_goal.toLowerCase();
+  if (/(graphe|patch|noeud|edge)/.test(s)) return { ok:true, chosen:"graph_apply_change_set" };
+  if (/plan|pipeline|workflow/.test(s)) return { ok:true, chosen:"plan_compile_execute" };
+  if (/fichier|artefact|write|save/.test(s)) return { ok:true, chosen:"artifact_write" };
+  return { ok:true, candidates:["tools_help","artifact_search","child_orchestrate"] };
+}
+```
 
-### 7.1 `src/resources/sse.ts`
+**Tests façade (golden)**
 
-* [x] Chunker > `MCP_SSE_MAX_CHUNK_BYTES` (défaut 32768).
-* [x] Buffer **borné** par client (DROP ancien + warning) → `MCP_SSE_MAX_BUFFER`.
-* [x] Timeout d’emit par client (`MCP_SSE_EMIT_TIMEOUT_MS`).
-
-### 7.2 `src/rpc/timeouts.ts` (nouveau)
-
-* [x] Mapping `method → timeoutMs` + défaut global.
-* [x] Appliquer dans le dispatcher (abort contrôlé + code erreur dédié).
-
-### 7.3 Tests
-
-* [x] `tests/streaming/sse.test.ts` : gros payload → chunking; clients lents → pas d’OOM.
-
----
-
-## 8) Middleware JSON-RPC (valider et normaliser)
-
-### 8.1 `src/rpc/schemas.ts`
-
-* [x] Définir un schéma **zod** pour chaque méthode publique (inputs/outputs).
-* [x] Exporter des “builders” réutilisables (graph patch, child limits, plan compile…).
-
-### 8.2 `src/rpc/middleware.ts`
-
-* [x] Centraliser parse/validation/erreurs (codes stables), injection `request_id`/`trace_id`.
-* [x] **Taxonomie** : `VALIDATION_ERROR`, `AUTH_REQUIRED`, `RATE_LIMITED`, `IDEMPOTENCY_CONFLICT`, `TIMEOUT`, `INTERNAL`.
-
-### 8.3 Tests
-
-* [x] `tests/rpc/validation.test.ts` : erreurs homogènes, golden outputs.
-
----
-
-## 9) Budgets multi-dimensionnels (nouveau)
-
-### 9.1 `src/infra/budget.ts`
-
-* [x] Implémenter un `BudgetTracker` (temps/token/tool_calls/bytes_in/bytes_out).
-* [x] Snapshot pour logs/métriques.
-
-### 9.2 Intégrations
-
-* [x] `src/server.ts` : instancier par run/enfant, décrémenter **avant** l’appel véritable.
-* [x] `src/tools/*` : consommer budgets selon usage réel.
-
-### 9.3 Tests
-
-* [x] `tests/infra/budget.test.ts` : refus à zéro budget, mode dégradé, snapshot.
+* [x] `tests/tools/facades/*.test.ts` : I/O valides + erreurs validation + budgets dépassés (mode dégradé).
 
 ---
 
-## 10) Tool-OS (registry dynamique + tools composites)
+### 3) HTTP — middleware, endpoints, sécurité
 
-### 10.1 `src/mcp/registry.ts` (nouveau)
+**Fichiers** : `src/httpServer.ts` (modifier), `src/http/{auth.ts,headers.ts,body.ts,rateLimit.ts}` (déjà présents)
 
-* [x] `register(manifest,impl)` / `list()` / `call(name,input,ctx)`.
-* [x] Hot-reload simple : rescanner `tools/` sur signal `SIGHUP` (facultatif).
+* [x] Assurer l’ordre : **auth** (si nécessaire) → **rate-limit** → **body-size** → **JSON-RPC middleware**.
+* [x] Ajouter/valider les endpoints :
 
-### 10.2 Method JSON-RPC
+  * [x] `GET /healthz` (no-auth).
+  * [x] `GET /readyz` (auth, vérifie idempotency store + graph-forge chargé + event-bus vivant).
+  * [x] `GET /metrics` (auth, latences p50/p95/p99 par méthode, erreurs, throughput).
+* [x] **Headers de sécurité** (`applySecurityHeaders`) sur toutes réponses.
 
-* [x] `tool_compose_register` : créer un tool composite (pipeline) et persister un **manifest synthétique**.
-* [x] `tools_list` : renvoyer manifests.
+**Tests HTTP**
 
-### 10.3 Tests
-
-* [x] `tests/mcp/registry.test.ts` : register/list/call, collisions, hot-reload.
-
----
-
-## 11) Planner compilé (plan → BT/graph)
-
-### 11.1 `src/planner/domain.ts` (nouveau)
-
-* [x] Types : tâche, pré/post-conditions, dépendances, ressources.
-
-### 11.2 `src/planner/compileBT.ts` + `src/planner/schedule.ts`
-
-* [x] Compiler en Behavior Tree et en DAG ordonnancé.
-* [x] Générer un **plan exécutable** (id de run) exposé au monitoring.
-
-### 11.3 Tool
-
-* [x] `plan_compile_execute` : entrée plan YAML/JSON → run id + suivi.
-
-### 11.4 Tests
-
-* [x] `tests/planner/compile.test.ts` : compilation non triviale, pré/post appliquées.
+* [x] `tests/http/auth.test.ts`, `tests/http/limits.test.ts`, `tests/ops/health_ready.test.ts`, `tests/obs/metrics.test.ts`.
 
 ---
 
-## 12) Mémoire multi-calques
+### 4) Middleware JSON-RPC (validation/erreurs homogènes)
 
-### 12.1 `src/memory/vector.ts` (nouveau)
+**Fichiers** : `src/rpc/middleware.ts`, `src/rpc/schemas.ts`
 
-* [x] Embeddings locaux (cosine simple) + index on-disk.
+* [x] Codes d’erreurs stabilisés : `VALIDATION_ERROR`, `AUTH_REQUIRED`, `RATE_LIMITED`, `IDEMPOTENCY_CONFLICT`, `TIMEOUT`, `INTERNAL`.
+* [x] **Zod** obligatoire pour toutes méthodes publiques (façades).
+* [x] Injection `request_id`/`trace_id` dans le contexte.
 
-### 12.2 `src/memory/kg.ts` (nouveau)
+**Tests**
 
-* [x] Triplets (suj/rel/obj), upsert, requêtes.
-
-### 12.3 Tools
-
-* [x] `memory_vector_search`, `kg_query`, `kg_upsert`.
-* [x] Hook post-tool : output long → indexer vector/KG.
-
-### 12.4 Tests
-
-* [x] `tests/memory/vector.test.ts` et `tests/memory/kg.test.ts`.
+* [x] `tests/rpc/validation.test.ts` : inputs invalides → `VALIDATION_ERROR` uniforme (golden outputs).
 
 ---
 
-## 13) Sandbox/profiles enfants
+### 5) Budgets & Timeouts
 
-### 13.1 `src/children/sandbox.ts` (nouveau)
+**Fichiers** : `src/infra/budget.ts` (créer), `src/rpc/timeouts.ts` (créer), intégrations dans chaque façade et dans `src/server.ts`.
 
-* [x] Spawner avec Node options : `--max-old-space-size`, `--frozen-intrinsics`, `--no-addons`, `--disable-proto=throw`.
-* [x] Profils : `strict` / `standard` / `permissive`.
+* [x] Implémente `BudgetTracker` (time_ms, tool_calls, bytes_out).
+* [x] `rpc/timeouts.ts` : mapping par méthode + valeur par défaut.
+* [x] Mode **dégradé** (ex : réponse résumée) puis **stop** avec message d’action (“relance avec budget X”).
 
-### 13.2 Intégration
+**Tests**
 
-* [x] `child_spawn_codex` : choisir profil, cwd isolé, env whitelists.
-
-### 13.3 Tests
-
-* [x] `tests/children/sandbox.test.ts` : limites mémoire/process, refus réseau (si support).
+* [x] `tests/infra/budget.test.ts` et `tests/rpc/timeouts.test.ts`.
 
 ---
 
-## 14) Packaging/ops
+### 6) Idempotence & durcissement stateful
 
-### 14.1 Docker
+**Fichiers** : `src/infra/idempotencyStore.file.ts`, `src/server.ts` (wrap mutations)
 
-* [x] `Dockerfile` multi-stage : builder (devDeps) → runtime (prod only, distroless si possible).
-* [x] `.dockerignore` : ignorer `node_modules`, `runs`, `tests`, etc.
+* [x] Toujours lire/écrire idempotence sur méthodes à effet (graph commit, artefacts write, spawn/kill).
+* [x] Ajouter **compaction** (optionnelle) si l’index file grossit.
+* [x] Conflit → renvoyer `IDEMPOTENCY_CONFLICT` (409).
 
-### 14.2 CI
+**Tests**
 
-* [x] `.github/workflows/ci.yml` : cache npm, `npm ci --include=dev`, build, tests, couverture artifact.
-* [x] Job optionnel : build image + smoke `/healthz`/`/readyz`.
-
----
-
-## 15) Scripts de validation
-
-### 15.1 `scripts/validation/run-smoke.mjs`
-
-* [x] Enchaîne : `mcp_info` → `tools_list` → `tx_begin` → `graph_patch` → `tx_commit` → `child_spawn_codex` → `child_send` → `child_kill`.
-* [x] Écrit entrées/sorties dans `runs/validation_<date>/…` + `summary.md` (latences p50/p95, taux erreurs).
-
-### 15.2 `scripts/validation/run-eval.mjs`
-
-* [x] Fuzz JSON-RPC, cas adversariaux (out-of-order, big payload), métamorphiques pour graphes.
+* [x] `tests/int/idempotency.http.test.ts`.
 
 ---
 
-## 16) Observabilité budgets
+### 7) Graphe — invariants & journalisation métier
 
-### 16.1 `src/infra/tracing.ts`
+**Fichiers** : `src/graph/validate.ts` (créer), `src/graph/oplog.ts` (créer), `src/graph/tx.ts` (adapter)
 
-* [x] Agréger les consommations/exhaustions par méthode/étape/acteur et exposer les métriques budget_* via `/metrics`.
+* [x] `validateGraph()` : types, orphelins, cardinalités, bornes.
+* [x] `oplog` (JSONL par op), distinct du WAL global (optionnel si déjà présent).
+* [x] `tx.commit()` → `validateGraph()` **avant** commit.
 
-### 16.2 `src/infra/budget.ts`
+**Tests**
 
-* [x] Instrumenter chaque consommation/dépassement pour alimenter les métriques budgets.
-
-### 16.3 Tests
-
-* [x] `tests/obs/metrics.test.ts` : vérifie la présence des lignes budget_* et l'incrément des compteurs d'épuisement.
+* [x] `tests/graph/invariants.test.ts`, `tests/graph/oplog.test.ts`.
 
 ---
 
-# Règles build/tests (obligatoire)
+### 8) Streaming SSE & backpressure
 
-* Build local/Cloud :
+**Fichiers** : `src/resources/sse.ts` (modifier)
 
-  1. `npm ci --include=dev`
-  2. `npm run build` (compile `src` puis `graph-forge`)
-  3. `npm run lint`
-* Tests : `npm run test` et `npm run coverage`
+* [x] Chunking à `MCP_SSE_MAX_CHUNK_BYTES` (défaut 32768).
+* [x] Buffer borné par client (`MCP_SSE_MAX_BUFFER`) → DROP ancien + warn.
+* [x] Timeout émisson (`MCP_SSE_EMIT_TIMEOUT_MS`).
 
-  * Couverture minimale **85%** (stmts/funcs/lines) ; branches **70%**.
-  * Pas de flakiness ; tests HTTP isolés via token et petits payloads.
-* Exécution HTTP :
+**Tests**
 
-  * `MCP_HTTP_TOKEN` **obligatoire** si HTTP actif.
-  * `MCP_SSE_MAX_CHUNK_BYTES`, `MCP_SSE_MAX_BUFFER`, `MCP_SSE_EMIT_TIMEOUT_MS` définis pour la plate-forme Cloud.
-  * `IDEMPOTENCY_TTL_MS` raisonnable (10–30 min).
+* [x] `tests/streaming/sse.test.ts`.
 
 ---
 
-# Critères d’acceptation (final)
+### 9) Enfants (Codex) — orchestration unique & sandbox
 
-* Tous les points 1→15 cochés et **tests associés verts**.
-* `/healthz` et `/readyz` répondent conformément (readyz casse si une dépendance simulée tombe).
-* **Idempotence** : même `Idempotency-Key` → même réponse après redémarrage.
-* **SSE** : pas d’OOM ni blocage sur clients lents, payloads chunkés.
-* **Observabilité** : `/metrics` expose p50/p95/p99 par méthode et erreurs/1000 reqs.
-* **WAL + snapshots** : `snapshot_take`/`snapshot_load` opérationnels, `walAppend` présent sur toutes mutations.
-* **Tool-OS** : `tool_compose_register` permet de créer un tool composite listable/exécutable.
-* **Planner** : un plan non trivial compilé/exécuté avec vérif pré/post.
-* **Sandbox** : profil `strict` limite mémoire et bloque fonctionnalités interdites.
+**Fichiers** : `src/children/supervisor.ts` (renforcer breaker), `src/children/sandbox.ts` (créer), `src/tools/child_orchestrate.ts` (façade)
+
+* [x] Circuit breaker : backoff exponentiel, limites `max_restarts_per_min`, états `open/half_open/closed`.
+* [x] Sandbox profils (`strict|standard|permissive`) avec options Node (mémoire, intrinsics, etc.).
+* [x] `child_orchestrate` encapsule spawn → send → observe → kill.
+
+**Tests**
+
+* [x] `tests/children/supervisor.test.ts`, `tests/children/sandbox.test.ts`, `tests/tools/child_orchestrate.test.ts`.
 
 ---
 
-Si tu veux, je peux te fournir **diffs initiaux** pour bootstraper les nouveaux fichiers (`wal.ts`, `snapshot.ts`, `budget.ts`, `registry.ts`, `planner/*`, `memory/*`) et un squelette de tests pour que tu partes avec des bases compilables dès la première passe.
+### 10) Observabilité & logs
+
+**Fichiers** : `src/infra/tracing.ts` (ajouter histos p50/p95/p99, compteurs), `src/logger.ts` (enrichir champs), `src/httpServer.ts` (/metrics)
+
+* [x] Ajouter/valider champs log : `request_id`, `trace_id`, `child_id`, `method`, `duration_ms`, `bytes_in/out`.
+* [x] Activer export OTLP si `OTEL_EXPORTER_OTLP_ENDPOINT` défini.
+
+**Tests**
+
+* [x] `tests/obs/metrics.test.ts`, `tests/obs/logs.test.ts`.
+
+---
+
+### 11) Dépréciation/Nettoyage
+
+**Fichiers** : chaque tool primitif (manifests)
+
+* [x] Ajouter `deprecated` avec `since` + `replace_with`.
+* [x] **Logguer** l’usage d’un deprecated (warning), et **masquer** en mode basic.
+* [x] Plan de retrait : J+30 masque dur (même en pro), J+60 suppression (docs mises à jour).
+
+**Tests**
+
+* [x] `tests/mcp/deprecation.test.ts`.
+
+---
+
+### 12) Scripts d’exploitation & validations
+
+**Fichiers** : `scripts/validation/run-smoke.mjs` (créer ou compléter), `scripts/validation/run-eval.mjs`
+
+* [x] `run-smoke.mjs` : séquence auto (mcp_info → tools_list → graph_apply_change_set → child_orchestrate …) + sortie dans `runs/validation_<date>/`.
+* [x] `run-eval.mjs` : fuzz JSON-RPC, payload volumineux, cas adversariaux.
+
+**Tests**
+
+* [x] Pas unitaires stricts, mais **exécution de smoke** en CI et export artefacts (logs/latences).
+
+---
+
+### 13) Documentation & env
+
+**Fichiers** : `README.md` (mettre à jour), `.env.example` (ajouter si absent)
+
+* [x] Documenter les **12 façades** : one-liner + **exemple minimal**.
+* [x] Expliquer `MCP_TOOLS_MODE`, `MCP_TOOL_PACK`, budgets, token HTTP.
+* [x] `.env.example` : variables clés (voir ci-dessous).
+
+**Env vars recommandées**
+
+* `MCP_HTTP_TOKEN` (obligatoire si HTTP)
+* `MCP_SSE_MAX_CHUNK_BYTES=32768`
+* `MCP_SSE_MAX_BUFFER=1048576`
+* `MCP_SSE_EMIT_TIMEOUT_MS=5000`
+* `IDEMPOTENCY_TTL_MS=600000`
+* `MCP_TOOLS_MODE=basic|pro`
+* `MCP_TOOL_PACK=basic|authoring|ops|all`
+* `OTEL_EXPORTER_OTLP_ENDPOINT` (optionnel)
+* `MCP_LOG_REDACT=on|off`
+
+---
+
+## Ce que tu dois respecter pour les **tests** & le **build**
+
+**Build (local & Cloud)**
+
+1. `npm ci --include=dev` (ou CI)
+2. `npm run build` (compile `src` puis `graph-forge`)
+3. `npm run lint`
+
+**Tests**
+
+* `npm run test` puis `npm run coverage` (objectifs : stmts/funcs/lines ≥ **85%**, branches ≥ **70%**).
+* Pas de tests flakey; fixer timeouts de test raisonnables (SSE/HTTP).
+* “Golden outputs” pour les façades et pour le middleware d’erreur.
+
+---
+
+## Critères d’acceptation (à valider à la fin)
+
+* **Façades** : 12 outils visibles en mode basic, chaque manifest avec exemple et budgets.
+* **Primitives** : cachées (`hidden:true`) et/ou dépréciées proprement.
+* **Intent router** : redirige ≥ 70% des intentions simples vers la bonne façade, sinon propose 2–3 candidats.
+* **Budgets/timeouts** : activés et testés (mode dégradé + stop propre).
+* **HTTP** : `/healthz`, `/readyz` (avec dépendances), `/metrics` (p50/p95/p99, erreurs/req).
+* **Graphe** : invariants appliqués **avant** commit; erreurs lisibles.
+* **Idempotence** : même clé → même résultat; conflit renvoie `IDEMPOTENCY_CONFLICT`.
+* **SSE** : chunking et backpressure fonctionnels; pas d’OOM sur client lent.
+* **Observabilité** : logs corrélés (`request_id`, `trace_id`, `method`, latence, bytes), export OTLP optionnel.
+* **Docs** : README à jour (façades, packs, env), `.env.example` présent.
+* **Smoke** : `run-smoke.mjs` génère un récap (latences p95, erreurs, outils top usage) dans `runs/validation_*`.
+
+---
+
+Si tu veux un **bootstrap de code** (squelettes compilables) pour les nouveaux fichiers — `registry.ts` enrichi, `graph_apply_change_set.ts`, `intent_route.ts`, `budget.ts`, `timeouts.ts`, tests “golden” par façade — je peux te livrer un lot prêt à coller pour accélérer la première passe.
 
 ### Historique des actions
 
-* 2025-02-14T00:00Z — gpt-5-codex : Implémentation des modules `state/wal` et `state/snapshot` avec tests de rotation/checksum et chargement. Commande : `node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --file tests/setup.ts "tests/state/wal.test.ts" "tests/state/snapshot.test.ts"`.
-* 2025-10-13T12:18Z — gpt-5-codex : Durcissement HTTP (`httpServer.ts`), normalisation erreurs JSON-RPC et observabilité `/metrics`, ajout tests HTTP/ops ciblés. Commande : `node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --file tests/setup.ts "tests/http/auth.test.ts" "tests/http/limits.test.ts" "tests/http/headers.test.ts" "tests/ops/health_ready.test.ts" "tests/obs/metrics.test.ts"`.
-* 2025-10-13T12:40Z — gpt-5-codex : Durcit le store idempotence (compaction auto, TTL configurable, conflit 409) et étend le fast-path HTTP pour détecter les divergences, avec tests infra/int. Commande : `node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --file tests/setup.ts "tests/infra/idempotencyStore.file.test.ts" "tests/int/idempotency.http.test.ts"`.
-* 2025-10-13T13:10Z — gpt-5-codex : Instrumente le serveur HTTP/JSON-RPC pour tracer les mutations idempotentes dans le WAL avant exécution, rejoue les métadonnées en fast-path et vérifie la persistance via `tests/int/idempotency.http.test.ts`. Commande : `node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --file tests/setup.ts "tests/int/idempotency.http.test.ts"`.
-* 2025-10-13T13:45Z — gpt-5-codex : Ajoute les politiques de supervision (quota/minute, aliases snake_case), émet des événements breaker/restart et relaye vers le bus enfant en incluant une tentative de respawn contrôlée après cooldown. Commande : `node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --file tests/setup.ts "tests/children/supervisor.test.ts"`.
-* 2025-10-13T13:54Z — gpt-5-codex : Instrumente la télémétrie JSON-RPC (erreurs par code, export OTLP) et enrichit les logs structurés avec corrélations/redaction automatique. Commande : `node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --file tests/setup.ts "tests/obs/metrics.test.ts" "tests/obs/logs.test.ts"`.
-* 2025-10-13T14:25Z — gpt-5-codex : Étend la transaction graph pour émettre dans le WAL, déclencher des snapshots incrémentaux et journaliser les outils `graph_patch`/`graph_batch`/`tx_*`. Ajout du test `tests/graph/persistence.test.ts`. Commandes : tentative `node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --file tests/setup.ts "tests/graph/*.test.ts"` (échoue faute de dépendance facultative `fast-check`), puis `node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --file tests/setup.ts "tests/graph/invariants.test.ts" "tests/graph/oplog.test.ts" "tests/graph/persistence.test.ts"`.
-* 2025-10-13T15:00Z — gpt-5-codex : Aligne le buffer SSE sur `MCP_SSE_MAX_BUFFER`, documente l’option et vérifie chunking/backpressure/timeouts via `tests/streaming/sse.test.ts`.
-* 2025-10-13T17:08Z — gpt-5-codex : Normalise le middleware JSON-RPC (taxonomie d’erreurs, builders de schémas) et ajoute les tests `tests/rpc/validation.test.ts` tout en homogénéisant les erreurs HTTP (`tests/http/limits.test.ts`). Commande : `node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --file tests/setup.ts "tests/rpc/validation.test.ts" "tests/http/limits.test.ts"`.
-* 2025-10-13T19:10Z — gpt-5-codex : Implémente le Tool-OS (registry dynamique + composites) avec `tool_compose_register`, `tools_list`, hot-reload et tests dédiés. Commandes : `node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --file tests/setup.ts "tests/mcp/registry.test.ts"` et `node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --file tests/setup.ts "tests/rpc/validation.test.ts"`.
-* 2025-10-14T00:10Z — gpt-5-codex : Ajoute les modules planner (`domain`, `schedule`, `compileBT`), le tool `plan_compile_execute` et les schémas RPC associés. Commande : `node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --file tests/setup.ts "tests/planner/compile.test.ts"`.
-* 2025-10-14T01:36Z — gpt-5-codex : Ajoute la mémoire vectorielle persistée, la couche KG durable, les tools `memory_vector_search`/`kg_upsert` et l'indexation automatique post `child_collect`. Commandes : `node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --file tests/setup.ts "tests/memory/vector.test.ts" "tests/memory/kg.test.ts" "tests/knowledge.kg.insert-query.test.ts"`; tentative `node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --file tests/setup.ts "tests/events.subscribe.cognitive-correlation.test.ts"` (échec esbuild top-level await CJS).
-* 2025-10-14T02:31Z — gpt-5-codex : Implémente le suivi budgétaire multi-dimensionnel (tracker, budgets requêtes/enfants, intégration outils) et ajoute les tests unitaires/acceptance associés. Commande : `node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --file tests/setup.ts "tests/infra/budget.test.ts" "tests/child.tools.test.ts"`.
-* 2025-10-14T02:52Z — gpt-5-codex : Ajoute le module sandbox (profils strict/standard/permissive, politiques réseau/mémoire), intègre `child_spawn_codex` avec whitelist d'environnement et ajoute les tests dédiés. Commande : `node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --file tests/setup.ts "tests/children/sandbox.test.ts" "tests/children/supervisor.test.ts" "tests/child.tools.test.ts"`.
-* 2025-10-14T03:45Z — gpt-5-codex : Finalise l'opérationnelle (Docker ignore/CI multi-étapes), enrichit la fumée validation (p99 + taux erreurs) et ajoute le script `run-eval.mjs` avec tests intégrés. Commandes : `node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --file tests/setup.ts "tests/validation/run-smoke.test.ts" "tests/validation/run-eval.test.ts"`.
-* 2025-10-14T04:05Z — gpt-5-codex : Rétablit le test `events.subscribe.cognitive-correlation` via import dynamique du serveur pour éviter les limites CJS d'esbuild et exécute l'installation `npm ci`. Commandes : `npm ci --include=dev` puis `node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --file tests/setup.ts "tests/events.subscribe.cognitive-correlation.test.ts"`.
-* 2025-10-14T05:10Z — gpt-5-codex : Instrumente le budget tracker pour publier les métriques budget_* (consommation & dépassement) et ajoute la couverture dédiée. Commande : `node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --file tests/setup.ts "tests/obs/metrics.test.ts"`.
+* 2025-10-14T06:27Z — gpt-5-codex : Étend le manifest Tool-OS (catégorie, visibilité, budgets, dépréciation), ajoute les filtres `listVisible` (mode/pack, env) et crée le test ciblé `tests/mcp/registry.listVisible.test.ts`. Commandes : `npm run lint:types` ; `node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --file tests/setup.ts tests/mcp/registry.listVisible.test.ts`.
+
+* 2025-10-14T07:45Z — gpt-5-codex : Ajoute l’inférence automatique de catégorie depuis le nom des outils, force `hidden` par défaut hors façades et étend `tests/mcp/registry.test.ts`. Commandes : `node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --file tests/setup.ts tests/mcp/registry.test.ts` ; `node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --file tests/setup.ts tests/mcp/registry.listVisible.test.ts` ; `npm run lint:types`.
+
+* 2025-10-14T06:56Z — gpt-5-codex : Crée la façade `intent_route` avec budgets, idempotence basique et journalisation corrélée, expose ses schémas Zod dédiés (`src/rpc/intentRouteSchemas.ts`) et enregistre la façade via le ToolRegistry. Ajoute les tests unitaires `tests/tools/facades/intent_route.test.ts`. Commandes : `npm run lint:types` ; `node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --file tests/setup.ts tests/tools/facades/intent_route.test.ts`.
+* 2025-10-14T07:07Z — gpt-5-codex : Ajoute la façade `tools_help` (manifest façade, filtrage multi-critères, budgets/idempotence,
+observabilité), publie ses schémas (`src/rpc/toolsHelpSchemas.ts` via `src/rpc/schemas.ts`), l’enregistre côté serveur MCP et crée
+les tests `tests/tools/facades/tools_help.test.ts`. Commandes : `npm run lint:types` ; `node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --file tests/setup.ts tests/tools/facades/tools_help.test.ts`.
+
+* 2025-10-14T08:15Z — gpt-5-codex : Implémente les façades `artifact_write`, `artifact_read` et `artifact_search` avec budgets, idempotence et journalisation, ajoute leurs schémas (`src/rpc/artifactSchemas.ts`), les enregistre dans le serveur, et couvre les cas de succès/budget/validation via `tests/tools/facades/artifact_*.test.ts`. Commandes : `npm run lint:types`; `node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --file tests/setup.ts tests/tools/facades/artifact_write.test.ts`; `node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --file tests/setup.ts tests/tools/facades/artifact_read.test.ts`; `node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --file tests/setup.ts tests/tools/facades/artifact_search.test.ts`.
+
+* 2025-10-14T07:44Z — gpt-5-codex : Livre la façade `graph_apply_change_set` (manifest façade, budgets, idempotence, validation et journalisation), expose ses schémas (`src/rpc/graphApplyChangeSetSchemas.ts`), enregistre l'outil MCP et ajoute les tests `tests/tools/facades/graph_apply_change_set.test.ts`. Commandes : `npm run lint:types`; `node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --file tests/setup.ts tests/tools/facades/graph_apply_change_set.test.ts`.
+* 2025-10-14T08:03Z — gpt-5-codex : Ajoute la façade `graph_snapshot_time_travel` (schemas dédiés, budgets, idempotence, modes liste/apercu/restaure et diff normalisé), l'enregistre côté serveur et couvre les cas de succès/dégradation avec `tests/tools/facades/graph_snapshot_time_travel.test.ts`. Commandes : `npm run lint:types`; `node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --file tests/setup.ts tests/tools/facades/graph_snapshot_time_travel.test.ts`.
+* 2025-10-14T09:20Z — gpt-5-codex : Implémente la façade `plan_compile_execute` (manifest façade, budgets, idempotence, résumés plan/schedule/BT), ajoute les schémas dédiés (`src/rpc/planCompileExecuteFacadeSchemas.ts`), l'enregistre côté serveur et crée les tests ciblés `tests/tools/facades/plan_compile_execute.test.ts`. Commandes : `npm run lint:types`; `node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --file tests/setup.ts tests/tools/facades/plan_compile_execute.test.ts`.
+* 2025-10-14T08:35Z — gpt-5-codex : Ajoute les façades `memory_upsert` et `memory_search` (manifestes façade, budgets, idempotence, rejouabilité), publie leurs schémas (`src/rpc/memoryFacadeSchemas.ts`), met à jour `src/server.ts` et enregistre les outils. Crée les tests `tests/tools/facades/memory_upsert.test.ts` et `tests/tools/facades/memory_search.test.ts`. Commandes : `npm run lint:types`; `node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --file tests/setup.ts tests/tools/facades/memory_upsert.test.ts tests/tools/facades/memory_search.test.ts`.
+* 2025-10-14T09:55Z — gpt-5-codex : Implémente la façade `child_orchestrate` (budgets, idempotence, observation et arrêt configurables), publie les schémas `src/rpc/childOrchestrateSchemas.ts`, enregistre l'outil via `src/server.ts` et ajoute les tests `tests/tools/facades/child_orchestrate.test.ts`. Commandes : `npm run lint:types`; `node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --file tests/setup.ts tests/tools/facades/child_orchestrate.test.ts`.
+* 2025-10-14T09:17Z — gpt-5-codex : Corrige la façade `child_orchestrate` (retour `isError:false` sur succès, retrait de l'instrumentation de test) pour stabiliser la suite et fiabiliser l'assertion d'idempotence. Commandes : `npm run lint:types`; `node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --file tests/setup.ts tests/tools/facades/child_orchestrate.test.ts`.
+* 2025-10-14T09:29Z — gpt-5-codex : Ajoute la façade `runtime_observe` (schémas dédiés, manifest façade, collecte snapshot/metrics, enregistrement serveur) et crée la suite `tests/tools/facades/runtime_observe.test.ts`. Commandes : `npm run lint:types`; `node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --file tests/setup.ts tests/tools/facades/runtime_observe.test.ts`.
+* 2025-10-14T09:43Z — gpt-5-codex : Livre la façade `project_scaffold_run` (schemas dédiés, idempotence, budgets, enregistrement serveur, tests ciblés) et couvre les diagnostics budget/sandbox. Commandes : `npm run lint:types`; `node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --file tests/setup.ts tests/tools/facades/project_scaffold_run.test.ts`.
+
+* 2025-10-14T10:45Z — gpt-5-codex : Documente les façades visibles (one-liners + exemples JSON), explique les variables d'exposition/budgets, ajoute `.env.example` et met à jour le suivi. Commandes : `npm run lint:types`.
+* 2025-10-14T14:57Z — gpt-5-codex : Réorganise la chaîne de garde HTTP (auth → rate-limit → body → JSON-RPC), ajoute une couverture `ops/health_ready` garantissant l'ordre et tolère les doubles enregistrements MCP durant les tests. Commandes : `node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --file tests/setup.ts tests/ops/health_ready.test.ts`; `npm run lint:types`.
+* 2025-10-14T15:40Z — gpt-5-codex : Centralise la politique de dépréciation (catalogue, filtrage ToolRegistry, blocage J+60), ajoute les journaux d’usage côté transport HTTP et publie `tests/mcp/deprecation.test.ts`. Commandes : `npm run lint:types`; `node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --file tests/setup.ts tests/mcp/deprecation.test.ts`.
+* 2025-10-14T16:20Z — gpt-5-codex : Vérifie et coche les jalons HTTP/middleware/budget/idempotence/graph/SSE/enfants/observabilité déjà en place, actualise AGENTS.md et confirme la présence des suites associées. Commandes : `npm run lint:types`.
+* 2025-10-14T16:26Z — gpt-5-codex : Supprime le double enregistrement MCP du plan compile & execute pour laisser la façade piloter le manifeste, vérifie les scripts `run-smoke`/`run-eval` et coche les entrées de validation. Commandes : `npm run lint:types`; `node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --file tests/setup.ts tests/validation/run-smoke.test.ts tests/validation/run-eval.test.ts`.
+* 2025-10-14T16:30Z — gpt-5-codex : Ajoute une couverture de registre dédiée pour `plan_compile_execute`, vérifie qu’une seule entrée MCP est créée et que les doublons lèvent `ToolRegistrationError`, puis étend la suite mocha correspondante. Commandes : `node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --file tests/setup.ts tests/tools/facades/plan_compile_execute.test.ts`; `npm run lint:types`.
+* 2025-10-14T16:55Z — gpt-5-codex : Active les overrides de budgets via l’environnement, propage les manifestes enrichis côté serveur pour créer les `BudgetTracker` des façades, documente le pattern `MCP_TOOLS_BUDGET_*` et ajoute une intégration qui observe la consommation du routeur d’intentions. Commandes : `npm run lint:types`; `node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --file tests/setup.ts tests/mcp/registry.test.ts tests/integration/tool.budgets.test.ts`.

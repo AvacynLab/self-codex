@@ -144,6 +144,112 @@ export const ResourceWatchInputSchema = z
     blackboard: ResourceWatchBlackboardFilterSchema.optional(),
   })
   .strict();
+
+export {
+  IntentRouteDiagnosticsSchema,
+  IntentRouteInputSchema,
+  IntentRouteInputShape,
+  IntentRouteOutputSchema,
+} from "./intentRouteSchemas.js";
+export {
+  ToolsHelpBudgetDiagnosticSchema,
+  ToolsHelpInputSchema,
+  ToolsHelpInputShape,
+  ToolsHelpOutputDetailsSchema,
+  ToolsHelpOutputSchema,
+  ToolsHelpToolSummarySchema,
+} from "./toolsHelpSchemas.js";
+export {
+  RUNTIME_OBSERVE_SECTIONS,
+  RuntimeObserveBudgetDiagnosticSchema,
+  RuntimeObserveInputSchema,
+  RuntimeObserveInputShape,
+  RuntimeObserveMethodMetricSchema,
+  RuntimeObserveOutputDetailsSchema,
+  RuntimeObserveOutputSchema,
+  RuntimeObserveSnapshotSchema,
+} from "./runtimeObserveSchemas.js";
+export {
+  ProjectScaffoldRunBudgetDiagnosticSchema,
+  ProjectScaffoldRunDirectoriesSchema,
+  ProjectScaffoldRunErrorDiagnosticSchema,
+  ProjectScaffoldRunInputSchema,
+  ProjectScaffoldRunInputShape,
+  ProjectScaffoldRunOutputDetailsSchema,
+  ProjectScaffoldRunOutputShape,
+  ProjectScaffoldRunOutputSchema,
+} from "./projectScaffoldRunSchemas.js";
+export {
+  ArtifactBudgetDiagnosticSchema,
+  ArtifactEncodingSchema,
+  ArtifactOperationContextSchema,
+  ArtifactOperationErrorSchema,
+  ArtifactReadDetailsSchema,
+  ArtifactReadInputSchema,
+  ArtifactReadOutputSchema,
+  ArtifactReadSuccessDetailsSchema,
+  ArtifactSearchDetailsSchema,
+  ArtifactSearchInputSchema,
+  ArtifactSearchOutputSchema,
+  ArtifactSearchResultEntrySchema,
+  ArtifactWriteDetailsSchema,
+  ArtifactWriteInputSchema,
+  ArtifactWriteOutputSchema,
+  ArtifactWriteSuccessDetailsSchema,
+} from "./artifactSchemas.js";
+export {
+  GraphApplyChangeSetBudgetDetailsSchema,
+  GraphApplyChangeSetInputSchema,
+  GraphApplyChangeSetOutputSchema,
+  GraphApplyChangeSetSuccessDetailsSchema,
+  GraphApplyChangeSetValidationFailureDetailsSchema,
+  GraphApplyChangeSetValidationSchema,
+  GraphChangeOperationSchema,
+} from "./graphApplyChangeSetSchemas.js";
+export {
+  GRAPH_SNAPSHOT_TIME_TRAVEL_MODES,
+  GraphSnapshotBudgetDiagnosticSchema,
+  GraphSnapshotDescriptorSchema,
+  GraphSnapshotTimeTravelBaseDetailsSchema,
+  GraphSnapshotTimeTravelDetailsSchema,
+  GraphSnapshotTimeTravelInputSchema,
+  GraphSnapshotTimeTravelListDetailsSchema,
+  GraphSnapshotTimeTravelModeSchema,
+  GraphSnapshotTimeTravelOutputSchema,
+  GraphSnapshotTimeTravelPreviewDetailsSchema,
+  GraphSnapshotTimeTravelRestoreDetailsSchema,
+} from "./graphSnapshotTimeTravelSchemas.js";
+export {
+  MemorySearchHitSchema,
+  MemorySearchInputSchema,
+  MemorySearchInputShape,
+  MemorySearchOutputSchema,
+  MemoryUpsertInputSchema,
+  MemoryUpsertInputShape,
+  MemoryUpsertOutputSchema,
+} from "./memoryFacadeSchemas.js";
+export {
+  ChildOrchestrateCollectSchema,
+  ChildOrchestrateInputSchema,
+  ChildOrchestrateInputShape,
+  ChildOrchestrateOutputSchema,
+  ChildOrchestrateRuntimeMessageSchema,
+  ChildOrchestrateSandboxSchema,
+  ChildOrchestrateSuccessDetailsSchema,
+} from "./childOrchestrateSchemas.js";
+export {
+  PlanCompileExecuteBehaviorTreeSummarySchema,
+  PlanCompileExecuteBindingSummarySchema,
+  PlanCompileExecuteBudgetDiagnosticSchema,
+  PlanCompileExecuteErrorDiagnosticSchema,
+  PlanCompileExecuteInputSchemaFacade,
+  PlanCompileExecuteOutputDetailsSchema,
+  PlanCompileExecuteOutputSchema,
+  PlanCompileExecutePlanPreviewSchema,
+  PlanCompileExecuteSchedulePhaseSchema,
+  PlanCompileExecuteScheduleSummarySchema,
+  PlanCompileExecuteStatsSchema,
+} from "./planCompileExecuteFacadeSchemas.js";
 export const EventSubscribeInputSchema = z
   .object({
     categories: z.array(z.string().trim().min(1)).max(10).optional(),
@@ -376,6 +482,8 @@ export const ToolsListInputSchema = z
   .object({
     names: z.array(z.string().trim().min(1).max(200)).max(50).optional(),
     kinds: z.array(z.enum(["dynamic", "composite", "native"])).max(3).optional(),
+    mode: z.enum(["basic", "pro"]).optional(),
+    pack: z.enum(["basic", "authoring", "ops", "all"]).optional(),
   })
   .strict();
 export const ToolsListInputShape = ToolsListInputSchema.shape;

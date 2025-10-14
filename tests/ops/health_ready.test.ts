@@ -3,8 +3,9 @@
  * tests exercise the lightweight helpers directly to guarantee deterministic
  * outcomes without starting an actual TCP listener.
  */
-import { beforeEach, afterEach, describe, it } from "mocha";
+import { before, after, beforeEach, afterEach, describe, it } from "mocha";
 import { expect } from "chai";
+import sinon from "sinon";
 
 import { resetRateLimitBuckets } from "../../src/http/rateLimit.js";
 import { MemoryHttpResponse, createHttpRequest } from "../helpers/http.ts";
@@ -23,10 +24,36 @@ const noopLogger = new Proxy(
 
 describe("ops probes", () => {
   let httpInternals: Awaited<ReturnType<typeof loadHttpServerInternals>>;
+  let registerStub: sinon.SinonStub | undefined;
 
   async function loadHttpServerInternals() {
     return (await import("../../src/httpServer.js")).__httpServerInternals;
   }
+
+  before(async () => {
+    const mcpModule = await import("@modelcontextprotocol/sdk/server/mcp.js");
+    const prototype = mcpModule.McpServer.prototype as typeof mcpModule.McpServer.prototype & {
+      registerTool: (...args: unknown[]) => unknown;
+    };
+    const originalRegister = prototype.registerTool;
+    registerStub = sinon
+      .stub(prototype, "registerTool")
+      .callsFake(function registerToolSafe(this: unknown, ...args: unknown[]) {
+        try {
+          return originalRegister.apply(this, args as never);
+        } catch (error) {
+          if (error instanceof Error && /already registered/i.test(error.message)) {
+            return this;
+          }
+          throw error;
+        }
+      });
+    httpInternals = await loadHttpServerInternals();
+  });
+
+  after(() => {
+    registerStub?.restore();
+  });
 
   beforeEach(() => {
     resetRateLimitBuckets();
@@ -35,10 +62,6 @@ describe("ops probes", () => {
   afterEach(() => {
     resetRateLimitBuckets();
     delete process.env.MCP_HTTP_TOKEN;
-  });
-
-  before(async () => {
-    httpInternals = await loadHttpServerInternals();
   });
 
   it("exposes a healthy status without requiring authentication", async () => {
@@ -145,5 +168,60 @@ describe("ops probes", () => {
     expect(response.statusCode).to.equal(503);
     const payload = JSON.parse(response.body) as { ok?: boolean };
     expect(payload.ok).to.equal(false);
+  });
+
+  it("authenticates `/readyz` callers before touching the rate limiter", async () => {
+    process.env.MCP_HTTP_TOKEN = "test-token";
+    const key = "127.0.0.1:/readyz";
+    // Pre-consume 19 out of 20 tokens to leave a single slot in the bucket. If the
+    // readiness handler invoked the limiter before the auth guard it would spend the
+    // last token and the assertion below would fail.
+    for (let attempt = 0; attempt < 19; attempt += 1) {
+      const ok = httpInternals.enforceRateLimit(
+        key,
+        new MemoryHttpResponse() as any,
+        noopLogger as any,
+        `rid-${attempt}`,
+      );
+      expect(ok, `pre-flight attempt ${attempt} should succeed`).to.equal(true);
+    }
+
+    const readinessInvoked: { called: boolean } = { called: false };
+    const request = createHttpRequest("GET", "/readyz");
+    (request as any).socket = { remoteAddress: "127.0.0.1" };
+    const response = new MemoryHttpResponse();
+
+    await httpInternals.handleReadyCheck(
+      request as any,
+      response as any,
+      noopLogger as any,
+      "rid-final",
+      {
+        async check() {
+          readinessInvoked.called = true;
+          return {
+            ok: true,
+            components: {
+              graphForge: { ok: true },
+              idempotency: { ok: true },
+              eventQueue: { ok: true, usage: 0, capacity: 10 },
+            },
+          } as const;
+        },
+      },
+    );
+
+    expect(readinessInvoked.called, "readiness probe should not run when auth fails").to.equal(false);
+    expect(response.statusCode).to.equal(401);
+    const payload = JSON.parse(response.body) as { error?: { data?: { category?: string } } };
+    expect(payload.error?.data?.category).to.equal("AUTH_REQUIRED");
+
+    const bucketIntact = httpInternals.enforceRateLimit(
+      key,
+      new MemoryHttpResponse() as any,
+      noopLogger as any,
+      "rid-post",
+    );
+    expect(bucketIntact, "last token should remain available").to.equal(true);
   });
 });

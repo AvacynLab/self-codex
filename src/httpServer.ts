@@ -216,10 +216,12 @@ export async function startHttpServer(
     }
 
     if (requestUrl.pathname === "/metrics") {
-      if (!enforceRateLimit(`${remoteAddress}:${requestUrl.pathname}`, response, logger, requestId, guardMeta)) {
+      // Authentication must run before throttling so operators receive a 401 when the
+      // bearer token is missing, even if the rate-limit bucket is already empty.
+      if (!enforceBearerToken(request, response, logger, requestId, guardMeta)) {
         return;
       }
-      if (!enforceBearerToken(request, response, logger, requestId, guardMeta)) {
+      if (!enforceRateLimit(`${remoteAddress}:${requestUrl.pathname}`, response, logger, requestId, guardMeta)) {
         return;
       }
 
@@ -247,11 +249,14 @@ export async function startHttpServer(
     }
 
     const clientKey = `${remoteAddress}:${requestUrl.pathname}`;
-    if (!enforceRateLimit(clientKey, response, logger, requestId, guardMeta)) {
+    // Enforce the documented guard ordering: authentication → rate limiting → body size →
+    // JSON-RPC validation. Keeping the sequence explicit helps regression tests catch
+    // accidental reordering when the handler is refactored in the future.
+    if (!enforceBearerToken(request, response, logger, requestId, guardMeta)) {
       return;
     }
 
-    if (!enforceBearerToken(request, response, logger, requestId, guardMeta)) {
+    if (!enforceRateLimit(clientKey, response, logger, requestId, guardMeta)) {
       return;
     }
 
@@ -366,11 +371,13 @@ async function handleReadyCheck(
   readiness: HttpReadinessExtras | undefined,
 ): Promise<void> {
   const key = `${req.socket.remoteAddress ?? "unknown"}:/readyz`;
-  if (!enforceRateLimit(key, res, logger, requestId)) {
+  // `/readyz` should authenticate callers before touching shared limiter state so that
+  // invalid tokens yield a deterministic 401 regardless of bucket usage.
+  if (!enforceBearerToken(req, res, logger, requestId)) {
     return;
   }
 
-  if (!enforceBearerToken(req, res, logger, requestId)) {
+  if (!enforceRateLimit(key, res, logger, requestId)) {
     return;
   }
 

@@ -111,6 +111,27 @@ describe("mcp/tool registry", () => {
     expect(result.structuredContent).to.deep.equal({ echoed: "hello" });
   });
 
+  it("infers categories and defaults primitive tools to hidden", async () => {
+    await registry.register(
+      { name: "graph_mutate", title: "Graph mutate", kind: "dynamic" },
+      async () => ({ content: [{ type: "text", text: JSON.stringify({ ok: true }) }] }),
+    );
+
+    await registry.register(
+      { name: "artifact_write_facade", title: "Artifact write facade", kind: "dynamic", tags: ["facade"] },
+      async () => ({ content: [{ type: "text", text: JSON.stringify({ ok: true }) }] }),
+    );
+
+    const manifests = registry.list();
+    const graph = manifests.find((manifest) => manifest.name === "graph_mutate");
+    const artifactFacade = manifests.find((manifest) => manifest.name === "artifact_write_facade");
+
+    expect(graph?.category).to.equal("graph");
+    expect(graph?.hidden).to.equal(true);
+    expect(artifactFacade?.category).to.equal("artifact");
+    expect(artifactFacade?.hidden).to.equal(false);
+  });
+
   it("rejects duplicate registrations", async () => {
     await registry.register(
       { name: "duplicate_tool", title: "First", kind: "dynamic" },
@@ -125,6 +146,47 @@ describe("mcp/tool registry", () => {
       expect.fail("expected ToolRegistrationError");
     } catch (error) {
       expect(error).to.be.instanceOf(ToolRegistrationError);
+    }
+  });
+
+  it("applies environment overrides to tool manifest budgets", async () => {
+    const name = "override_budget_tool";
+    const timeKey = "MCP_TOOLS_BUDGET_OVERRIDE_BUDGET_TOOL_TIME_MS";
+    const toolCallsKey = "MCP_TOOLS_BUDGET_OVERRIDE_BUDGET_TOOL_TOOL_CALLS";
+    const previousTime = process.env[timeKey];
+    const previousCalls = process.env[toolCallsKey];
+    process.env[timeKey] = "5000";
+    process.env[toolCallsKey] = "0";
+
+    try {
+      const manifest = await registry.register(
+        {
+          name,
+          title: "Override budgets",
+          kind: "dynamic",
+          tags: ["facade"],
+          budgets: { time_ms: 1200, tool_calls: 1 },
+        },
+        async () => ({ content: [{ type: "text", text: JSON.stringify({ ok: true }) }] }),
+      );
+
+      expect(manifest.budgets?.time_ms).to.equal(5000);
+      expect(manifest.budgets?.tool_calls).to.equal(1);
+
+      const listed = registry.list().find((entry) => entry.name === name);
+      expect(listed?.budgets?.time_ms).to.equal(5000);
+      expect(listed?.budgets?.tool_calls).to.equal(1);
+    } finally {
+      if (previousTime === undefined) {
+        delete process.env[timeKey];
+      } else {
+        process.env[timeKey] = previousTime;
+      }
+      if (previousCalls === undefined) {
+        delete process.env[toolCallsKey];
+      } else {
+        process.env[toolCallsKey] = previousCalls;
+      }
     }
   });
 
