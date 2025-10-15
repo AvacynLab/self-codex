@@ -54,12 +54,16 @@ describe('gateway hygiene', () => {
         'src/memory/kg.ts',
         'src/memory/vector.ts',
         'src/paths.ts',
+        // HTTP readiness probe persists readiness markers in the runs root.
+        'src/http/readiness.ts',
         'src/monitor/log.ts',
         'src/logger.ts',
         'src/childRuntime.ts',
         'src/gateways/fs.ts',
         'src/gateways/fsArtifacts.ts',
         'src/server.ts',
+        // Orchestrator runtime wires configuration defaults and persists manifests.
+        'src/orchestrator/runtime.ts',
         'src/artifacts.ts',
         'src/bridge/fsBridge.ts',
         'src/tools/planTools.ts',
