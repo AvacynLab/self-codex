@@ -532,6 +532,30 @@ export class ToolRegistry {
     return listVisible(manifests, resolvedMode, resolvedPack);
   }
 
+  /**
+   * Returns additional registry metadata for the requested tool, including the
+   * validated manifest clone and any Zod input schema attached during
+   * registration. Consumers such as discovery façades can rely on the schema to
+   * generate documentation artefacts without exposing the underlying
+   * registration record.
+   */
+  public describe(
+    name: string,
+  ): { manifest: ToolManifest; inputSchema?: z.ZodObject<z.ZodRawShape> } | undefined {
+    const trimmed = name.trim();
+    if (!trimmed) {
+      return undefined;
+    }
+    const record = this.entries.get(trimmed);
+    if (!record) {
+      return undefined;
+    }
+    return {
+      manifest: cloneJson(record.manifest),
+      inputSchema: record.inputSchema,
+    };
+  }
+
   /** Retrieves a defensive copy of the manifest registered for the given tool. */
   public get(name: string): ToolManifest | undefined {
     const record = this.entries.get(name);

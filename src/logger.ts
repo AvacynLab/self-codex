@@ -4,11 +4,17 @@ import { dirname } from "node:path";
 import type { ErrnoException } from "./nodePrimitives.js";
 import { getJsonRpcContext } from "./infra/jsonRpcContext.js";
 import { getActiveTraceContext, type TraceContextSnapshot } from "./infra/tracing.js";
-import type { JsonRpcRouteContext } from "./server.js";
+import type { JsonRpcRouteContext } from "./infra/runtime.js";
 // NOTE: Node built-in modules are imported with the explicit `node:` prefix to guarantee ESM resolution in Node.js.
 
 /** Default placeholder inserted when a secret token is redacted. */
 const REDACTION_TOKEN = "[REDACTED]";
+
+/** Accepted directives enabling custom secret redaction. */
+const REDACTION_ENABLE_TOKENS = new Set(["on", "true", "yes", "1", "enable", "enabled"]);
+
+/** Directives explicitly disabling secret redaction despite configured tokens. */
+const REDACTION_DISABLE_TOKENS = new Set(["off", "false", "no", "0", "disable", "disabled"]);
 
 interface CorrelationFields {
   request_id?: string | number | null;
@@ -35,8 +41,51 @@ const SENSITIVE_KEYS = new Set([
   "set-cookie",
 ]);
 
-function isRedactionEnabled(): boolean {
-  return (process.env.MCP_LOG_REDACT ?? "").toLowerCase() === "on";
+/**
+ * Parses the `MCP_LOG_REDACT` environment variable so operators can both
+ * toggle redaction and provide a list of sensitive substrings that must be
+ * scrubbed from persisted artefacts. The helper accepts comma-separated
+ * directives such as `"on,sk-"` or `"off"` and defaults to enabling
+ * redaction when custom patterns are provided without an explicit toggle.
+ */
+export function parseRedactionDirectives(raw: string | undefined): {
+  enabled: boolean;
+  tokens: Array<string>;
+} {
+  if (!raw) {
+    return { enabled: false, tokens: [] };
+  }
+
+  const directives = raw
+    .split(",")
+    .map((value) => value.trim())
+    .filter((value) => value.length > 0);
+
+  if (directives.length === 0) {
+    return { enabled: false, tokens: [] };
+  }
+
+  let enabled: boolean | undefined;
+  const tokens: Array<string> = [];
+
+  for (const directive of directives) {
+    const normalised = directive.toLowerCase();
+    if (REDACTION_DISABLE_TOKENS.has(normalised)) {
+      enabled = false;
+      continue;
+    }
+    if (REDACTION_ENABLE_TOKENS.has(normalised)) {
+      enabled = true;
+      continue;
+    }
+    tokens.push(directive);
+  }
+
+  if (enabled === undefined) {
+    enabled = tokens.length > 0;
+  }
+
+  return { enabled, tokens };
 }
 
 /**
@@ -77,6 +126,12 @@ export interface LoggerOptions {
    * sensitive prompts stay confidential in persisted artefacts.
    */
   readonly redactSecrets?: Array<string | RegExp>;
+  /**
+   * Explicit toggle for structured payload redaction. When omitted, the logger
+   * falls back to {@link parseRedactionDirectives} to keep behaviour consistent
+   * with the `MCP_LOG_REDACT` environment variable.
+   */
+  readonly redactionEnabled?: boolean;
   /** Optional listener invoked every time an entry is emitted. */
   readonly onEntry?: (entry: LogEntry) => void;
 }
@@ -130,9 +185,16 @@ export class StructuredLogger {
     this.logFile = options.logFile ?? undefined;
     this.maxFileSizeBytes = options.maxFileSizeBytes ?? DEFAULT_MAX_FILE_SIZE;
     this.maxFileCount = Math.max(1, options.maxFileCount ?? DEFAULT_MAX_FILE_COUNT);
-    this.redactSecrets = options.redactSecrets ? [...options.redactSecrets] : [];
+    const directives = parseRedactionDirectives(process.env.MCP_LOG_REDACT);
+    const combined = new Set<string | RegExp>(directives.tokens);
+    if (options.redactSecrets) {
+      for (const entry of options.redactSecrets) {
+        combined.add(entry);
+      }
+    }
+    this.redactSecrets = [...combined];
     this.entryListener = options.onEntry;
-    this.redactionEnabled = isRedactionEnabled();
+    this.redactionEnabled = options.redactionEnabled ?? directives.enabled;
   }
 
   info(message: string, payload?: unknown): void {

@@ -1,0 +1,142 @@
+{
+  "ok": true,
+  "summary": "plan golden-plan compilé (3 tâches)",
+  "details": {
+    "idempotency_key": "golden-plan",
+    "run_id": "<<dynamic>>",
+    "op_id": "<<dynamic>>",
+    "plan_id": "golden-plan",
+    "plan_version": "1.0.0",
+    "dry_run": true,
+    "registered": true,
+    "idempotent": false,
+    "plan_hash": "a57033c24b612b0384b21f4788b6973c01277118c371bfe819332d8d75ddc8ad",
+    "stats": {
+      "total_tasks": 3,
+      "phases": 3,
+      "parallel_phases": 0,
+      "critical_path_length": 3,
+      "estimated_duration_ms": 145,
+      "slacky_tasks": 0
+    },
+    "schedule": {
+      "critical_path": [
+        "prepare",
+        "execute",
+        "finalise"
+      ],
+      "phases": [
+        {
+          "index": 0,
+          "earliest_start_ms": 0,
+          "tasks": [
+            {
+              "id": "prepare",
+              "name": null,
+              "slack_ms": 0,
+              "estimated_duration_ms": 50
+            }
+          ]
+        },
+        {
+          "index": 1,
+          "earliest_start_ms": 50,
+          "tasks": [
+            {
+              "id": "execute",
+              "name": null,
+              "slack_ms": 0,
+              "estimated_duration_ms": 75
+            }
+          ]
+        },
+        {
+          "index": 2,
+          "earliest_start_ms": 125,
+          "tasks": [
+            {
+              "id": "finalise",
+              "name": null,
+              "slack_ms": 0,
+              "estimated_duration_ms": 20
+            }
+          ]
+        }
+      ]
+    },
+    "behavior_tree": {
+      "id": "golden-plan",
+      "root_type": "sequence",
+      "total_nodes": 4,
+      "task_nodes": 3,
+      "leaf_tools": [
+        "bb_set",
+        "wait",
+        "noop"
+      ]
+    },
+    "plan_preview": {
+      "id": "golden-plan",
+      "version": "1.0.0",
+      "title": "Golden plan",
+      "total_tasks": 3,
+      "preview_tasks": [
+        {
+          "id": "prepare",
+          "name": null,
+          "tool": "bb_set",
+          "depends_on": []
+        },
+        {
+          "id": "execute",
+          "name": null,
+          "tool": "wait",
+          "depends_on": [
+            "prepare"
+          ]
+        },
+        {
+          "id": "finalise",
+          "name": null,
+          "tool": "noop",
+          "depends_on": [
+            "execute"
+          ]
+        }
+      ]
+    },
+    "variable_bindings": {
+      "total": 1,
+      "keys": [
+        "plan.inputs.prepare"
+      ]
+    },
+    "guard_conditions": {
+      "total": 0,
+      "keys": []
+    },
+    "postconditions": {
+      "total": 0,
+      "keys": []
+    },
+    "dry_run_report": {
+      "estimated_tool_calls": [
+        {
+          "tool": "bb_set",
+          "estimated_calls": 1
+        },
+        {
+          "tool": "noop",
+          "estimated_calls": 1
+        },
+        {
+          "tool": "wait",
+          "estimated_calls": 1
+        }
+      ],
+      "cumulative_budget": {
+        "tool_calls": 3
+      }
+    }
+  }
+}

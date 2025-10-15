@@ -39,7 +39,9 @@
     "bench:scheduler": "node --import tsx tests/perf/scheduler.bench.ts",
     "lint": "npm run lint:types && npm run lint:node-builtins",
     "lint:types": "tsc --noEmit --pretty false && tsc --noEmit --project graph-forge/tsconfig.json",
-    "lint:node-builtins": "node --import tsx scripts/checkNodeBuiltins.ts"
+    "lint:node-builtins": "node --import tsx scripts/checkNodeBuiltins.ts",
+    "lint:commits": "commitlint --from=HEAD~1 --to=HEAD",
+    "changeset": "changeset"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.18.1",
@@ -52,6 +54,10 @@
     "@types/mocha": "^10.0.6",
     "c8": "^9.1.0",
     "chai": "^5.1.1",
+    "@changesets/changelog-git": "^0.2.1",
+    "@changesets/cli": "^2.27.8",
+    "@commitlint/cli": "^19.5.0",
+    "@commitlint/config-conventional": "^19.5.0",
     "fast-check": "^4.3.0",
     "mocha": "^10.7.0",
     "sinon": "^17.0.1",

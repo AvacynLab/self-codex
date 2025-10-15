@@ -1,9 +1,11 @@
 import { ZodError } from "zod";
 
 import { getActiveTraceContext } from "../infra/tracing.js";
+import type { JsonRpcRouteContext } from "../infra/runtime.js";
 import type { JsonRpcRequest, JsonRpcResponse } from "../server.js";
 import { RPC_METHOD_SCHEMAS, ToolsCallEnvelopeSchema, type RpcMethodSchemaRegistry } from "./schemas.js";
 
+/** Options propagated to the normaliser so it can enrich validation errors. */
 interface NormaliseOptions {
   requestId?: string | number | null;
 }
@@ -13,6 +15,48 @@ export interface NormalisedJsonRpcRequest {
   method: string;
   toolName?: string | null;
   schemaApplied: boolean;
+}
+
+/**
+ * Minimal snapshot emitted when {@link createRpcHandler} maps a
+ * {@link JsonRpcError} to a JSON-RPC response. The payload gives observability
+ * hooks enough context to log or meter the failure without leaking
+ * transport-specific details into the middleware.
+ */
+export interface RpcErrorSnapshot {
+  /** Identifier propagated by the transport, if any. */
+  readonly requestId: string | number | null;
+  /** Fully qualified method name extracted from the request payload. */
+  readonly method: string | null;
+  /** Logical tool name targeted by the invocation, when available. */
+  readonly toolName: string | null;
+}
+
+/** Pure function signature used to normalise incoming JSON-RPC requests. */
+export type JsonRpcNormaliser = (
+  raw: JsonRpcRequest,
+  options: NormaliseOptions,
+) => NormalisedJsonRpcRequest;
+
+/** Dependencies required to build the reusable JSON-RPC middleware. */
+export interface RpcHandlerDependencies {
+  /**
+   * Optional normaliser to use instead of the default implementation. Tests can
+   * inject fakes while production code falls back to
+   * {@link normaliseJsonRpcRequest}.
+   */
+  readonly normalise?: JsonRpcNormaliser;
+  /**
+   * Pure dispatcher invoked once the request payload has been validated. The
+   * function returns the JSON-RPC response or throws a {@link JsonRpcError} to
+   * surface domain-specific failures.
+   */
+  readonly route: (
+    request: NormalisedJsonRpcRequest,
+    context?: JsonRpcRouteContext,
+  ) => Promise<JsonRpcResponse>;
+  /** Optional hook triggered whenever routing results in a {@link JsonRpcError}. */
+  readonly onError?: (error: JsonRpcError, snapshot: RpcErrorSnapshot) => void;
 }
 
 export const JSON_RPC_ERROR_TAXONOMY = {
@@ -205,3 +249,53 @@ export function buildJsonRpcErrorResponse(
 }
 
 export { JsonRpcError as JsonRpcValidationError };
+
+function extractRequestId(candidate: unknown): string | number | null {
+  if (!candidate || typeof candidate !== "object") {
+    return null;
+  }
+  const rawId = (candidate as { id?: unknown }).id;
+  return typeof rawId === "string" || typeof rawId === "number" ? rawId : null;
+}
+
+function extractMethod(candidate: unknown): string | null {
+  if (!candidate || typeof candidate !== "object") {
+    return null;
+  }
+  const rawMethod = (candidate as { method?: unknown }).method;
+  return typeof rawMethod === "string" ? rawMethod.trim() || null : null;
+}
+
+/**
+ * Creates a pure JSON-RPC middleware that normalises inbound payloads, applies
+ * the registered Zod schema validations, and delegates to the provided router.
+ * Any {@link JsonRpcError} thrown either by the normaliser or the router is
+ * transformed into a compliant JSON-RPC error response to guarantee clients do
+ * not receive generic 500 responses for validation failures.
+ */
+export function createRpcHandler(deps: RpcHandlerDependencies) {
+  const normalise: JsonRpcNormaliser = deps.normalise ?? ((raw, options) => normaliseJsonRpcRequest(raw, options));
+
+  return async function handle(
+    rawRequest: JsonRpcRequest,
+    context?: JsonRpcRouteContext,
+  ): Promise<JsonRpcResponse> {
+    const requestId = context?.requestId ?? extractRequestId(rawRequest);
+    let method = extractMethod(rawRequest);
+    let toolName: string | null = null;
+
+    let normalised: NormalisedJsonRpcRequest | null = null;
+    try {
+      normalised = normalise(rawRequest, { requestId });
+      method = normalised.method;
+      toolName = normalised.toolName ?? null;
+      return await deps.route(normalised, context);
+    } catch (error) {
+      if (error instanceof JsonRpcError) {
+        deps.onError?.(error, { requestId, method, toolName });
+        return buildJsonRpcErrorResponse(requestId ?? null, error);
+      }
+      throw error;
+    }
+  };
+}

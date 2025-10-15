@@ -11,6 +11,7 @@ import type { ChildRuntimeLimits } from "../childRuntime.js";
 import { ChildSupervisor } from "../childSupervisor.js";
 import { StructuredLogger } from "../logger.js";
 import { serialiseForSse } from "../events/sse.js";
+import { reportOpenSseClients } from "../infra/tracing.js";
 import type {
   ContractNetWatcherTelemetryRecorder,
   ContractNetWatcherTelemetryState,
@@ -612,9 +613,18 @@ function handleStreamRequest(
   });
   res.write(`retry: ${streamIntervalMs}\n\n`);
   clients.add(res);
-  res.on("close", () => {
+  reportOpenSseClients(clients.size);
+  let released = false;
+  const release = () => {
+    if (released) {
+      return;
+    }
+    released = true;
     clients.delete(res);
-  });
+    reportOpenSseClients(clients.size);
+  };
+  res.on("close", release);
+  res.on("error", release);
   const snapshot = buildSnapshot(
     graphState,
     eventStore,

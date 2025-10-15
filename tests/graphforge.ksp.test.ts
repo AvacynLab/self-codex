@@ -1,9 +1,9 @@
 /// <reference path="./graph-forge.d.ts" />
 import { describe, it } from "mocha";
 import { expect } from "chai";
+import { loadGraphForge } from "../src/graph/forgeLoader.js";
 
-const graphForgeModuleUrl = new URL("../graph-forge/dist/index.js", import.meta.url);
-const { GraphModel, kShortestPaths } = (await import(graphForgeModuleUrl.href)) as {
+const { GraphModel, kShortestPaths } = (await loadGraphForge()) as unknown as {
   GraphModel: new (
     name: string,
     nodes: Array<{ id: string; attributes: Record<string, string | number | boolean> }>,

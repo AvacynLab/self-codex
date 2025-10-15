@@ -1,0 +1,46 @@
+{
+  "ok": true,
+  "summary": "1 outil correspondant",
+  "details": {
+    "idempotency_key": "golden-tools-help",
+    "mode": "pro",
+    "pack": "all",
+    "include_hidden": false,
+    "total": 1,
+    "returned": 1,
+    "filters": {},
+    "tools": [
+      {
+        "name": "artifact_search",
+        "title": "Recherche d'artefacts",
+        "description": "Permet de retrouver des artefacts enregistrés",
+        "category": "artifact",
+        "tags": [
+          "facade",
+          "discovery"
+        ],
+        "hidden": false,
+        "budgets": {
+          "time_ms": 4000,
+          "tool_calls": 1,
+          "bytes_out": 24576
+        },
+        "example": {
+          "query": "xxxxx",
+          "tags": [
+            "plan"
+          ]
+        },
+        "common_errors": [
+          "le champ \"payload.query\" est requis",
+          "payload.query doit contenir au moins 3 caractère(s)",
+          "le champ \"payload.tags\" est requis",
+          "payload.tags doit contenir au moins 1 élément(s)",
+          "payload.tags.[*] doit correspondre à l'une des valeurs : plan, artifact",
+          "payload.limit doit être ≥ 1",
+          "payload.limit doit être ≤ 5"
+        ]
+      }
+    ]
+  }
+}

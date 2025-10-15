@@ -1,5 +1,30 @@
 import { z } from "zod";
 
+import type { ChildSandboxProfileName } from "../children/sandbox.js";
+
+/**
+ * Canonical profile identifiers supported by the façade. Short aliases are
+ * mapped to their long form so callers can use the concise `std`/`perm`
+ * variants without the rest of the codebase having to special-case them.
+ */
+const SANDBOX_PROFILE_ALIASES: Record<string, ChildSandboxProfileName> = {
+  strict: "strict",
+  standard: "standard",
+  permissive: "permissive",
+  std: "standard",
+  perm: "permissive",
+};
+
+const ChildOrchestrateSandboxProfileSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .transform((value) => value.toLowerCase())
+  .refine((value): value is keyof typeof SANDBOX_PROFILE_ALIASES => value in SANDBOX_PROFILE_ALIASES, {
+    message: "sandbox.profile must be one of strict|standard|permissive|std|perm",
+  })
+  .transform((value) => SANDBOX_PROFILE_ALIASES[value]);
+
 /**
  * Options describing the sandbox environment requested when orchestrating a
  * child runtime. Profiles control network access, environment inheritance and
@@ -7,7 +32,7 @@ import { z } from "zod";
  */
 export const ChildOrchestrateSandboxSchema = z
   .object({
-    profile: z.enum(["strict", "standard", "permissive"]).optional(),
+    profile: ChildOrchestrateSandboxProfileSchema.optional(),
     allow_env: z
       .array(z.string().min(1, "allow_env entries must be non-empty strings"))
       .max(64, "cannot allow more than 64 environment variables")

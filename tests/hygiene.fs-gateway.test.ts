@@ -58,6 +58,7 @@ describe('gateway hygiene', () => {
         'src/logger.ts',
         'src/childRuntime.ts',
         'src/gateways/fs.ts',
+        'src/gateways/fsArtifacts.ts',
         'src/server.ts',
         'src/artifacts.ts',
         'src/bridge/fsBridge.ts',
@@ -125,6 +126,7 @@ describe('gateway hygiene', () => {
       dynamicPattern: /import\(['"](?:node:)?child_process['"]\)/,
       allowList: new Set([
         'src/childRuntime.ts',
+        'src/gateways/childProcess.ts',
       ]),
     },
     {

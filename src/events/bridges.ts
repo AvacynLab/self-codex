@@ -6,6 +6,13 @@
  */
 import type { EventBus, EventInput } from "./bus.js";
 import { mergeCorrelationHints, type EventCorrelationHints } from "./correlation.js";
+import type {
+  CancellationEventMessage,
+  ChildLifecycleMessage,
+  ConsensusEventMessage,
+  ContractNetEventMessage,
+  ValueGuardEventMessage,
+} from "./types.js";
 import type { BlackboardEvent, BlackboardStore } from "../coord/blackboard.js";
 import type { StigmergyChangeEvent, StigmergyField } from "../coord/stigmergy.js";
 import type {
@@ -299,7 +306,8 @@ export function bridgeCancellationEvents(options: CancellationBridgeOptions): ()
     mergeCorrelationHints(hints, resolved ?? undefined);
 
     const level: EventInput["level"] = event.outcome === "requested" ? "info" : "warn";
-    const message = event.outcome === "requested" ? "cancel_requested" : "cancel_repeat";
+    const message: CancellationEventMessage =
+      event.outcome === "requested" ? "cancel_requested" : "cancel_repeat";
 
     bus.publish({
       cat: "scheduler",
@@ -408,7 +416,7 @@ export function bridgeChildRuntimeEvents(options: ChildRuntimeBridgeOptions): ()
     const correlation = handleCorrelation({ kind: "lifecycle", runtime, lifecycle: event });
 
     let level: EventInput["level"] = "info";
-    let msg = "child_lifecycle";
+    let msg: ChildLifecycleMessage = "child_lifecycle";
     const data: Record<string, unknown> = {
       childId: runtime.childId,
       phase: event.phase,
@@ -478,7 +486,7 @@ export function bridgeContractNetEvents(options: ContractNetBridgeOptions): () =
       mergeCorrelationHints(correlation, resolved);
     }
     let level: EventInput["level"] = "info";
-    let msg = "cnp_event";
+    let msg: ContractNetEventMessage = "cnp_event";
     let data: Record<string, unknown> = {};
 
     switch (event.kind) {
@@ -569,7 +577,7 @@ export function bridgeConsensusEvents(options: ConsensusBridgeOptions): () => vo
     mergeCorrelationHints(correlation, resolved ?? undefined);
 
     let level: EventInput["level"] = event.satisfied ? "info" : "warn";
-    let msg = "consensus_decision";
+    let msg: ConsensusEventMessage = "consensus_decision";
     if (event.tie && !event.outcome) {
       msg = "consensus_tie_unresolved";
       level = "warn";
@@ -632,7 +640,7 @@ export function bridgeValueEvents(options: ValueGuardBridgeOptions): () => void 
     const resolved = resolveCorrelation?.(event);
     mergeCorrelationHints(hints, resolved ?? undefined);
     let level: EventInput["level"] = "info";
-    let msg = "values_event";
+    let msg: ValueGuardEventMessage = "values_event";
     let data: Record<string, unknown> = {};
 
     switch (event.kind) {

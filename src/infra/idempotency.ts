@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 // NOTE: Node built-in modules are imported with the explicit `node:` prefix to guarantee ESM resolution in Node.js.
+import type { IdempotencyStore } from "./idempotencyStore.js";
 
 /**
  * Lightweight in-memory registry storing the outcome of idempotent operations.
@@ -292,6 +293,46 @@ function canonicalise(value: unknown, seen: WeakSet<object>): unknown {
   } finally {
     seen.delete(value as object);
   }
+}
+
+/** Lightweight snapshot persisted by HTTP idempotency stores. */
+export interface HttpIdempotencySnapshot {
+  /** HTTP status code sent back to the caller. */
+  status: number;
+  /** Serialised JSON payload delivered to the transport. */
+  body: string;
+}
+
+/**
+ * Executes the provided operation once and replays the captured HTTP response on
+ * subsequent retries. Callers typically use the helper inside transport layers
+ * so the logic stays isolated from request/response plumbing.
+ */
+export async function withIdempotency<T extends HttpIdempotencySnapshot>(
+  cacheKey: string | null | undefined,
+  ttlMs: number,
+  operation: () => Promise<T>,
+  store: Pick<IdempotencyStore, "get" | "set"> & Partial<Pick<IdempotencyStore, "assertKeySemantics">>,
+): Promise<T> {
+  const key = typeof cacheKey === "string" ? cacheKey.trim() : "";
+  if (!key) {
+    // Without a cache key there is nothing to replay, so the operation executes eagerly.
+    return operation();
+  }
+
+  // Enforce semantic guarantees eagerly when the store exposes an assertion hook.
+  await Promise.resolve(store.assertKeySemantics?.(key));
+
+  const cached = await store.get(key);
+  if (cached) {
+    // The snapshot is stored immutably by the persistent store so callers can reuse it as-is.
+    return cached as T;
+  }
+
+  const fresh = await operation();
+  // Persist the response so future retries replay it instantly.
+  await store.set(key, fresh.status, fresh.body, Math.max(1, ttlMs));
+  return fresh;
 }
 
 

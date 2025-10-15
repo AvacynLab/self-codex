@@ -98,6 +98,17 @@ const storage = new AsyncLocalStorage<ActiveTraceContext>();
 const methodMetrics = new Map<string, MethodMetrics>();
 const budgetMetrics = new Map<string, BudgetMetricRecord>();
 
+/**
+ * Runtime counters exported by the metrics endpoint. Each counter/gauge is kept
+ * in-process so the `/metrics` handler can expose instantaneous values without
+ * performing additional aggregation work at request time.
+ */
+let sseDropCount = 0;
+let childRestartCount = 0;
+let idempotencyConflictCount = 0;
+let openSseClients = 0;
+let openChildRuntimes = 0;
+
 interface BudgetMetricRecord {
   consumed: number;
   exhausted: number;
@@ -422,6 +433,61 @@ export function recordBudgetExhaustionMetric(dimension: string, metadata?: Budge
   record.exhausted += 1;
 }
 
+function normaliseGaugeInput(value: number): number {
+  if (!Number.isFinite(value) || value < 0) {
+    return 0;
+  }
+  return Math.trunc(value);
+}
+
+/**
+ * Records the number of Server-Sent Events (SSE) frames dropped due to
+ * backpressure or transmission failures. The counter is monotonic so
+ * observability backends can graph cumulative drops over time.
+ */
+export function recordSseDrop(dropped: number = 1): void {
+  if (!Number.isFinite(dropped) || dropped <= 0) {
+    return;
+  }
+  sseDropCount += dropped;
+}
+
+/**
+ * Registers a child process restart attempt emitted by the supervisor.
+ * Tracking restarts helps correlate spikes with circuit-breaker activity and
+ * downstream failures.
+ */
+export function registerChildRestart(): void {
+  childRestartCount += 1;
+}
+
+/**
+ * Records an idempotency conflict detected by the HTTP server. Conflicts are
+ * surfaced as a dedicated counter so operators can alert when clients reuse
+ * keys with diverging payloads.
+ */
+export function registerIdempotencyConflict(): void {
+  idempotencyConflictCount += 1;
+}
+
+/**
+ * Updates the gauge reflecting the number of active SSE clients. Callers
+ * provide the current count so the gauge remains accurate when multiple
+ * connection lifecycles overlap.
+ */
+export function reportOpenSseClients(count: number): void {
+  openSseClients = normaliseGaugeInput(count);
+}
+
+/**
+ * Updates the gauge exposing the number of active child runtimes (processes or
+ * logical HTTP bridges). The supervisor refreshes the gauge whenever the
+ * population changes.
+ */
+export function reportOpenChildRuntimes(count: number): void {
+  openChildRuntimes = normaliseGaugeInput(count);
+}
+
 /** Marks the active JSON-RPC trace as successful. */
 export function registerRpcSuccess(): void {
   const context = storage.getStore();
@@ -493,6 +559,12 @@ export function renderMetricsSnapshot(): string {
       }
     }
   }
+  lines.push("# mcp infra metrics");
+  lines.push(`sse_drops ${sseDropCount}`);
+  lines.push(`child_restarts ${childRestartCount}`);
+  lines.push(`idempotency_conflicts ${idempotencyConflictCount}`);
+  lines.push(`open_sse ${openSseClients}`);
+  lines.push(`open_children ${openChildRuntimes}`);
   return `${lines.join("\n")}\n`;
 }
 
@@ -501,6 +573,11 @@ export const __tracingInternals = {
   reset(): void {
     methodMetrics.clear();
     budgetMetrics.clear();
+    sseDropCount = 0;
+    childRestartCount = 0;
+    idempotencyConflictCount = 0;
+    openSseClients = 0;
+    openChildRuntimes = 0;
   },
   configureOtlp(config: OtlpConfig | null): void {
     otlpConfig = config;

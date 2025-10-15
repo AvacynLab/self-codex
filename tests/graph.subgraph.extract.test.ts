@@ -75,6 +75,37 @@ describe("graph subgraph extract", () => {
     });
   });
 
+  it("sanitises descriptor paths when references contain unsafe characters", async () => {
+    await withTempDir(async (root) => {
+      const graph: GraphDescriptorPayload = {
+        name: "pipeline",
+        nodes: [
+          { id: "alpha", attributes: { kind: "task" } },
+          { id: "beta", attributes: { kind: "subgraph", ref: "../analysis<danger>" } },
+        ],
+        edges: [],
+        metadata: {
+          [SUBGRAPH_REGISTRY_KEY]: JSON.stringify({
+            "../analysis<danger>": { graph: { id: "analysis", nodes: [], edges: [] } },
+          }),
+        },
+      };
+
+      const result = await extractSubgraphToFile({
+        graph,
+        nodeId: "beta",
+        runId: "run-sanitize",
+        childrenRoot: root,
+      });
+
+      expect(result.absolutePath.startsWith(root)).to.equal(true);
+      expect(result.absolutePath).to.not.include("..");
+      expect(result.relativePath).to.not.include("..");
+      expect(result.relativePath).to.not.include("<");
+      expect(result.relativePath).to.match(/analysis-danger\.v001\.json$/);
+    });
+  });
+
   it("rejects graphs missing the referenced descriptor", async () => {
     await withTempDir(async (root) => {
       const graph: GraphDescriptorPayload = {

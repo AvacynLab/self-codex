@@ -150,14 +150,30 @@ export {
   IntentRouteInputSchema,
   IntentRouteInputShape,
   IntentRouteOutputSchema,
+  IntentRouteRecommendationSchema,
+} from "./intentRouteSchemas.js";
+export type {
+  IntentRouteDiagnostics,
+  IntentRouteInput,
+  IntentRouteOutput,
+  IntentRouteRecommendation,
 } from "./intentRouteSchemas.js";
 export {
+  TOOL_HELP_CATEGORIES,
   ToolsHelpBudgetDiagnosticSchema,
   ToolsHelpInputSchema,
   ToolsHelpInputShape,
+  ToolsHelpPackSchema,
   ToolsHelpOutputDetailsSchema,
   ToolsHelpOutputSchema,
   ToolsHelpToolSummarySchema,
+  ToolsHelpVisibilityModeSchema,
+} from "./toolsHelpSchemas.js";
+export type {
+  ToolsHelpBudgetDiagnostic,
+  ToolsHelpInput,
+  ToolsHelpOutput,
+  ToolsHelpToolSummary,
 } from "./toolsHelpSchemas.js";
 export {
   RUNTIME_OBSERVE_SECTIONS,
@@ -169,6 +185,13 @@ export {
   RuntimeObserveOutputSchema,
   RuntimeObserveSnapshotSchema,
 } from "./runtimeObserveSchemas.js";
+export type {
+  RuntimeObserveBudgetDiagnostic,
+  RuntimeObserveInput,
+  RuntimeObserveMethodMetric,
+  RuntimeObserveOutput,
+  RuntimeObserveSnapshot,
+} from "./runtimeObserveSchemas.js";
 export {
   ProjectScaffoldRunBudgetDiagnosticSchema,
   ProjectScaffoldRunDirectoriesSchema,
@@ -178,6 +201,10 @@ export {
   ProjectScaffoldRunOutputDetailsSchema,
   ProjectScaffoldRunOutputShape,
   ProjectScaffoldRunOutputSchema,
+} from "./projectScaffoldRunSchemas.js";
+export type {
+  ProjectScaffoldRunInput,
+  ProjectScaffoldRunOutput,
 } from "./projectScaffoldRunSchemas.js";
 export {
   ArtifactBudgetDiagnosticSchema,
@@ -197,6 +224,14 @@ export {
   ArtifactWriteOutputSchema,
   ArtifactWriteSuccessDetailsSchema,
 } from "./artifactSchemas.js";
+export type {
+  ArtifactReadInput,
+  ArtifactReadOutput,
+  ArtifactSearchInput,
+  ArtifactSearchOutput,
+  ArtifactWriteInput,
+  ArtifactWriteOutput,
+} from "./artifactSchemas.js";
 export {
   GraphApplyChangeSetBudgetDetailsSchema,
   GraphApplyChangeSetInputSchema,
@@ -205,6 +240,13 @@ export {
   GraphApplyChangeSetValidationFailureDetailsSchema,
   GraphApplyChangeSetValidationSchema,
   GraphChangeOperationSchema,
+} from "./graphApplyChangeSetSchemas.js";
+export type {
+  GraphApplyChangeSetInput,
+  GraphApplyChangeSetOutput,
+  GraphApplyChangeSetSuccessDetails,
+  GraphApplyChangeSetValidation,
+  GraphChangeOperation,
 } from "./graphApplyChangeSetSchemas.js";
 export {
   GRAPH_SNAPSHOT_TIME_TRAVEL_MODES,
@@ -219,6 +261,12 @@ export {
   GraphSnapshotTimeTravelPreviewDetailsSchema,
   GraphSnapshotTimeTravelRestoreDetailsSchema,
 } from "./graphSnapshotTimeTravelSchemas.js";
+export type {
+  GraphSnapshotDescriptor,
+  GraphSnapshotTimeTravelInput,
+  GraphSnapshotTimeTravelMode,
+  GraphSnapshotTimeTravelOutput,
+} from "./graphSnapshotTimeTravelSchemas.js";
 export {
   MemorySearchHitSchema,
   MemorySearchInputSchema,
@@ -228,6 +276,18 @@ export {
   MemoryUpsertInputShape,
   MemoryUpsertOutputSchema,
 } from "./memoryFacadeSchemas.js";
+export type {
+  MemorySearchInput,
+  MemorySearchOutput,
+  MemorySearchBudgetDetails,
+  MemorySearchErrorDetails,
+  MemorySearchSuccessDetails,
+  MemoryUpsertInput,
+  MemoryUpsertOutput,
+  MemoryUpsertBudgetDetails,
+  MemoryUpsertErrorDetails,
+  MemoryUpsertSuccessDetails,
+} from "./memoryFacadeSchemas.js";
 export {
   ChildOrchestrateCollectSchema,
   ChildOrchestrateInputSchema,
@@ -236,6 +296,11 @@ export {
   ChildOrchestrateRuntimeMessageSchema,
   ChildOrchestrateSandboxSchema,
   ChildOrchestrateSuccessDetailsSchema,
+} from "./childOrchestrateSchemas.js";
+export type {
+  ChildOrchestrateInput,
+  ChildOrchestrateOutput,
+  ChildOrchestrateSuccessDetails,
 } from "./childOrchestrateSchemas.js";
 export {
   PlanCompileExecuteBehaviorTreeSummarySchema,
@@ -249,6 +314,12 @@ export {
   PlanCompileExecuteSchedulePhaseSchema,
   PlanCompileExecuteScheduleSummarySchema,
   PlanCompileExecuteStatsSchema,
+  hashPlanPayload,
+} from "./planCompileExecuteFacadeSchemas.js";
+export type {
+  PlanCompileExecuteDryRunReport,
+  PlanCompileExecuteFacadeInput,
+  PlanCompileExecuteFacadeOutput,
 } from "./planCompileExecuteFacadeSchemas.js";
 export const EventSubscribeInputSchema = z
   .object({

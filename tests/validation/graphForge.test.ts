@@ -147,6 +147,61 @@ describe("graph forge validation runner", () => {
     });
   });
 
+  it("sanitises custom autosave overrides before writing to disk", async function () {
+    this.timeout(5000);
+    const responses = [
+      { jsonrpc: "2.0", result: { content: [{ type: "text", text: JSON.stringify({ report: "ok" }) }] } },
+      { jsonrpc: "2.0", result: { status: "started" } },
+      { jsonrpc: "2.0", result: { status: "stopped" } },
+    ];
+
+    globalThis.fetch = (async () => {
+      const payload = responses.shift() ?? { jsonrpc: "2.0", result: {} };
+      return new Response(JSON.stringify(payload), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as typeof fetch;
+
+    const observedPaths: string[] = [];
+    const autosaveObserver: GraphForgePhaseOptions["autosaveObserver"] = async (absolutePath) => {
+      observedPaths.push(absolutePath);
+      await mkdir(dirname(absolutePath), { recursive: true });
+      const payload = {
+        metadata: { saved_at: new Date().toISOString() },
+        snapshot: { nodes: [], edges: [] },
+      };
+      const serialised = `${JSON.stringify(payload, null, 2)}\n`;
+      await writeFile(absolutePath, serialised, "utf8");
+      const sample: AutosaveTickSample = {
+        capturedAt: new Date().toISOString(),
+        savedAt: payload.metadata.saved_at ?? null,
+        fileSize: Buffer.byteLength(serialised, "utf8"),
+      };
+      return {
+        path: absolutePath,
+        requiredTicks: 1,
+        observedTicks: 1,
+        durationMs: 5,
+        completed: true,
+        samples: [sample],
+      };
+    };
+
+    const result = await runGraphForgePhase(runRoot, environment, {
+      workspaceRoot: workingDir,
+      autosaveRelativePath: "tmp/<danger>.json",
+      autosaveObserver,
+      autosaveObservation: { requiredTicks: 1 },
+      autosaveQuiescence: { pollIntervalMs: 5, durationMs: 20 },
+    });
+
+    expect(result.autosave.relativePath).to.equal("tmp/_danger_.json");
+    expect(result.autosave.absolutePath).to.equal(join(workingDir, "tmp", "_danger_.json"));
+    expect(observedPaths).to.deep.equal([result.autosave.absolutePath]);
+    expect(result.autosave.absolutePath).to.not.include("<");
+  });
+
   it("throws when the autosave artefact changes after stop", async function () {
     this.timeout(5000);
     const responses = [

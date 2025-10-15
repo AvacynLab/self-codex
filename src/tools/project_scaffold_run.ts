@@ -19,7 +19,7 @@ import {
   ProjectScaffoldRunOutputSchema,
   type ProjectScaffoldRunInput,
   type ProjectScaffoldRunOutput,
-} from "../rpc/projectScaffoldRunSchemas.js";
+} from "../rpc/schemas.js";
 
 /** Canonical façade identifier exposed through the manifest catalogue. */
 export const PROJECT_SCAFFOLD_RUN_TOOL_NAME = "project_scaffold_run" as const;

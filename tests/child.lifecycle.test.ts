@@ -1,6 +1,8 @@
 import { describe, it } from "mocha";
 import { expect } from "chai";
 import { spawn, type ChildProcessWithoutNullStreams, type SpawnOptions } from "node:child_process";
+import { EventEmitter } from "node:events";
+import { PassThrough } from "node:stream";
 import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -20,9 +22,57 @@ import {
 } from "../src/state/childrenIndex.js";
 import { PathResolutionError, childWorkspacePath } from "../src/paths.js";
 import { writeArtifact } from "../src/artifacts.js";
+import type { ChildProcessGateway } from "../src/gateways/childProcess.js";
 
 const mockRunnerPath = fileURLToPath(new URL("./fixtures/mock-runner.js", import.meta.url));
 const stubbornRunnerPath = fileURLToPath(new URL("./fixtures/stubborn-runner.js", import.meta.url));
+
+class StubGatewayChildProcess extends EventEmitter implements ChildProcessWithoutNullStreams {
+  public readonly stdin = new PassThrough();
+  public readonly stdout = new PassThrough();
+  public readonly stderr = new PassThrough();
+  public readonly pid = 4_242;
+  public killed = false;
+  public connected = false;
+  public exitCode: number | null = null;
+  public signalCode: NodeJS.Signals | null = null;
+  public readonly spawnargs: string[] = [];
+  public readonly spawnfile = "stub-child";
+  public readonly channel = null;
+  public readonly stdio: [PassThrough, PassThrough, PassThrough];
+
+  constructor() {
+    super();
+    this.stdio = [this.stdin, this.stdout, this.stderr];
+  }
+
+  override kill(signal?: NodeJS.Signals | number): boolean {
+    this.killed = true;
+    const resolvedSignal = typeof signal === "string" ? signal : null;
+    this.signalCode = resolvedSignal;
+    this.exitCode = null;
+    setImmediate(() => {
+      this.emit("exit", this.exitCode, resolvedSignal);
+    });
+    return true;
+  }
+
+  override send(): boolean {
+    throw new Error("IPC channel not implemented for stub child process");
+  }
+
+  override disconnect(): void {
+    // No-op for stub process.
+  }
+
+  override ref(): this {
+    return this;
+  }
+
+  override unref(): this {
+    return this;
+  }
+}
 
 describe("child runtime lifecycle", () => {
   it("spawns a child, exchanges messages, logs activity and updates the index", async () => {
@@ -147,6 +197,70 @@ describe("child runtime lifecycle", () => {
           await runtime.shutdown({ signal: "SIGTERM", timeoutMs: 500 });
         } catch {
           // Best-effort cleanup for the tests.
+        }
+      }
+      await rm(childrenRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("propagates only sanitised environment variables to the process gateway", async () => {
+    const childrenRoot = await mkdtemp(path.join(tmpdir(), "child-env-"));
+    const childId = "child-env";
+    const captured: Array<{
+      allowedEnvKeys: readonly string[];
+      inheritEnv: NodeJS.ProcessEnv;
+      extraEnv: Record<string, string | undefined>;
+    }> = [];
+
+    let runtime: ChildRuntime | null = null;
+
+    const gateway: ChildProcessGateway = {
+      spawn(options) {
+        captured.push({
+          allowedEnvKeys: [...options.allowedEnvKeys],
+          inheritEnv: { ...(options.inheritEnv ?? {}) },
+          extraEnv: { ...(options.extraEnv ?? {}) },
+        });
+        const child = new StubGatewayChildProcess();
+        setImmediate(() => {
+          child.emit("spawn");
+        });
+        return {
+          child,
+          signal: undefined,
+          dispose() {
+            child.removeAllListeners();
+          },
+        };
+      },
+    };
+
+    try {
+      runtime = await startChildRuntime({
+        childId,
+        childrenRoot,
+        command: process.execPath,
+        args: [mockRunnerPath, "--role", "env-propagation"],
+        env: {
+          PATH: "/usr/bin",
+          MCP_SECRET: "classified",
+          OPTIONAL: undefined,
+        },
+        processGateway: gateway,
+      });
+
+      expect(captured).to.have.lengthOf(1);
+      const invocation = captured[0];
+      expect(invocation.allowedEnvKeys).to.deep.equal(["MCP_SECRET", "PATH"]);
+      expect(invocation.inheritEnv).to.deep.equal({});
+      expect(invocation.extraEnv).to.deep.equal({ MCP_SECRET: "classified", PATH: "/usr/bin" });
+      expect(runtime.envKeys).to.deep.equal(["MCP_SECRET", "PATH"]);
+    } finally {
+      if (runtime) {
+        try {
+          await runtime.shutdown({ signal: "SIGTERM", timeoutMs: 200 });
+        } catch {
+          // Child already terminated.
         }
       }
       await rm(childrenRoot, { recursive: true, force: true });

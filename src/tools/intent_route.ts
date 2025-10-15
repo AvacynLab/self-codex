@@ -1,6 +1,5 @@
 import { randomUUID } from "node:crypto";
 
-import { z } from "zod";
 import type { RequestHandlerExtra } from "@modelcontextprotocol/sdk/shared/protocol.js";
 import type { CallToolResult, ServerNotification, ServerRequest } from "@modelcontextprotocol/sdk/types.js";
 
@@ -13,8 +12,15 @@ import type {
   ToolManifestDraft,
   ToolRegistry,
   ToolImplementation,
+  ToolBudgets,
 } from "../mcp/registry.js";
-import { IntentRouteInputSchema, IntentRouteOutputSchema } from "../rpc/intentRouteSchemas.js";
+import {
+  IntentRouteInputSchema,
+  IntentRouteOutputSchema,
+  IntentRouteRecommendationSchema,
+  type IntentRouteOutput,
+  type IntentRouteRecommendation as IntentRouteRecommendationPayload,
+} from "../rpc/schemas.js";
 
 /**
  * Describes the structured payload returned by the intent routing façade.
@@ -22,7 +28,10 @@ import { IntentRouteInputSchema, IntentRouteOutputSchema } from "../rpc/intentRo
  * The façade intentionally keeps the result concise so upstream automation can
  * reason about the chosen action without parsing unbounded free-form text.
  */
-export type IntentRouteResult = z.infer<typeof IntentRouteOutputSchema>;
+/** Structured result returned to callers (success and degraded branches). */
+export type IntentRouteResult = IntentRouteOutput;
+/** Recommendation entry included in the success payload. */
+export type IntentRouteRecommendation = IntentRouteRecommendationPayload;
 
 /**
  * Context forwarded to {@link createIntentRouteHandler}. Tests provide a
@@ -32,6 +41,8 @@ export type IntentRouteResult = z.infer<typeof IntentRouteOutputSchema>;
 export interface IntentRouteToolContext {
   /** Structured logger mirroring observability requirements from the checklist. */
   readonly logger: StructuredLogger;
+  /** Optional lookup returning the budgets advertised by a façade manifest. */
+  readonly resolveBudget?: (tool: string) => ToolBudgets | undefined;
 }
 
 /** Canonical name advertised by the façade manifest. */
@@ -64,6 +75,32 @@ export const IntentRouteManifestDraft: ToolManifestDraft = {
  */
 const FALLBACK_CANDIDATES = ["tools_help", "artifact_search", "child_orchestrate"] as const;
 
+/** Rationale strings surfaced for fallback suggestions. */
+const FALLBACK_RATIONALES: Record<(typeof FALLBACK_CANDIDATES)[number], string> = {
+  tools_help: "aucune règle précise trouvée : proposer la documentation interactive",
+  artifact_search: "aucune règle précise trouvée : suggérer l'exploration des artefacts",
+  child_orchestrate: "aucune règle précise trouvée : envisager un enfant opérateur",
+};
+
+/**
+ * Static budget hints mirroring the manifests declared by façade modules. The
+ * handler falls back to these values when the registry does not expose a
+ * runtime manifest (e.g. unit tests wiring a minimal registry stub).
+ */
+const ESTIMATED_BUDGET_HINTS: Record<string, ToolBudgets> = {
+  graph_apply_change_set: { time_ms: 7_000, tool_calls: 1, bytes_out: 24_576 },
+  graph_snapshot_time_travel: { time_ms: 7_000, tool_calls: 1, bytes_out: 32_768 },
+  plan_compile_execute: { time_ms: 10_000, tool_calls: 1, bytes_out: 32_768 },
+  artifact_write: { time_ms: 5_000, tool_calls: 1, bytes_out: 8_192 },
+  artifact_read: { time_ms: 3_000, tool_calls: 1, bytes_out: 16_384 },
+  artifact_search: { time_ms: 4_000, tool_calls: 1, bytes_out: 24_576 },
+  memory_search: { time_ms: 3_000, tool_calls: 1, bytes_out: 16_384 },
+  memory_upsert: { time_ms: 5_000, tool_calls: 1, bytes_out: 12_288 },
+  child_orchestrate: { time_ms: 15_000, tool_calls: 1, bytes_out: 32_768 },
+  runtime_observe: { time_ms: 1_000, tool_calls: 1, bytes_out: 12_288 },
+  tools_help: { time_ms: 1_000, tool_calls: 1, bytes_out: 16_384 },
+};
+
 /** Heuristic rule examined sequentially until one matches the intent. */
 interface IntentHeuristicRule {
   /** Identifier of the façade triggered by the rule. */
@@ -72,6 +109,10 @@ interface IntentHeuristicRule {
   readonly label: string;
   /** Predicate returning `true` when the natural language goal matches. */
   readonly matcher: (normalisedGoal: string) => boolean;
+  /** Confidence score (0-1) associated with the rule when it matches. */
+  readonly confidence: number;
+  /** Concise explanation surfaced alongside the recommendation. */
+  readonly successRationale: string;
 }
 
 /** Ordered heuristic catalogue that favours precise routes before broader ones. */
@@ -80,51 +121,74 @@ const HEURISTIC_RULES: readonly IntentHeuristicRule[] = [
     tool: "graph_apply_change_set",
     label: "graph_mutation",
     matcher: (goal) => /(graph|graphe|noeud|edge|arête|patch)/i.test(goal),
+    confidence: 0.95,
+    successRationale: "l'intention mentionne explicitement une modification du graphe",
   },
   {
     tool: "graph_snapshot_time_travel",
     label: "graph_snapshot",
     matcher: (goal) => /(snapshot|travel|historique|rollback|restore)/i.test(goal),
+    confidence: 0.9,
+    successRationale: "l'objectif demande d'explorer ou restaurer un snapshot de graphe",
   },
   {
     tool: "plan_compile_execute",
     label: "plan_pipeline",
     matcher: (goal) => /(plan|pipeline|workflow|planifier|schedule)/i.test(goal),
+    confidence: 0.9,
+    successRationale: "la requête évoque la compilation ou l'exécution d'un plan",
   },
   {
     tool: "artifact_write",
     label: "artifact_write",
     matcher: (goal) => /(fichier|artefact|artifact|write|enregistrer|save)/i.test(goal),
+    confidence: 0.85,
+    successRationale: "l'intention mentionne l'enregistrement ou l'écriture d'un artefact",
   },
   {
     tool: "artifact_read",
     label: "artifact_read",
-    matcher: (goal) => /(lire|read|inspect|ouvrir|afficher)/i.test(goal) && /(fichier|artefact|artifact)/i.test(goal),
+    matcher: (goal) =>
+      /(lire|read|inspect|ouvrir|afficher)/i.test(goal) && /(fichier|artefact|artifact)/i.test(goal),
+    confidence: 0.85,
+    successRationale: "la requête mentionne la lecture ou l'inspection d'un artefact",
   },
   {
     tool: "artifact_search",
     label: "artifact_search",
-    matcher: (goal) => /(chercher|search|rechercher|find)/i.test(goal) && /(fichier|artefact|artifact)/i.test(goal),
+    matcher: (goal) =>
+      /(chercher|search|rechercher|find)/i.test(goal) && /(fichier|artefact|artifact)/i.test(goal),
+    confidence: 0.8,
+    successRationale: "l'objectif décrit une recherche d'artefacts dans le dépôt",
   },
   {
     tool: "memory_search",
     label: "memory_search",
     matcher: (goal) => /(mémoire|memory|rappel|souvenir)/i.test(goal) && /(chercher|search|lookup)/i.test(goal),
+    confidence: 0.85,
+    successRationale: "l'intention demande de retrouver une information dans la mémoire",
   },
   {
     tool: "memory_upsert",
     label: "memory_upsert",
     matcher: (goal) => /(mémoire|memory)/i.test(goal) && /(ajout|add|write|store|enregistrer)/i.test(goal),
+    confidence: 0.8,
+    successRationale: "la demande mentionne l'ajout ou la mise à jour d'une mémoire",
   },
   {
     tool: "child_orchestrate",
     label: "child_orchestration",
-    matcher: (goal) => /(child|enfant|runtime|agent)/i.test(goal) && /(spawn|orchestrate|coordonner|manage)/i.test(goal),
+    matcher: (goal) =>
+      /(child|enfant|runtime|agent)/i.test(goal) && /(spawn|orchestrate|coordonner|manage)/i.test(goal),
+    confidence: 0.9,
+    successRationale: "l'intention cible la gestion ou la coordination d'un enfant Codex",
   },
   {
     tool: "runtime_observe",
     label: "runtime_observe",
     matcher: (goal) => /(metrics|observe|latence|latency|stats|statistiques)/i.test(goal),
+    confidence: 0.75,
+    successRationale: "la requête évoque l'observation des métriques runtime",
   },
 ];
 
@@ -142,21 +206,114 @@ function asJsonPayload(result: IntentRouteResult): string {
  * triggered (or not) without having to re-evaluate the goal client-side.
  */
 function evaluateHeuristics(goal: string): {
-  chosen: string | null;
+  primary: IntentHeuristicRule | null;
   diagnostics: Array<{ label: string; tool: string; matched: boolean }>;
+  evaluations: Array<{ rule: IntentHeuristicRule; matched: boolean }>;
 } {
-  let chosen: string | null = null;
+  let primary: IntentHeuristicRule | null = null;
   const diagnostics: Array<{ label: string; tool: string; matched: boolean }> = [];
+  const evaluations: Array<{ rule: IntentHeuristicRule; matched: boolean }> = [];
 
   for (const rule of HEURISTIC_RULES) {
     const matched = rule.matcher(goal);
     diagnostics.push({ label: rule.label, tool: rule.tool, matched });
-    if (!chosen && matched) {
-      chosen = rule.tool;
+    evaluations.push({ rule, matched });
+    if (!primary && matched) {
+      primary = rule;
     }
   }
 
-  return { chosen, diagnostics };
+  return { primary, diagnostics, evaluations };
+}
+
+/** Ensures returned budgets are finite non-negative integers. */
+function sanitiseBudget(budgets: ToolBudgets | undefined): ToolBudgets {
+  const snapshot: { time_ms?: number; tool_calls?: number; bytes_out?: number } = {};
+  if (budgets && Number.isFinite(budgets.time_ms ?? NaN) && (budgets.time_ms as number) >= 0) {
+    snapshot.time_ms = Math.trunc(budgets.time_ms as number);
+  }
+  if (budgets && Number.isFinite(budgets.tool_calls ?? NaN) && (budgets.tool_calls as number) >= 0) {
+    snapshot.tool_calls = Math.trunc(budgets.tool_calls as number);
+  }
+  if (budgets && Number.isFinite(budgets.bytes_out ?? NaN) && (budgets.bytes_out as number) >= 0) {
+    snapshot.bytes_out = Math.trunc(budgets.bytes_out as number);
+  }
+  if (snapshot.tool_calls === undefined) {
+    snapshot.tool_calls = 1;
+  }
+  return snapshot;
+}
+
+/** Lookup budgets from the registry-aware context or fallback hints. */
+function lookupEstimatedBudget(context: IntentRouteToolContext, tool: string): ToolBudgets {
+  try {
+    const fromContext = context.resolveBudget?.(tool);
+    if (fromContext) {
+      return sanitiseBudget(fromContext);
+    }
+  } catch (error) {
+    context.logger.warn("intent_route_budget_lookup_failed", {
+      tool,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+  return sanitiseBudget(ESTIMATED_BUDGET_HINTS[tool]);
+}
+
+/** Normalises a confidence score to two decimal places in the [0, 1] range. */
+function clampScore(confidence: number): number {
+  const bounded = Math.max(0, Math.min(1, confidence));
+  return Math.round(bounded * 100) / 100;
+}
+
+/** Builds ordered recommendations (matched heuristics first, then fallbacks). */
+function buildRecommendations(
+  evaluations: Array<{ rule: IntentHeuristicRule; matched: boolean }>,
+  context: IntentRouteToolContext,
+): IntentRouteRecommendation[] {
+  const recommendations: IntentRouteRecommendation[] = [];
+  const matched = evaluations.filter((entry) => entry.matched);
+
+  matched.forEach((entry, index) => {
+    if (recommendations.length >= 3) {
+      return;
+    }
+    const score = clampScore(entry.rule.confidence - index * 0.05);
+    recommendations.push({
+      tool: entry.rule.tool,
+      score,
+      rationale: entry.rule.successRationale,
+      estimated_budget: lookupEstimatedBudget(context, entry.rule.tool),
+    });
+  });
+
+  for (const fallback of FALLBACK_CANDIDATES) {
+    if (recommendations.length >= 3) {
+      break;
+    }
+    if (recommendations.some((entry) => entry.tool === fallback)) {
+      continue;
+    }
+    const scoreOffset = 0.55 - recommendations.length * 0.05;
+    recommendations.push({
+      tool: fallback,
+      score: clampScore(scoreOffset),
+      rationale: FALLBACK_RATIONALES[fallback],
+      estimated_budget: lookupEstimatedBudget(context, fallback),
+    });
+  }
+
+  if (recommendations.length === 0) {
+    // Defensive guard: if everything fails, fall back to tools_help.
+    recommendations.push({
+      tool: "tools_help",
+      score: 0.5,
+      rationale: FALLBACK_RATIONALES.tools_help,
+      estimated_budget: lookupEstimatedBudget(context, "tools_help"),
+    });
+  }
+
+  return recommendations.slice(0, 3);
 }
 
 /** Builds a failure response when budget consumption raises an error. */
@@ -238,17 +395,18 @@ export function createIntentRouteHandler(
     }
 
     const goal = parsed.natural_language_goal.trim().toLowerCase();
-    const { chosen, diagnostics } = evaluateHeuristics(goal);
+    const { primary, diagnostics, evaluations } = evaluateHeuristics(goal);
+    const recommendations = buildRecommendations(evaluations, context);
 
     const structured: IntentRouteResult = {
       ok: true,
-      summary: chosen
-        ? `façade sélectionnée : ${chosen}`
-        : "aucune façade unique détectée, candidats proposés",
+      summary:
+        recommendations.length > 0
+          ? `top recommandation : ${recommendations[0]!.tool}`
+          : "aucune recommandation disponible",
       details: {
         idempotency_key: idempotencyKey,
-        chosen: chosen ?? undefined,
-        candidates: chosen ? undefined : [...FALLBACK_CANDIDATES],
+        recommendations,
         diagnostics,
         metadata: parsed.metadata ?? undefined,
       },
@@ -256,8 +414,9 @@ export function createIntentRouteHandler(
 
     context.logger.info("intent_route_evaluated", {
       goal: parsed.natural_language_goal,
-      chosen: chosen ?? null,
-      candidates: chosen ? [chosen] : [...FALLBACK_CANDIDATES],
+      top_tool: recommendations[0]?.tool ?? null,
+      primary_rule: primary ? primary.label : null,
+      recommendations,
       diagnostics,
       idempotency_key: idempotencyKey,
       request_id: rpcContext?.requestId ?? extra.requestId ?? null,

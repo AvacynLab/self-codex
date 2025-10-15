@@ -22,7 +22,13 @@ import {
   ArtifactWriteInputSchema,
   ArtifactWriteOutputSchema,
   type ArtifactWriteOutput,
-} from "../rpc/artifactSchemas.js";
+} from "../rpc/schemas.js";
+import {
+  buildPathLogFields,
+  redactPathForLogs,
+  resolveMaxArtifactBytes,
+  sanitizeArtifactPath,
+} from "./artifact_paths.js";
 
 /** Canonical name advertised by the façade manifest. */
 export const ARTIFACT_WRITE_TOOL_NAME = "artifact_write" as const;
@@ -134,6 +140,57 @@ function buildIoErrorResult(
   });
 }
 
+function buildInvalidPathResult(
+  idempotencyKey: string,
+  childId: string,
+  path: string,
+  metadata: Record<string, unknown> | undefined,
+): ArtifactWriteOutput {
+  const diagnostic = ArtifactOperationErrorSchema.parse({
+    reason: "io_error",
+    message: "chemin d'artefact invalide",
+    retryable: false,
+  });
+  return ArtifactWriteOutputSchema.parse({
+    ok: false,
+    summary: "chemin d'artefact invalide",
+    details: {
+      idempotency_key: idempotencyKey,
+      child_id: childId,
+      path,
+      error: diagnostic,
+      ...(metadata ? { metadata } : {}),
+    },
+  });
+}
+
+function buildSizeExceededResult(
+  idempotencyKey: string,
+  childId: string,
+  path: string,
+  attempted: number,
+  limit: number,
+  metadata: Record<string, unknown> | undefined,
+): ArtifactWriteOutput {
+  const diagnostic = ArtifactOperationErrorSchema.parse({
+    reason: "io_error",
+    message: "le contenu dépasse la taille maximale autorisée",
+    retryable: false,
+  });
+  return ArtifactWriteOutputSchema.parse({
+    ok: false,
+    summary: `artefact trop volumineux (limite ${limit} octets)`,
+    details: {
+      idempotency_key: idempotencyKey,
+      child_id: childId,
+      path,
+      size: attempted,
+      error: diagnostic,
+      ...(metadata ? { metadata } : {}),
+    },
+  });
+}
+
 /**
  * Factory returning the MCP handler that powers the `artifact_write` façade.
  */
@@ -154,6 +211,29 @@ export function createArtifactWriteHandler(context: ArtifactWriteToolContext): T
     const buffer = Buffer.from(parsed.content, encoding);
     const bytesIn = buffer.byteLength;
 
+    let sanitizedPath;
+    try {
+      sanitizedPath = sanitizeArtifactPath(context.childrenRoot, parsed.child_id, parsed.path);
+    } catch (error) {
+      const redacted = redactPathForLogs(parsed.path);
+      context.logger.warn("artifact_write_invalid_path", {
+        request_id: rpcContext?.requestId ?? extra.requestId ?? null,
+        trace_id: traceContext?.traceId ?? null,
+        child_id: parsed.child_id,
+        path_hash: redacted,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      const degraded = buildInvalidPathResult(idempotencyKey, parsed.child_id, parsed.path, metadata);
+      return {
+        isError: true,
+        content: [{ type: "text", text: asJsonPayload(degraded) }],
+        structuredContent: degraded,
+      };
+    }
+
+    const pathLogFields = buildPathLogFields(sanitizedPath);
+    const maxArtifactBytes = resolveMaxArtifactBytes();
+
     let charge: BudgetCharge | null = null;
     if (rpcContext?.budget) {
       try {
@@ -167,13 +247,19 @@ export function createArtifactWriteHandler(context: ArtifactWriteToolContext): T
             request_id: rpcContext.requestId ?? extra.requestId ?? null,
             trace_id: traceContext?.traceId ?? null,
             child_id: parsed.child_id,
-            path: parsed.path,
+            ...pathLogFields,
             dimension: error.dimension,
             attempted: error.attempted,
             remaining: error.remaining,
             limit: error.limit,
           });
-          const degraded = buildBudgetExceededResult(idempotencyKey, parsed.child_id, parsed.path, metadata, error);
+          const degraded = buildBudgetExceededResult(
+            idempotencyKey,
+            parsed.child_id,
+            sanitizedPath.relative,
+            metadata,
+            error,
+          );
           return {
             isError: true,
             content: [{ type: "text", text: asJsonPayload(degraded) }],
@@ -184,9 +270,36 @@ export function createArtifactWriteHandler(context: ArtifactWriteToolContext): T
       }
     }
 
+    if (bytesIn > maxArtifactBytes) {
+      if (rpcContext?.budget && charge) {
+        rpcContext.budget.refund(charge);
+      }
+      context.logger.warn("artifact_write_size_exceeded", {
+        request_id: rpcContext?.requestId ?? extra.requestId ?? null,
+        trace_id: traceContext?.traceId ?? null,
+        child_id: parsed.child_id,
+        ...pathLogFields,
+        attempted: bytesIn,
+        limit: maxArtifactBytes,
+      });
+      const degraded = buildSizeExceededResult(
+        idempotencyKey,
+        parsed.child_id,
+        sanitizedPath.relative,
+        bytesIn,
+        maxArtifactBytes,
+        metadata,
+      );
+      return {
+        isError: true,
+        content: [{ type: "text", text: asJsonPayload(degraded) }],
+        structuredContent: degraded,
+      };
+    }
+
     const fingerprint = {
       child_id: parsed.child_id,
-      path: parsed.path,
+      path: sanitizedPath.relative,
       mime_type: parsed.mime_type,
       encoding,
       content_sha256: createHash("sha256").update(buffer).digest("hex"),
@@ -197,7 +310,7 @@ export function createArtifactWriteHandler(context: ArtifactWriteToolContext): T
         const entry = await writeArtifact({
           childrenRoot: context.childrenRoot,
           childId: parsed.child_id,
-          relativePath: parsed.path,
+          relativePath: sanitizedPath.relative,
           data: buffer,
           mimeType: parsed.mime_type,
           encoding,
@@ -213,13 +326,13 @@ export function createArtifactWriteHandler(context: ArtifactWriteToolContext): T
         if (rpcContext?.budget && charge) {
           rpcContext.budget.refund(charge);
         }
-        context.logger.error("artifact_write_failed", {
-          request_id: rpcContext?.requestId ?? extra.requestId ?? null,
-          trace_id: traceContext?.traceId ?? null,
-          child_id: parsed.child_id,
-          path: parsed.path,
-          error: error instanceof Error ? error.message : String(error),
-        });
+          context.logger.error("artifact_write_failed", {
+            request_id: rpcContext?.requestId ?? extra.requestId ?? null,
+            trace_id: traceContext?.traceId ?? null,
+            child_id: parsed.child_id,
+            ...pathLogFields,
+            error: error instanceof Error ? error.message : String(error),
+          });
         throw error;
       }
     };
@@ -233,7 +346,13 @@ export function createArtifactWriteHandler(context: ArtifactWriteToolContext): T
         snapshot = hit.value;
         idempotent = hit.idempotent;
       } catch (error) {
-        const degraded = buildIoErrorResult(idempotencyKey, parsed.child_id, parsed.path, metadata, error);
+        const degraded = buildIoErrorResult(
+          idempotencyKey,
+          parsed.child_id,
+          sanitizedPath.relative,
+          metadata,
+          error,
+        );
         return {
           isError: true,
           content: [{ type: "text", text: asJsonPayload(degraded) }],
@@ -244,7 +363,13 @@ export function createArtifactWriteHandler(context: ArtifactWriteToolContext): T
       try {
         snapshot = await executeWrite();
       } catch (error) {
-        const degraded = buildIoErrorResult(idempotencyKey, parsed.child_id, parsed.path, metadata, error);
+        const degraded = buildIoErrorResult(
+          idempotencyKey,
+          parsed.child_id,
+          sanitizedPath.relative,
+          metadata,
+          error,
+        );
         return {
           isError: true,
           content: [{ type: "text", text: asJsonPayload(degraded) }],
@@ -273,7 +398,7 @@ export function createArtifactWriteHandler(context: ArtifactWriteToolContext): T
       request_id: rpcContext?.requestId ?? extra.requestId ?? null,
       trace_id: traceContext?.traceId ?? null,
       child_id: parsed.child_id,
-      path: snapshot.path,
+      ...pathLogFields,
       bytes_written: snapshot.bytesWritten,
       idempotent,
       mime_type: snapshot.mimeType,

@@ -23,6 +23,7 @@ import {
 import type { NormalisedGraph, GraphAttributeValue } from "../graph/types.js";
 import type { KnowledgeGraph } from "../knowledge/knowledgeGraph.js";
 import { resolveOperationId } from "./operationIds.js";
+import { loadGraphForge } from "../graph/forgeLoader.js";
 
 interface GraphForgeModelInstance {
   listNodes(): Array<{ id: string }>;
@@ -100,14 +101,13 @@ type GraphForgeModule = {
 
 const computationCache = new GraphComputationCache(128);
 
-const graphForgeModuleUrl = new URL("../../graph-forge/dist/index.js", import.meta.url);
 const {
   GraphModel,
   betweennessCentrality,
   kShortestPaths,
   shortestPath,
   constrainedShortestPath,
-} = (await import(graphForgeModuleUrl.href)) as GraphForgeModule;
+} = (await loadGraphForge()) as unknown as GraphForgeModule;
 
 
 /** Allowed attribute value stored on nodes/edges. */

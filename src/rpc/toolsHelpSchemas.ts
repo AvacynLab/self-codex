@@ -84,6 +84,8 @@ export const ToolsHelpToolSummarySchema = z
         bytes_out: z.number().int().nonnegative().optional(),
       })
       .optional(),
+    example: z.unknown().optional(),
+    common_errors: z.array(z.string().trim().min(1)).max(10).optional(),
   })
   .strict();
 

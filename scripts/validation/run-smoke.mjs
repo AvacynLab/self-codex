@@ -1,6 +1,3 @@
-#!/usr/bin/env node
-"use strict";
-
 /**
  * End-to-end smoke script exercising a representative subset of MCP tools. The
  * harness records deterministic artefacts under `runs/validation_<timestamp>/`
@@ -14,6 +11,7 @@ import process from "node:process";
 import { createRunContext } from "../lib/validation/run-context.mjs";
 import { ArtifactRecorder } from "../lib/validation/artifact-recorder.mjs";
 import { McpSession, McpToolCallError } from "../lib/validation/mcp-session.mjs";
+import { runPreflightStage } from "../lib/validation/stages/preflight.mjs";
 
 const ROOT_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 
@@ -102,6 +100,7 @@ export async function run(options = {}) {
     featureOverrides: { ...SMOKE_FEATURE_OVERRIDES, ...(options.featureOverrides ?? {}) },
   });
 
+  const stageResults = [];
   const operations = [];
 
   /** Helper wrapping an MCP invocation while tracking latency and status. */
@@ -170,6 +169,13 @@ export async function run(options = {}) {
   process.env.MCP_HTTP_STATELESS = "yes";
 
   try {
+    const preflight = await runPreflightStage({
+      context: runContext,
+      recorder,
+      phaseId: "phase-00-preflight",
+    });
+    stageResults.push(preflight);
+
     await session.open();
 
     try {
@@ -274,6 +280,24 @@ export async function run(options = {}) {
   const summaryLines = [
     `# Smoke Validation Run — ${runId}`,
     "",
+    "## HTTP Preflight",
+  ];
+
+  const preflightSummary = stageResults[0]?.summary;
+  if (preflightSummary) {
+    summaryLines.push(
+      `- Base URL: ${preflightSummary.target?.baseUrl ?? "n/a"}`,
+      `- /healthz status: ${preflightSummary.checks?.healthz?.status ?? "n/a"}`,
+      `- /metrics status: ${preflightSummary.checks?.metrics?.status ?? "n/a"}`,
+      `- JSON-RPC authorised status: ${preflightSummary.checks?.authorised?.status ?? "n/a"}`,
+      `- JSON-RPC unauthorised status: ${preflightSummary.checks?.unauthorised?.status ?? "n/a"}`,
+      "",
+    );
+  } else {
+    summaryLines.push("- Preflight stage did not run", "");
+  }
+
+  summaryLines.push(
     "## Latency Summary",
     p50 !== null ? `- p50: ${p50.toFixed(2)} ms` : "- p50: n/a",
     p95 !== null ? `- p95: ${p95.toFixed(2)} ms` : "- p95: n/a",
@@ -282,12 +306,12 @@ export async function run(options = {}) {
     "",
     "## Operations",
     formatSummaryTable(operations),
-  ];
+  );
 
   const summaryPath = join(runContext.rootDir, "summary.md");
   await writeFile(summaryPath, summaryLines.join("\n"), "utf8");
 
-  return { runId, summaryPath, runRoot: runContext.rootDir, operations };
+  return { runId, summaryPath, runRoot: runContext.rootDir, operations, stages: stageResults };
 }
 
 function isMainModule() {

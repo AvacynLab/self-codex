@@ -8,9 +8,9 @@ describe("event bus progress", () => {
     let tick = 0;
     const bus = new EventBus({ historyLimit: 10, now: () => ++tick });
 
-    bus.publish({ cat: "graph", jobId: "job-1", runId: "run-1", opId: "op-alpha", msg: "plan_started" });
-    bus.publish({ cat: "graph", jobId: "job-2", runId: "run-2", opId: "op-beta", msg: "plan_running" });
-    bus.publish({ cat: "child", jobId: "job-1", childId: "child-9", msg: "child_ready" });
+    bus.publish({ cat: "graph", jobId: "job-1", runId: "run-1", opId: "op-alpha", msg: "plan" });
+    bus.publish({ cat: "graph", jobId: "job-2", runId: "run-2", opId: "op-beta", msg: "status" });
+    bus.publish({ cat: "child", jobId: "job-1", childId: "child-9", msg: "child_spawned" });
 
     const filtered = bus.list({ cats: ["graph"], runId: "run-1" });
     expect(filtered).to.have.lengthOf(1);
@@ -31,10 +31,10 @@ describe("event bus progress", () => {
   it("merges categories while preserving chronological ordering", () => {
     const bus = new EventBus({ historyLimit: 10 });
 
-    const planStart = bus.publish({ cat: "graph", runId: "run-multi", msg: "plan_start" });
-    const childReady = bus.publish({ cat: "child", childId: "child-multi", msg: "child_ready" });
-    const planFinish = bus.publish({ cat: "graph", runId: "run-multi", msg: "plan_finish" });
-    bus.publish({ cat: "scheduler", msg: "tick" });
+    const planStart = bus.publish({ cat: "graph", runId: "run-multi", msg: "plan" });
+    const childReady = bus.publish({ cat: "child", childId: "child-multi", msg: "child_spawned" });
+    const planFinish = bus.publish({ cat: "graph", runId: "run-multi", msg: "aggregate" });
+    bus.publish({ cat: "scheduler", msg: "scheduler" });
 
     const filtered = bus.list({ cats: ["child", "graph"], limit: 10 });
     expect(filtered).to.have.lengthOf(3);
@@ -45,15 +45,15 @@ describe("event bus progress", () => {
     ]);
     expect(filtered[0]?.cat).to.equal("graph");
     expect(filtered[1]?.cat).to.equal("child");
-    expect(filtered[2]?.msg).to.equal("plan_finish");
+    expect(filtered[2]?.msg).to.equal("aggregate");
   });
 
   it("streams sequentially from the requested checkpoint", async () => {
     const bus = new EventBus({ historyLimit: 5 });
 
-    const first = bus.publish({ cat: "graph", runId: "run-42", msg: "queued" });
-    const second = bus.publish({ cat: "graph", runId: "run-42", msg: "executing" });
-    const third = bus.publish({ cat: "graph", runId: "run-42", msg: "done" });
+    const first = bus.publish({ cat: "graph", runId: "run-42", msg: "plan" });
+    const second = bus.publish({ cat: "graph", runId: "run-42", msg: "status" });
+    const third = bus.publish({ cat: "graph", runId: "run-42", msg: "aggregate" });
 
     const stream = bus.subscribe({ runId: "run-42", afterSeq: first.seq });
     const iterator = stream[Symbol.asyncIterator]();
@@ -61,12 +61,12 @@ describe("event bus progress", () => {
     const next = await iterator.next();
     expect(next.done).to.equal(false);
     expect(next.value.seq).to.equal(second.seq);
-    expect(next.value.msg).to.equal("executing");
+    expect(next.value.msg).to.equal("status");
 
     const final = await iterator.next();
     expect(final.done).to.equal(false);
     expect(final.value.seq).to.equal(third.seq);
-    expect(final.value.msg).to.equal("done");
+    expect(final.value.msg).to.equal("aggregate");
 
     const pending = iterator.next();
     stream.close();
@@ -77,8 +77,8 @@ describe("event bus progress", () => {
   it("uses the afterSeq cursor for idempotent pagination", () => {
     const bus = new EventBus({ historyLimit: 5 });
 
-    bus.publish({ cat: "graph", runId: "run-9", msg: "start" });
-    const latest = bus.publish({ cat: "graph", runId: "run-9", msg: "finish" });
+    bus.publish({ cat: "graph", runId: "run-9", msg: "plan" });
+    const latest = bus.publish({ cat: "graph", runId: "run-9", msg: "status" });
 
     const firstPage = bus.list({ cats: ["graph"], runId: "run-9" });
     expect(firstPage).to.have.lengthOf(2);
@@ -86,9 +86,9 @@ describe("event bus progress", () => {
     const secondPage = bus.list({ cats: ["graph"], runId: "run-9", afterSeq: latest.seq });
     expect(secondPage).to.have.lengthOf(0);
 
-    bus.publish({ cat: "graph", runId: "run-9", msg: "cleanup" });
+    bus.publish({ cat: "graph", runId: "run-9", msg: "aggregate" });
     const thirdPage = bus.list({ cats: ["graph"], runId: "run-9", afterSeq: latest.seq });
     expect(thirdPage).to.have.lengthOf(1);
-    expect(thirdPage[0]?.msg).to.equal("cleanup");
+    expect(thirdPage[0]?.msg).to.equal("aggregate");
   });
 });

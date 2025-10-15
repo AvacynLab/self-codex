@@ -28,7 +28,7 @@ import {
   type GraphSnapshotDescriptor,
   type GraphSnapshotTimeTravelMode,
   type GraphSnapshotTimeTravelOutput,
-} from "../rpc/graphSnapshotTimeTravelSchemas.js";
+} from "../rpc/schemas.js";
 import { snapshotList, snapshotLoad, type SnapshotMetadata, type SnapshotRecord } from "../state/snapshot.js";
 import { recordGraphWal } from "../graph/wal.js";
 import { recordOperation } from "../graph/oplog.js";

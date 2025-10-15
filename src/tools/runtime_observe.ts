@@ -18,7 +18,7 @@ import {
   RuntimeObserveSnapshotSchema,
   type RuntimeObserveInput,
   type RuntimeObserveOutput,
-} from "../rpc/runtimeObserveSchemas.js";
+} from "../rpc/schemas.js";
 
 /** Canonical façade identifier exposed through the manifest catalogue. */
 export const RUNTIME_OBSERVE_TOOL_NAME = "runtime_observe" as const;

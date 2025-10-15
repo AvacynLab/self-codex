@@ -13,9 +13,9 @@ describe("event bus sequencing", () => {
   it("assigns a strictly increasing sequence to every published event", () => {
     const bus = new EventBus({ historyLimit: 4, now: () => 1700 });
 
-    const first = bus.publish({ cat: "child", msg: "spawned" });
-    const second = bus.publish({ cat: "child", msg: "running" });
-    const third = bus.publish({ cat: "child", msg: "terminated" });
+    const first = bus.publish({ cat: "child", msg: "child_spawned" });
+    const second = bus.publish({ cat: "child", msg: "child_lifecycle" });
+    const third = bus.publish({ cat: "child", msg: "child_exit" });
 
     expect(first.seq).to.equal(1);
     expect(second.seq).to.equal(2);
@@ -31,7 +31,7 @@ describe("event bus sequencing", () => {
     const bus = new EventBus({ historyLimit: 5, now: () => now++ });
 
     // Seed the history buffer before a subscriber attaches to ensure the iterator is primed.
-    bus.publish({ cat: "graph", msg: "initial" });
+    bus.publish({ cat: "graph", msg: "plan" });
 
     const stream = bus.subscribe();
     const observed: EventEnvelope[] = [];
@@ -45,9 +45,9 @@ describe("event bus sequencing", () => {
       }
     })();
 
-    bus.publish({ cat: "graph", msg: "update" });
-    bus.publish({ cat: "graph", msg: "checkpoint" });
-    bus.publish({ cat: "graph", msg: "final" });
+    bus.publish({ cat: "graph", msg: "status" });
+    bus.publish({ cat: "graph", msg: "aggregate" });
+    bus.publish({ cat: "graph", msg: "info" });
 
     await collect;
 

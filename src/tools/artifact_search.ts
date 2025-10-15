@@ -21,7 +21,7 @@ import {
   ArtifactSearchInputSchema,
   ArtifactSearchOutputSchema,
   type ArtifactSearchOutput,
-} from "../rpc/artifactSchemas.js";
+} from "../rpc/schemas.js";
 
 /** Canonical name advertised by the façade manifest. */
 export const ARTIFACT_SEARCH_TOOL_NAME = "artifact_search" as const;
