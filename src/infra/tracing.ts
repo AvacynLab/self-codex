@@ -481,8 +481,9 @@ function normaliseGaugeInput(value: number): number {
 
 /**
  * Records the number of Server-Sent Events (SSE) frames dropped due to
- * backpressure or transmission failures. The counter is monotonic so
- * observability backends can graph cumulative drops over time.
+ * backpressure or transmission failures. The counter feeds the
+ * `sse_drops_total` metric exposed over `/metrics` so observability
+ * backends can graph cumulative drops over time.
  */
 export function recordSseDrop(dropped: number = 1): void {
   if (!Number.isFinite(dropped) || dropped <= 0) {
@@ -492,9 +493,9 @@ export function recordSseDrop(dropped: number = 1): void {
 }
 
 /**
- * Registers a child process restart attempt emitted by the supervisor.
- * Tracking restarts helps correlate spikes with circuit-breaker activity and
- * downstream failures.
+ * Registers a child process restart attempt emitted by the supervisor. The
+ * count is surfaced as `child_restarts_total`, helping correlate spikes with
+ * circuit-breaker activity and downstream failures.
  */
 export function registerChildRestart(): void {
   childRestartCount += 1;
@@ -502,8 +503,8 @@ export function registerChildRestart(): void {
 
 /**
  * Records an idempotency conflict detected by the HTTP server. Conflicts are
- * surfaced as a dedicated counter so operators can alert when clients reuse
- * keys with diverging payloads.
+ * surfaced via `idempotency_conflicts_total` so operators can alert when
+ * clients reuse keys with diverging payloads.
  */
 export function registerIdempotencyConflict(): void {
   idempotencyConflictCount += 1;
@@ -599,9 +600,9 @@ export function renderMetricsSnapshot(): string {
     }
   }
   lines.push("# mcp infra metrics");
-  lines.push(`sse_drops ${sseDropCount}`);
-  lines.push(`child_restarts ${childRestartCount}`);
-  lines.push(`idempotency_conflicts ${idempotencyConflictCount}`);
+  lines.push(`sse_drops_total ${sseDropCount}`);
+  lines.push(`child_restarts_total ${childRestartCount}`);
+  lines.push(`idempotency_conflicts_total ${idempotencyConflictCount}`);
   lines.push(`open_sse ${openSseClients}`);
   lines.push(`open_children ${openChildRuntimes}`);
   return `${lines.join("\n")}\n`;

@@ -14,36 +14,30 @@ function readEnvExample(): string {
   return readFileSync(filePath, "utf8");
 }
 
+/** Loads the canonical list of environment keys and prefixes expected by the repo. */
+function readExpectedKeys(): { required: string[]; prefixes: string[] } {
+  const manifestPath = resolve(process.cwd(), "config", "env", "expected-keys.json");
+  const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+  const required = Array.isArray(manifest.required) ? manifest.required : [];
+  const prefixes = Array.isArray(manifest.prefixes) ? manifest.prefixes : [];
+  return { required, prefixes };
+}
+
 describe(".env.example documentation", () => {
   it("lists the orchestrator keys required for bootstrap", () => {
     const file = readEnvExample();
+    const { required, prefixes } = readExpectedKeys();
     const keys = file
       .split(/\r?\n/)
       .map((line) => line.trim())
       .filter((line) => line.length > 0 && !line.startsWith("#"))
       .map((line) => line.split("=", 1)[0]);
 
-    expect(keys).to.include.members([
-      "START_HTTP",
-      "MCP_HTTP_TOKEN",
-      "MCP_HTTP_HOST",
-      "MCP_HTTP_PORT",
-      "MCP_HTTP_PATH",
-      "MCP_SSE_MAX_CHUNK_BYTES",
-      "MCP_SSE_MAX_BUFFER",
-      "MCP_SSE_EMIT_TIMEOUT_MS",
-      "MCP_GRAPH_WORKERS",
-      "MCP_GRAPH_POOL_THRESHOLD",
-      "MCP_TOOLS_MODE",
-      "MCP_TOOL_PACK",
-      "IDEMPOTENCY_TTL_MS",
-      "OTEL_EXPORTER_OTLP_ENDPOINT",
-      "OTEL_EXPORTER_OTLP_HEADERS",
-      "MCP_LOG_REDACT",
-      "MCP_LOG_FILE",
-      "MCP_LOG_ROTATE_SIZE",
-      "MCP_LOG_ROTATE_KEEP",
-    ]);
+    expect(keys).to.include.members(required);
+
+    for (const prefix of prefixes) {
+      expect(file, `${prefix} should be referenced for documentation`).to.include(prefix);
+    }
   });
 
   it("documents HTTP token usage and SSE default recommendations", () => {
