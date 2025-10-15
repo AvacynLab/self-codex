@@ -49,9 +49,9 @@ describe("http metrics", () => {
     expect(snapshot).to.contain("rpc_count{method=\"tool:artifact_write\"} 2");
     expect(snapshot).to.contain("rpc_error_count{method=\"tool:artifact_write\"} 1");
     expect(snapshot).to.contain("# mcp infra metrics");
-    expect(snapshot).to.contain("sse_drops 3");
-    expect(snapshot).to.contain("child_restarts 1");
-    expect(snapshot).to.contain("idempotency_conflicts 1");
+    expect(snapshot).to.contain("sse_drops_total 3");
+    expect(snapshot).to.contain("child_restarts_total 1");
+    expect(snapshot).to.contain("idempotency_conflicts_total 1");
     expect(snapshot).to.contain("open_sse 2");
     expect(snapshot).to.contain("open_children 5");
   });

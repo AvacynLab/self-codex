@@ -93,6 +93,6 @@ describe("http sse backpressure", () => {
     });
 
     const metrics = renderMetricsSnapshot();
-    expect(metrics).to.contain("sse_drops 1");
+    expect(metrics).to.contain("sse_drops_total 1");
   });
 });
