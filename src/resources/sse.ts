@@ -1,3 +1,4 @@
+import { Buffer } from "node:buffer";
 import process from "node:process";
 import { setTimeout as delay } from "node:timers/promises";
 import { TextEncoder } from "node:util";
@@ -207,8 +208,8 @@ export interface RenderSseMessageOptions {
 /** Default chunk size applied to SSE payloads when the environment omits overrides. */
 const DEFAULT_MAX_CHUNK_BYTES = 32 * 1024;
 
-/** Default number of messages retained in a per-client buffer before dropping the oldest entries. */
-const DEFAULT_MAX_BUFFERED_MESSAGES = 256;
+/** Default number of bytes retained across buffered frames before backpressure drops kick in. */
+const DEFAULT_MAX_BUFFERED_BYTES = 512 * 1024;
 
 /** Default timeout granted to downstream writers when flushing SSE frames (in milliseconds). */
 const DEFAULT_EMIT_TIMEOUT_MS = 5_000;
@@ -232,12 +233,12 @@ function resolveMaxChunkBytes(override?: number): number {
   return parsePositiveInteger(envValue, DEFAULT_MAX_CHUNK_BYTES);
 }
 
-function resolveMaxBufferedMessages(override?: number): number {
+function resolveMaxBufferedBytes(override?: number): number {
   if (override && override > 0) {
     return override;
   }
   const envValue = process.env.MCP_SSE_MAX_BUFFER;
-  return parsePositiveInteger(envValue, DEFAULT_MAX_BUFFERED_MESSAGES);
+  return parsePositiveInteger(envValue, DEFAULT_MAX_BUFFERED_BYTES);
 }
 
 function resolveEmitTimeoutMs(override?: number): number {
@@ -312,11 +313,11 @@ export interface ResourceWatchSseBufferOptions extends RenderSseMessageOptions {
   /** Structured logger used to surface warnings when backpressure kicks in. */
   logger: Pick<StructuredLogger, "warn">;
   /**
-   * Maximum number of messages retained before discarding the oldest ones. If
+   * Maximum number of bytes retained before discarding the oldest frames. If
    * omitted, the helper falls back to `MCP_SSE_MAX_BUFFER` or the default
    * bounded capacity.
    */
-  maxBufferedMessages?: number;
+  maxBufferedBytes?: number;
   /** Maximum time spent awaiting a downstream flush before the frame is dropped. */
   emitTimeoutMs?: number;
 }
@@ -328,26 +329,33 @@ export interface ResourceWatchSseBufferOptions extends RenderSseMessageOptions {
  * consumers are slow or disconnected.
  */
 export class ResourceWatchSseBuffer {
-  private readonly maxBufferedMessages: number;
+  private readonly maxBufferedBytes: number;
   private readonly emitTimeoutMs: number;
   private readonly options: ResourceWatchSseBufferOptions;
-  private readonly queue: string[] = [];
+  private readonly queue: Array<{ frame: string; bytes: number }> = [];
   /**
    * Monotonic counter tracking the number of frames discarded for this client.
    * The metric complements the global observability signal and is primarily
    * used by tests to ensure drops are recorded whenever backpressure triggers.
    */
   private droppedFrames = 0;
+  /** Tracks the cumulative byte size of buffered frames for overflow checks. */
+  private bufferedBytes = 0;
 
   constructor(options: ResourceWatchSseBufferOptions) {
     this.options = options;
-    this.maxBufferedMessages = resolveMaxBufferedMessages(options.maxBufferedMessages);
+    this.maxBufferedBytes = resolveMaxBufferedBytes(options.maxBufferedBytes);
     this.emitTimeoutMs = resolveEmitTimeoutMs(options.emitTimeoutMs);
   }
 
   /** Number of SSE frames currently stored in the buffer. */
   get size(): number {
     return this.queue.length;
+  }
+
+  /** Total number of bytes occupied by the buffered SSE frames. */
+  get bufferedSizeBytes(): number {
+    return this.bufferedBytes;
   }
 
   /** Total number of frames dropped for this buffer instance. */
@@ -358,6 +366,7 @@ export class ResourceWatchSseBuffer {
   /** Clears all buffered frames without notifying downstream consumers. */
   clear(): void {
     this.queue.length = 0;
+    this.bufferedBytes = 0;
   }
 
   /**
@@ -367,19 +376,32 @@ export class ResourceWatchSseBuffer {
    */
   enqueue(messages: ResourceWatchSseMessage[]): void {
     for (const message of messages) {
-      this.queue.push(renderSingleSseMessage(message, this.options));
+      const frame = renderSingleSseMessage(message, this.options);
+      const bytes = Buffer.byteLength(frame, "utf8");
+      this.queue.push({ frame, bytes });
+      this.bufferedBytes += bytes;
     }
 
-    if (this.queue.length > this.maxBufferedMessages) {
-      const overflow = this.queue.length - this.maxBufferedMessages;
-      this.queue.splice(0, overflow);
-      recordSseDrop(overflow);
-      this.droppedFrames += overflow;
-      this.options.logger.warn("resources_sse_buffer_overflow", {
-        client_id: this.options.clientId,
-        dropped: overflow,
-        capacity: this.maxBufferedMessages,
-      });
+    if (this.bufferedBytes > this.maxBufferedBytes) {
+      let dropped = 0;
+      let freedBytes = 0;
+      while (this.bufferedBytes > this.maxBufferedBytes && this.queue.length > 0) {
+        const droppedFrame = this.queue.shift()!;
+        this.bufferedBytes -= droppedFrame.bytes;
+        dropped += 1;
+        freedBytes += droppedFrame.bytes;
+      }
+      if (dropped > 0) {
+        recordSseDrop(dropped);
+        this.droppedFrames += dropped;
+        this.options.logger.warn("resources_sse_buffer_overflow", {
+          client_id: this.options.clientId,
+          dropped,
+          freed_bytes: freedBytes,
+          capacity_bytes: this.maxBufferedBytes,
+          buffered_bytes: this.bufferedBytes,
+        });
+      }
     }
   }
 
@@ -389,8 +411,9 @@ export class ResourceWatchSseBuffer {
    */
   async drain(writer: (frame: string) => Promise<void>): Promise<void> {
     while (this.queue.length > 0) {
-      const frame = this.queue.shift()!;
-      const writeResult = writer(frame);
+      const payload = this.queue.shift()!;
+      this.bufferedBytes = Math.max(0, this.bufferedBytes - payload.bytes);
+      const writeResult = writer(payload.frame);
       const timeout = this.emitTimeoutMs;
 
       if (timeout > 0) {
@@ -444,6 +467,6 @@ export class ResourceWatchSseBuffer {
 
 export {
   DEFAULT_MAX_CHUNK_BYTES,
-  DEFAULT_MAX_BUFFERED_MESSAGES,
+  DEFAULT_MAX_BUFFERED_BYTES,
   DEFAULT_EMIT_TIMEOUT_MS,
 };

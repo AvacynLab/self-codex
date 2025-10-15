@@ -141,7 +141,11 @@ describe('gateway hygiene', () => {
       label: 'node:worker_threads usage requires an explicit security review',
       staticPattern: /(?:from\s+['"]|require\(['"])(?:node:)?worker_threads['"]/,
       dynamicPattern: /import\(['"](?:node:)?worker_threads['"]\)/,
-      allowList: new Set<string>([]),
+      allowList: new Set<string>([
+        // Graph diff/validate workloads can offload heavy computations to vetted worker threads.
+        'src/infra/workerPool.ts',
+        'src/infra/graphWorkerThread.ts',
+      ]),
     },
     {
       // The `vm` module enables evaluation of user-provided code snippets. While

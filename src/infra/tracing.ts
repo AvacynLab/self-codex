@@ -197,6 +197,33 @@ function normaliseMetricLabel(value: string | null | undefined, fallback: string
   return trimmed.replace(/[^a-zA-Z0-9_.:-]/g, "_");
 }
 
+/**
+ * Derives the canonical label used to bucket latency metrics. JSON-RPC tool
+ * invocations (`tools/call`) are rewritten to the `tool:<name>` namespace so
+ * observability dashboards expose per-façade percentiles instead of an
+ * aggregated series that hides slow outliers. Non tool invocations retain
+ * their original method name for backwards compatibility.
+ */
+export function deriveMetricMethodLabel(method: string | null | undefined, toolName: string | null | undefined): string {
+  const rawMethod = typeof method === "string" ? method.trim() : "";
+  const rawTool = typeof toolName === "string" ? toolName.trim() : "";
+
+  if (rawTool.length > 0) {
+    if (rawMethod === "tools/call" || rawMethod.length === 0) {
+      return `tool:${rawTool}`;
+    }
+    if (rawMethod.startsWith("tools/")) {
+      return `tool:${rawTool}`;
+    }
+  }
+
+  if (rawMethod.length > 0) {
+    return rawMethod;
+  }
+
+  return rawTool.length > 0 ? `tool:${rawTool}` : "unknown";
+}
+
 function ensureBudgetMetricRecord(key: string): BudgetMetricRecord {
   let record = budgetMetrics.get(key);
   if (!record) {
@@ -367,8 +394,20 @@ export function annotateTraceContext(update: TraceAnnotation): void {
   if (!context) {
     return;
   }
-  if (update.method && !context.method) {
-    context.method = update.method;
+  if (typeof update.method === "string") {
+    const nextMethod = update.method.trim();
+    if (nextMethod.length > 0) {
+      const current = context.method;
+      const allowOverride =
+        !current ||
+        current === "unknown" ||
+        current === nextMethod ||
+        current === "tools/call" ||
+        current.startsWith("tools/");
+      if (allowOverride) {
+        context.method = nextMethod;
+      }
+    }
   }
   if (update.requestId !== undefined && context.requestId == null && update.requestId != null) {
     context.requestId = update.requestId;

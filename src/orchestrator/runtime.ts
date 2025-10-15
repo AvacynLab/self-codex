@@ -91,6 +91,7 @@ import {
   getActiveTraceContext,
   registerRpcError,
   registerRpcSuccess,
+  deriveMetricMethodLabel,
 } from "../infra/tracing.js";
 import {
   BudgetTracker,
@@ -110,7 +111,7 @@ import {
   normaliseJsonRpcRequest,
   JsonRpcError,
   createJsonRpcError,
-  buildJsonRpcErrorResponse,
+  toJsonRpc,
 } from "../rpc/middleware.js";
 import { JsonRpcTimeoutError, resolveRpcTimeoutBudget, loadDefaultTimeoutOverride } from "../rpc/timeouts.js";
 import {
@@ -499,7 +500,11 @@ function resolveVectorIndexCapacity(): number {
 }
 
 /** Resolves the worker-pool configuration responsible for heavy graph workloads. */
-function resolveGraphWorkerPoolOptions(): { maxWorkers: number; changeSetSizeThreshold: number } {
+function resolveGraphWorkerPoolOptions(): {
+  maxWorkers: number;
+  changeSetSizeThreshold: number;
+  workerTimeoutMs?: number;
+} {
   const workersRaw = process.env.MCP_GRAPH_WORKERS;
   let maxWorkers = 0;
   if (workersRaw) {
@@ -518,7 +523,16 @@ function resolveGraphWorkerPoolOptions(): { maxWorkers: number; changeSetSizeThr
     }
   }
 
-  return { maxWorkers, changeSetSizeThreshold };
+  const timeoutRaw = process.env.MCP_GRAPH_WORKER_TIMEOUT_MS;
+  let workerTimeoutMs: number | undefined;
+  if (timeoutRaw) {
+    const parsed = Number.parseInt(timeoutRaw, 10);
+    if (Number.isFinite(parsed) && parsed > 0) {
+      workerTimeoutMs = parsed;
+    }
+  }
+
+  return { maxWorkers, changeSetSizeThreshold, ...(workerTimeoutMs ? { workerTimeoutMs } : {}) };
 }
 
 const IDEMPOTENCY_TTL_OVERRIDE = resolveIdempotencyTtlFromEnv();
@@ -806,7 +820,7 @@ function recordServerLogEntry(entry: LogEntry): void {
       stage,
       elapsedMs,
     });
-  } catch (error) {
+  } catch (error: unknown) {
     try {
       const detail = error instanceof Error ? error.message : String(error);
       process.stderr.write(
@@ -8948,9 +8962,13 @@ function recordJsonRpcObservability(input: JsonRpcObservabilityInput): void {
   const bytesOut = typeof trace?.bytesOut === "number" && Number.isFinite(trace.bytesOut)
     ? Math.max(0, trace.bytesOut)
     : null;
+  const metricMethod = deriveMetricMethodLabel(input.method, input.toolName ?? null);
+
+  annotateTraceContext({ method: metricMethod });
   const payload = {
     msg: `jsonrpc_${input.stage}`,
     method: input.method,
+    metric_method: metricMethod,
     tool: input.toolName ?? null,
     request_id: input.requestId ?? null,
     transport: input.transport ?? null,
@@ -9234,7 +9252,7 @@ export async function handleJsonRpc(
         errorMessage: error.data?.hint ?? error.message,
         errorCode: error.code,
       });
-      return buildJsonRpcErrorResponse(rawId, error);
+      return toJsonRpc(rawId, error);
     }
     throw error;
   }
@@ -9284,7 +9302,7 @@ export async function handleJsonRpc(
         errorMessage: removalError.data?.hint ?? removalError.message,
         errorCode: removalError.code,
       });
-      return buildJsonRpcErrorResponse(id, removalError);
+      return toJsonRpc(id, removalError);
     }
     logToolDeprecation(logger, "warn", "tool_deprecated_invoked", logPayload);
   }
@@ -9328,7 +9346,7 @@ export async function handleJsonRpc(
           errorMessage: budgetError.data?.hint ?? budgetError.message,
           errorCode: budgetError.code,
         });
-        return buildJsonRpcErrorResponse(id, budgetError);
+        return toJsonRpc(id, budgetError);
       }
       throw error;
     }
@@ -9434,7 +9452,7 @@ export async function handleJsonRpc(
             errorCode: budgetError.code,
             timeoutMs,
           });
-          return buildJsonRpcErrorResponse(id, budgetError);
+          return toJsonRpc(id, budgetError);
         }
         throw error;
       }
@@ -9504,7 +9522,7 @@ export async function handleJsonRpc(
             errorCode: jsonRpcError.code,
             timeoutMs,
           });
-          return buildJsonRpcErrorResponse(id, jsonRpcError);
+          return toJsonRpc(id, jsonRpcError);
         }
         throw budgetError;
       }

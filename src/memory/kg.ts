@@ -1,9 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { mkdirSync, readFileSync, existsSync } from "node:fs";
-import { dirname, resolve as resolvePath } from "node:path";
+import { dirname } from "node:path";
 
 import { KnowledgeGraph, type KnowledgeInsertResult, type KnowledgeQueryOptions, type KnowledgeQueryPattern, type KnowledgeTripleSnapshot } from "../knowledge/knowledgeGraph.js";
+import { safePath } from "../gateways/fsArtifacts.js";
 
 /** Options accepted by {@link PersistentKnowledgeGraph.create}. */
 export interface PersistentKnowledgeGraphOptions {
@@ -28,7 +29,11 @@ export class PersistentKnowledgeGraph {
 
   private constructor(options: PersistentKnowledgeGraphOptions) {
     this.graph = new KnowledgeGraph({ now: options.now });
-    this.filePath = resolvePath(options.directory, options.fileName ?? "graph.json");
+    // Persist snapshots inside the caller-provided directory while disallowing
+    // traversal via the optional `fileName` override. `safePath` mirrors the
+    // child workspace guarantees so knowledge artefacts cannot be written
+    // outside of their sandbox (e.g. when a misconfigured env passes "../").
+    this.filePath = safePath(options.directory, options.fileName ?? "graph.json");
   }
 
   /**

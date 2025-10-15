@@ -39,6 +39,12 @@ describe("gateways/fsArtifacts.safePath", () => {
     expect(() => safePath(root, "../escape.txt")).to.throw(ArtifactPathTraversalError);
   });
 
+  it("rejects traversal attempts expressed with Windows-style backslashes", async () => {
+    const root = await createSandbox();
+
+    expect(() => safePath(root, "..\\escape.txt")).to.throw(ArtifactPathTraversalError);
+  });
+
   it("normalises dot segments without breaking legitimate subdirectories", async () => {
     const root = await createSandbox();
     const sanitized = safePath(root, "logs/../logs/session/./latest.log");
@@ -48,5 +54,13 @@ describe("gateways/fsArtifacts.safePath", () => {
       "session",
       "latest.log",
     ]);
+  });
+
+  it("collapses repeated dots in filenames while keeping the path inside the sandbox", async () => {
+    const root = await createSandbox();
+    const sanitized = safePath(root, "reports/final....txt");
+
+    const segments = relative(root, sanitized).split(sep);
+    expect(segments).to.deep.equal(["reports", "final.txt"]);
   });
 });

@@ -4,12 +4,15 @@
  * increment. The regression ensures the HTTP layer benefits from deterministic
  * backpressure behaviour even under slow consumers.
  */
+import { Buffer } from "node:buffer";
+
 import { afterEach, beforeEach, describe, it } from "mocha";
 import { expect } from "chai";
 
 import type { ResourceWatchResult } from "../../src/resources/registry.js";
 import {
   ResourceWatchSseBuffer,
+  renderResourceWatchSseMessages,
   serialiseResourceWatchResultForSse,
 } from "../../src/resources/sse.js";
 import { __tracingInternals, renderMetricsSnapshot } from "../../src/infra/tracing.js";
@@ -27,20 +30,6 @@ describe("http sse backpressure", () => {
   });
 
   it("records drops when the environment-configured buffer is exceeded", async () => {
-    process.env.MCP_SSE_MAX_BUFFER = "2";
-
-    const warnings: Array<{ message: string; payload: Record<string, unknown> | undefined }> = [];
-    const buffer = new ResourceWatchSseBuffer({
-      clientId: "http-sse-test",
-      logger: {
-        warn: (message: string, payload?: unknown) => {
-          warnings.push({ message, payload: payload as Record<string, unknown> | undefined });
-        },
-      },
-      maxChunkBytes: 128,
-      emitTimeoutMs: 25,
-    });
-
     const buildResult = (seq: number): ResourceWatchResult => ({
       uri: "sc://runs/http-sse/events",
       kind: "run_events",
@@ -65,6 +54,25 @@ describe("http sse backpressure", () => {
       ],
     });
 
+    const singleFrameBytes = Buffer.byteLength(
+      renderResourceWatchSseMessages(serialiseResourceWatchResultForSse(buildResult(1)), { maxChunkBytes: 128 }),
+      "utf8",
+    );
+    process.env.MCP_SSE_MAX_BUFFER = String(singleFrameBytes * 2);
+
+    const warnings: Array<{ message: string; payload: Record<string, unknown> | undefined }> = [];
+    const buffer = new ResourceWatchSseBuffer({
+      clientId: "http-sse-test",
+      logger: {
+        warn: (message: string, payload?: unknown) => {
+          warnings.push({ message, payload: payload as Record<string, unknown> | undefined });
+        },
+      },
+      maxChunkBytes: 128,
+      maxBufferedBytes: singleFrameBytes * 2,
+      emitTimeoutMs: 25,
+    });
+
     buffer.enqueue(serialiseResourceWatchResultForSse(buildResult(1)));
     buffer.enqueue(serialiseResourceWatchResultForSse(buildResult(2)));
     buffer.enqueue(serialiseResourceWatchResultForSse(buildResult(3)));
@@ -73,7 +81,10 @@ describe("http sse backpressure", () => {
     expect(buffer.droppedFrameCount).to.equal(1);
     expect(
       warnings.some(
-        (entry) => entry.message === "resources_sse_buffer_overflow" && (entry.payload?.dropped as number) === 1,
+        (entry) =>
+          entry.message === "resources_sse_buffer_overflow" &&
+          (entry.payload?.dropped as number) === 1 &&
+          (entry.payload?.capacity_bytes as number) === singleFrameBytes * 2,
       ),
     ).to.equal(true);
 

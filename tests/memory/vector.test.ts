@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 
 import { VectorMemoryIndex } from "../../src/memory/vector.js";
+import { PathResolutionError } from "../../src/paths.js";
 
 /** Simple deterministic clock used to control timestamps in tests. */
 class ManualClock {
@@ -76,5 +77,18 @@ describe("vector memory index", () => {
       "Gamma release summary",
       "Beta release summary",
     ]);
+  });
+
+  it("rejects file names that would escape the index directory", async () => {
+    try {
+      await VectorMemoryIndex.create({ directory: rootDir, fileName: "../vector.json" });
+      expect.fail("expected VectorMemoryIndex.create to reject a traversal attempt");
+    } catch (error) {
+      expect(error).to.be.instanceOf(PathResolutionError);
+    }
+
+    expect(() =>
+      VectorMemoryIndex.createSync({ directory: rootDir, fileName: "..\\vector.json" }),
+    ).to.throw(PathResolutionError);
   });
 });
