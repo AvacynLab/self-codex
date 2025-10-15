@@ -1,0 +1,91 @@
+{
+  "ok": true,
+  "summary": "top recommandation : graph_apply_change_set",
+  "details": {
+    "idempotency_key": "golden-intent",
+    "recommendations": [
+      {
+        "tool": "graph_apply_change_set",
+        "score": 0.95,
+        "rationale": "l'intention mentionne explicitement une modification du graphe",
+        "estimated_budget": {
+          "time_ms": 7000,
+          "tool_calls": 1,
+          "bytes_out": 24576
+        }
+      },
+      {
+        "tool": "tools_help",
+        "score": 0.5,
+        "rationale": "aucune règle précise trouvée : proposer la documentation interactive",
+        "estimated_budget": {
+          "time_ms": 1000,
+          "tool_calls": 1,
+          "bytes_out": 16384
+        }
+      },
+      {
+        "tool": "artifact_search",
+        "score": 0.45,
+        "rationale": "aucune règle précise trouvée : suggérer l'exploration des artefacts",
+        "estimated_budget": {
+          "time_ms": 4000,
+          "tool_calls": 1,
+          "bytes_out": 24576
+        }
+      }
+    ],
+    "diagnostics": [
+      {
+        "label": "graph_mutation",
+        "tool": "graph_apply_change_set",
+        "matched": true
+      },
+      {
+        "label": "graph_snapshot",
+        "tool": "graph_snapshot_time_travel",
+        "matched": false
+      },
+      {
+        "label": "plan_pipeline",
+        "tool": "plan_compile_execute",
+        "matched": false
+      },
+      {
+        "label": "artifact_write",
+        "tool": "artifact_write",
+        "matched": false
+      },
+      {
+        "label": "artifact_read",
+        "tool": "artifact_read",
+        "matched": false
+      },
+      {
+        "label": "artifact_search",
+        "tool": "artifact_search",
+        "matched": false
+      },
+      {
+        "label": "memory_search",
+        "tool": "memory_search",
+        "matched": false
+      },
+      {
+        "label": "memory_upsert",
+        "tool": "memory_upsert",
+        "matched": false
+      },
+      {
+        "label": "child_orchestration",
+        "tool": "child_orchestrate",
+        "matched": false
+      },
+      {
+        "label": "runtime_observe",
+        "tool": "runtime_observe",
+        "matched": false
+      }
+    ]
+  }
+}

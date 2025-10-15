@@ -1,8 +1,7 @@
-import { spawn, type ChildProcessWithoutNullStreams, type SpawnOptions } from "node:child_process";
+import type { ChildProcess, ChildProcessWithoutNullStreams, SpawnOptions } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { createWriteStream, type WriteStream } from "node:fs";
 import { writeFile } from "node:fs/promises";
-import process from "node:process";
 import type { ProcessEnv, ResourceUsage, Signal } from "./nodePrimitives.js";
 import { inspect } from "node:util";
 // NOTE: Node built-in modules are imported with the explicit `node:` prefix to guarantee ESM resolution in Node.js.
@@ -10,6 +9,13 @@ import { inspect } from "node:util";
 import { scanArtifacts, type ArtifactManifestEntry } from "./artifacts.js";
 import { childWorkspacePath, ensureDirectory } from "./paths.js";
 import { runtimeTimers, type TimeoutHandle } from "./runtime/timers.js";
+import {
+  createChildProcessGateway,
+  type ChildProcessGateway,
+} from "./gateways/childProcess.js";
+
+/** Default hardened gateway leveraged when callers do not inject one explicitly. */
+const defaultChildProcessGateway: ChildProcessGateway = createChildProcessGateway();
 
 /**
  * Message emitted by a child process runtime.
@@ -113,9 +119,13 @@ export interface StartChildRuntimeOptions {
   toolsAllow?: string[] | null;
   spawnRetry?: ChildSpawnRetryOptions;
   /**
-   * Optional factory used to spawn the process. Tests provide a stub so the
-   * retry behaviour can be exercised deterministically without touching the
-   * real filesystem or relying on brittle command failures.
+   * Optional hardened gateway responsible for spawning the process. Tests can
+   * inject a double to observe the wiring without launching a real child.
+   */
+  processGateway?: ChildProcessGateway;
+  /**
+   * @deprecated Inject {@link processGateway} instead so environment
+   * sanitisation and timeout guards remain enforced during tests.
    */
   spawnFactory?: (
     command: string,
@@ -933,14 +943,39 @@ export async function startChildRuntime(options: StartChildRuntimeOptions): Prom
   const manifestPath = childWorkspacePath(options.childrenRoot, options.childId, "manifest.json");
 
   const args = options.args ? [...options.args] : [];
-  const env = { ...process.env, ...(options.env ?? {}) };
+  const env: ProcessEnv = {};
+  if (options.env) {
+    for (const [key, value] of Object.entries(options.env)) {
+      if (typeof value === "undefined") {
+        continue;
+      }
+      env[key] = String(value);
+    }
+  }
   const envKeys = Object.keys(env).sort();
   const metadata = options.metadata ? { ...options.metadata } : {};
   const manifestExtras = options.manifestExtras ? { ...options.manifestExtras } : {};
   const limits = options.limits ? { ...options.limits } : null;
   const toolsAllow = options.toolsAllow ? Array.from(new Set(options.toolsAllow)) : [];
 
-  const spawnFactory = options.spawnFactory ?? spawn;
+  const processGateway: ChildProcessGateway = (() => {
+    if (options.processGateway) {
+      return options.processGateway;
+    }
+    if (options.spawnFactory) {
+      const spawnImpl = ((
+        command: string,
+        argsOrOptions?: readonly string[] | SpawnOptions,
+        maybeOptions?: SpawnOptions,
+      ) => {
+        const args = Array.isArray(argsOrOptions) ? argsOrOptions : undefined;
+        const optionsCandidate = Array.isArray(argsOrOptions) ? maybeOptions : argsOrOptions;
+        return options.spawnFactory!(command, args, optionsCandidate as SpawnOptions | undefined);
+      }) as typeof import("node:child_process").spawn;
+      return createChildProcessGateway({ spawnImpl });
+    }
+    return defaultChildProcessGateway;
+  })();
   const retry = options.spawnRetry ?? {};
   const attempts = Math.max(1, Math.trunc(retry.attempts ?? 1));
   const factor = Math.max(1, retry.backoffFactor ?? 2);
@@ -952,11 +987,16 @@ export async function startChildRuntime(options: StartChildRuntimeOptions): Prom
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
     let child: ChildProcessWithoutNullStreams;
     try {
-      child = spawnFactory(options.command, args, {
+      const { child: spawnedChild } = processGateway.spawn({
+        command: options.command,
+        args,
         cwd: workdir,
-        env,
+        allowedEnvKeys: envKeys,
+        inheritEnv: {},
+        extraEnv: env,
         stdio: ["pipe", "pipe", "pipe"],
       });
+      child = ensurePipedChildProcess(spawnedChild);
     } catch (error) {
       lastError = error;
       if (attempt >= attempts) {
@@ -1023,6 +1063,14 @@ export function formatChildMessages(messages: ChildRuntimeMessage[]): string {
       (message.parsed ? inspect(message.parsed, { depth: 4 }) : "<raw>"),
     )
     .join("\n");
+}
+
+/** Ensures the spawned child exposes pipe-based stdio streams. */
+function ensurePipedChildProcess(child: ChildProcess): ChildProcessWithoutNullStreams {
+  if (!child.stdin || !child.stdout || !child.stderr) {
+    throw new Error("Child process must expose stdin/stdout/stderr pipes");
+  }
+  return child as ChildProcessWithoutNullStreams;
 }
 
 /**

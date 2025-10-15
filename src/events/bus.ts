@@ -1,4 +1,5 @@
 import { EventEmitter } from "node:events";
+import { assertValidEventMessage, type EventMessage } from "./types.js";
 // NOTE: Node built-in modules are imported with the explicit `node:` prefix to guarantee ESM resolution in Node.js.
 
 /**
@@ -54,7 +55,7 @@ export interface EventEnvelope {
    * contract expected by the regression suite.
    */
   kind?: string;
-  msg: string;
+  msg: EventMessage;
   data?: unknown;
 }
 
@@ -76,7 +77,7 @@ export interface EventInput {
   elapsedMs?: number | null;
   /** Optional semantic event identifier (see {@link EventEnvelope.kind}). */
   kind?: string | null;
-  msg: string;
+  msg: EventMessage;
   data?: unknown;
   ts?: number;
 }
@@ -129,9 +130,13 @@ function normaliseCategory(cat: EventCategory): EventCategory {
   return cat;
 }
 
-function normaliseMessage(msg: string): string {
+function normaliseMessage(msg: string): EventMessage {
   const trimmed = msg.trim();
-  return trimmed.length > 0 ? trimmed : "event";
+  if (trimmed.length === 0) {
+    throw new TypeError("event message must be non-empty");
+  }
+  assertValidEventMessage(trimmed);
+  return trimmed;
 }
 
 /**

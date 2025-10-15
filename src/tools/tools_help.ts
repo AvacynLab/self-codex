@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 
 import type { RequestHandlerExtra } from "@modelcontextprotocol/sdk/shared/protocol.js";
 import type { CallToolResult, ServerNotification, ServerRequest } from "@modelcontextprotocol/sdk/types.js";
+import { z, type ZodTypeAny, ZodFirstPartyTypeKind } from "zod";
 
 import { BudgetExceededError, type BudgetCharge } from "../infra/budget.js";
 import { getJsonRpcContext } from "../infra/jsonRpcContext.js";
@@ -29,7 +30,7 @@ import {
   type ToolsHelpInput,
   type ToolsHelpOutput,
   type ToolsHelpToolSummary,
-} from "../rpc/toolsHelpSchemas.js";
+} from "../rpc/schemas.js";
 
 /** Canonical name advertised by the façade manifest. */
 export const TOOLS_HELP_TOOL_NAME = "tools_help" as const;
@@ -61,6 +62,7 @@ export const ToolsHelpManifestDraft: ToolManifestDraft = {
 export interface ToolsHelpRegistryView {
   list(): ToolManifest[];
   listVisible(mode?: ToolVisibilityMode, pack?: ToolPack): ToolManifest[];
+  describe(name: string): { manifest: ToolManifest; inputSchema?: ZodTypeAny } | undefined;
 }
 
 /** Context forwarded to the façade handler. */
@@ -113,11 +115,353 @@ function cloneMetadata(metadata: Record<string, unknown> | undefined): Record<st
   return Object.fromEntries(Object.entries(metadata));
 }
 
+/** Maximum recursion depth when constructing illustrative payloads. */
+const EXAMPLE_MAX_DEPTH = 6;
+
+/** Upper bound applied to the list of generated error diagnostics. */
+const COMMON_ERROR_LIMIT = 8;
+
+/**
+ * Formats a dot-separated JSON pointer starting from the payload root. The
+ * helper keeps generated diagnostics human readable while remaining compact
+ * enough for the textual channel.
+ */
+function formatPath(path: readonly string[]): string {
+  if (path.length === 0) {
+    return "payload";
+  }
+  return `payload.${path.join(".")}`;
+}
+
+/**
+ * Produces a string value that satisfies the constraints attached to the Zod
+ * string schema. Whenever a minimum length is specified the helper pads the
+ * placeholder so the resulting payload validates without additional tweaks.
+ */
+function buildStringExample(schema: z.ZodString): string {
+  let length = 5;
+  for (const check of schema._def.checks ?? []) {
+    if (check.kind === "min") {
+      length = Math.max(length, Math.ceil(check.value));
+    }
+    if (check.kind === "max") {
+      length = Math.min(length, Math.ceil(check.value));
+    }
+  }
+  const safeLength = Number.isFinite(length) && length > 0 ? length : 5;
+  return "x".repeat(Math.max(1, safeLength));
+}
+
+/**
+ * Produces a number compatible with the provided schema. The helper honours
+ * minimum bounds when present and defaults to zero otherwise to remain
+ * intuitive for operators exploring the documentation payload.
+ */
+function buildNumberExample(schema: z.ZodNumber): number {
+  let base = 0;
+  for (const check of schema._def.checks ?? []) {
+    if (check.kind === "min") {
+      const candidate = check.inclusive ? check.value : check.value + 1;
+      base = Math.max(base, candidate);
+    }
+    if (check.kind === "max") {
+      const limit = check.inclusive ? check.value : check.value - 1;
+      base = Math.min(base, limit);
+    }
+    if (check.kind === "multipleOf" && check.value > 0) {
+      const multiplier = Math.ceil(base / check.value) || 1;
+      base = check.value * multiplier;
+    }
+  }
+  return base;
+}
+
+/** Selects the first serialisable value from a native enum definition. */
+function pickNativeEnumValue(values: Record<string, unknown>): string | number {
+  for (const candidate of Object.values(values)) {
+    if (typeof candidate === "string") {
+      return candidate;
+    }
+  }
+  const numeric = Object.values(values).find((value) => typeof value === "number");
+  return (numeric as number | undefined) ?? "value";
+}
+
+/**
+ * Recursively builds a JSON-serialisable payload satisfying the provided Zod
+ * schema. Optional fields are intentionally skipped so the example stays
+ * concise. Unknown constructs fall back to `null`, signalling that manual input
+ * is required for those shapes.
+ */
+function buildExampleValue(schema: ZodTypeAny, depth = 0): unknown {
+  if (depth > EXAMPLE_MAX_DEPTH) {
+    return null;
+  }
+
+  const typeName = schema._def.typeName as ZodFirstPartyTypeKind;
+  switch (typeName) {
+    case ZodFirstPartyTypeKind.ZodString:
+      return buildStringExample(schema as z.ZodString);
+    case ZodFirstPartyTypeKind.ZodNumber:
+      return buildNumberExample(schema as z.ZodNumber);
+    case ZodFirstPartyTypeKind.ZodBoolean:
+      return true;
+    case ZodFirstPartyTypeKind.ZodEnum:
+      return (schema as z.ZodEnum<[string, ...string[]]>).options[0];
+    case ZodFirstPartyTypeKind.ZodNativeEnum: {
+      const values = (schema as z.ZodNativeEnum<any>)._def.values as unknown as Record<string, unknown>;
+      return pickNativeEnumValue(values);
+    }
+    case ZodFirstPartyTypeKind.ZodLiteral:
+      return (schema as z.ZodLiteral<unknown>)._def.value;
+    case ZodFirstPartyTypeKind.ZodArray: {
+      const arrayDef = schema as z.ZodArray<ZodTypeAny, "many">;
+      const element = buildExampleValue(arrayDef._def.type, depth + 1);
+      if (typeof arrayDef._def.minLength?.value === "number") {
+        const count = Math.max(1, arrayDef._def.minLength.value);
+        return Array.from({ length: count }, () => element);
+      }
+      return element === undefined ? [] : [element];
+    }
+    case ZodFirstPartyTypeKind.ZodSet: {
+      const setDef = schema as z.ZodSet<ZodTypeAny>;
+      const element = buildExampleValue(setDef._def.valueType, depth + 1);
+      return element === undefined ? [] : [element];
+    }
+    case ZodFirstPartyTypeKind.ZodTuple: {
+      const tupleDef = schema as z.ZodTuple<any>;
+      return tupleDef._def.items.map((item: ZodTypeAny) => buildExampleValue(item, depth + 1));
+    }
+    case ZodFirstPartyTypeKind.ZodObject: {
+      const objectDef = schema as z.ZodObject<Record<string, ZodTypeAny>>;
+      const shape = objectDef.shape;
+      const result: Record<string, unknown> = {};
+      for (const [key, valueSchema] of Object.entries(shape)) {
+        if (valueSchema.isOptional()) {
+          continue;
+        }
+        const example = buildExampleValue(valueSchema, depth + 1);
+        if (example !== undefined) {
+          result[key] = example;
+        }
+      }
+      return result;
+    }
+    case ZodFirstPartyTypeKind.ZodUnion: {
+      const unionDef = schema as z.ZodUnion<[ZodTypeAny, ...ZodTypeAny[]]>;
+      return buildExampleValue(unionDef._def.options[0], depth + 1);
+    }
+    case ZodFirstPartyTypeKind.ZodDiscriminatedUnion: {
+      const optionList = (schema as unknown as { options?: ReadonlyArray<ZodTypeAny> }).options ?? [];
+      const first = optionList[0];
+      return first ? buildExampleValue(first, depth + 1) : null;
+    }
+    case ZodFirstPartyTypeKind.ZodIntersection: {
+      const intersection = schema as z.ZodIntersection<ZodTypeAny, ZodTypeAny>;
+      const left = buildExampleValue(intersection._def.left, depth + 1);
+      const right = buildExampleValue(intersection._def.right, depth + 1);
+      if (typeof left === "object" && left && typeof right === "object" && right) {
+        return { ...(left as Record<string, unknown>), ...(right as Record<string, unknown>) };
+      }
+      return left ?? right ?? null;
+    }
+    case ZodFirstPartyTypeKind.ZodRecord: {
+      const recordDef = schema as z.ZodRecord<ZodTypeAny, ZodTypeAny>;
+      const value = buildExampleValue(recordDef._def.valueType, depth + 1);
+      return value === undefined ? {} : { exemple_clef: value };
+    }
+    case ZodFirstPartyTypeKind.ZodEffects:
+      return buildExampleValue((schema as z.ZodEffects<ZodTypeAny>)._def.schema, depth + 1);
+    case ZodFirstPartyTypeKind.ZodOptional:
+    case ZodFirstPartyTypeKind.ZodNullable:
+    case ZodFirstPartyTypeKind.ZodReadonly:
+      return buildExampleValue((schema as { _def: { innerType: ZodTypeAny } })._def.innerType, depth + 1);
+    case ZodFirstPartyTypeKind.ZodDefault:
+      return (schema as z.ZodDefault<ZodTypeAny>)._def.defaultValue();
+    case ZodFirstPartyTypeKind.ZodBranded:
+      return buildExampleValue((schema as z.ZodBranded<ZodTypeAny, string>)._def.type, depth + 1);
+    case ZodFirstPartyTypeKind.ZodCatch:
+      return buildExampleValue((schema as z.ZodCatch<ZodTypeAny>)._def.innerType, depth + 1);
+    case ZodFirstPartyTypeKind.ZodPipeline:
+      return buildExampleValue((schema as z.ZodPipeline<ZodTypeAny, ZodTypeAny>)._def.out, depth + 1);
+    default:
+      return null;
+  }
+}
+
+/**
+ * Generates a defensive deep-cloned example ensuring consumers cannot mutate
+ * references used across requests. `undefined` indicates that no suitable
+ * payload could be synthesised for the provided schema.
+ */
+function buildExampleFromSchema(schema: ZodTypeAny | undefined): unknown {
+  if (!schema) {
+    return undefined;
+  }
+  const raw = buildExampleValue(schema);
+  if (typeof raw === "undefined") {
+    return undefined;
+  }
+  try {
+    return JSON.parse(JSON.stringify(raw));
+  } catch {
+    return raw;
+  }
+}
+
+/**
+ * Walks the schema to infer common validation mistakes so the façade can
+ * surface actionable hints. Messages intentionally stay short and focus on
+ * mandatory fields or tight constraints.
+ */
+function collectCommonErrors(schema: ZodTypeAny | undefined): string[] {
+  if (!schema) {
+    return [];
+  }
+  const hints = new Set<string>();
+
+  function visit(current: ZodTypeAny, path: string[], depth: number): void {
+    if (depth > EXAMPLE_MAX_DEPTH || hints.size >= COMMON_ERROR_LIMIT) {
+      return;
+    }
+    const typeName = current._def.typeName as ZodFirstPartyTypeKind;
+    switch (typeName) {
+      case ZodFirstPartyTypeKind.ZodOptional:
+      case ZodFirstPartyTypeKind.ZodNullable:
+      case ZodFirstPartyTypeKind.ZodReadonly:
+        visit((current as { _def: { innerType: ZodTypeAny } })._def.innerType, path, depth + 1);
+        return;
+      case ZodFirstPartyTypeKind.ZodDefault:
+        return;
+      case ZodFirstPartyTypeKind.ZodEffects:
+        visit((current as z.ZodEffects<ZodTypeAny>)._def.schema, path, depth + 1);
+        return;
+      case ZodFirstPartyTypeKind.ZodBranded:
+        visit((current as z.ZodBranded<ZodTypeAny, string>)._def.type, path, depth + 1);
+        return;
+      case ZodFirstPartyTypeKind.ZodCatch:
+        visit((current as z.ZodCatch<ZodTypeAny>)._def.innerType, path, depth + 1);
+        return;
+      case ZodFirstPartyTypeKind.ZodPipeline:
+        visit((current as z.ZodPipeline<ZodTypeAny, ZodTypeAny>)._def.out, path, depth + 1);
+        return;
+      case ZodFirstPartyTypeKind.ZodObject: {
+        const objectDef = current as z.ZodObject<Record<string, ZodTypeAny>>;
+        const shape = objectDef.shape;
+        for (const [key, valueSchema] of Object.entries(shape)) {
+          const nextPath = [...path, key];
+          if (!valueSchema.isOptional()) {
+            hints.add(`le champ "${formatPath(nextPath)}" est requis`);
+            if (hints.size >= COMMON_ERROR_LIMIT) {
+              return;
+            }
+          }
+          visit(valueSchema, nextPath, depth + 1);
+          if (hints.size >= COMMON_ERROR_LIMIT) {
+            return;
+          }
+        }
+        return;
+      }
+      case ZodFirstPartyTypeKind.ZodString: {
+        for (const check of (current as z.ZodString)._def.checks ?? []) {
+          if (check.kind === "min" && typeof check.value === "number") {
+            hints.add(`${formatPath(path)} doit contenir au moins ${check.value} caractère(s)`);
+          }
+          if (check.kind === "max" && typeof check.value === "number") {
+            hints.add(`${formatPath(path)} doit contenir au plus ${check.value} caractère(s)`);
+          }
+          if (check.kind === "regex") {
+            hints.add(`${formatPath(path)} doit respecter le format attendu`);
+          }
+        }
+        return;
+      }
+      case ZodFirstPartyTypeKind.ZodNumber: {
+        for (const check of (current as z.ZodNumber)._def.checks ?? []) {
+          if (check.kind === "min") {
+            hints.add(`${formatPath(path)} doit être ≥ ${check.inclusive ? check.value : check.value + 1}`);
+          }
+          if (check.kind === "max") {
+            hints.add(`${formatPath(path)} doit être ≤ ${check.inclusive ? check.value : check.value - 1}`);
+          }
+        }
+        return;
+      }
+      case ZodFirstPartyTypeKind.ZodEnum: {
+        const enumValues = (current as z.ZodEnum<[string, ...string[]]>).options.join(", ");
+        hints.add(`${formatPath(path)} doit correspondre à l'une des valeurs : ${enumValues}`);
+        return;
+      }
+      case ZodFirstPartyTypeKind.ZodNativeEnum: {
+        const rawValues = Object.values(
+          (current as z.ZodNativeEnum<any>)._def.values as unknown as Record<string, unknown>,
+        ).filter((value) => typeof value === "string");
+        if (rawValues.length > 0) {
+          hints.add(`${formatPath(path)} doit correspondre à l'une des valeurs : ${rawValues.join(", ")}`);
+        }
+        return;
+      }
+      case ZodFirstPartyTypeKind.ZodLiteral: {
+        hints.add(`${formatPath(path)} doit être exactement ${(current as z.ZodLiteral<unknown>)._def.value}`);
+        return;
+      }
+      case ZodFirstPartyTypeKind.ZodArray: {
+        const arrayDef = current as z.ZodArray<ZodTypeAny, "many">;
+        const min = arrayDef._def.minLength?.value;
+        if (typeof min === "number" && min > 0) {
+          hints.add(`${formatPath(path)} doit contenir au moins ${min} élément(s)`);
+        }
+        visit(arrayDef._def.type, [...path, "[*]"], depth + 1);
+        return;
+      }
+      case ZodFirstPartyTypeKind.ZodSet: {
+        const setDef = current as z.ZodSet<ZodTypeAny>;
+        visit(setDef._def.valueType as unknown as ZodTypeAny, [...path, "[*]"], depth + 1);
+        return;
+      }
+      case ZodFirstPartyTypeKind.ZodUnion: {
+        const unionDef = current as z.ZodUnion<[ZodTypeAny, ...ZodTypeAny[]]>;
+        hints.add(`${formatPath(path)} doit respecter l'une des formes attendues`);
+        visit(unionDef._def.options[0], path, depth + 1);
+        return;
+      }
+      case ZodFirstPartyTypeKind.ZodDiscriminatedUnion: {
+        const discr = current as z.ZodDiscriminatedUnion<string, any>;
+        const discriminator = discr._def.discriminator;
+        hints.add(`${formatPath([...path, discriminator])} doit correspondre à une variante supportée`);
+        const optionList = (discr as unknown as { options?: ReadonlyArray<ZodTypeAny> }).options ?? [];
+        const first = optionList[0];
+        if (first) {
+          visit(first, path, depth + 1);
+        }
+        return;
+      }
+      case ZodFirstPartyTypeKind.ZodRecord: {
+        const recordDef = current as z.ZodRecord<ZodTypeAny, ZodTypeAny>;
+        visit(recordDef._def.valueType as unknown as ZodTypeAny, [...path, "clé"], depth + 1);
+        return;
+      }
+      case ZodFirstPartyTypeKind.ZodIntersection: {
+        const intersection = current as z.ZodIntersection<ZodTypeAny, ZodTypeAny>;
+        visit(intersection._def.left, path, depth + 1);
+        visit(intersection._def.right, path, depth + 1);
+        return;
+      }
+      default:
+        return;
+    }
+  }
+
+  visit(schema, [], 0);
+  return Array.from(hints).slice(0, COMMON_ERROR_LIMIT);
+}
+
 /**
  * Converts a manifest entry into the façade-friendly summary validated by the
  * public schema.
  */
-function toToolSummary(manifest: ToolManifest): ToolsHelpToolSummary {
+function toToolSummary(manifest: ToolManifest, schema: ZodTypeAny | undefined): ToolsHelpToolSummary {
   const summary: ToolsHelpToolSummary = {
     name: manifest.name,
     title: manifest.title,
@@ -138,6 +482,14 @@ function toToolSummary(manifest: ToolManifest): ToolsHelpToolSummary {
         }
       : undefined,
   };
+  const example = buildExampleFromSchema(schema);
+  if (typeof example !== "undefined") {
+    summary.example = example;
+  }
+  const errors = collectCommonErrors(schema);
+  if (errors.length > 0) {
+    summary.common_errors = errors;
+  }
   return summary;
 }
 
@@ -276,7 +628,10 @@ export function createToolsHelpHandler(context: ToolsHelpToolContext): ToolImple
     }
 
     const limited = typeof filters.limit === "number" ? filtered.slice(0, filters.limit) : filtered;
-    const summaries = limited.map((manifest) => toToolSummary(manifest));
+    const summaries = limited.map((manifest) => {
+      const descriptor = context.registry.describe(manifest.name);
+      return toToolSummary(manifest, descriptor?.inputSchema);
+    });
 
     const structured: ToolsHelpOutput = {
       ok: true,

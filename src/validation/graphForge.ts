@@ -20,6 +20,7 @@ import {
   type HttpEnvironmentSummary,
 } from "./runSetup.js";
 import { ensureDirectory } from "../paths.js";
+import { safePath } from "../gateways/fsArtifacts.js";
 
 /** Relative JSONL targets dedicated to the Graph Forge validation workflow. */
 export const GRAPH_FORGE_JSONL_FILES = {
@@ -519,14 +520,18 @@ export async function runGraphForgePhase(
   const workspaceRoot = resolve(options.workspaceRoot ?? process.cwd());
   const artifactsDir = await ensureDirectory(runRoot, ...GRAPH_FORGE_ARTIFACT_DIR.split("/"));
 
-  const autosaveAbsoluteDefault = join(artifactsDir, GRAPH_FORGE_AUTOSAVE_FILENAME);
-  const autosaveRelative = options.autosaveRelativePath
+  const autosaveAbsoluteDefault = safePath(artifactsDir, GRAPH_FORGE_AUTOSAVE_FILENAME);
+  const autosaveRelativeCandidate = options.autosaveRelativePath
     ? sanitiseRelativePath(options.autosaveRelativePath)
     : resolveAutosaveRelativePath(workspaceRoot, autosaveAbsoluteDefault);
 
+  // Normalise the autosave location via {@link safePath} so overrides cannot
+  // escape the workspace root. The resolved absolute path is converted back to
+  // a relative POSIX string to keep the HTTP payload consistent.
   const autosaveAbsolute = options.autosaveRelativePath
-    ? join(workspaceRoot, ...autosaveRelative.split("/"))
+    ? safePath(workspaceRoot, autosaveRelativeCandidate)
     : autosaveAbsoluteDefault;
+  const autosaveRelative = resolveAutosaveRelativePath(workspaceRoot, autosaveAbsolute);
 
   // Ensure the parent directory exists so the autosave tool can write files
   // without racing with our observation logic. The runner mirrors the server
@@ -542,7 +547,7 @@ export async function runGraphForgePhase(
   }
 
   const { source: dslSource, entryGraph } = buildSampleGraphForgeScript();
-  const dslPath = join(artifactsDir, GRAPH_FORGE_DSL_FILENAME);
+  const dslPath = safePath(artifactsDir, GRAPH_FORGE_DSL_FILENAME);
   await writeFile(dslPath, `${dslSource}\n`, "utf8");
 
   const analysisRequest = {
@@ -589,7 +594,7 @@ export async function runGraphForgePhase(
     parsed: parsedAnalysis,
     parseError: analysisParseError ?? null,
   };
-  const analysisPath = join(artifactsDir, GRAPH_FORGE_ANALYSIS_FILENAME);
+  const analysisPath = safePath(artifactsDir, GRAPH_FORGE_ANALYSIS_FILENAME);
   await writeJsonFile(analysisPath, analysisDocument);
 
   const autosaveRequestStart = {
@@ -673,7 +678,7 @@ export async function runGraphForgePhase(
       analysisPath,
     },
   };
-  const summaryPath = join(artifactsDir, GRAPH_FORGE_AUTOSAVE_SUMMARY);
+  const summaryPath = safePath(artifactsDir, GRAPH_FORGE_AUTOSAVE_SUMMARY);
   await writeJsonFile(summaryPath, summaryPayload);
 
   if (!quiescence.verified) {

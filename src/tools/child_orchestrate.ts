@@ -10,6 +10,9 @@ import { StructuredLogger } from "../logger.js";
 import {
   BudgetExceededError,
   type BudgetCharge,
+  type BudgetSnapshot,
+  type BudgetUsage,
+  type BudgetUsageRecord,
   estimateTokenUsage,
   measureBudgetBytes,
 } from "../infra/budget.js";
@@ -30,7 +33,7 @@ import {
   ChildOrchestrateOutputSchema,
   type ChildOrchestrateInput,
   type ChildOrchestrateSuccessDetails,
-} from "../rpc/childOrchestrateSchemas.js";
+} from "../rpc/schemas.js";
 
 /** Canonical façade identifier exposed in the manifest catalogue. */
 export const CHILD_ORCHESTRATE_TOOL_NAME = "child_orchestrate" as const;
@@ -99,6 +102,194 @@ interface NormalisedCollection {
 interface NormalisedObservation {
   readonly message: NormalisedRuntimeMessage | null;
   readonly error?: string;
+}
+
+/** JSON-friendly serialisation of a {@link BudgetUsage} object. */
+type SerialisedBudgetUsage = Record<keyof BudgetUsage, number>;
+
+/** JSON-friendly representation of a {@link BudgetSnapshot}. */
+interface SerialisedBudgetSnapshot {
+  readonly limits: Readonly<BudgetSnapshot["limits"]>;
+  readonly consumed: SerialisedBudgetUsage;
+  readonly remaining: Record<keyof BudgetUsage, number | null>;
+  readonly exhausted: readonly BudgetSnapshot["exhausted"][number][];
+  readonly createdAt: number;
+  readonly updatedAt: number;
+  readonly lastUsage: (BudgetUsageRecord & { charge: SerialisedBudgetUsage }) | null;
+}
+
+/** Snapshot embedded in headers to expose timeout budgets to children. */
+interface RuntimeTimeoutSnapshot {
+  readonly request_timeout_ms: number | null;
+  readonly ready_timeout_ms: number | null;
+}
+
+/**
+ * Converts a potentially infinite numeric value into a JSON-friendly number.
+ * `Infinity` is mapped to `null` so downstream consumers can distinguish
+ * between bounded and unbounded dimensions without relying on special values.
+ */
+function toJsonNumber(value: number): number | null {
+  return Number.isFinite(value) ? value : null;
+}
+
+/** Serialises a {@link BudgetUsage} into a plain JSON object. */
+function serialiseBudgetUsage(usage: BudgetUsage): SerialisedBudgetUsage {
+  return {
+    timeMs: usage.timeMs,
+    tokens: usage.tokens,
+    toolCalls: usage.toolCalls,
+    bytesIn: usage.bytesIn,
+    bytesOut: usage.bytesOut,
+  };
+}
+
+/** Serialises a {@link BudgetSnapshot} while normalising `Infinity` values. */
+function serialiseBudgetSnapshot(snapshot: BudgetSnapshot): SerialisedBudgetSnapshot {
+  const remaining: Record<keyof BudgetUsage, number | null> = {
+    timeMs: toJsonNumber(snapshot.remaining.timeMs),
+    tokens: toJsonNumber(snapshot.remaining.tokens),
+    toolCalls: toJsonNumber(snapshot.remaining.toolCalls),
+    bytesIn: toJsonNumber(snapshot.remaining.bytesIn),
+    bytesOut: toJsonNumber(snapshot.remaining.bytesOut),
+  };
+
+  return {
+    limits: { ...snapshot.limits },
+    consumed: serialiseBudgetUsage(snapshot.consumed),
+    remaining,
+    exhausted: [...snapshot.exhausted],
+    createdAt: snapshot.createdAt,
+    updatedAt: snapshot.updatedAt,
+    lastUsage: snapshot.lastUsage
+      ? { charge: serialiseBudgetUsage(snapshot.lastUsage.charge), metadata: snapshot.lastUsage.metadata }
+      : null,
+  };
+}
+
+/**
+ * Normalises arbitrary header bags into a lower-case map of strings. Unknown
+ * values are coerced via `String()` so they remain serialisable, while empty
+ * entries are ignored to keep manifests concise.
+ */
+function normaliseRequestHeaders(
+  headers: Record<string, unknown> | undefined | null,
+): Record<string, string> {
+  if (!headers || typeof headers !== "object") {
+    return {};
+  }
+  const normalised: Record<string, string> = {};
+  for (const [key, value] of Object.entries(headers)) {
+    if (!key) {
+      continue;
+    }
+    const lowered = key.toLowerCase();
+    if (typeof value === "string") {
+      const trimmed = value.trim();
+      if (trimmed) {
+        normalised[lowered] = trimmed;
+      }
+      continue;
+    }
+    if (Array.isArray(value)) {
+      const joined = value
+        .map((entry) => (typeof entry === "string" ? entry.trim() : String(entry ?? "")))
+        .filter((entry) => entry.length > 0)
+        .join(", ");
+      if (joined) {
+        normalised[lowered] = joined;
+      }
+      continue;
+    }
+    if (value !== undefined && value !== null) {
+      const serialised = String(value).trim();
+      if (serialised) {
+        normalised[lowered] = serialised;
+      }
+    }
+  }
+  return normalised;
+}
+
+/**
+ * Builds the header snapshot persisted alongside the child manifest. Request
+ * headers coming from HTTP transports are merged with synthetic JSON payloads
+ * that describe timeout and budget envelopes so spawned children can reason
+ * about the constraints applied to their lifecycle.
+ */
+function buildRuntimeHeadersSnapshot(
+  base: Record<string, string>,
+  timeouts: RuntimeTimeoutSnapshot,
+  budgets: { transport?: BudgetSnapshot | null; tool?: BudgetSnapshot | null },
+): Record<string, string> | null {
+  const headers: Record<string, string> = { ...base };
+
+  if (timeouts.request_timeout_ms !== null || timeouts.ready_timeout_ms !== null) {
+    headers["x-runtime-timeouts"] = JSON.stringify(timeouts);
+  }
+
+  const budgetPayload: Record<string, unknown> = {};
+  if (budgets.transport) {
+    budgetPayload.transport = serialiseBudgetSnapshot(budgets.transport);
+  }
+  if (budgets.tool) {
+    budgetPayload.tool = serialiseBudgetSnapshot(budgets.tool);
+  }
+  if (Object.keys(budgetPayload).length > 0) {
+    headers["x-runtime-budgets"] = JSON.stringify(budgetPayload);
+  }
+
+  return Object.keys(headers).length > 0 ? headers : null;
+}
+
+/**
+ * Aggregates the metadata persisted alongside the child manifest. Request
+ * headers originating from transports are merged with synthetic JSON payloads
+ * describing timeout and budget envelopes so spawned children can reason about
+ * the orchestration context without having to query the server again.
+ */
+function buildSpawnMetadata(
+  parsed: ChildOrchestrateInput,
+  rpcContext: ReturnType<typeof getJsonRpcContext>,
+  extra: RequestHandlerExtra<ServerRequest, ServerNotification>,
+): Record<string, unknown> | undefined {
+  const metadata: Record<string, unknown> = parsed.metadata ? structuredClone(parsed.metadata) : {};
+
+  const existingRuntimeHeaders =
+    metadata.runtime_headers && typeof metadata.runtime_headers === "object" && metadata.runtime_headers !== null
+      ? normaliseRequestHeaders(metadata.runtime_headers as Record<string, unknown>)
+      : {};
+
+  const contextHeaders = normaliseRequestHeaders(rpcContext?.headers);
+  const requestInfo = (extra as { requestInfo?: { headers?: Record<string, unknown> } }).requestInfo;
+  const requestHeaders = normaliseRequestHeaders(requestInfo?.headers);
+
+  const mergedHeaders: Record<string, string> = { ...existingRuntimeHeaders, ...contextHeaders, ...requestHeaders };
+
+  const timeouts: RuntimeTimeoutSnapshot = {
+    request_timeout_ms:
+      typeof rpcContext?.timeoutMs === "number" && Number.isFinite(rpcContext.timeoutMs)
+        ? Math.max(0, Math.trunc(rpcContext.timeoutMs))
+        : null,
+    ready_timeout_ms:
+      typeof parsed.ready_timeout_ms === "number" && Number.isFinite(parsed.ready_timeout_ms)
+        ? Math.max(0, Math.trunc(parsed.ready_timeout_ms))
+        : null,
+  };
+
+  const runtimeBudgets = {
+    transport: rpcContext?.requestBudget ? rpcContext.requestBudget.snapshot() : null,
+    tool: rpcContext?.budget ? rpcContext.budget.snapshot() : null,
+  };
+
+  const runtimeHeaders = buildRuntimeHeadersSnapshot(mergedHeaders, timeouts, runtimeBudgets);
+  if (runtimeHeaders) {
+    metadata.runtime_headers = runtimeHeaders;
+  } else if (Object.prototype.hasOwnProperty.call(metadata, "runtime_headers")) {
+    delete metadata.runtime_headers;
+  }
+
+  return Object.keys(metadata).length > 0 ? metadata : undefined;
 }
 
 /**
@@ -234,13 +425,25 @@ function resolveIdempotencyKey(parsed: ChildOrchestrateInput, rpcContextIdempote
   return randomUUID();
 }
 
-function buildSpawnOptions(parsed: ChildOrchestrateInput) {
+function buildSpawnOptions(
+  parsed: ChildOrchestrateInput,
+  metadata: Record<string, unknown> | undefined,
+) {
+  const sandbox = parsed.sandbox
+    ? {
+        profile: parsed.sandbox.profile,
+        allowEnv: parsed.sandbox.allow_env ?? undefined,
+        env: parsed.sandbox.env ?? undefined,
+        inheritDefaultEnv: parsed.sandbox.inherit_default_env ?? undefined,
+      }
+    : null;
+
   return {
     childId: parsed.child_id,
     command: parsed.command,
     args: parsed.args,
     env: parsed.env,
-    metadata: parsed.metadata,
+    ...(metadata ? { metadata } : {}),
     manifestExtras: parsed.manifest_extras,
     limits: parsed.limits ?? null,
     role: parsed.role ?? null,
@@ -248,14 +451,7 @@ function buildSpawnOptions(parsed: ChildOrchestrateInput) {
     waitForReady: parsed.wait_for_ready,
     readyType: parsed.ready_type,
     readyTimeoutMs: parsed.ready_timeout_ms,
-    sandbox: parsed.sandbox
-      ? {
-          profile: parsed.sandbox.profile,
-          allowEnv: parsed.sandbox.allow_env ?? undefined,
-          env: parsed.sandbox.env ?? undefined,
-          inheritDefaultEnv: parsed.sandbox.inherit_default_env ?? undefined,
-        }
-      : null,
+    sandbox,
     spawnRetry: parsed.spawn_retry
       ? {
           attempts: parsed.spawn_retry.attempts,
@@ -327,8 +523,10 @@ export function createChildOrchestrateHandler(
       }
     }
 
+    const spawnMetadata = buildSpawnMetadata(parsed, rpcContext, extra);
+
     const executeOrchestration = async (): Promise<ChildOrchestrateSnapshot> => {
-      const spawnOptions = buildSpawnOptions(parsed);
+      const spawnOptions = buildSpawnOptions(parsed, spawnMetadata);
       const sendResults: NormalisedSendResult[] = [];
       let collected: NormalisedCollection | null = null;
       let observation: NormalisedObservation | null = null;

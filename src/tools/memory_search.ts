@@ -22,7 +22,7 @@ import {
   MemorySearchHitSchema,
   MemorySearchInputSchema,
   MemorySearchOutputSchema,
-} from "../rpc/memoryFacadeSchemas.js";
+} from "../rpc/schemas.js";
 
 /** Canonical façade identifier exposed in the manifest catalogue. */
 export const MEMORY_SEARCH_TOOL_NAME = "memory_search" as const;

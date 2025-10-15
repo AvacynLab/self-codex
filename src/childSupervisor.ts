@@ -35,6 +35,7 @@ import {
   type SupervisionTicket,
   type SupervisorEvent,
 } from "./children/supervisor.js";
+import { registerChildRestart, reportOpenChildRuntimes } from "./infra/tracing.js";
 
 /**
  * Options used to bootstrap a {@link ChildSupervisor} instance.
@@ -632,6 +633,7 @@ export class ChildSupervisor {
     await this.writeLogicalManifest(session);
 
     this.logicalChildren.set(childId, session);
+    this.refreshOpenChildrenGauge();
 
     return { childId, index: indexSnapshot, manifestPath, logPath, workdir, startedAt };
   }
@@ -898,6 +900,7 @@ export class ChildSupervisor {
       this.runtimes.set(childId, runtime);
       this.supervisionKeyByChild.set(childId, supervisionKey);
       this.attachRuntime(childId, runtime);
+      this.refreshOpenChildrenGauge();
 
       const waitForReady = options.waitForReady ?? true;
       if (waitForReady) {
@@ -926,6 +929,7 @@ export class ChildSupervisor {
         this.clearIdleWatchdog(childId);
         this.detachEventBridge(childId);
         this.detachChildLogRecorder(childId);
+        this.refreshOpenChildrenGauge();
 
         try {
           this.index.updateState(childId, "stopping");
@@ -1260,6 +1264,7 @@ export class ChildSupervisor {
     this.clearIdleWatchdog(childId);
     this.detachEventBridge(childId);
     this.detachChildLogRecorder(childId);
+    this.refreshOpenChildrenGauge();
   }
 
   /**
@@ -1297,6 +1302,7 @@ export class ChildSupervisor {
       runtimeTimers.clearInterval(timer);
     }
     this.watchdogs.clear();
+    this.refreshOpenChildrenGauge();
   }
 
   private requireRuntime(childId: string): ChildRuntime {
@@ -1393,6 +1399,7 @@ export class ChildSupervisor {
     const result: ChildShutdownResult = { code: 0, signal: null, forced, durationMs };
     this.exitEvents.set(session.childId, result);
     this.logicalChildren.delete(session.childId);
+    this.refreshOpenChildrenGauge();
     return result;
   }
 
@@ -1407,6 +1414,11 @@ export class ChildSupervisor {
     }
     active += this.logicalChildren.size;
     return active;
+  }
+
+  /** Updates the observability gauge reflecting the number of active children. */
+  private refreshOpenChildrenGauge(): void {
+    reportOpenChildRuntimes(this.countActiveChildren());
   }
 
   /**
@@ -1529,6 +1541,9 @@ export class ChildSupervisor {
    * transitions alongside restart attempts.
    */
   private handleSupervisionEvent(event: SupervisorEvent): void {
+    if (event.type === "child_restart") {
+      registerChildRestart();
+    }
     if (!this.eventBus) {
       return;
     }

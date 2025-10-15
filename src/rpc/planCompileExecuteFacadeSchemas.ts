@@ -122,6 +122,29 @@ export const PlanCompileExecuteErrorDiagnosticSchema = z
   .strict();
 
 /** Base details echoed in every façade response. */
+const PlanCompileExecuteBudgetSummarySchema = z
+  .object({
+    time_ms: z.number().int().nonnegative().optional(),
+    tool_calls: z.number().int().nonnegative().optional(),
+    bytes_out: z.number().int().nonnegative().optional(),
+  })
+  .strict();
+
+const PlanCompileExecuteDryRunToolEstimateSchema = z
+  .object({
+    tool: z.string().min(1),
+    estimated_calls: z.number().int().nonnegative(),
+    budget: PlanCompileExecuteBudgetSummarySchema.optional(),
+  })
+  .strict();
+
+export const PlanCompileExecuteDryRunReportSchema = z
+  .object({
+    estimated_tool_calls: z.array(PlanCompileExecuteDryRunToolEstimateSchema).max(200),
+    cumulative_budget: PlanCompileExecuteBudgetSummarySchema.optional(),
+  })
+  .strict();
+
 export const PlanCompileExecuteOutputDetailsSchema = z
   .object({
     idempotency_key: z.string().min(1),
@@ -142,6 +165,7 @@ export const PlanCompileExecuteOutputDetailsSchema = z
     postconditions: PlanCompileExecuteBindingSummarySchema.optional(),
     budget: PlanCompileExecuteBudgetDiagnosticSchema.optional(),
     error: PlanCompileExecuteErrorDiagnosticSchema.optional(),
+    dry_run_report: PlanCompileExecuteDryRunReportSchema.optional(),
   })
   .strict();
 
@@ -164,6 +188,7 @@ export const PlanCompileExecuteInputSchemaFacade = PlanCompileExecuteInputSchema
 
 export type PlanCompileExecuteFacadeInput = z.infer<typeof PlanCompileExecuteInputSchemaFacade>;
 export type PlanCompileExecuteFacadeOutput = z.infer<typeof PlanCompileExecuteOutputSchema>;
+export type PlanCompileExecuteDryRunReport = z.infer<typeof PlanCompileExecuteDryRunReportSchema>;
 
 /**
  * Compute a deterministic SHA-256 digest from the provided planner payload. The

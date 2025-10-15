@@ -1,7 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 // NOTE: Node built-in modules are imported with the explicit `node:` prefix to guarantee ESM resolution in Node.js.
 
-import type { JsonRpcRouteContext } from "../server.js";
+import type { JsonRpcRouteContext } from "./runtime.js";
 
 /**
  * Lightweight AsyncLocalStorage used to expose the JSON-RPC routing context to

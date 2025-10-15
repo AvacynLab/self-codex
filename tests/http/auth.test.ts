@@ -7,26 +7,31 @@
 import { describe, it } from "mocha";
 import { expect } from "chai";
 
-import { tokenOk } from "../../src/http/auth.js";
+import { checkToken } from "../../src/http/auth.js";
 
 describe("http auth token", () => {
   it("accepts matching tokens", () => {
-    const result = tokenOk("abc123", "abc123");
+    const result = checkToken("abc123", "abc123");
     expect(result, "matching tokens should validate").to.equal(true);
   });
 
   it("rejects missing tokens", () => {
-    const result = tokenOk(undefined, "expected");
+    const result = checkToken(undefined, "expected");
     expect(result, "missing header must fail").to.equal(false);
   });
 
   it("rejects tokens with different length despite common prefix", () => {
-    const result = tokenOk("secret", "secret-extended");
+    const result = checkToken("secret", "secret-extended");
     expect(result, "length mismatch must fail").to.equal(false);
   });
 
   it("rejects tokens with same length but different content", () => {
-    const result = tokenOk("abcdef", "abcdeg");
+    const result = checkToken("abcdef", "abcdeg");
     expect(result, "different payloads must fail").to.equal(false);
+  });
+
+  it("refuses to authenticate when the expected secret is empty", () => {
+    const result = checkToken("whatever", "");
+    expect(result, "empty reference secret must fail").to.equal(false);
   });
 });

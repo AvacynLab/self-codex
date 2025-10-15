@@ -15,7 +15,7 @@ describe("event bus kind normalisation", () => {
     bus.publish({
       cat: "child",
       level: "info",
-      msg: "child_prompt",
+      msg: "child_stdout",
       // Intentionally provide a lower-case kind with surrounding whitespace to
       // verify the normaliser trims and upper-cases the identifier.
       kind: "  prompt  ",
@@ -24,7 +24,7 @@ describe("event bus kind normalisation", () => {
 
     const [event] = bus.list();
     expect(event.kind).to.equal("PROMPT");
-    expect(event.msg).to.equal("child_prompt");
+    expect(event.msg).to.equal("child_stdout");
     expect(event.cat).to.equal("child");
     expect(event.data).to.deep.equal({ id: "child-1" });
   });
@@ -35,7 +35,7 @@ describe("event bus kind normalisation", () => {
     bus.publish({
       cat: "child",
       level: "info",
-      msg: "child_prompt",
+      msg: "child_stdout",
       kind: "   ",
     });
 

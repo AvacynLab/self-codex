@@ -1,4 +1,4 @@
-import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { resolve as resolvePath } from "node:path";
 
 import {
@@ -35,6 +35,14 @@ const DEFAULT_TTL_MS = 600_000;
 const DEFAULT_COMPACTION_THRESHOLD = 2_000;
 /** Number of hexadecimal characters produced by a SHA-256 digest. */
 const SHA256_HEX_LENGTH = 64;
+/** Suffix appended to the JSONL ledger file to create the offset index sidecar. */
+const INDEX_SUFFIX = ".idx";
+
+/** Lightweight description of where a cached entry resides in the ledger. */
+interface OffsetRecord {
+  offset: number;
+  length: number;
+}
 
 interface CacheKeyMetadata {
   method: string;
@@ -45,7 +53,8 @@ interface CacheKeyMetadata {
 
 /**
  * Persistent idempotency store backed by a JSON Lines ledger on disk. The store
- * keeps a compact in-memory index for quick lookups and appends immutable
+ * keeps a compact in-memory index for quick lookups, mirrors the offsets in a
+ * sidecar file so restarts can hydrate efficiently, and appends immutable
  * records for each completed request. Periodic compaction rewrites the ledger
  * with the surviving entries so storage stays bounded.
  */
@@ -54,15 +63,25 @@ export class FileIdempotencyStore implements IdempotencyStore {
   private readonly cacheMetadata = new Map<string, CacheKeyMetadata>();
   private readonly methodKeyIndex = new Map<string, { fingerprint: string; cacheKey: string }>();
   private readonly filePath: string;
+  private readonly indexFilePath: string;
   private readonly clock: () => number;
   private readonly defaultTtlMs: number;
   private readonly compactionThreshold: number;
+  private readonly offsetIndex = new Map<string, OffsetRecord>();
   private writeQueue: Promise<void> = Promise.resolve();
   private compactionPromise: Promise<void> | null = null;
   private entriesSinceCompaction = 0;
+  private ledgerSize = 0;
 
-  private constructor(filePath: string, clock: () => number, defaultTtlMs: number, compactionThreshold: number) {
+  private constructor(
+    filePath: string,
+    indexFilePath: string,
+    clock: () => number,
+    defaultTtlMs: number,
+    compactionThreshold: number,
+  ) {
     this.filePath = filePath;
+    this.indexFilePath = indexFilePath;
     this.clock = clock;
     this.defaultTtlMs = defaultTtlMs > 0 ? defaultTtlMs : DEFAULT_TTL_MS;
     this.compactionThreshold = compactionThreshold >= 0 ? compactionThreshold : DEFAULT_COMPACTION_THRESHOLD;
@@ -78,10 +97,11 @@ export class FileIdempotencyStore implements IdempotencyStore {
     await mkdir(directory, { recursive: true });
     const fileName = options.fileName ?? "index.jsonl";
     const filePath = resolvePath(directory, fileName);
+    const indexFilePath = resolvePath(directory, `${fileName}${INDEX_SUFFIX}`);
     const clock = options.clock ?? (() => Date.now());
     const defaultTtl = normalisePositiveInteger(options.defaultTtlMs, DEFAULT_TTL_MS);
     const compactionThreshold = normaliseThreshold(options.maxEntriesBeforeCompaction);
-    const store = new FileIdempotencyStore(filePath, clock, defaultTtl, compactionThreshold);
+    const store = new FileIdempotencyStore(filePath, indexFilePath, clock, defaultTtl, compactionThreshold);
     await store.loadFromDisk();
     store.entriesSinceCompaction = store.entries.size;
     if (store.entries.size >= store.compactionThreshold && store.compactionThreshold > 0) {
@@ -125,7 +145,13 @@ export class FileIdempotencyStore implements IdempotencyStore {
           exp: expiresAt,
           meta: { fingerprint: metadata.fingerprint },
         };
-        await appendFile(this.filePath, `${JSON.stringify(record)}\n`, "utf8");
+        const serialised = `${JSON.stringify(record)}\n`;
+        const length = Buffer.byteLength(serialised, "utf8");
+        const offset = await this.ensureLedgerSize();
+        await appendFile(this.filePath, serialised, "utf8");
+        this.ledgerSize += length;
+        this.offsetIndex.set(key, { offset, length });
+        await this.writeIndexSnapshotLocked();
       });
     } catch (error) {
       this.entries.delete(key);
@@ -150,25 +176,42 @@ export class FileIdempotencyStore implements IdempotencyStore {
       }
     }
 
-    const lines: string[] = [];
+    const survivors: Array<{ key: string; entry: InMemoryEntry; metadata: CacheKeyMetadata }> = [];
     for (const [key, entry] of this.entries) {
       const metadata = this.cacheMetadata.get(key) ?? extractCacheKeyMetadata(key);
-      const record: PersistedIdempotencyEntry = {
-        key,
-        status: entry.status,
-        body: entry.body,
-        exp: entry.exp,
-        meta: { fingerprint: metadata.fingerprint },
-      };
-      lines.push(JSON.stringify(record));
+      survivors.push({ key, entry, metadata });
     }
 
     await this.enqueue(async () => {
-      if (lines.length === 0) {
+      if (survivors.length === 0) {
+        this.offsetIndex.clear();
+        this.ledgerSize = 0;
         await writeFile(this.filePath, "", "utf8");
+        await writeFile(this.indexFilePath, "", "utf8");
         return;
       }
-      await writeFile(this.filePath, `${lines.join("\n")}\n`, "utf8");
+
+      const ledgerLines: string[] = [];
+      this.offsetIndex.clear();
+      let offset = 0;
+      for (const { key, entry, metadata } of survivors) {
+        const record: PersistedIdempotencyEntry = {
+          key,
+          status: entry.status,
+          body: entry.body,
+          exp: entry.exp,
+          meta: { fingerprint: metadata.fingerprint },
+        };
+        const serialised = `${JSON.stringify(record)}\n`;
+        ledgerLines.push(serialised);
+        const length = Buffer.byteLength(serialised, "utf8");
+        this.offsetIndex.set(key, { offset, length });
+        offset += length;
+      }
+
+      this.ledgerSize = offset;
+      await writeFile(this.filePath, ledgerLines.join(""), "utf8");
+      await this.writeIndexSnapshotLocked();
     });
   }
 
@@ -190,25 +233,33 @@ export class FileIdempotencyStore implements IdempotencyStore {
 
   /** Replays existing JSONL entries into the in-memory index. */
   private async loadFromDisk(): Promise<void> {
-    let contents: string;
+    let buffer: Buffer;
     try {
-      contents = await readFile(this.filePath, "utf8");
+      buffer = await readFile(this.filePath);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") {
         await writeFile(this.filePath, "", "utf8");
+        await writeFile(this.indexFilePath, "", "utf8");
         return;
       }
       throw error;
     }
 
+    this.offsetIndex.clear();
+    this.ledgerSize = buffer.length;
     const now = this.clock();
-    const lines = contents.split(/\r?\n/);
-    for (const raw of lines) {
-      if (!raw || raw.trim().length === 0) {
+    let offset = 0;
+    while (offset < buffer.length) {
+      const newlineIndex = buffer.indexOf(0x0a, offset);
+      const lineEnd = newlineIndex === -1 ? buffer.length : newlineIndex;
+      const lineBuffer = buffer.subarray(offset, lineEnd);
+      const nextOffset = newlineIndex === -1 ? buffer.length : lineEnd + 1;
+      if (lineBuffer.length === 0) {
+        offset = nextOffset;
         continue;
       }
       try {
-        const parsed = JSON.parse(raw) as PersistedIdempotencyEntry;
+        const parsed = JSON.parse(lineBuffer.toString("utf8")) as PersistedIdempotencyEntry;
         if (typeof parsed.key !== "string" || typeof parsed.status !== "number" || typeof parsed.exp !== "number") {
           continue;
         }
@@ -225,6 +276,8 @@ export class FileIdempotencyStore implements IdempotencyStore {
           );
           this.entries.set(parsed.key, { status: parsed.status, body, exp: parsed.exp });
           this.cacheMetadata.set(parsed.key, metadata);
+          const length = lineBuffer.length + (newlineIndex === -1 ? 0 : 1);
+          this.offsetIndex.set(parsed.key, { offset, length });
         } catch (error) {
           if (error instanceof IdempotencyConflictError) {
             // Skip conflicting legacy entries while keeping the oldest payload.
@@ -236,7 +289,10 @@ export class FileIdempotencyStore implements IdempotencyStore {
         // Ignore malformed lines so a single bad entry does not poison the cache.
         continue;
       }
+      offset = nextOffset;
     }
+
+    await this.writeIndexSnapshotLocked();
   }
 
   private normaliseTtl(ttlMs: number): number {
@@ -276,6 +332,7 @@ export class FileIdempotencyStore implements IdempotencyStore {
     if (existing && existing.cacheKey === cacheKey) {
       this.methodKeyIndex.delete(metadata.methodKey);
     }
+    this.offsetIndex.delete(cacheKey);
   }
 
   private maybeScheduleCompaction(): void {
@@ -310,6 +367,51 @@ export class FileIdempotencyStore implements IdempotencyStore {
       throw error;
     });
     return run;
+  }
+
+  /**
+   * Persists the current offset index to the sidecar file, ensuring restarts can
+   * rebuild the in-memory ledger without scanning the entire JSONL payload.
+   * Callers must run this method while holding the write queue lock.
+   */
+  private async writeIndexSnapshotLocked(): Promise<void> {
+    const lines: string[] = [];
+    for (const [key, location] of this.offsetIndex) {
+      if (!this.entries.has(key)) {
+        continue;
+      }
+      lines.push(
+        JSON.stringify({
+          key,
+          offset: location.offset,
+          length: location.length,
+        }),
+      );
+    }
+    const payload = lines.length === 0 ? "" : `${lines.join("\n")}\n`;
+    await writeFile(this.indexFilePath, payload, "utf8");
+  }
+
+  /**
+   * Ensures the cached ledger size is accurate, performing a stat when the
+   * current instance was freshly created. Subsequent appends simply update the
+   * tracked byte count.
+   */
+  private async ensureLedgerSize(): Promise<number> {
+    if (this.ledgerSize > 0) {
+      return this.ledgerSize;
+    }
+    try {
+      const descriptor = await stat(this.filePath);
+      this.ledgerSize = descriptor.size;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        this.ledgerSize = 0;
+      } else {
+        throw error;
+      }
+    }
+    return this.ledgerSize;
   }
 }
 

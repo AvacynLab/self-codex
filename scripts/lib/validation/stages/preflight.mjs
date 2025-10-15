@@ -559,6 +559,107 @@ export async function runPreflightStage(options) {
       },
     });
 
+    // Probe the unauthenticated `/healthz` endpoint to confirm the transport is
+    // reachable before issuing authenticated requests.  The response payload is
+    // recorded verbatim so operators can diagnose degraded latencies.
+    const healthUrl = new URL(baseUrl);
+    healthUrl.pathname = "/healthz";
+    healthUrl.search = "";
+
+    requestsPath = await recorder.appendJsonlArtifact({
+      directory: "inputs",
+      filename: filenames.requests,
+      payload: {
+        timestamp: nowIso(),
+        method: "GET",
+        url: healthUrl.toString(),
+        headers: JSON_HEADERS,
+        expectation: { status: 200 },
+      },
+      phaseId,
+      metadata: { channel: "http_requests" },
+    });
+
+    const healthResponse = await fetchFn(healthUrl, { method: "GET" });
+    const healthBody = await readResponseBody(healthResponse);
+
+    responsesPath = await recorder.appendJsonlArtifact({
+      directory: "outputs",
+      filename: filenames.responses,
+      payload: {
+        timestamp: nowIso(),
+        status: healthResponse.status,
+        ok: healthResponse.ok,
+        headers: headersToObject(healthResponse.headers),
+        body: healthBody.parsed ?? healthBody.raw,
+        expectation: { status: 200 },
+      },
+      phaseId,
+      metadata: { channel: "http_responses" },
+    });
+
+    await recorder.appendPhaseEvent({
+      phaseId,
+      event: {
+        kind: "http_probe",
+        probe: "healthz",
+        status: healthResponse.status,
+        ok: healthResponse.status === 200,
+      },
+    });
+
+    // Metrics require bearer authentication.  We reuse the generated token to
+    // validate that the guard accepts well-formed credentials while capturing
+    // the rendered Prometheus snapshot for observability triage.
+    const metricsUrl = new URL(baseUrl);
+    metricsUrl.pathname = "/metrics";
+    metricsUrl.search = "";
+
+    requestsPath = await recorder.appendJsonlArtifact({
+      directory: "inputs",
+      filename: filenames.requests,
+      payload: {
+        timestamp: nowIso(),
+        method: "GET",
+        url: metricsUrl.toString(),
+        headers: { authorization: `Bearer ${token}`, accept: "text/plain" },
+        expectation: { status: 200 },
+      },
+      phaseId,
+      metadata: { channel: "http_requests" },
+    });
+
+    const metricsResponse = await fetchFn(metricsUrl, {
+      method: "GET",
+      headers: { authorization: `Bearer ${token}`, accept: "text/plain" },
+    });
+    const metricsBody = await metricsResponse.text();
+
+    responsesPath = await recorder.appendJsonlArtifact({
+      directory: "outputs",
+      filename: filenames.responses,
+      payload: {
+        timestamp: nowIso(),
+        status: metricsResponse.status,
+        ok: metricsResponse.ok,
+        headers: headersToObject(metricsResponse.headers),
+        body: metricsBody,
+        expectation: { status: 200 },
+      },
+      phaseId,
+      metadata: { channel: "http_responses" },
+    });
+
+    await recorder.appendPhaseEvent({
+      phaseId,
+      event: {
+        kind: "http_probe",
+        probe: "metrics",
+        status: metricsResponse.status,
+        ok: metricsResponse.status === 200,
+      },
+    });
+
     const summary = {
       target: {
         host,
@@ -578,6 +679,16 @@ export async function runPreflightStage(options) {
           status: authorisedResponse.status,
           ok: authorisedResponse.status === 200,
         },
+        healthz: {
+          expected: 200,
+          status: healthResponse.status,
+          ok: healthResponse.status === 200,
+        },
+        metrics: {
+          expected: 200,
+          status: metricsResponse.status,
+          ok: metricsResponse.status === 200,
+        },
       },
       token: {
         source: tokenSource,
@@ -586,6 +697,8 @@ export async function runPreflightStage(options) {
       events: {
         baseline: { count: unauthorisedResponse.status === 401 ? 1 : 0 },
         followUp: { count: authorisedResponse.status === 200 ? 1 : 0 },
+        healthz: { count: healthResponse.status === 200 ? 1 : 0 },
+        metrics: { count: metricsResponse.status === 200 ? 1 : 0 },
       },
       artifacts: {
         contextPath,

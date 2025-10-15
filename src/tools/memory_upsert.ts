@@ -23,7 +23,7 @@ import type {
   ToolManifestDraft,
   ToolRegistry,
 } from "../mcp/registry.js";
-import { MemoryUpsertInputSchema, MemoryUpsertOutputSchema } from "../rpc/memoryFacadeSchemas.js";
+import { MemoryUpsertInputSchema, MemoryUpsertOutputSchema } from "../rpc/schemas.js";
 
 /** Canonical façade identifier exposed to the MCP catalogue. */
 export const MEMORY_UPSERT_TOOL_NAME = "memory_upsert" as const;

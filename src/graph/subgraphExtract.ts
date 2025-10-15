@@ -4,6 +4,7 @@ import path from "node:path";
 // NOTE: Node built-in modules are imported with the explicit `node:` prefix to guarantee ESM resolution in Node.js.
 
 import { ensureDirectory, resolveWithin } from "../paths.js";
+import { safePath } from "../gateways/fsArtifacts.js";
 import type { GraphDescriptorPayload } from "../tools/graphTools.js";
 import {
   SUBGRAPH_REGISTRY_KEY,
@@ -121,7 +122,9 @@ export async function extractSubgraphToFile(
   }
   const nextVersion = maxVersion + 1;
   const fileName = `${safeRef}.v${String(nextVersion).padStart(3, "0")}.json`;
-  const absolutePath = resolveWithin(targetDirectory, fileName);
+  // Guard against accidental traversal by forcing the descriptor path through
+  // the shared {@link safePath} sanitiser.
+  const absolutePath = safePath(targetDirectory, fileName);
 
   const extractedAt = options.now ? options.now() : Date.now();
   const payload = {

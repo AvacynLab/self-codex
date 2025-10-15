@@ -131,9 +131,14 @@ export const MemorySearchOutputSchema = z
   })
   .strict();
 
+/** Convenience aliases exposing the validated façade inputs and outputs. */
+export type MemoryUpsertInput = z.infer<typeof MemoryUpsertInputSchema>;
+export type MemoryUpsertOutput = z.infer<typeof MemoryUpsertOutputSchema>;
 export type MemoryUpsertSuccessDetails = z.infer<typeof MemoryUpsertSuccessDetailsSchema>;
 export type MemoryUpsertBudgetDetails = z.infer<typeof MemoryUpsertBudgetDetailsSchema>;
 export type MemoryUpsertErrorDetails = z.infer<typeof MemoryUpsertErrorDetailsSchema>;
+export type MemorySearchInput = z.infer<typeof MemorySearchInputSchema>;
+export type MemorySearchOutput = z.infer<typeof MemorySearchOutputSchema>;
 export type MemorySearchSuccessDetails = z.infer<typeof MemorySearchSuccessDetailsSchema>;
 export type MemorySearchBudgetDetails = z.infer<typeof MemorySearchBudgetDetailsSchema>;
 export type MemorySearchErrorDetails = z.infer<typeof MemorySearchErrorDetailsSchema>;

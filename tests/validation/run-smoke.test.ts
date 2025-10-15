@@ -1,11 +1,14 @@
 import { after, describe, it } from "mocha";
 import { expect } from "chai";
 import { randomUUID } from "node:crypto";
+import { execFile } from "node:child_process";
 import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
+import { promisify } from "node:util";
 
-import { run as runSmokeValidation } from "../../scripts/validation/run-smoke.mjs";
+const execFileAsync = promisify(execFile);
 
 /**
  * Integration coverage ensuring the smoke validation harness exercises the full
@@ -32,17 +35,58 @@ describe("validation smoke script", function () {
     temporaryRoots.add(runRoot);
 
     const runId = `validation_${randomUUID()}`;
-    const result = await runSmokeValidation({
-      runId,
-      runRoot,
-      timestamp: "2025-01-01T00:00:00.000Z",
+    const smokeModulePath = join(process.cwd(), "scripts", "validation", "run-smoke.mjs");
+    const inlineRunner = `
+      import { writeFile } from 'node:fs/promises';
+      const module = await import(process.env.__SMOKE_RUN_MODULE__);
+      const options = JSON.parse(process.env.__SMOKE_RUN_OPTIONS__ ?? "{}");
+      try {
+        const result = await module.run(options);
+        await writeFile(process.env.__SMOKE_RESULT_PATH__, JSON.stringify(result), 'utf8');
+      } catch (error) {
+        console.error(error instanceof Error ? error.stack ?? error.message : String(error));
+        process.exit(1);
+      }
+    `;
+
+    const resultPath = join(runRoot, "result.json");
+
+    await execFileAsync("node", ["--input-type=module", "-e", inlineRunner.trim()], {
+      env: {
+        ...process.env,
+        __SMOKE_RUN_MODULE__: pathToFileURL(smokeModulePath).href,
+        __SMOKE_RUN_OPTIONS__: JSON.stringify({
+          runId,
+          runRoot,
+          timestamp: "2025-01-01T00:00:00.000Z",
+        }),
+        __SMOKE_RESULT_PATH__: resultPath,
+        MCP_HTTP_PORT: "0",
+        MCP_LOG_FILE: join(runRoot, "smoke.log"),
+      },
+      encoding: "utf8",
+      maxBuffer: 10 * 1024 * 1024,
     });
+
+    const rawResult = await readFile(resultPath, "utf8");
+    const result = JSON.parse(rawResult);
 
     expect(result.runId).to.equal(runId);
     expect(result.summaryPath).to.be.a("string");
+    expect(result.stages, "expected at least one validation stage").to.be.an("array").that.is.not.empty;
+
+    const preflightStage = result.stages.find((stage) => stage.phaseId === "phase-00-preflight");
+    expect(preflightStage, "expected preflight stage summary").to.exist;
+    expect(preflightStage?.summary?.checks?.healthz?.ok).to.equal(true);
+    expect(preflightStage?.summary?.checks?.metrics?.ok).to.equal(true);
+    expect(preflightStage?.summary?.checks?.authorised?.status).to.equal(200);
+    expect(preflightStage?.summary?.checks?.unauthorised?.status).to.equal(401);
 
     const summaryContents = await readFile(result.summaryPath, "utf8");
     expect(summaryContents).to.contain("| Operation | Duration (ms) | Status | Trace ID |");
+    expect(summaryContents).to.include("HTTP Preflight");
+    expect(summaryContents).to.include("/healthz status: 200");
+    expect(summaryContents).to.include("/metrics status: 200");
     expect(summaryContents).to.include("mcp_info");
     expect(summaryContents).to.include("child_spawn_codex");
     expect(summaryContents).to.match(/p99:/);

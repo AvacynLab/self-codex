@@ -6,18 +6,22 @@ import process from "node:process";
 // NOTE: Node built-in modules are imported with the explicit `node:` prefix to guarantee ESM resolution in Node.js.
 
 import { StructuredLogger } from "./logger.js";
-import { handleJsonRpc, maybeRecordIdempotentWalEntry, type JsonRpcRequest, type JsonRpcRouteContext } from "./server.js";
+import { handleJsonRpc, maybeRecordIdempotentWalEntry, type JsonRpcRequest } from "./server.js";
+import type { JsonRpcRouteContext } from "./infra/runtime.js";
 import { HttpRuntimeOptions, createHttpSessionId } from "./serverOptions.js";
 import { applySecurityHeaders, ensureRequestId } from "./http/headers.js";
 import { rateLimitOk } from "./http/rateLimit.js";
 import { readJsonBody } from "./http/body.js";
-import { tokenOk } from "./http/auth.js";
+import { checkToken } from "./http/auth.js";
+import type { HttpReadinessReport } from "./http/readiness.js";
+export type { HttpReadinessReport } from "./http/readiness.js";
 import { buildIdempotencyCacheKey } from "./infra/idempotency.js";
 import { IdempotencyConflictError, type IdempotencyStore } from "./infra/idempotencyStore.js";
 import {
   runWithRpcTrace,
   annotateTraceContext,
   registerOutboundBytes,
+  registerIdempotencyConflict,
   getActiveTraceContext,
   renderMetricsSnapshot,
 } from "./infra/tracing.js";
@@ -147,15 +151,6 @@ export interface HttpServerExtras {
 }
 
 /** Details returned by the readiness probe so operators can diagnose failures. */
-export interface HttpReadinessReport {
-  ok: boolean;
-  components: {
-    graphForge: { ok: boolean; message?: string };
-    idempotency: { ok: boolean; message?: string };
-    eventQueue: { ok: boolean; usage: number; capacity: number };
-  };
-}
-
 /** Hook implemented by the orchestrator to evaluate readiness conditions. */
 export interface HttpReadinessExtras {
   check: () => Promise<HttpReadinessReport>;
@@ -428,7 +423,7 @@ function enforceBearerToken(
   const header = req.headers["authorization"];
   const provided = Array.isArray(header) ? header[0] : header;
   const token = typeof provided === "string" ? provided.replace(/^Bearer\s+/, "") : undefined;
-  const valid = typeof token === "string" && tokenOk(token, requiredToken);
+  const valid = typeof token === "string" && checkToken(token, requiredToken);
 
   if (valid) {
     return true;
@@ -436,9 +431,9 @@ function enforceBearerToken(
 
   logger.warn("http_auth_rejected", { reason: "missing_or_invalid_token", request_id: requestId });
   void respondWithJsonRpcError(res, 401, "AUTH_REQUIRED", "Authentication required", logger, requestId, meta, {
-    hint: "Missing or invalid bearer token",
     // Keep the legacy E-MCP-AUTH marker in metadata so downstream scrapers and
-    // assertions that rely on the historical flag remain compatible.
+    // assertions that rely on the historical flag remain compatible while the
+    // client-facing response stays intentionally vague.
     meta: { code: "E-MCP-AUTH" },
   });
   return false;
@@ -556,6 +551,7 @@ async function tryHandleJsonRpc(
           requestId: jsonrpcId,
           hint: "Idempotency key was reused with different parameters.",
         });
+        registerIdempotencyConflict();
         const payload = buildJsonRpcErrorResponse(jsonrpcId, conflict);
         const bytesOut = await sendJson(res, 409, payload, false, logger, requestId, undefined, idempotency);
         logJsonRpcOutcome(logger, "warn", {

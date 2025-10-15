@@ -9,6 +9,7 @@ import { describe, it } from "mocha";
 import { expect } from "chai";
 
 import { EventBus } from "../src/events/bus.js";
+import type { EventMessage } from "../src/events/types.js";
 import { ResourceRegistry } from "../src/resources/registry.js";
 
 /** Utility building a deterministic clock for reproducible timestamps. */
@@ -28,13 +29,15 @@ describe("stream pagination backpressure", () => {
     // Publish events in bursts that never exceed the configured limit so a slow
     // consumer can poll repeatedly without losing entries between iterations.
     const bursts = [3, 2, 3, 1];
+    const tokens: EventMessage[] = ["plan", "status", "aggregate", "info", "scheduler"];
     for (const [burstIndex, burstSize] of bursts.entries()) {
       for (let offset = 0; offset < burstSize; offset += 1) {
         published += 1;
+        const token = tokens[published % tokens.length]!;
         bus.publish({
           cat: burstIndex % 2 === 0 ? "graph" : "child",
           runId: `run-${burstIndex + 1}`,
-          msg: `event-${published}`,
+          msg: token,
         });
       }
 
@@ -55,7 +58,7 @@ describe("stream pagination backpressure", () => {
     const keepAlive = bus.list({ afterSeq: cursor, limit });
     expect(keepAlive).to.have.length(0);
 
-    const resumed = bus.publish({ cat: "graph", runId: "run-keepalive", msg: "resume" });
+    const resumed = bus.publish({ cat: "graph", runId: "run-keepalive", msg: "plan" });
     const replay = bus.list({ afterSeq: cursor, limit });
     expect(replay.map((event) => event.seq)).to.deep.equal([resumed.seq]);
   });
@@ -113,7 +116,7 @@ describe("stream pagination backpressure", () => {
       kind: "plan",
       level: "info",
       runId,
-      msg: "resume",
+      msg: "status",
       component: "graph",
       stage: "plan",
       elapsedMs: null,

@@ -1,11 +1,17 @@
 /**
- * Readiness endpoint regression tests. They verify authentication requirements
- * and the structured payload returned by the orchestrator-provided probe.
+ * Readiness endpoint regression tests. Besides verifying the authentication and
+ * plumbing semantics, these checks exercise the concrete helper that probes the
+ * underlying dependencies so the `/readyz` payload remains actionable for
+ * operators.
  */
-import { describe, it, beforeEach, afterEach } from "mocha";
+import { beforeEach, afterEach, describe, it } from "mocha";
 import { expect } from "chai";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 
 import { __httpServerInternals, type HttpReadinessReport } from "../../src/httpServer.js";
+import { evaluateHttpReadiness } from "../../src/http/readiness.js";
 import { resetRateLimitBuckets } from "../../src/http/rateLimit.js";
 import { MemoryHttpResponse, createHttpRequest } from "../helpers/http.js";
 
@@ -26,7 +32,7 @@ describe("http readyz", () => {
     process.env.MCP_HTTP_TOKEN = "unit-test-token";
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     if (originalToken === undefined) {
       delete process.env.MCP_HTTP_TOKEN;
     } else {
@@ -41,8 +47,9 @@ describe("http readyz", () => {
           ok: true,
           components: {
             graphForge: { ok: true, message: "loaded" },
+            runsDirectory: { ok: true, path: "/tmp/runs", message: "read/write verified" },
             idempotency: { ok: true, message: "store" },
-            eventQueue: { ok: true, usage: 5, capacity: 5000 },
+            eventQueue: { ok: true, usage: 5, capacity: 5_000, message: "queue within capacity" },
           },
         };
       },
@@ -60,6 +67,7 @@ describe("http readyz", () => {
     const payload = JSON.parse(response.body) as HttpReadinessReport;
     expect(payload.ok).to.equal(true);
     expect(payload.components.eventQueue.usage).to.equal(5);
+    expect(payload.components.runsDirectory.ok).to.equal(true);
   }).timeout(10_000);
 
   it("requires authentication before invoking the readiness probe", async () => {
@@ -68,6 +76,7 @@ describe("http readyz", () => {
         throw new Error("should not be reached");
       },
     };
+
     const request = createHttpRequest("GET", "/readyz");
     (request as any).socket = { remoteAddress: "127.0.0.1" };
     const response = new MemoryHttpResponse();
@@ -78,19 +87,58 @@ describe("http readyz", () => {
     expect(() => JSON.parse(response.body)).to.not.throw();
   }).timeout(10_000);
 
-  it("propagates readiness failures", async () => {
+  it("reports a degraded state when the runs directory is not writable", async () => {
+    const tempRoot = await mkdtemp(join(tmpdir(), "readyz-"));
+    const fileRoot = join(tempRoot, "file-root");
+    await writeFile(fileRoot, "not-a-directory");
+
+    const readiness: { check: () => Promise<HttpReadinessReport> } = {
+      check: () =>
+        evaluateHttpReadiness({
+          loadGraphForge: async () => {},
+          runsRoot: fileRoot,
+          idempotencyStore: { checkHealth: async () => {} },
+          eventStore: {
+            getEventCount: () => 0,
+            getMaxHistory: () => 100,
+          },
+        }),
+    };
+
+    const request = createHttpRequest("GET", "/readyz", {
+      authorization: "Bearer unit-test-token",
+    });
+    (request as any).socket = { remoteAddress: "127.0.0.1" };
+    const response = new MemoryHttpResponse();
+
+    try {
+      await __httpServerInternals.handleReadyCheck(request as any, response as any, createLogger() as any, "req-ready", readiness);
+
+      expect(response.statusCode).to.equal(503);
+      const payload = JSON.parse(response.body) as HttpReadinessReport;
+      expect(payload.ok).to.equal(false);
+      expect(payload.components.runsDirectory.ok).to.equal(false);
+      expect(payload.components.runsDirectory.message).to.be.a("string");
+    } finally {
+      await rm(tempRoot, { recursive: true, force: true });
+    }
+  }).timeout(10_000);
+
+  it("propagates readiness failures for other components", async () => {
     const readiness: { check: () => Promise<HttpReadinessReport> } = {
       async check() {
         return {
           ok: false,
           components: {
             graphForge: { ok: false, message: "dsl not compiled" },
+            runsDirectory: { ok: true, path: "/tmp/runs", message: "read/write verified" },
             idempotency: { ok: true, message: "store" },
-            eventQueue: { ok: false, usage: 4999, capacity: 5000 },
+            eventQueue: { ok: false, usage: 4_999, capacity: 5_000, message: "event history near capacity" },
           },
         };
       },
     };
+
     const request = createHttpRequest("GET", "/readyz", {
       authorization: "Bearer unit-test-token",
     });

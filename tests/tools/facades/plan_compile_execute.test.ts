@@ -165,6 +165,15 @@ describe("plan_compile_execute facade", () => {
     expect(structured.details.plan_hash).to.match(/^[a-f0-9]{64}$/);
     expect(structured.details.idempotent).to.equal(false);
 
+    const dryRunReport = structured.details.dry_run_report;
+    expect(dryRunReport).to.not.equal(undefined);
+    expect(dryRunReport.estimated_tool_calls).to.deep.equal([
+      { tool: "bb_set", estimated_calls: 1 },
+      { tool: "noop", estimated_calls: 1 },
+      { tool: "wait", estimated_calls: 1 },
+    ]);
+    expect(dryRunReport.cumulative_budget).to.deep.equal({ tool_calls: 3 });
+
     const completionLog = entries.find((entry) => entry.message === "plan_compile_execute_completed");
     expect(completionLog?.request_id).to.equal("req-plan-success");
     expect(completionLog?.payload?.plan_id).to.equal("demo-plan");

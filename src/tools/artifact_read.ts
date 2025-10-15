@@ -21,7 +21,12 @@ import {
   ArtifactReadInputSchema,
   ArtifactReadOutputSchema,
   type ArtifactReadOutput,
-} from "../rpc/artifactSchemas.js";
+} from "../rpc/schemas.js";
+import {
+  buildPathLogFields,
+  redactPathForLogs,
+  sanitizeArtifactPath,
+} from "./artifact_paths.js";
 
 /** Canonical name advertised by the façade manifest. */
 export const ARTIFACT_READ_TOOL_NAME = "artifact_read" as const;
@@ -142,6 +147,30 @@ function buildIoErrorResult(
   });
 }
 
+function buildInvalidPathResult(
+  idempotencyKey: string,
+  childId: string,
+  path: string,
+  metadata: Record<string, unknown> | undefined,
+): ArtifactReadOutput {
+  const diagnostic = ArtifactOperationErrorSchema.parse({
+    reason: "io_error",
+    message: "chemin d'artefact invalide",
+    retryable: false,
+  });
+  return ArtifactReadOutputSchema.parse({
+    ok: false,
+    summary: "chemin d'artefact invalide",
+    details: {
+      idempotency_key: idempotencyKey,
+      child_id: childId,
+      path,
+      error: diagnostic,
+      ...(metadata ? { metadata } : {}),
+    },
+  });
+}
+
 /**
  * Factory returning the MCP handler that powers the `artifact_read` façade.
  */
@@ -161,6 +190,28 @@ export function createArtifactReadHandler(context: ArtifactReadToolContext): Too
     const format = parsed.format ?? "text";
     const encoding = (parsed.encoding ?? "utf8") as BufferEncoding;
 
+    let sanitizedPath;
+    try {
+      sanitizedPath = sanitizeArtifactPath(context.childrenRoot, parsed.child_id, parsed.path);
+    } catch (error) {
+      const redacted = redactPathForLogs(parsed.path);
+      context.logger.warn("artifact_read_invalid_path", {
+        request_id: rpcContext?.requestId ?? extra.requestId ?? null,
+        trace_id: traceContext?.traceId ?? null,
+        child_id: parsed.child_id,
+        path_hash: redacted,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      const degraded = buildInvalidPathResult(idempotencyKey, parsed.child_id, parsed.path, metadata);
+      return {
+        isError: true,
+        content: [{ type: "text", text: asJsonPayload(degraded) }],
+        structuredContent: degraded,
+      };
+    }
+
+    const pathLogFields = buildPathLogFields(sanitizedPath);
+
     let toolCallCharge: BudgetCharge | null = null;
     if (rpcContext?.budget) {
       try {
@@ -174,13 +225,19 @@ export function createArtifactReadHandler(context: ArtifactReadToolContext): Too
             request_id: rpcContext.requestId ?? extra.requestId ?? null,
             trace_id: traceContext?.traceId ?? null,
             child_id: parsed.child_id,
-            path: parsed.path,
+            ...pathLogFields,
             dimension: error.dimension,
             attempted: error.attempted,
             remaining: error.remaining,
             limit: error.limit,
           });
-          const degraded = buildBudgetExceededResult(idempotencyKey, parsed.child_id, parsed.path, metadata, error);
+          const degraded = buildBudgetExceededResult(
+            idempotencyKey,
+            parsed.child_id,
+            sanitizedPath.relative,
+            metadata,
+            error,
+          );
           return {
             isError: true,
             content: [{ type: "text", text: asJsonPayload(degraded) }],
@@ -196,7 +253,7 @@ export function createArtifactReadHandler(context: ArtifactReadToolContext): Too
       const value = await readArtifact({
         childrenRoot: context.childrenRoot,
         childId: parsed.child_id,
-        relativePath: parsed.path,
+        relativePath: sanitizedPath.relative,
       });
       buffer = Buffer.isBuffer(value) ? value : Buffer.from(value);
     } catch (error) {
@@ -208,9 +265,14 @@ export function createArtifactReadHandler(context: ArtifactReadToolContext): Too
           request_id: rpcContext?.requestId ?? extra.requestId ?? null,
           trace_id: traceContext?.traceId ?? null,
           child_id: parsed.child_id,
-          path: parsed.path,
+          ...pathLogFields,
         });
-        const degraded = buildNotFoundResult(idempotencyKey, parsed.child_id, parsed.path, metadata);
+        const degraded = buildNotFoundResult(
+          idempotencyKey,
+          parsed.child_id,
+          sanitizedPath.relative,
+          metadata,
+        );
         return {
           isError: true,
           content: [{ type: "text", text: asJsonPayload(degraded) }],
@@ -224,10 +286,16 @@ export function createArtifactReadHandler(context: ArtifactReadToolContext): Too
         request_id: rpcContext?.requestId ?? extra.requestId ?? null,
         trace_id: traceContext?.traceId ?? null,
         child_id: parsed.child_id,
-        path: parsed.path,
+        ...pathLogFields,
         error: error instanceof Error ? error.message : String(error),
       });
-      const degraded = buildIoErrorResult(idempotencyKey, parsed.child_id, parsed.path, metadata, error);
+      const degraded = buildIoErrorResult(
+        idempotencyKey,
+        parsed.child_id,
+        sanitizedPath.relative,
+        metadata,
+        error,
+      );
       return {
         isError: true,
         content: [{ type: "text", text: asJsonPayload(degraded) }],
@@ -254,13 +322,19 @@ export function createArtifactReadHandler(context: ArtifactReadToolContext): Too
             request_id: rpcContext?.requestId ?? extra.requestId ?? null,
             trace_id: traceContext?.traceId ?? null,
             child_id: parsed.child_id,
-            path: parsed.path,
+            ...pathLogFields,
             dimension: error.dimension,
             attempted: error.attempted,
             remaining: error.remaining,
             limit: error.limit,
           });
-          const degraded = buildBudgetExceededResult(idempotencyKey, parsed.child_id, parsed.path, metadata, error);
+          const degraded = buildBudgetExceededResult(
+            idempotencyKey,
+            parsed.child_id,
+            sanitizedPath.relative,
+            metadata,
+            error,
+          );
           return {
             isError: true,
             content: [{ type: "text", text: asJsonPayload(degraded) }],
@@ -285,7 +359,7 @@ export function createArtifactReadHandler(context: ArtifactReadToolContext): Too
       details: {
         idempotency_key: idempotencyKey,
         child_id: parsed.child_id,
-        path: parsed.path,
+        path: sanitizedPath.relative,
         format,
         bytes_returned: bytesReturned,
         size,
@@ -300,7 +374,7 @@ export function createArtifactReadHandler(context: ArtifactReadToolContext): Too
       request_id: rpcContext?.requestId ?? extra.requestId ?? null,
       trace_id: traceContext?.traceId ?? null,
       child_id: parsed.child_id,
-      path: parsed.path,
+      ...pathLogFields,
       format,
       bytes_returned: bytesReturned,
       truncated,

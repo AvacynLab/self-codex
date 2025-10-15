@@ -12,6 +12,7 @@ import type {
   ResourceWatchRunFilters,
 } from "./registry.js";
 import { serialiseForSse } from "../events/sse.js";
+import { recordSseDrop } from "../infra/tracing.js";
 import type { StructuredLogger } from "../logger.js";
 
 /**
@@ -331,6 +332,12 @@ export class ResourceWatchSseBuffer {
   private readonly emitTimeoutMs: number;
   private readonly options: ResourceWatchSseBufferOptions;
   private readonly queue: string[] = [];
+  /**
+   * Monotonic counter tracking the number of frames discarded for this client.
+   * The metric complements the global observability signal and is primarily
+   * used by tests to ensure drops are recorded whenever backpressure triggers.
+   */
+  private droppedFrames = 0;
 
   constructor(options: ResourceWatchSseBufferOptions) {
     this.options = options;
@@ -341,6 +348,11 @@ export class ResourceWatchSseBuffer {
   /** Number of SSE frames currently stored in the buffer. */
   get size(): number {
     return this.queue.length;
+  }
+
+  /** Total number of frames dropped for this buffer instance. */
+  get droppedFrameCount(): number {
+    return this.droppedFrames;
   }
 
   /** Clears all buffered frames without notifying downstream consumers. */
@@ -361,6 +373,8 @@ export class ResourceWatchSseBuffer {
     if (this.queue.length > this.maxBufferedMessages) {
       const overflow = this.queue.length - this.maxBufferedMessages;
       this.queue.splice(0, overflow);
+      recordSseDrop(overflow);
+      this.droppedFrames += overflow;
       this.options.logger.warn("resources_sse_buffer_overflow", {
         client_id: this.options.clientId,
         dropped: overflow,
@@ -387,6 +401,8 @@ export class ResourceWatchSseBuffer {
           ]);
 
           if (winner === "timeout") {
+            recordSseDrop();
+            this.droppedFrames += 1;
             this.options.logger.warn("resources_sse_emit_timeout", {
               client_id: this.options.clientId,
               timeout_ms: timeout,
@@ -401,6 +417,8 @@ export class ResourceWatchSseBuffer {
             continue;
           }
         } catch (error) {
+          recordSseDrop();
+          this.droppedFrames += 1;
           this.options.logger.warn("resources_sse_emit_failed", {
             client_id: this.options.clientId,
             error: error instanceof Error ? error.message : String(error),
@@ -411,6 +429,8 @@ export class ResourceWatchSseBuffer {
         try {
           await writeResult;
         } catch (error) {
+          recordSseDrop();
+          this.droppedFrames += 1;
           this.options.logger.warn("resources_sse_emit_failed", {
             client_id: this.options.clientId,
             error: error instanceof Error ? error.message : String(error),

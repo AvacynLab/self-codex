@@ -3,6 +3,7 @@ import path from "node:path";
 import process from "node:process";
 
 import { sanitizeFilename } from "../paths.js";
+import { safePath } from "../gateways/fsArtifacts.js";
 
 /** Metadata associated with a persisted snapshot on disk. */
 export interface SnapshotMetadata {
@@ -47,8 +48,9 @@ export interface SnapshotQueryOptions {
 /**
  * Persists the provided state into the snapshot store. The artefact is encoded
  * as JSON and always terminated by a newline so log processing tools can stream
- * it safely. Callers receive a structured descriptor that can be fed back into
- * {@link snapshotLoad}.
+ * it safely. All filesystem paths are routed through {@link safePath} to guard
+ * against traversal attacks before callers receive the structured descriptor
+ * that can be fed back into {@link snapshotLoad}.
  */
 export async function snapshotTake<TState>(
   namespace: string,
@@ -62,12 +64,12 @@ export async function snapshotTake<TState>(
 
   const timestamp = (options.clock?.() ?? new Date()).toISOString();
   const runsRoot = resolveRunsRoot(options.runsRoot);
-  const directory = path.join(runsRoot, "snapshots", sanitizeFilename(trimmedNamespace));
+  const directory = safePath(runsRoot, path.join("snapshots", sanitizeFilename(trimmedNamespace)));
   await mkdir(directory, { recursive: true });
 
   const labelSegment = options.label ? `-${sanitizeFilename(options.label)}` : "";
   const id = `${formatTimestampForId(timestamp)}${labelSegment}`;
-  const filePath = path.join(directory, `${id}.json`);
+  const filePath = safePath(directory, `${id}.json`);
   const metadata = options.metadata ?? {};
 
   const record: SnapshotRecord<TState> = {
@@ -97,7 +99,8 @@ export async function snapshotTake<TState>(
 /**
  * Lists the snapshots associated with the provided namespace. The result is
  * ordered from newest to oldest so callers can pick the latest state by reading
- * the first entry only.
+ * the first entry only. Each path is resolved through {@link safePath} to keep
+ * traversal attempts inside the configured runs root.
  */
 export async function snapshotList(
   namespace: string,
@@ -109,7 +112,7 @@ export async function snapshotList(
   }
 
   const runsRoot = resolveRunsRoot(options.runsRoot);
-  const directory = path.join(runsRoot, "snapshots", sanitizeFilename(trimmedNamespace));
+  const directory = safePath(runsRoot, path.join("snapshots", sanitizeFilename(trimmedNamespace)));
 
   let files: string[];
   try {
@@ -128,7 +131,7 @@ export async function snapshotList(
       continue;
     }
     const id = file.slice(0, -5);
-    const absolutePath = path.join(directory, file);
+    const absolutePath = safePath(directory, file);
     try {
       const raw = await readFile(absolutePath, { encoding: "utf8" });
       const parsed = JSON.parse(raw) as {
@@ -157,7 +160,11 @@ export async function snapshotList(
   return metadata.sort((left, right) => right.createdAt.localeCompare(left.createdAt));
 }
 
-/** Loads and returns the full snapshot record for the provided identifier. */
+/**
+ * Loads and returns the full snapshot record for the provided identifier while
+ * ensuring the caller-provided id cannot escape the runs root thanks to
+ * {@link safePath}.
+ */
 export async function snapshotLoad<TState>(
   namespace: string,
   id: string,
@@ -174,8 +181,8 @@ export async function snapshotLoad<TState>(
   }
 
   const runsRoot = resolveRunsRoot(options.runsRoot);
-  const directory = path.join(runsRoot, "snapshots", sanitizeFilename(trimmedNamespace));
-  const filePath = path.join(directory, `${sanitizeFilename(trimmedId)}.json`);
+  const directory = safePath(runsRoot, path.join("snapshots", sanitizeFilename(trimmedNamespace)));
+  const filePath = safePath(directory, `${sanitizeFilename(trimmedId)}.json`);
 
   let raw: string;
   try {

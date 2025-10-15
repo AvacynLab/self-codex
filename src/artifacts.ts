@@ -5,12 +5,8 @@ import path from 'node:path';
 import type { BufferEncoding, ErrnoException } from './nodePrimitives.js';
 // NOTE: Node built-in modules are imported with the explicit `node:` prefix to guarantee ESM resolution in Node.js.
 
-import {
-  childWorkspacePath,
-  ensureDirectory,
-  ensureParentDirectory,
-  resolveWithin,
-} from './paths.js';
+import { ensureDirectory, ensureParentDirectory, resolveWithin } from './paths.js';
+import { safePath } from './gateways/fsArtifacts.js';
 
 /**
  * Describes a single artifact produced by a child agent.
@@ -79,15 +75,6 @@ export async function hashFile(
   return hash.digest('hex');
 }
 
-function outboxPath(childrenRoot: string, childId: string, relativePath?: string) {
-  const base = childWorkspacePath(childrenRoot, childId, OUTBOX_DIRNAME);
-  if (!relativePath) {
-    return base;
-  }
-
-  return resolveWithin(base, relativePath);
-}
-
 async function loadManifest(outboxDir: string): Promise<Map<string, ArtifactManifestEntry>> {
   const manifestPath = resolveWithin(outboxDir, MANIFEST_FILENAME);
 
@@ -141,7 +128,7 @@ export async function writeArtifact(
   options: WriteArtifactOptions,
 ): Promise<ArtifactManifestEntry> {
   const outboxDir = await ensureDirectory(options.childrenRoot, options.childId, OUTBOX_DIRNAME);
-  const absolutePath = resolveWithin(outboxDir, options.relativePath);
+  const absolutePath = safePath(outboxDir, options.relativePath);
 
   await ensureParentDirectory(absolutePath);
 
@@ -173,11 +160,8 @@ export async function writeArtifact(
 export async function readArtifact(
   options: ReadArtifactOptions,
 ): Promise<string | Buffer> {
-  const absolutePath = outboxPath(
-    options.childrenRoot,
-    options.childId,
-    options.relativePath,
-  );
+  const outboxDir = await ensureDirectory(options.childrenRoot, options.childId, OUTBOX_DIRNAME);
+  const absolutePath = safePath(outboxDir, options.relativePath);
 
   if (options.encoding) {
     return fs.readFile(absolutePath, { encoding: options.encoding });

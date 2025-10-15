@@ -21,6 +21,7 @@ import { BudgetExceededError, type BudgetCharge } from "../infra/budget.js";
 import { IdempotencyRegistry, buildIdempotencyCacheKey } from "../infra/idempotency.js";
 import { getJsonRpcContext } from "../infra/jsonRpcContext.js";
 import { getActiveTraceContext } from "../infra/tracing.js";
+import type { GraphWorkerPool } from "../infra/workerPool.js";
 import { StructuredLogger } from "../logger.js";
 import type {
   ToolImplementation,
@@ -34,7 +35,7 @@ import {
   GraphApplyChangeSetSuccessDetailsSchema,
   type GraphApplyChangeSetInput,
   type GraphApplyChangeSetOutput,
-} from "../rpc/graphApplyChangeSetSchemas.js";
+} from "../rpc/schemas.js";
 import { serialiseNormalisedGraph } from "./graphTools.js";
 import { resolveOperationId } from "./operationIds.js";
 import { ERROR_CODES } from "../types.js";
@@ -74,6 +75,8 @@ export interface GraphApplyChangeSetToolContext {
   readonly resources: ResourceRegistry;
   /** Optional idempotency registry replaying cached outcomes. */
   readonly idempotency?: IdempotencyRegistry;
+  /** Optional worker pool offloading diff/validate workloads for large change-sets. */
+  readonly workerPool?: GraphWorkerPool;
 }
 
 /** Internal snapshot persisted in the idempotency registry. */
@@ -239,9 +242,37 @@ async function executeChangeSet(
     }
   });
 
-  try {
+  const computeChangeSet = () => {
     const patchedGraph = applyGraphPatch(committed.graph, patchOperations);
     const validation = validateGraph(patchedGraph);
+    const diff = diffGraphs(committed.graph, patchedGraph);
+    return { patchedGraph, validation, diff };
+  };
+
+  let patchedGraph: NormalisedGraph;
+  let validation: ReturnType<typeof validateGraph>;
+  let diff: ReturnType<typeof diffGraphs>;
+  let offloaded = false;
+
+  try {
+    if (context.workerPool) {
+      const execution = await context.workerPool.execute(parsed.changes.length, committed.graph, async () =>
+        computeChangeSet(),
+      );
+      ({ patchedGraph, validation, diff } = execution.result);
+      offloaded = execution.offloaded;
+      if (offloaded) {
+        const stats = context.workerPool.getStatistics();
+        context.logger.debug("graph_apply_change_set_offloaded", {
+          graph_id: parsed.graph_id,
+          change_set_operations: parsed.changes.length,
+          recorded_executions: stats.executed,
+          offload_threshold: stats.threshold,
+        });
+      }
+    } else {
+      ({ patchedGraph, validation, diff } = computeChangeSet());
+    }
     if (!validation.ok) {
       context.transactions.rollback(tx.txId);
       context.resources.markGraphSnapshotRolledBack(tx.graphId, tx.txId);
@@ -276,7 +307,6 @@ async function executeChangeSet(
       return { output: degraded };
     }
 
-    const diff = diffGraphs(committed.graph, patchedGraph);
     const summary = {
       name_changed: diff.summary.nameChanged,
       metadata_changed: diff.summary.metadataChanged,

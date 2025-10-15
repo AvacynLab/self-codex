@@ -15,6 +15,7 @@ import {
   IdempotencyRegistry,
 } from "../infra/idempotency.js";
 import type {
+  ToolBudgets,
   ToolImplementation,
   ToolManifest,
   ToolManifestDraft,
@@ -24,10 +25,11 @@ import {
   PlanCompileExecuteInputSchemaFacade,
   PlanCompileExecuteOutputSchema,
   PlanCompileExecuteStatsSchema,
+  hashPlanPayload,
+  type PlanCompileExecuteDryRunReport,
   type PlanCompileExecuteFacadeInput,
   type PlanCompileExecuteFacadeOutput,
-  hashPlanPayload,
-} from "../rpc/planCompileExecuteFacadeSchemas.js";
+} from "../rpc/schemas.js";
 import {
   PlanSpecificationError,
   type PlannerPlan,
@@ -76,6 +78,8 @@ export interface PlanCompileExecuteToolContext {
   readonly logger: StructuredLogger;
   /** Optional idempotency registry replaying cached compilation results. */
   readonly idempotency?: IdempotencyRegistry;
+  /** Optional helper returning manifest budgets for downstream dry-run previews. */
+  readonly resolveBudget?: (tool: string) => ToolBudgets | undefined;
 }
 
 type RpcExtra = RequestHandlerExtra<ServerRequest, ServerNotification>;
@@ -123,6 +127,130 @@ function mapFacadeInputToPrimitive(
 
 /** Limit preview arrays to keep responses compact while remaining informative. */
 const MAX_PREVIEW_ITEMS = 10;
+
+type DryRunReport = PlanCompileExecuteDryRunReport;
+type DryRunBudget = NonNullable<DryRunReport["cumulative_budget"]>;
+type DryRunToolEstimate = DryRunReport["estimated_tool_calls"][number];
+
+/**
+ * Returns `true` when the manifest budgets expose at least one numerical
+ * dimension. Prevents the dry-run report from emitting empty objects rejected by
+ * the Zod schema guarding the façade output.
+ */
+function hasBudgetSignal(budget: ToolBudgets | undefined): budget is ToolBudgets {
+  if (!budget) {
+    return false;
+  }
+  return [budget.time_ms, budget.tool_calls, budget.bytes_out].some(
+    (dimension) => typeof dimension === "number" && Number.isFinite(dimension) && dimension >= 0,
+  );
+}
+
+/**
+ * Multiplies the manifest budget by the expected number of invocations and
+ * coerces the result into a safe integer, clamping negative values that could
+ * otherwise trip the façade validation logic.
+ */
+function normaliseBudgetValue(value: number | undefined, multiplier: number): number | undefined {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return undefined;
+  }
+  const scaled = value * multiplier;
+  const rounded = Math.round(scaled);
+  return rounded < 0 ? 0 : rounded;
+}
+
+/**
+ * Folds manifest budgets into a cumulative accumulator so dry-run responses can
+ * surface an overall envelope while keeping the per-tool estimates intact.
+ */
+function accumulateBudget(
+  totals: Partial<DryRunBudget>,
+  budget: ToolBudgets | undefined,
+  multiplier: number,
+): void {
+  if (!hasBudgetSignal(budget)) {
+    return;
+  }
+  const time = normaliseBudgetValue(budget.time_ms, multiplier);
+  const bytes = normaliseBudgetValue(budget.bytes_out, multiplier);
+  if (typeof time === "number") {
+    totals.time_ms = (totals.time_ms ?? 0) + time;
+  }
+  if (typeof bytes === "number") {
+    totals.bytes_out = (totals.bytes_out ?? 0) + bytes;
+  }
+}
+
+/**
+ * Builds the dry-run analytics exposed to agents when they request a preview of
+ * the orchestration cost. The helper remains side-effect free so it can be used
+ * safely before the idempotency layer captures a snapshot.
+ */
+function computeDryRunReport(
+  plan: PlannerPlan,
+  resolveBudget: PlanCompileExecuteToolContext["resolveBudget"],
+): DryRunReport | undefined {
+  if (!plan.tasks.length) {
+    return undefined;
+  }
+
+  const counts = new Map<string, number>();
+  for (const task of plan.tasks) {
+    if (!task.tool) {
+      continue;
+    }
+    counts.set(task.tool, (counts.get(task.tool) ?? 0) + 1);
+  }
+
+  if (counts.size === 0) {
+    return undefined;
+  }
+
+  const totals: Partial<DryRunBudget> = {};
+  const estimates: DryRunToolEstimate[] = Array.from(counts.entries())
+    .sort((a, b) => {
+      if (b[1] !== a[1]) {
+        return b[1] - a[1];
+      }
+      return a[0].localeCompare(b[0]);
+    })
+    .map(([tool, calls]) => {
+      const manifestBudget = resolveBudget?.(tool);
+      const estimate: DryRunToolEstimate = { tool, estimated_calls: calls };
+      if (hasBudgetSignal(manifestBudget)) {
+        const budget: DryRunToolEstimate["budget"] = {};
+        const time = normaliseBudgetValue(manifestBudget.time_ms, calls);
+        if (typeof time === "number") {
+          budget.time_ms = time;
+        }
+        const bytes = normaliseBudgetValue(manifestBudget.bytes_out, calls);
+        if (typeof bytes === "number") {
+          budget.bytes_out = bytes;
+        }
+        const toolCalls = normaliseBudgetValue(manifestBudget.tool_calls, calls);
+        if (typeof toolCalls === "number") {
+          budget.tool_calls = toolCalls;
+        }
+        if (Object.keys(budget).length > 0) {
+          estimate.budget = budget;
+        }
+        accumulateBudget(totals, manifestBudget, calls);
+      }
+      return estimate;
+    });
+
+  const totalCalls = Array.from(counts.values()).reduce((sum, value) => sum + value, 0);
+  const cumulative: DryRunBudget = { tool_calls: totalCalls, ...totals } as DryRunBudget;
+  if (typeof cumulative.tool_calls !== "number" || Number.isNaN(cumulative.tool_calls)) {
+    cumulative.tool_calls = totalCalls;
+  }
+
+  return {
+    estimated_tool_calls: estimates,
+    cumulative_budget: cumulative,
+  } satisfies DryRunReport;
+}
 
 /** Build a concise plan preview emphasising tooling oriented metadata. */
 function summarisePlan(plan: PlannerPlan) {
@@ -221,6 +349,7 @@ function summariseBindings(record: Record<string, unknown>) {
 function buildSuccessOutput(
   idempotencyKey: string,
   result: PlanCompileExecuteResult,
+  dryRunReport?: DryRunReport,
 ): PlanCompileExecuteFacadeOutput {
   const structured = PlanCompileExecuteOutputSchema.parse({
     ok: true,
@@ -242,6 +371,7 @@ function buildSuccessOutput(
       variable_bindings: summariseBindings(result.variable_bindings),
       guard_conditions: summariseBindings(result.guard_conditions),
       postconditions: summariseBindings(result.postconditions),
+      ...(dryRunReport ? { dry_run_report: dryRunReport } : {}),
     },
   });
   return structured;
@@ -393,7 +523,8 @@ export function createPlanCompileExecuteHandler(
     const execute = async (): Promise<PlanCompileExecuteSnapshot> => {
       try {
         const result = handlePlanCompileExecute(context.plan, primitiveInput);
-        return { output: buildSuccessOutput(idempotencyKey, result) };
+        const dryRunReport = result.dry_run ? computeDryRunReport(result.plan, context.resolveBudget) : undefined;
+        return { output: buildSuccessOutput(idempotencyKey, result, dryRunReport) };
       } catch (error) {
         if (rpcContext?.budget && charge) {
           rpcContext.budget.snapshot();

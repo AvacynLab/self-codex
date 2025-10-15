@@ -22,6 +22,7 @@ import {
 } from "../../../src/tools/graph_apply_change_set.js";
 import type { NormalisedGraph } from "../../../src/graph/types.js";
 import type { GraphApplyChangeSetInput } from "../../../src/rpc/graphApplyChangeSetSchemas.js";
+import { GraphWorkerPool } from "../../../src/infra/workerPool.js";
 
 function createRequestExtras(
   requestId: string,
@@ -129,6 +130,41 @@ describe("graph_apply_change_set facade", () => {
 
     const logEntry = entries.find((entry) => entry.message === "graph_apply_change_set_completed");
     expect(logEntry?.request_id).to.equal("req-graph-change-set-success");
+  });
+
+  it("offloads heavy change-sets through the worker pool when enabled", async () => {
+    const workerPool = new GraphWorkerPool({ maxWorkers: 2, changeSetSizeThreshold: 1 });
+    const handler = createGraphApplyChangeSetHandler({
+      logger,
+      transactions,
+      locks,
+      resources,
+      workerPool,
+    });
+    const extras = createRequestExtras("req-graph-change-set-worker");
+    const budget = new BudgetTracker({ toolCalls: 3 });
+
+    const input: GraphApplyChangeSetInput = {
+      graph_id: graphId,
+      idempotency_key: "graph-worker-1",
+      changes: [
+        { op: "update", path: ["nodes", "0", "label"], value: "Worker Start" },
+        { op: "add", path: ["metadata", "worker"], value: "enabled" },
+      ],
+    };
+
+    const result = await runWithRpcTrace(
+      { method: `tools/${GRAPH_APPLY_CHANGE_SET_TOOL_NAME}`, traceId: "trace-graph-worker", requestId: extras.requestId },
+      async () =>
+        await runWithJsonRpcContext({ requestId: extras.requestId, budget }, () => handler(input, extras)),
+    );
+
+    expect(result.isError).to.not.equal(true);
+    const stats = workerPool.getStatistics();
+    expect(stats.executed).to.equal(1);
+    expect(stats.threshold).to.equal(1);
+
+    await workerPool.destroy();
   });
 
   it("replays the committed result when the idempotency key matches", async () => {
