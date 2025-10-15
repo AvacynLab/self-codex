@@ -220,17 +220,29 @@ Je m’adresse **directement à toi, l’agent**. Ton objectif : **hausser la qu
 
 ```ts
 // src/gateways/fsArtifacts.ts
-import { resolve, sep } from "node:path";
+import { relative as relativePath, resolve, sep } from "node:path";
+import { PathResolutionError } from "../paths.js";
+
+export class ArtifactPathTraversalError extends PathResolutionError {
+  public readonly relativePath: string;
+  constructor(attemptedPath: string, relativePath: string, rootDirectory: string) {
+    super("artifact path escapes configured root directory", attemptedPath, rootDirectory, { relative: relativePath });
+    this.name = "ArtifactPathTraversalError";
+    this.relativePath = relativePath;
+  }
+}
 
 export function safePath(root: string, rel: string): string {
-  const clean = rel
-    .replace(/[<>:"|?*\x00-\x1F]/g, "_")
-    .replace(/\.\.+/g, ".");
-  const abs = resolve(root, clean);
-  if (!abs.startsWith(resolve(root) + sep)) {
-    throw new Error("Path traversal");
+  const resolvedRoot = resolve(root);
+  const clean = rel.replace(/[<>:"|?*\x00-\x1F]/g, "_");
+  const absolute = resolve(resolvedRoot, clean);
+  const relativeWithinRoot = relativePath(resolvedRoot, absolute);
+  const escapesRoot =
+    relativeWithinRoot.length > 0 && relativeWithinRoot.split(sep).some((segment) => segment === "..");
+  if (absolute === resolvedRoot || !escapesRoot) {
+    return absolute;
   }
-  return abs;
+  throw new ArtifactPathTraversalError(absolute, rel, resolvedRoot);
 }
 ```
 
@@ -336,3 +348,4 @@ function tryEnqueue(client, chunk: string): boolean {
 * 2025-10-17T11:45Z — gpt-5-codex : Stabilise `tests/perf/graph.pool.test.ts` en validant les percentiles via des durées simulées (`recordSuccess`) pour éliminer la variance murale, puis rejoue `npm run lint:types` et la cible Mocha (`tests/perf/graph.pool.test.ts` + `tests/tools/facades/graph_apply_change_set.test.ts`).
 * 2025-10-17T13:20Z — gpt-5-codex : Implémente réellement `GraphWorkerPool` (heuristiques, percentiles) et l’injecte dans `graph_apply_change_set`, ajoute le test d’intégration façade, documente `MCP_GRAPH_WORKERS`/`MCP_GRAPH_POOL_THRESHOLD` et met à jour `.env.example`. Commandes : `npm run lint:types`; `node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --file tests/setup.ts tests/perf/graph.pool.test.ts tests/tools/facades/graph_apply_change_set.test.ts tests/tools/facades.golden.test.ts tests/env/example.test.ts`.
 * 2025-10-17T15:04Z — gpt-5-codex : Vérifie la checklist finale (A4/A5 + acceptation), rejoue lint builtins/types et le bootstrap E2E pour confirmer les garanties opérationnelles. Commandes : `npm run lint:node-builtins`; `npm run lint:types`; `node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --file tests/setup.ts tests/e2e/server.bootstrap.test.ts`.
+* 2025-10-17T17:45Z — gpt-5-codex : Corrige les erreurs de test en alignant `safePath` sur `PathResolutionError` et en enregistrant les messages `scheduler_event_*` dans le catalogue typé pour les événements planificateur. Commandes : `npm run lint:types`; `node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --file tests/setup.ts tests/artifacts.test.ts tests/events.subscribe.plan-correlation.test.ts tests/events.subscribe.scheduler-telemetry.test.ts tests/plan.lifecycle.test.ts`.

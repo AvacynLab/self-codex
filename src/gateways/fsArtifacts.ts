@@ -1,6 +1,8 @@
 import { dirname, relative as relativePath, resolve, sep } from "node:path";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 
+import { PathResolutionError } from "../paths.js";
+
 /**
  * Error raised when an artifact path attempts to escape the configured root.
  *
@@ -8,22 +10,14 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
  * HTTP handlers) to surface actionable diagnostics without leaking filesystem
  * layout details to untrusted callers.
  */
-export class ArtifactPathTraversalError extends Error {
-  /** Stable error code propagated to observability pipelines. */
-  public readonly code = "E-ARTIFACTS-TRAVERSAL" as const;
-  /** Absolute path that would have been accessed. */
-  public readonly attemptedPath: string;
+export class ArtifactPathTraversalError extends PathResolutionError {
   /** Sanitised relative path provided by the caller. */
   public readonly relativePath: string;
-  /** Root directory configured for artifact persistence. */
-  public readonly rootDirectory: string;
 
   constructor(attemptedPath: string, relativePath: string, rootDirectory: string) {
-    super("artifact path escapes configured root directory");
+    super("artifact path escapes configured root directory", attemptedPath, rootDirectory, { relative: relativePath });
     this.name = "ArtifactPathTraversalError";
-    this.attemptedPath = attemptedPath;
     this.relativePath = relativePath;
-    this.rootDirectory = rootDirectory;
   }
 }
 

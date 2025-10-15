@@ -80,6 +80,9 @@ export type AutoscalerEventMessage =
   | "scale_down_forced"
   | "scale_down_failed";
 
+/** Message identifiers emitted by the reactive scheduler telemetry bridge. */
+export type SchedulerEventMessage = "scheduler_event_enqueued" | "scheduler_tick_result";
+
 /** Message identifiers emitted by smoke/introspection probes. */
 export type IntrospectionEventMessage = "introspection_probe";
 
@@ -108,6 +111,7 @@ export type EventMessage =
   | ValueGuardEventMessage
   | JsonRpcEventMessage
   | AutoscalerEventMessage
+  | SchedulerEventMessage
   | IntrospectionEventMessage
   | HeartbeatEventMessage
   | StigmergyEventMessage;
@@ -199,6 +203,8 @@ const AUTOSCALER_MESSAGES = [
   "scale_down_failed",
 ] as const satisfies readonly AutoscalerEventMessage[];
 
+const SCHEDULER_MESSAGES = ["scheduler_event_enqueued", "scheduler_tick_result"] as const satisfies readonly SchedulerEventMessage[];
+
 const INTROSPECTION_MESSAGES = ["introspection_probe"] as const satisfies readonly IntrospectionEventMessage[];
 
 const HEARTBEAT_MESSAGES = ["alive"] as const satisfies readonly HeartbeatEventMessage[];
@@ -219,6 +225,7 @@ const EVENT_MESSAGE_VALUES = [
   ...VALUE_GUARD_MESSAGES,
   ...JSONRPC_MESSAGES,
   ...AUTOSCALER_MESSAGES,
+  ...SCHEDULER_MESSAGES,
   ...INTROSPECTION_MESSAGES,
   ...HEARTBEAT_MESSAGES,
   ...STIGMERGY_MESSAGES,
