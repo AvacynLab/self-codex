@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 
 import { PersistentKnowledgeGraph } from "../../src/memory/kg.js";
+import { PathResolutionError } from "../../src/paths.js";
 
 /** Manual clock providing deterministic timestamps for knowledge snapshots. */
 class ManualClock {
@@ -68,5 +69,18 @@ describe("persistent knowledge graph", () => {
     const triples = reload.query({ subject: "plan", predicate: "includes" });
     expect(triples[0].revision).to.equal(1);
     expect(triples[0].source).to.equal("library");
+  });
+
+  it("refuses to persist the graph outside of the configured directory", async () => {
+    try {
+      await PersistentKnowledgeGraph.create({ directory: rootDir, fileName: "../kg.json" });
+      expect.fail("expected PersistentKnowledgeGraph.create to reject a traversal attempt");
+    } catch (error) {
+      expect(error).to.be.instanceOf(PathResolutionError);
+    }
+
+    expect(() =>
+      PersistentKnowledgeGraph.createSync({ directory: rootDir, fileName: "..\\kg.json" }),
+    ).to.throw(PathResolutionError);
   });
 });

@@ -6,11 +6,7 @@
 import { describe, it } from "mocha";
 import { expect } from "chai";
 
-import {
-  buildJsonRpcErrorResponse,
-  createJsonRpcError,
-  normaliseJsonRpcRequest,
-} from "../../src/rpc/middleware.js";
+import { createJsonRpcError, normaliseJsonRpcRequest, toJsonRpc } from "../../src/rpc/middleware.js";
 
 import type { JsonRpcRequest } from "../../src/server.js";
 
@@ -78,7 +74,7 @@ describe("rpc middleware validation", () => {
       requestId: "rid-json",
       hint: "Too many requests",
     });
-    const response = buildJsonRpcErrorResponse("rid-json", jsonError);
+    const response = toJsonRpc("rid-json", jsonError);
     expect(response).to.deep.include({ jsonrpc: "2.0", id: "rid-json" });
     expect(response).to.have.nested.property("error.code", jsonError.code);
     expect(response).to.have.nested.property("error.data.category", "RATE_LIMITED");

@@ -1,6 +1,5 @@
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { pathToFileURL } from "node:url";
-import { resolve as resolvePath } from "node:path";
 import process from "node:process";
 
 import {
@@ -24,12 +23,10 @@ import {
   IDEMPOTENCY_TTL_OVERRIDE,
 } from "./orchestrator/runtime.js";
 import { parseOrchestratorRuntimeOptions } from "./serverOptions.js";
-import { startHttpServer, type HttpServerExtras } from "./httpServer.js";
-import { evaluateHttpReadiness } from "./http/readiness.js";
+import { startHttpServer } from "./httpServer.js";
 import { startDashboardServer } from "./monitor/dashboard.js";
-import { loadGraphForge } from "./graph/forgeLoader.js";
-import { FileIdempotencyStore } from "./infra/idempotencyStore.file.js";
-import { resolveIdempotencyDirectory } from "./infra/idempotencyStore.js";
+import { prepareHttpRuntime } from "./http/bootstrap.js";
+import { applyOrchestratorRuntimeOptions, publishTransportSnapshot } from "./orchestrator/bootstrap.js";
 import { updateMcpRuntimeSnapshot } from "./mcp/info.js";
 
 export * from "./orchestrator/runtime.js";
@@ -51,34 +48,10 @@ async function main(): Promise<void> {
 
   // Apply CLI overrides to the orchestrator core so subsequent requests inherit
   // the negotiated features, timings, and guardrails.
-  configureRuntimeFeatures(options.features);
-  configureRuntimeTimings(options.timings);
-  configureChildSafetyLimits(options.safety);
-  configureReflectionEnabled(options.enableReflection);
-  configureQualityGateEnabled(options.enableQualityGate);
-  configureQualityGateThreshold(options.qualityThreshold);
-  configureLogFileOverride(options.logFile ?? null);
-
-  eventStore.setMaxHistory(options.maxEventHistory);
-  eventBus.setHistoryLimit(options.maxEventHistory);
-  updateMcpRuntimeSnapshot({ limits: { maxEventHistory: options.maxEventHistory } });
+  applyOrchestratorRuntimeOptions(options);
 
   let enableStdio = options.enableStdio;
   const httpEnabled = options.http.enabled;
-
-  updateMcpRuntimeSnapshot({
-    transports: {
-      stdio: { enabled: enableStdio },
-      http: {
-        enabled: httpEnabled,
-        host: httpEnabled ? options.http.host : null,
-        port: httpEnabled ? options.http.port : null,
-        path: httpEnabled ? options.http.path : null,
-        enableJson: options.http.enableJson,
-        stateless: options.http.stateless,
-      },
-    },
-  });
 
   if (!enableStdio && !httpEnabled) {
     logger.error("no_transport_enabled", {});
@@ -94,53 +67,17 @@ async function main(): Promise<void> {
       enableStdio = false;
     }
 
-    let httpExtras: HttpServerExtras = {};
-    let httpIdempotencyStore: FileIdempotencyStore | null = null;
-    if (options.http.stateless) {
-      try {
-        const store = await FileIdempotencyStore.create();
-        const ttlMs = IDEMPOTENCY_TTL_OVERRIDE ?? 600_000;
-        httpIdempotencyStore = store;
-        httpExtras = { idempotency: { store, ttlMs } };
-        logger.info("http_idempotency_store_ready", {
-          directory: resolveIdempotencyDirectory(),
-          ttl_ms: ttlMs,
-        });
-      } catch (error) {
-        logger.error("http_idempotency_store_failed", {
-          message: error instanceof Error ? error.message : String(error),
-        });
-      }
-    }
-
-    const runsRoot = process.env.MCP_RUNS_ROOT
-      ? resolvePath(process.cwd(), process.env.MCP_RUNS_ROOT)
-      : resolvePath(process.cwd(), "runs");
-
-    // Dependencies evaluated by the HTTP readiness probe. Sharing the object
-    // keeps the `check` closure free of stateful mutations.
-    const readinessDeps = {
-      loadGraphForge,
-      runsRoot,
-      idempotencyStore: httpIdempotencyStore,
-      eventStore,
-    } as const;
-
-    httpExtras = {
-      ...httpExtras,
-      readiness: {
-        check: () => evaluateHttpReadiness(readinessDeps),
-      },
-    };
-
     try {
-      const handle = await startHttpServer(server, options.http, logger, httpExtras);
+      const preparedHttp = await prepareHttpRuntime({ options: options.http, logger, eventStore });
+      const handle = await startHttpServer(server, options.http, logger, preparedHttp.extras);
       cleanup.push(handle.close);
     } catch (error) {
       logger.error("http_start_failed", { message: error instanceof Error ? error.message : String(error) });
       process.exit(1);
     }
   }
+
+  publishTransportSnapshot(enableStdio, options.http);
 
   if (options.dashboard.enabled) {
     try {

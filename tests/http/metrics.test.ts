@@ -6,6 +6,7 @@ import {
   runWithRpcTrace,
   registerRpcSuccess,
   registerRpcError,
+  annotateTraceContext,
   recordSseDrop,
   registerChildRestart,
   registerIdempotencyConflict,
@@ -27,9 +28,11 @@ describe("http metrics", () => {
 
   it("renders latency, counters and gauges for observability dashboards", async () => {
     await runWithRpcTrace({ method: "tools/call", requestId: "rpc-1" }, async () => {
+      annotateTraceContext({ method: "tool:artifact_write" });
       registerRpcSuccess();
     });
     await runWithRpcTrace({ method: "tools/call", requestId: "rpc-2" }, async () => {
+      annotateTraceContext({ method: "tool:artifact_write" });
       registerRpcError(-32000);
     }).catch(() => {
       // The simulated error is intentional for the metric assertions below.
@@ -43,8 +46,8 @@ describe("http metrics", () => {
 
     const snapshot = renderMetricsSnapshot();
 
-    expect(snapshot).to.contain("rpc_count{method=\"tools/call\"} 2");
-    expect(snapshot).to.contain("rpc_error_count{method=\"tools/call\"} 1");
+    expect(snapshot).to.contain("rpc_count{method=\"tool:artifact_write\"} 2");
+    expect(snapshot).to.contain("rpc_error_count{method=\"tool:artifact_write\"} 1");
     expect(snapshot).to.contain("# mcp infra metrics");
     expect(snapshot).to.contain("sse_drops 3");
     expect(snapshot).to.contain("child_restarts 1");

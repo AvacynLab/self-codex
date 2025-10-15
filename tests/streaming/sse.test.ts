@@ -3,6 +3,8 @@
  * and timeout handling. The scenarios emulate slow consumers to ensure back-
  * pressure does not lead to unbounded memory growth.
  */
+import { Buffer } from "node:buffer";
+
 import { describe, it } from "mocha";
 import { expect } from "chai";
 
@@ -55,19 +57,6 @@ describe("resource SSE streaming", () => {
   });
 
   it("drops the oldest frames when the buffer exceeds capacity", () => {
-    const warnings: Array<{ message: string; payload: Record<string, unknown> | undefined }> = [];
-    const buffer = new ResourceWatchSseBuffer({
-      clientId: "buffer-test",
-      logger: {
-        warn: (message: string, payload?: unknown) => {
-          warnings.push({ message, payload: payload as Record<string, unknown> | undefined });
-        },
-      },
-      maxBufferedMessages: 2,
-      maxChunkBytes: 128,
-      emitTimeoutMs: 50,
-    });
-
     const buildResult = (seq: number): ResourceWatchResult => ({
       uri: "sc://runs/backpressure/events",
       kind: "run_events",
@@ -92,13 +81,37 @@ describe("resource SSE streaming", () => {
       ],
     });
 
+    const singleFrameBytes = Buffer.byteLength(
+      renderResourceWatchSseMessages(serialiseResourceWatchResultForSse(buildResult(1)), { maxChunkBytes: 128 }),
+      "utf8",
+    );
+
+    const warnings: Array<{ message: string; payload: Record<string, unknown> | undefined }> = [];
+    const buffer = new ResourceWatchSseBuffer({
+      clientId: "buffer-test",
+      logger: {
+        warn: (message: string, payload?: unknown) => {
+          warnings.push({ message, payload: payload as Record<string, unknown> | undefined });
+        },
+      },
+      maxBufferedBytes: singleFrameBytes * 2,
+      maxChunkBytes: 128,
+      emitTimeoutMs: 50,
+    });
+
     buffer.enqueue(serialiseResourceWatchResultForSse(buildResult(1)));
     buffer.enqueue(serialiseResourceWatchResultForSse(buildResult(2)));
     buffer.enqueue(serialiseResourceWatchResultForSse(buildResult(3)));
 
     expect(buffer.size).to.equal(2);
+    expect(buffer.bufferedSizeBytes).to.be.at.most(singleFrameBytes * 2);
     expect(
-      warnings.some((entry) => entry.message === "resources_sse_buffer_overflow" && (entry.payload?.dropped as number) === 1),
+      warnings.some(
+        (entry) =>
+          entry.message === "resources_sse_buffer_overflow" &&
+          (entry.payload?.dropped as number) === 1 &&
+          (entry.payload?.capacity_bytes as number) === singleFrameBytes * 2,
+      ),
     ).to.equal(true);
   });
 
@@ -111,7 +124,7 @@ describe("resource SSE streaming", () => {
           warnings.push({ message, payload: payload as Record<string, unknown> | undefined });
         },
       },
-      maxBufferedMessages: 4,
+      maxBufferedBytes: 4096,
       maxChunkBytes: 128,
       emitTimeoutMs: 25,
     });

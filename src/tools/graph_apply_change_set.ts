@@ -4,15 +4,14 @@ import { randomUUID } from "node:crypto";
 import type { RequestHandlerExtra } from "@modelcontextprotocol/sdk/shared/protocol.js";
 import type { CallToolResult, ServerNotification, ServerRequest } from "@modelcontextprotocol/sdk/types.js";
 
-import { diffGraphs } from "../graph/diff.js";
-import { applyGraphPatch } from "../graph/patch.js";
+import type { JsonPatchOperation } from "../graph/diff.js";
 import { GraphLockManager } from "../graph/locks.js";
 import {
   GraphTransactionManager,
   GraphTransactionError,
   GraphVersionConflictError,
 } from "../graph/tx.js";
-import { GraphValidationError, validateGraph } from "../graph/validate.js";
+import type { GraphValidationError } from "../graph/validate.js";
 import type { NormalisedGraph } from "../graph/types.js";
 import { recordOperation } from "../graph/oplog.js";
 import { recordGraphWal } from "../graph/wal.js";
@@ -20,6 +19,7 @@ import type { ResourceRegistry } from "../resources/registry.js";
 import { BudgetExceededError, type BudgetCharge } from "../infra/budget.js";
 import { IdempotencyRegistry, buildIdempotencyCacheKey } from "../infra/idempotency.js";
 import { getJsonRpcContext } from "../infra/jsonRpcContext.js";
+import { computeGraphChangeSet, type GraphChangeSetComputation } from "../infra/graphChangeSet.js";
 import { getActiveTraceContext } from "../infra/tracing.js";
 import type { GraphWorkerPool } from "../infra/workerPool.js";
 import { StructuredLogger } from "../logger.js";
@@ -228,37 +228,35 @@ async function executeChangeSet(
     expiresAt: tx.expiresAt,
   });
 
-  const patchOperations = parsed.changes.map((change) => {
+  const patchOperations: JsonPatchOperation[] = parsed.changes.map((change) => {
     const pointer = toJsonPointer(change.path);
     switch (change.op) {
       case "add":
-        return { op: "add" as const, path: pointer, value: change.value };
+        return { op: "add", path: pointer, value: change.value };
       case "update":
-        return { op: "replace" as const, path: pointer, value: change.value };
+        return { op: "replace", path: pointer, value: change.value };
       case "remove":
-        return { op: "remove" as const, path: pointer };
+        return { op: "remove", path: pointer };
       default:
-        return { op: "replace" as const, path: pointer, value: change.value };
+        return { op: "replace", path: pointer, value: change.value };
     }
   });
 
-  const computeChangeSet = () => {
-    const patchedGraph = applyGraphPatch(committed.graph, patchOperations);
-    const validation = validateGraph(patchedGraph);
-    const diff = diffGraphs(committed.graph, patchedGraph);
-    return { patchedGraph, validation, diff };
-  };
-
   let patchedGraph: NormalisedGraph;
-  let validation: ReturnType<typeof validateGraph>;
-  let diff: ReturnType<typeof diffGraphs>;
+  let validation: GraphChangeSetComputation["validation"];
+  let diff: GraphChangeSetComputation["diff"];
   let offloaded = false;
+
+  const computeChangeSet = (): GraphChangeSetComputation =>
+    computeGraphChangeSet(committed.graph, patchOperations);
 
   try {
     if (context.workerPool) {
-      const execution = await context.workerPool.execute(parsed.changes.length, committed.graph, async () =>
-        computeChangeSet(),
-      );
+      const execution = await context.workerPool.execute({
+        changeSetSize: parsed.changes.length,
+        baseGraph: committed.graph,
+        operations: patchOperations,
+      });
       ({ patchedGraph, validation, diff } = execution.result);
       offloaded = execution.offloaded;
       if (offloaded) {
@@ -273,6 +271,7 @@ async function executeChangeSet(
     } else {
       ({ patchedGraph, validation, diff } = computeChangeSet());
     }
+
     if (!validation.ok) {
       context.transactions.rollback(tx.txId);
       context.resources.markGraphSnapshotRolledBack(tx.graphId, tx.txId);

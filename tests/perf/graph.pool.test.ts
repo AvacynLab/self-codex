@@ -69,4 +69,27 @@ describe("graph worker pool performance", () => {
 
     await pool.destroy();
   });
+
+  it("offloads heavy change-sets via worker threads when available", async function () {
+    const pool = new GraphWorkerPool({ maxWorkers: 1, changeSetSizeThreshold: 1 });
+    if (!pool.hasWorkerSupport) {
+      await pool.destroy();
+      this.skip();
+    }
+
+    const baseGraph = buildLargeGraph();
+    const operations = buildHeavyPatchOperations();
+
+    const execution = await pool.execute({
+      changeSetSize: operations.length,
+      baseGraph,
+      operations,
+    });
+
+    expect(execution.offloaded).to.equal(true);
+    expect(execution.result.diff.changed).to.equal(true);
+    expect(execution.result.validation.ok).to.equal(true);
+
+    await pool.destroy();
+  });
 });

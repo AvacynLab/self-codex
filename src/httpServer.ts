@@ -26,11 +26,11 @@ import {
   renderMetricsSnapshot,
 } from "./infra/tracing.js";
 import {
-  buildJsonRpcErrorResponse,
   createJsonRpcError,
+  toJsonRpc,
   type JsonRpcErrorCategory,
   type JsonRpcErrorOptions,
-} from "./rpc/middleware.js";
+} from "./rpc/errors.js";
 
 type HttpTransportRequest = Parameters<StreamableHTTPServerTransport["handleRequest"]>[0];
 type HttpTransportResponse = Parameters<StreamableHTTPServerTransport["handleRequest"]>[1];
@@ -518,7 +518,7 @@ async function tryHandleJsonRpc(
       status === 413
         ? createJsonRpcError("VALIDATION_ERROR", "Payload Too Large", { code: -32600, requestId: jsonrpcId })
         : createJsonRpcError("VALIDATION_ERROR", "Parse error", { code: -32700, requestId: jsonrpcId });
-    const payload = buildJsonRpcErrorResponse(null, errorDetails);
+    const payload = toJsonRpc(null, errorDetails);
     const bytesOut = await sendJson(res, status, payload, false, logger, requestId, undefined, idempotency);
     logJsonRpcOutcome(logger, "warn", {
       httpRequestId: requestId,
@@ -552,7 +552,7 @@ async function tryHandleJsonRpc(
           hint: "Idempotency key was reused with different parameters.",
         });
         registerIdempotencyConflict();
-        const payload = buildJsonRpcErrorResponse(jsonrpcId, conflict);
+        const payload = toJsonRpc(jsonrpcId, conflict);
         const bytesOut = await sendJson(res, 409, payload, false, logger, requestId, undefined, idempotency);
         logJsonRpcOutcome(logger, "warn", {
           httpRequestId: requestId,
@@ -653,7 +653,7 @@ async function tryHandleJsonRpc(
           message: error instanceof Error ? error.message : String(error),
           request_id: requestId,
         });
-        const failure = buildJsonRpcErrorResponse(
+        const failure = toJsonRpc(
           parsed?.id ?? null,
           createJsonRpcError("INTERNAL", "Internal error", { requestId: jsonrpcId }),
         );
@@ -777,7 +777,7 @@ async function respondWithJsonRpcError(
     status: options.status ?? status,
   };
   const error = createJsonRpcError(category, message, enrichedOptions);
-  const payload = buildJsonRpcErrorResponse(jsonId, error);
+  const payload = toJsonRpc(jsonId, error);
   const bytesOut = await sendJson(res, status, payload, false, logger, httpRequestId, undefined, undefined);
   logJsonRpcOutcome(logger, status >= 500 ? "error" : "warn", {
     ...meta,

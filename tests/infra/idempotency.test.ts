@@ -1,5 +1,5 @@
 /**
- * Unit tests for the `withIdempotency` helper. The scenarios focus on replaying
+ * Unit tests for the idempotency helpers. The scenarios focus on replaying
  * cached payloads, forwarding TTL hints to the persistent store, and bubbling up
  * assertion failures when the same logical request is reused with divergent
  * parameters.
@@ -7,8 +7,40 @@
 import { describe, it } from "mocha";
 import { expect } from "chai";
 
-import { withIdempotency, type HttpIdempotencySnapshot } from "../../src/infra/idempotency.js";
+import {
+  withIdempotency,
+  withHttpIdempotency,
+  type HttpIdempotencySnapshot,
+  type IdempotencyResultStore,
+} from "../../src/infra/idempotency.js";
 import type { IdempotencyStore } from "../../src/infra/idempotencyStore.js";
+
+/**
+ * Simple in-memory implementation of {@link IdempotencyResultStore}. The helper
+ * keeps track of TTL propagation to guarantee values remain cached for the
+ * requested duration.
+ */
+class MemoryResultStore implements IdempotencyResultStore {
+  /** Records the most recent TTL applied to the stored entries. */
+  public lastPersistedTtl: number | null = null;
+  /** Persists cached entries together with their remaining TTL. */
+  private readonly entries = new Map<string, { value: unknown; ttl: number }>();
+
+  async get(key: string): Promise<unknown | null> {
+    const record = this.entries.get(key);
+    return record ? record.value : null;
+  }
+
+  async set(key: string, value: unknown, ttlMs: number): Promise<void> {
+    this.entries.set(key, { value, ttl: ttlMs });
+    this.lastPersistedTtl = ttlMs;
+  }
+
+  /** Retrieves the TTL associated with the provided key for assertions. */
+  public ttlFor(key: string): number | null {
+    return this.entries.get(key)?.ttl ?? null;
+  }
+}
 
 /**
  * Minimal in-memory implementation of {@link IdempotencyStore} used to verify
@@ -56,12 +88,61 @@ class StubStore implements IdempotencyStore {
   }
 }
 
-describe("infra/withIdempotency", () => {
+describe("infra/withIdempotency (generic)", () => {
+  it("executes the factory immediately when no cache key is supplied", async () => {
+    const store = new MemoryResultStore();
+    let executions = 0;
+
+    const outcome = await withIdempotency(null, 5_000, async () => {
+      executions += 1;
+      return { status: "fresh" };
+    }, store);
+
+    expect(outcome).to.deep.equal({ status: "fresh" });
+    expect(executions, "factory executes exactly once").to.equal(1);
+    expect(store.lastPersistedTtl, "no value should be cached without key").to.equal(null);
+  });
+
+  it("replays cached values without re-running the factory", async () => {
+    const store = new MemoryResultStore();
+    let executions = 0;
+
+    const first = await withIdempotency("graph:123", 3_000, async () => {
+      executions += 1;
+      return { payload: "fresh" };
+    }, store);
+
+    const replay = await withIdempotency("graph:123", 3_000, async () => {
+      executions += 1;
+      return { payload: "stale" };
+    }, store);
+
+    expect(first).to.deep.equal({ payload: "fresh" });
+    expect(replay).to.deep.equal(first);
+    expect(executions, "second call should reuse cached value").to.equal(1);
+  });
+
+  it("persists values with normalised ttl hints", async () => {
+    const store = new MemoryResultStore();
+
+    await withIdempotency("child:alpha", 2_750.9, async () => ({ ok: true }), store);
+    expect(store.lastPersistedTtl).to.equal(2_750);
+    expect(store.ttlFor("child:alpha")).to.equal(2_750);
+
+    await withIdempotency("child:beta", -25, async () => ({ ok: true }), store);
+    expect(store.lastPersistedTtl).to.equal(1);
+
+    await withIdempotency("child:gamma", Number.POSITIVE_INFINITY, async () => ({ ok: true }), store);
+    expect(store.lastPersistedTtl).to.equal(1);
+  });
+});
+
+describe("infra/withHttpIdempotency", () => {
   it("executes the operation immediately when no cache key is supplied", async () => {
     const store = new StubStore();
     let executions = 0;
 
-    const result = await withIdempotency(null, 5_000, async () => {
+    const result = await withHttpIdempotency(null, 5_000, async () => {
       executions += 1;
       return { status: 201, body: JSON.stringify({ ok: true }) };
     }, store);
@@ -77,7 +158,7 @@ describe("infra/withIdempotency", () => {
     store.seed("graph:abc:hash", { status: 200, body: JSON.stringify({ cached: true }) }, 10_000);
 
     let executed = false;
-    const replay = await withIdempotency("graph:abc:hash", 5_000, async () => {
+    const replay = await withHttpIdempotency("graph:abc:hash", 5_000, async () => {
       executed = true;
       return { status: 500, body: JSON.stringify({}) };
     }, store);
@@ -91,7 +172,7 @@ describe("infra/withIdempotency", () => {
   it("persists fresh responses and forwards ttl hints to the store", async () => {
     const store = new StubStore();
 
-    const fresh = await withIdempotency("child:create:123", 2_500, async () => ({
+    const fresh = await withHttpIdempotency("child:create:123", 2_500, async () => ({
       status: 202,
       body: JSON.stringify({ child_id: "123" }),
     }), store);
@@ -104,7 +185,7 @@ describe("infra/withIdempotency", () => {
 
     // Advance time to prove the stored entry stays valid until the TTL elapses.
     store.now += 2_000;
-    const replay = await withIdempotency("child:create:123", 1_000, async () => {
+    const replay = await withHttpIdempotency("child:create:123", 1_000, async () => {
       throw new Error("should not execute once cached");
     }, store);
     expect(replay).to.deep.equal(fresh);
@@ -115,7 +196,7 @@ describe("infra/withIdempotency", () => {
     store.conflictingKeys.add("plan:conflict");
 
     try {
-      await withIdempotency("plan:conflict", 1_000, async () => ({
+      await withHttpIdempotency("plan:conflict", 1_000, async () => ({
         status: 500,
         body: JSON.stringify({ error: true }),
       }), store);
@@ -128,7 +209,7 @@ describe("infra/withIdempotency", () => {
   it("clamps negative ttl values before persisting snapshots", async () => {
     const store = new StubStore();
 
-    await withIdempotency("plan:negative", -50, async () => ({
+    await withHttpIdempotency("plan:negative", -50, async () => ({
       status: 200,
       body: JSON.stringify({ ok: true }),
     }), store);

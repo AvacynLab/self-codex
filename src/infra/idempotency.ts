@@ -60,6 +60,33 @@ const DEFAULT_TTL_MS = 600_000;
 const IDEMPOTENCY_HASH_ALGORITHM = "sha256";
 
 /**
+ * Minimal contract required by {@link withIdempotency}. The helper purposely
+ * stays agnostic of the backing store implementation so callers can reuse the
+ * same logic for in-memory registries, Redis-backed caches, or filesystem
+ * snapshots. Implementations are responsible for serialising values when
+ * necessary.
+ */
+export interface IdempotencyResultStore {
+  /** Retrieves the cached payload previously associated with the supplied key. */
+  get(key: string): Promise<unknown | null | undefined>;
+  /** Persists the freshly computed payload for the provided duration. */
+  set(key: string, value: unknown, ttlMs: number): Promise<void>;
+}
+
+/**
+ * Normalises TTL hints received from transports. The guard clamps the value to
+ * a sane minimum to guarantee stores never persist entries that instantly
+ * expire while also tolerating `NaN` or `Infinity` inputs.
+ */
+function normalisePersistenceTtl(ttlMs: number): number {
+  if (!Number.isFinite(ttlMs)) {
+    return MIN_TTL_MS;
+  }
+  const truncated = Math.trunc(ttlMs);
+  return truncated >= MIN_TTL_MS ? truncated : MIN_TTL_MS;
+}
+
+/**
  * In-memory registry storing idempotent outcomes. The implementation favours a
  * predictable behaviour over absolute performance as the orchestrator only
  * keeps a few dozen entries at a time (tools and server enforce timeouts).
@@ -308,30 +335,57 @@ export interface HttpIdempotencySnapshot {
  * subsequent retries. Callers typically use the helper inside transport layers
  * so the logic stays isolated from request/response plumbing.
  */
-export async function withIdempotency<T extends HttpIdempotencySnapshot>(
+export async function withHttpIdempotency<T extends HttpIdempotencySnapshot>(
   cacheKey: string | null | undefined,
   ttlMs: number,
   operation: () => Promise<T>,
   store: Pick<IdempotencyStore, "get" | "set"> & Partial<Pick<IdempotencyStore, "assertKeySemantics">>,
 ): Promise<T> {
-  const key = typeof cacheKey === "string" ? cacheKey.trim() : "";
-  if (!key) {
+  const trimmedKey = typeof cacheKey === "string" ? cacheKey.trim() : "";
+  if (!trimmedKey) {
     // Without a cache key there is nothing to replay, so the operation executes eagerly.
     return operation();
   }
 
   // Enforce semantic guarantees eagerly when the store exposes an assertion hook.
-  await Promise.resolve(store.assertKeySemantics?.(key));
+  await Promise.resolve(store.assertKeySemantics?.(trimmedKey));
 
-  const cached = await store.get(key);
-  if (cached) {
-    // The snapshot is stored immutably by the persistent store so callers can reuse it as-is.
+  const adapter: IdempotencyResultStore = {
+    get: (key) => store.get(key),
+    set: async (key, value, ttl) => {
+      const snapshot = value as HttpIdempotencySnapshot;
+      await store.set(key, snapshot.status, snapshot.body, ttl);
+    },
+  };
+
+  return withIdempotency(trimmedKey, ttlMs, operation, adapter);
+}
+
+/**
+ * Executes the provided factory exactly once for a given idempotency key. When
+ * the store already contains a cached value the helper bypasses the factory and
+ * returns the replayed payload instead. The routine is intentionally tiny so it
+ * can be reused by higher-level transports as well as low-level orchestration
+ * code.
+ */
+export async function withIdempotency<T>(
+  key: string | undefined | null,
+  ttlMs: number,
+  factory: () => Promise<T>,
+  store: IdempotencyResultStore,
+): Promise<T> {
+  const normalisedKey = typeof key === "string" ? key.trim() : "";
+  if (!normalisedKey) {
+    return factory();
+  }
+
+  const cached = await store.get(normalisedKey);
+  if (cached !== null && cached !== undefined) {
     return cached as T;
   }
 
-  const fresh = await operation();
-  // Persist the response so future retries replay it instantly.
-  await store.set(key, fresh.status, fresh.body, Math.max(1, ttlMs));
+  const fresh = await factory();
+  await store.set(normalisedKey, fresh, normalisePersistenceTtl(ttlMs));
   return fresh;
 }
 

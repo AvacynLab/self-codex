@@ -1,7 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { mkdirSync, readFileSync, existsSync } from "node:fs";
-import { dirname, resolve as resolvePath } from "node:path";
+import { dirname } from "node:path";
+
+import { safePath } from "../gateways/fsArtifacts.js";
 
 /** Normalised representation of a single vectorised memory document. */
 export interface VectorMemoryDocument {
@@ -89,7 +91,11 @@ export class VectorMemoryIndex {
   private readonly records = new Map<string, VectorDocumentRecord>();
 
   private constructor(options: VectorMemoryIndexOptions) {
-    this.filePath = resolvePath(options.directory, options.fileName ?? "index.json");
+    // Persist the index inside the caller-provided directory while forbidding
+    // any traversal via the optional `fileName` override. `safePath` mirrors the
+    // artefact gateway guarantees so even crafted filenames ("../index.json")
+    // cannot escape the configured directory.
+    this.filePath = safePath(options.directory, options.fileName ?? "index.json");
     this.maxDocuments = Math.max(1, options.maxDocuments ?? 512);
     this.now = options.now ?? (() => Date.now());
   }
