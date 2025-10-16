@@ -10,7 +10,7 @@ import {
   recordSseDrop,
   registerChildRestart,
   registerIdempotencyConflict,
-  reportOpenSseClients,
+  reportOpenSseStreams,
   reportOpenChildRuntimes,
   renderMetricsSnapshot,
 } from "../../src/infra/tracing.js";
@@ -41,18 +41,22 @@ describe("http metrics", () => {
     recordSseDrop(3);
     registerChildRestart();
     registerIdempotencyConflict();
-    reportOpenSseClients(2);
+    reportOpenSseStreams(2);
     reportOpenChildRuntimes(5);
 
     const snapshot = renderMetricsSnapshot();
 
     expect(snapshot).to.contain("rpc_count{method=\"tool:artifact_write\"} 2");
     expect(snapshot).to.contain("rpc_error_count{method=\"tool:artifact_write\"} 1");
+    // Percentile gauges expose the latency distribution per façade so dashboards can flag regressions.
+    expect(snapshot).to.contain("rpc_latency_ms_p50{method=\"tool:artifact_write\"}");
+    expect(snapshot).to.contain("rpc_latency_ms_p95{method=\"tool:artifact_write\"}");
+    expect(snapshot).to.contain("rpc_latency_ms_p99{method=\"tool:artifact_write\"}");
     expect(snapshot).to.contain("# mcp infra metrics");
     expect(snapshot).to.contain("sse_drops_total 3");
     expect(snapshot).to.contain("child_restarts_total 1");
     expect(snapshot).to.contain("idempotency_conflicts_total 1");
-    expect(snapshot).to.contain("open_sse 2");
+    expect(snapshot).to.contain("open_sse_streams 2");
     expect(snapshot).to.contain("open_children 5");
   });
 });

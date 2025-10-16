@@ -9,6 +9,7 @@
   },
   "scripts": {
     "build": "tsc && tsc -p graph-forge/tsconfig.json",
+    "ci:build": "npm ci --include=dev && npm run build",
     "build:portable": "node -e \"process.exit(require('fs').existsSync('node_modules/.bin/tsc')?0:1)\" || (npx --yes typescript tsc && npx --yes typescript tsc -p graph-forge/tsconfig.json)",
     "start": "node dist/server.js",
     "start:http": "node dist/server.js --http --http-host 127.0.0.1 --http-port 8765 --http-path /mcp --http-json on --http-stateless yes",

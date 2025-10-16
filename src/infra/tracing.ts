@@ -106,7 +106,8 @@ const budgetMetrics = new Map<string, BudgetMetricRecord>();
 let sseDropCount = 0;
 let childRestartCount = 0;
 let idempotencyConflictCount = 0;
-let openSseClients = 0;
+/** Gauge tracking the number of live SSE streams served by the HTTP transport. */
+let openSseStreams = 0;
 let openChildRuntimes = 0;
 
 interface BudgetMetricRecord {
@@ -515,8 +516,17 @@ export function registerIdempotencyConflict(): void {
  * provide the current count so the gauge remains accurate when multiple
  * connection lifecycles overlap.
  */
+export function reportOpenSseStreams(count: number): void {
+  openSseStreams = normaliseGaugeInput(count);
+}
+
+/**
+ * Backwards compatible alias maintained for existing imports. The implementation
+ * forwards to {@link reportOpenSseStreams} so the gauge exposed over `/metrics`
+ * stays consistent with the hardened naming (`open_sse_streams`).
+ */
 export function reportOpenSseClients(count: number): void {
-  openSseClients = normaliseGaugeInput(count);
+  reportOpenSseStreams(count);
 }
 
 /**
@@ -603,7 +613,7 @@ export function renderMetricsSnapshot(): string {
   lines.push(`sse_drops_total ${sseDropCount}`);
   lines.push(`child_restarts_total ${childRestartCount}`);
   lines.push(`idempotency_conflicts_total ${idempotencyConflictCount}`);
-  lines.push(`open_sse ${openSseClients}`);
+  lines.push(`open_sse_streams ${openSseStreams}`);
   lines.push(`open_children ${openChildRuntimes}`);
   return `${lines.join("\n")}\n`;
 }
@@ -616,7 +626,7 @@ export const __tracingInternals = {
     sseDropCount = 0;
     childRestartCount = 0;
     idempotencyConflictCount = 0;
-    openSseClients = 0;
+    openSseStreams = 0;
     openChildRuntimes = 0;
   },
   configureOtlp(config: OtlpConfig | null): void {

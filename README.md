@@ -63,11 +63,25 @@ configuration éventuelle de `~/.codex/config.toml`.
 - **Variables utiles** :
   - `MCP_HTTP_*` : configure l'hôte, le port, le chemin et le mode stateless du
     transport HTTP (ex. `MCP_HTTP_HOST`, `MCP_HTTP_PORT`). Définir
-    `MCP_HTTP_TOKEN` active la protection Bearer requise par `/readyz` et
-    `/metrics`.
+    `MCP_HTTP_TOKEN` (valeur d'exemple : `change-me`) active la protection
+    Bearer requise par `/readyz` et `/metrics`. Les clients incapables d'envoyer
+    le header standard peuvent utiliser `X-MCP-Token` comme solution de
+    repli : le serveur applique la même comparaison en temps constant. Les
+    proxys qui dupliquent `Authorization`, concatènent plusieurs schémas dans un
+    seul header (séparés par des virgules) ou émettent des valeurs vides sont
+    également gérés : l'extraction ignore les entrées blanches et privilégie la
+    première valeur Bearer valide sans tronquer les jetons atypiques.
+  - `MCP_SSE_*` : pilote les flux Server-Sent Events. `MCP_SSE_MAX_CHUNK_BYTES`
+    borne la taille d'un événement individuel tandis que `MCP_SSE_MAX_BUFFER`
+    (1 048 576 octets par défaut) impose un seuil de backpressure avant de
+    ralentir ou supprimer des messages.
+  - `IDEMPOTENCY_TTL_MS` : contrôle la rétention des clés d'idempotence côté
+    serveur pour éviter les replays accidentels (5 minutes par défaut).
   - `MCP_LOG_*` : positionne le chemin du log structuré (`MCP_LOG_FILE`), la
     politique de rotation (`MCP_LOG_ROTATE_SIZE`, `MCP_LOG_ROTATE_KEEP`) et la
-    rédaction (`MCP_LOG_REDACT`).
+    rédaction (`MCP_LOG_REDACT`, activée par défaut avec la valeur `true`). Les
+    suffixes `k`/`m`/`g` restent acceptés pour exprimer la taille maximale (ex.
+    `10MB`).
   - `MCP_*_ROOT` : `MCP_RUNS_ROOT` et `MCP_CHILDREN_ROOT` redirigent les
     répertoires d'exécution vers des volumes persistants.
   - `MCP_QUALITY_*` : active le garde-fou qualité (`MCP_QUALITY_GATE`,
@@ -79,8 +93,6 @@ configuration éventuelle de `~/.codex/config.toml`.
     les manifestes des façades lorsque vous devez autoriser des réponses plus
     volumineuses ou de longues orchestrations. Utilisez la forme
     `MCP_TOOLS_BUDGET_<NOM_OUTIL>_{TIME_MS|TOOL_CALLS|BYTES_OUT}` (ex. `MCP_TOOLS_BUDGET_PLAN_COMPILE_EXECUTE_TIME_MS=240000`).
-  - `IDEMPOTENCY_TTL_MS` : contrôle la rétention des clés d'idempotence côté
-    serveur pour éviter les replays accidentels.
 - **Observabilité** : `scripts/record-run.mjs` pilote le serveur HTTP, enchaîne
   `mcp_info`, `tools/list`, les opérations de graphe et le cycle enfant Codex,
   puis génère un dossier `runs/validation_<date>/` avec les requêtes JSONL,

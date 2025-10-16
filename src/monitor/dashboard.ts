@@ -11,7 +11,7 @@ import type { ChildRuntimeLimits } from "../childRuntime.js";
 import { ChildSupervisor } from "../childSupervisor.js";
 import { StructuredLogger } from "../logger.js";
 import { serialiseForSse } from "../events/sse.js";
-import { reportOpenSseClients } from "../infra/tracing.js";
+import { reportOpenSseStreams } from "../infra/tracing.js";
 import type {
   ContractNetWatcherTelemetryRecorder,
   ContractNetWatcherTelemetryState,
@@ -613,7 +613,7 @@ function handleStreamRequest(
   });
   res.write(`retry: ${streamIntervalMs}\n\n`);
   clients.add(res);
-  reportOpenSseClients(clients.size);
+  reportOpenSseStreams(clients.size);
   let released = false;
   const release = () => {
     if (released) {
@@ -621,7 +621,7 @@ function handleStreamRequest(
     }
     released = true;
     clients.delete(res);
-    reportOpenSseClients(clients.size);
+    reportOpenSseStreams(clients.size);
   };
   res.on("close", release);
   res.on("error", release);
