@@ -4,6 +4,7 @@ import { mkdirSync, readFileSync, existsSync } from "node:fs";
 import { dirname } from "node:path";
 
 import { KnowledgeGraph, type KnowledgeInsertResult, type KnowledgeQueryOptions, type KnowledgeQueryPattern, type KnowledgeTripleSnapshot } from "../knowledge/knowledgeGraph.js";
+import type { Provenance } from "../types/provenance.js";
 import { safePath } from "../gateways/fsArtifacts.js";
 
 /** Options accepted by {@link PersistentKnowledgeGraph.create}. */
@@ -73,6 +74,7 @@ export class PersistentKnowledgeGraph {
     object: string;
     source?: string;
     confidence?: number;
+    provenance?: Provenance[];
   }): Promise<KnowledgeInsertResult> {
     const result = this.graph.insert(triple);
     await this.persist();

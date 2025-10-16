@@ -238,6 +238,7 @@ describe("graph lock concurrency over HTTP", function () {
   const logger = new StructuredLogger();
   let originalFeatures: FeatureToggles;
   let originalToken: string | undefined;
+  let originalAllow: string | undefined;
   let handle: HttpServerHandle | null = null;
   let baseUrl = "";
   let scenarioCounter = 0;
@@ -250,6 +251,8 @@ describe("graph lock concurrency over HTTP", function () {
 
     originalToken = process.env.MCP_HTTP_TOKEN;
     delete process.env.MCP_HTTP_TOKEN;
+    originalAllow = process.env.MCP_HTTP_ALLOW_NOAUTH;
+    process.env.MCP_HTTP_ALLOW_NOAUTH = "1";
 
     originalFeatures = getRuntimeFeatures();
     configureRuntimeFeatures({
@@ -285,6 +288,11 @@ describe("graph lock concurrency over HTTP", function () {
       delete process.env.MCP_HTTP_TOKEN;
     } else {
       process.env.MCP_HTTP_TOKEN = originalToken;
+    }
+    if (originalAllow === undefined) {
+      delete process.env.MCP_HTTP_ALLOW_NOAUTH;
+    } else {
+      process.env.MCP_HTTP_ALLOW_NOAUTH = originalAllow;
     }
   });
 

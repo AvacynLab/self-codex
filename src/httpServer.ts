@@ -6,6 +6,7 @@ import process from "node:process";
 // NOTE: Node built-in modules are imported with the explicit `node:` prefix to guarantee ESM resolution in Node.js.
 
 import { StructuredLogger } from "./logger.js";
+import type { EventStore } from "./eventStore.js";
 import { handleJsonRpc, maybeRecordIdempotentWalEntry, type JsonRpcRequest } from "./server.js";
 import type { JsonRpcRouteContext } from "./infra/runtime.js";
 import { HttpRuntimeOptions, createHttpSessionId } from "./serverOptions.js";
@@ -130,6 +131,11 @@ function refreshRateLimiterFromEnv(): RateLimiterConfig {
 // Initialise the limiter from the current environment as soon as the module loads.
 refreshRateLimiterFromEnv();
 
+/** Flag value that opts the HTTP transport into unauthenticated development mode. */
+const NOAUTH_FLAG_VALUE = "1";
+/** Tracks whether the unauthenticated override warning has already been logged. */
+let noAuthBypassLogged = false;
+
 export interface HttpServerHandle {
   close: () => Promise<void>;
   /** Actual port bound by the HTTP server (useful when `0` was requested). */
@@ -148,6 +154,8 @@ export interface HttpServerExtras {
   idempotency?: HttpIdempotencyConfig;
   /** Optional readiness probe invoked by `/readyz`. */
   readiness?: HttpReadinessExtras;
+  /** Event store used to emit structured HTTP access logs for observability. */
+  eventStore?: EventStore;
 }
 
 /** Details returned by the readiness probe so operators can diagnose failures. */
@@ -183,6 +191,8 @@ export async function startHttpServer(
 
   await server.connect(httpTransport);
 
+  const accessLogStore = extras.eventStore;
+
   const httpServer = createHttpServer(async (req, res) => {
     const request = req as HttpTransportRequest;
     const response = res as HttpTransportResponse;
@@ -191,7 +201,23 @@ export async function startHttpServer(
     const requestUrl = request.url ? new URL(request.url, `http://${request.headers.host ?? "localhost"}`) : null;
     const requestId = ensureRequestId(request, response);
     const remoteAddress = request.socket?.remoteAddress ?? "unknown";
+    const route = requestUrl?.pathname ?? request.url ?? "/";
+    const method = request.method ?? "UNKNOWN";
     const guardMeta: HttpErrorMeta = { startedAt: requestStartedAt };
+
+    let accessLogged = false;
+    const logAccess = (statusOverride?: number): void => {
+      if (accessLogged) {
+        return;
+      }
+      accessLogged = true;
+      const status = typeof statusOverride === "number" ? statusOverride : response.statusCode ?? 0;
+      const completedAt = process.hrtime.bigint();
+      publishHttpAccessEvent(accessLogStore, remoteAddress, route, method, status, requestStartedAt, completedAt);
+    };
+
+    response.once("finish", () => logAccess());
+    response.once("close", () => logAccess(response.statusCode ?? 0));
 
     if (!requestUrl) {
       await respondWithJsonRpcError(response, 400, "VALIDATION_ERROR", "Invalid Request", logger, requestId, guardMeta, {
@@ -408,6 +434,11 @@ async function handleReadyCheck(
  * is present on incoming HTTP requests. A `401` JSON-RPC error response is
  * returned when the header is missing or does not match.
  */
+function shouldAllowUnauthenticatedRequests(): boolean {
+  const flag = process.env.MCP_HTTP_ALLOW_NOAUTH;
+  return typeof flag === "string" && flag.trim() === NOAUTH_FLAG_VALUE;
+}
+
 function enforceBearerToken(
   req: HttpTransportRequest,
   res: HttpTransportResponse,
@@ -415,19 +446,27 @@ function enforceBearerToken(
   requestId: string,
   meta: HttpErrorMeta = {},
 ): boolean {
-  const requiredToken = process.env.MCP_HTTP_TOKEN ?? "";
-  if (!requiredToken) {
-    return true;
-  }
-
+  const allowNoAuth = shouldAllowUnauthenticatedRequests();
+  const configuredTokenRaw = process.env.MCP_HTTP_TOKEN;
+  const requiredToken = typeof configuredTokenRaw === "string" ? configuredTokenRaw.trim() : "";
   const token = resolveHttpAuthToken(req.headers);
-  const valid = typeof token === "string" && checkToken(token, requiredToken);
+  const hasValidToken =
+    requiredToken.length > 0 && typeof token === "string" && checkToken(token, requiredToken);
 
-  if (valid) {
+  if (hasValidToken) {
     return true;
   }
 
-  logger.warn("http_auth_rejected", { reason: "missing_or_invalid_token", request_id: requestId });
+  if (allowNoAuth) {
+    if (!noAuthBypassLogged) {
+      logger.warn("http_auth_bypassed", { reason: "allow_noauth", request_id: requestId });
+      noAuthBypassLogged = true;
+    }
+    return true;
+  }
+
+  const rejectionReason = requiredToken.length === 0 ? "token_not_configured" : "missing_or_invalid_token";
+  logger.warn("http_auth_rejected", { reason: rejectionReason, request_id: requestId });
   void respondWithJsonRpcError(res, 401, "AUTH_REQUIRED", "Authentication required", logger, requestId, meta, {
     // Keep the legacy E-MCP-AUTH marker in metadata so downstream scrapers and
     // assertions that rely on the historical flag remain compatible while the
@@ -741,6 +780,10 @@ export const __httpServerInternals = {
   configureRateLimiter,
   refreshRateLimiterFromEnv,
   getRateLimiterConfig: () => rateLimiterConfig,
+  resetNoAuthBypassWarning: () => {
+    noAuthBypassLogged = false;
+  },
+  publishHttpAccessEvent,
 };
 
 type JsonRpcLogLevel = "info" | "warn" | "error";
@@ -845,5 +888,33 @@ async function sendJson(
     logger.warn("http_idempotency_store_failed", { request_id: requestId, cache_key: cacheKey, message });
   }
   return bytesOut;
+}
+
+function publishHttpAccessEvent(
+  store: EventStore | undefined,
+  remoteAddress: string,
+  route: string,
+  method: string,
+  status: number,
+  startedAt: bigint,
+  completedAt: bigint,
+): void {
+  if (!store) {
+    return;
+  }
+  const latencyNs = completedAt - startedAt;
+  const latencyMs = Number(latencyNs) / 1_000_000;
+  store.emit({
+    kind: "HTTP_ACCESS",
+    source: "system",
+    level: "info",
+    payload: {
+      ip: remoteAddress,
+      route,
+      method,
+      status,
+      latency_ms: Number.isFinite(latencyMs) && latencyMs >= 0 ? latencyMs : 0,
+    },
+  });
 }
 

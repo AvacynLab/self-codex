@@ -1,3 +1,5 @@
+import { mergeProvenance, normaliseProvenanceList, type Provenance } from "../types/provenance.js";
+
 /** Options accepted by the {@link KnowledgeGraph} constructor. */
 export interface KnowledgeGraphOptions {
   /** Clock providing monotonic timestamps. Defaults to {@link Date.now}. */
@@ -16,6 +18,8 @@ export interface KnowledgeTripleSnapshot {
   object: string;
   /** Optional provenance string describing the data source. */
   source: string | null;
+  /** Structured provenance metadata pointing to supporting artefacts. */
+  provenance: Provenance[];
   /** Confidence score (0-1) associated with the triple. */
   confidence: number;
   /** Creation timestamp emitted by the injected clock. */
@@ -103,6 +107,8 @@ export interface KnowledgePlanTask {
   source: string | null;
   /** Confidence inherited from the triple linking the task to the plan. */
   confidence: number;
+  /** Structured provenance metadata associated with the task triple. */
+  provenance: Provenance[];
 }
 
 interface KnowledgeTripleRecord extends KnowledgeTripleSnapshot {
@@ -143,6 +149,7 @@ export class KnowledgeGraph {
     object: string;
     source?: string;
     confidence?: number;
+    provenance?: Provenance[];
   }): KnowledgeInsertResult {
     const subject = triple.subject.trim();
     const predicate = triple.predicate.trim();
@@ -154,6 +161,7 @@ export class KnowledgeGraph {
 
     const source = triple.source?.trim() ?? null;
     const confidence = clampConfidence(triple.confidence);
+    const provenance = normaliseProvenanceList(triple.provenance);
     const timestamp = this.now();
     const key = makeKey(subject, predicate, object);
     const existingId = this.keyIndex.get(key);
@@ -168,6 +176,7 @@ export class KnowledgeGraph {
         ...record,
         source,
         confidence,
+        provenance: mergeProvenance(record.provenance, provenance),
         updatedAt: timestamp,
         revision: record.revision + 1,
       };
@@ -185,6 +194,7 @@ export class KnowledgeGraph {
       object,
       source,
       confidence,
+      provenance,
       insertedAt: timestamp,
       updatedAt: timestamp,
       revision: 0,
@@ -253,6 +263,7 @@ export class KnowledgeGraph {
       const weight = toNumber(taskTriples.find((triple) => triple.predicate === "weight")?.object);
       const source = include.source;
       const confidence = include.confidence;
+      const provenance = cloneProvenanceList(include.provenance);
       if (source) {
         sources.add(source);
       }
@@ -265,6 +276,7 @@ export class KnowledgeGraph {
         weight: weight ?? undefined,
         source,
         confidence,
+        provenance,
       });
     }
 
@@ -301,8 +313,12 @@ export class KnowledgeGraph {
     this.clear();
 
     for (const snapshot of snapshots) {
+      const provenance = normaliseProvenanceList(
+        (snapshot as KnowledgeTripleSnapshot & { provenance?: Provenance[] }).provenance,
+      );
       const record: KnowledgeTripleRecord = {
         ...snapshot,
+        provenance,
         key: makeKey(snapshot.subject, snapshot.predicate, snapshot.object),
       };
       this.records.set(record.id, record);
@@ -406,7 +422,11 @@ function makePairKey(left: string, right: string): string {
 }
 
 function cloneRecord(record: KnowledgeTripleRecord): KnowledgeTripleSnapshot {
-  return { ...record };
+  return { ...record, provenance: cloneProvenanceList(record.provenance) };
+}
+
+function cloneProvenanceList(list: ReadonlyArray<Provenance>): Provenance[] {
+  return list.map((entry) => ({ ...entry }));
 }
 
 function intersect(left: Set<string>, right: Set<string>): Set<string> {

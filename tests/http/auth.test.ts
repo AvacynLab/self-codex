@@ -134,6 +134,7 @@ describe("resolveHttpAuthToken", () => {
  */
 describe("http bearer guard", () => {
   const previousToken = process.env.MCP_HTTP_TOKEN;
+  const previousAllow = process.env.MCP_HTTP_ALLOW_NOAUTH;
 
   afterEach(() => {
     // Restore the expected token so unrelated tests continue observing the
@@ -143,6 +144,68 @@ describe("http bearer guard", () => {
     } else {
       process.env.MCP_HTTP_TOKEN = previousToken;
     }
+    if (previousAllow === undefined) {
+      delete process.env.MCP_HTTP_ALLOW_NOAUTH;
+    } else {
+      process.env.MCP_HTTP_ALLOW_NOAUTH = previousAllow;
+    }
+    __httpServerInternals.resetNoAuthBypassWarning();
+  });
+
+  it("fails closed when the server token is not configured", () => {
+    delete process.env.MCP_HTTP_TOKEN;
+    delete process.env.MCP_HTTP_ALLOW_NOAUTH;
+
+    const request = createHttpRequest("GET", "/mcp");
+    const response = new MemoryHttpResponse();
+    const warnings: Array<{ event: string; payload: Record<string, unknown> }> = [];
+    const logger = {
+      warn(event: string, payload: Record<string, unknown>) {
+        warnings.push({ event, payload });
+      },
+      info() {},
+      error() {},
+    };
+
+    const allowed = __httpServerInternals.enforceBearerToken(
+      request as any,
+      response as any,
+      logger as any,
+      "no-token",
+    );
+
+    expect(allowed, "guard must reject unauthenticated calls when no token is configured").to.equal(false);
+    expect(response.statusCode, "HTTP status").to.equal(401);
+    expect(warnings.some(({ payload }) => payload.reason === "token_not_configured")).to.equal(true);
+  });
+
+  it("allows unauthenticated calls when the development override is enabled", () => {
+    delete process.env.MCP_HTTP_TOKEN;
+    process.env.MCP_HTTP_ALLOW_NOAUTH = "1";
+
+    const request = createHttpRequest("GET", "/mcp");
+    const response = new MemoryHttpResponse();
+    let bypassWarnings = 0;
+    const logger = {
+      warn(event: string) {
+        if (event === "http_auth_bypassed") {
+          bypassWarnings += 1;
+        }
+      },
+      info() {},
+      error() {},
+    };
+
+    const allowed = __httpServerInternals.enforceBearerToken(
+      request as any,
+      response as any,
+      logger as any,
+      "dev-override",
+    );
+
+    expect(allowed, "guard must honour the no-auth development override").to.equal(true);
+    expect(response.statusCode, "guard should not mutate the response when bypassing").to.equal(0);
+    expect(bypassWarnings, "override should be logged once for operator visibility").to.equal(1);
   });
 
   it("rejects same-length bearer tokens with a 401 response", () => {

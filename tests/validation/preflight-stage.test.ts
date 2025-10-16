@@ -31,10 +31,12 @@ describe("validation preflight stage", function () {
     originalEnv.MCP_HTTP_PORT = process.env.MCP_HTTP_PORT;
     originalEnv.MCP_HTTP_PATH = process.env.MCP_HTTP_PATH;
     originalEnv.MCP_HTTP_TOKEN = process.env.MCP_HTTP_TOKEN;
+    originalEnv.MCP_HTTP_ALLOW_NOAUTH = process.env.MCP_HTTP_ALLOW_NOAUTH;
     process.env.MCP_HTTP_HOST = "127.0.0.1";
     process.env.MCP_HTTP_PORT = "0";
     process.env.MCP_HTTP_PATH = "/mcp";
     delete process.env.MCP_HTTP_TOKEN;
+    process.env.MCP_HTTP_ALLOW_NOAUTH = "1";
   });
 
   afterEach(async () => {
@@ -59,6 +61,11 @@ describe("validation preflight stage", function () {
     } else {
       process.env.MCP_HTTP_TOKEN = originalEnv.MCP_HTTP_TOKEN;
     }
+    if (originalEnv.MCP_HTTP_ALLOW_NOAUTH === undefined) {
+      delete process.env.MCP_HTTP_ALLOW_NOAUTH;
+    } else {
+      process.env.MCP_HTTP_ALLOW_NOAUTH = originalEnv.MCP_HTTP_ALLOW_NOAUTH;
+    }
   });
 
   after(() => {
@@ -66,6 +73,7 @@ describe("validation preflight stage", function () {
     delete originalEnv.MCP_HTTP_PORT;
     delete originalEnv.MCP_HTTP_PATH;
     delete originalEnv.MCP_HTTP_TOKEN;
+    delete originalEnv.MCP_HTTP_ALLOW_NOAUTH;
   });
 
   it("records http handshake artefacts and restores tokens", async () => {

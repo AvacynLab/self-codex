@@ -57,6 +57,8 @@ describe("http idempotency endpoints", () => {
   let handle: HttpServerHandle;
   let baseUrl: string;
   let originalFeatures: FeatureToggles;
+  let tokenSnapshot: string | undefined;
+  let allowSnapshot: string | undefined;
 
   before(async function () {
     const offlineGuard = (globalThis as { __OFFLINE_TEST_GUARD__?: string }).__OFFLINE_TEST_GUARD__;
@@ -75,7 +77,10 @@ describe("http idempotency endpoints", () => {
       enableResources: true,
     });
 
+    tokenSnapshot = process.env.MCP_HTTP_TOKEN;
     delete process.env.MCP_HTTP_TOKEN;
+    allowSnapshot = process.env.MCP_HTTP_ALLOW_NOAUTH;
+    process.env.MCP_HTTP_ALLOW_NOAUTH = "1";
 
     handle = await startHttpServer(
       mcpServer,
@@ -96,6 +101,16 @@ describe("http idempotency endpoints", () => {
       await handle.close();
     }
     configureRuntimeFeatures(originalFeatures);
+    if (tokenSnapshot === undefined) {
+      delete process.env.MCP_HTTP_TOKEN;
+    } else {
+      process.env.MCP_HTTP_TOKEN = tokenSnapshot;
+    }
+    if (allowSnapshot === undefined) {
+      delete process.env.MCP_HTTP_ALLOW_NOAUTH;
+    } else {
+      process.env.MCP_HTTP_ALLOW_NOAUTH = allowSnapshot;
+    }
   });
 
   it("replays tx_begin payloads when the idempotency key is reused", async () => {

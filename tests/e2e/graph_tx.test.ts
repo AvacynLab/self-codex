@@ -264,6 +264,7 @@ describe("graph transactions over HTTP", function () {
   let baseUrl = "";
   let featuresSnapshot: FeatureToggles;
   let tokenSnapshot: string | undefined;
+  let allowSnapshot: string | undefined;
   let graphCounter = 0;
 
   before(async function () {
@@ -274,6 +275,8 @@ describe("graph transactions over HTTP", function () {
 
     tokenSnapshot = process.env.MCP_HTTP_TOKEN;
     delete process.env.MCP_HTTP_TOKEN;
+    allowSnapshot = process.env.MCP_HTTP_ALLOW_NOAUTH;
+    process.env.MCP_HTTP_ALLOW_NOAUTH = "1";
 
     featuresSnapshot = getRuntimeFeatures();
     configureRuntimeFeatures({
@@ -308,6 +311,11 @@ describe("graph transactions over HTTP", function () {
       delete process.env.MCP_HTTP_TOKEN;
     } else {
       process.env.MCP_HTTP_TOKEN = tokenSnapshot;
+    }
+    if (allowSnapshot === undefined) {
+      delete process.env.MCP_HTTP_ALLOW_NOAUTH;
+    } else {
+      process.env.MCP_HTTP_ALLOW_NOAUTH = allowSnapshot;
     }
   });
 

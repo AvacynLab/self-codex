@@ -70,7 +70,10 @@ configuration éventuelle de `~/.codex/config.toml`.
     proxys qui dupliquent `Authorization`, concatènent plusieurs schémas dans un
     seul header (séparés par des virgules) ou émettent des valeurs vides sont
     également gérés : l'extraction ignore les entrées blanches et privilégie la
-    première valeur Bearer valide sans tronquer les jetons atypiques.
+    première valeur Bearer valide sans tronquer les jetons atypiques. Pour les
+    itérations locales, le flag `MCP_HTTP_ALLOW_NOAUTH=1` désactive
+    temporairement l'authentification ; laissez-le non défini (valeur par défaut
+    sécurisée) en production.
   - `MCP_SSE_*` : pilote les flux Server-Sent Events. `MCP_SSE_MAX_CHUNK_BYTES`
     borne la taille d'un événement individuel tandis que `MCP_SSE_MAX_BUFFER`
     (1 048 576 octets par défaut) impose un seuil de backpressure avant de
@@ -104,6 +107,38 @@ configuration éventuelle de `~/.codex/config.toml`.
   mode attendu par Codex CLI.
 - **HTTP optionnel** — `npm run start:http` active le transport streamable HTTP
   (`--no-stdio`). À réserver aux scénarios cloud avec reverse proxy MCP.
+
+## Sécurité HTTP
+
+- **Jeton obligatoire par défaut** — toute requête HTTP doit présenter un header
+  `Authorization: Bearer …` correspondant à `MCP_HTTP_TOKEN`. À défaut, le
+  serveur renvoie un JSON-RPC 401 (`E-MCP-AUTH`). Les flux SSE, `/readyz` et
+  `/metrics` appliquent la même garde.
+- **Mode local sans auth** — définissez `MCP_HTTP_ALLOW_NOAUTH=1` uniquement sur
+  un poste de développement pour tester rapidement l'API. Laissez cette variable
+  absente (ou à `0`) en production : le build considère la configuration sans
+  jeton comme un échec de sécurité.
+- **Journalisation d'accès** — chaque requête génère un événement
+  `HTTP_ACCESS` dans l'EventStore avec l'IP, la route, le statut HTTP et la
+  latence observée. Ces traces facilitent les audits ainsi que la corrélation
+  avec les métriques `http_rate_limited` et les erreurs applicatives.
+
+### Vérifier la protection
+
+```bash
+# Attendu : 401 car aucun jeton Bearer n'est fourni.
+curl -s -o /dev/null -w "HTTP %{http_code}\n" \
+  -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":"unauth","method":"mcp_info","params":{}}' \
+  http://127.0.0.1:8765/mcp
+
+# Attendu : 200 avec un jeton valide.
+export MCP_HTTP_TOKEN="change-me"
+curl -s -H "Authorization: Bearer ${MCP_HTTP_TOKEN}" \
+  -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":"auth","method":"mcp_info","params":{}}' \
+  http://127.0.0.1:8765/mcp
+```
 
 ## Façades haut niveau
 

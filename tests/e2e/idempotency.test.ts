@@ -98,6 +98,7 @@ describe("transaction idempotency over HTTP", function () {
   let baseUrl = "";
   let originalFeatures: FeatureToggles;
   let originalToken: string | undefined;
+  let originalAllow: string | undefined;
 
   before(async function () {
     const guard = (globalThis as { __OFFLINE_TEST_GUARD__?: string }).__OFFLINE_TEST_GUARD__;
@@ -107,6 +108,8 @@ describe("transaction idempotency over HTTP", function () {
 
     originalToken = process.env.MCP_HTTP_TOKEN;
     delete process.env.MCP_HTTP_TOKEN;
+    originalAllow = process.env.MCP_HTTP_ALLOW_NOAUTH;
+    process.env.MCP_HTTP_ALLOW_NOAUTH = "1";
     originalFeatures = getRuntimeFeatures();
     configureRuntimeFeatures({
       ...originalFeatures,
@@ -139,6 +142,11 @@ describe("transaction idempotency over HTTP", function () {
       delete process.env.MCP_HTTP_TOKEN;
     } else {
       process.env.MCP_HTTP_TOKEN = originalToken;
+    }
+    if (originalAllow === undefined) {
+      delete process.env.MCP_HTTP_ALLOW_NOAUTH;
+    } else {
+      process.env.MCP_HTTP_ALLOW_NOAUTH = originalAllow;
     }
   });
 

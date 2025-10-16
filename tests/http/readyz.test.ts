@@ -25,11 +25,14 @@ function createLogger() {
 
 describe("http readyz", () => {
   let originalToken: string | undefined;
+  let originalAllow: string | undefined;
 
   beforeEach(() => {
     resetRateLimitBuckets();
     originalToken = process.env.MCP_HTTP_TOKEN;
+    originalAllow = process.env.MCP_HTTP_ALLOW_NOAUTH;
     process.env.MCP_HTTP_TOKEN = "unit-test-token";
+    delete process.env.MCP_HTTP_ALLOW_NOAUTH;
   });
 
   afterEach(async () => {
@@ -37,6 +40,11 @@ describe("http readyz", () => {
       delete process.env.MCP_HTTP_TOKEN;
     } else {
       process.env.MCP_HTTP_TOKEN = originalToken;
+    }
+    if (originalAllow === undefined) {
+      delete process.env.MCP_HTTP_ALLOW_NOAUTH;
+    } else {
+      process.env.MCP_HTTP_ALLOW_NOAUTH = originalAllow;
     }
   });
 

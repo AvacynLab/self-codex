@@ -14,6 +14,8 @@ import { resources } from "../src/server.js";
  *     `.gitkeep` sentinels so future steps can drop artefacts deterministically.
  */
 describe("validate run script", () => {
+  let originalAllowNoAuth: string | undefined;
+
   beforeEach(() => {
     process.env.CODEX_SCRIPT_TEST = "1";
     delete process.env.START_MCP_BG;
@@ -22,6 +24,8 @@ describe("validate run script", () => {
     process.env.MCP_HTTP_PORT = "0";
     process.env.MCP_HTTP_PATH = "/mcp";
     delete process.env.MCP_HTTP_TOKEN;
+    originalAllowNoAuth = process.env.MCP_HTTP_ALLOW_NOAUTH;
+    process.env.MCP_HTTP_ALLOW_NOAUTH = "1";
     process.env.CODEX_NODE_VERSION_OVERRIDE = "20.10.0";
     delete (globalThis as any).CODEX_VALIDATE_PLAN;
     resources.clearValidationArtifacts();
@@ -35,6 +39,11 @@ describe("validate run script", () => {
     delete process.env.MCP_HTTP_PORT;
     delete process.env.MCP_HTTP_PATH;
     delete process.env.MCP_HTTP_TOKEN;
+    if (originalAllowNoAuth === undefined) {
+      delete process.env.MCP_HTTP_ALLOW_NOAUTH;
+    } else {
+      process.env.MCP_HTTP_ALLOW_NOAUTH = originalAllowNoAuth;
+    }
     delete process.env.CODEX_NODE_VERSION_OVERRIDE;
     delete (globalThis as any).CODEX_VALIDATE_PLAN;
     resources.clearValidationArtifacts();

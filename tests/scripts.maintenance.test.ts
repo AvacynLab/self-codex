@@ -10,6 +10,8 @@ import { join } from "node:path";
  * effects without touching the working tree.
  */
 describe("maintenance script", () => {
+  let originalAllowNoAuth: string | undefined;
+
   beforeEach(() => {
     process.env.CODEX_SCRIPT_TEST = "1";
     process.env.CODEX_SCRIPT_DRY_RUN = "1";
@@ -20,6 +22,8 @@ describe("maintenance script", () => {
     process.env.MCP_HTTP_JSON = "on";
     process.env.MCP_HTTP_STATELESS = "yes";
     process.env.MCP_HTTP_TOKEN = "";
+    originalAllowNoAuth = process.env.MCP_HTTP_ALLOW_NOAUTH;
+    process.env.MCP_HTTP_ALLOW_NOAUTH = "1";
     process.env.MCP_FS_IPC_DIR = "~/.codex/ipc-tests";
     process.env.CODEX_NODE_VERSION_OVERRIDE = "20.10.0";
     const projectRoot = process.cwd();
@@ -41,6 +45,11 @@ describe("maintenance script", () => {
     delete process.env.MCP_HTTP_JSON;
     delete process.env.MCP_HTTP_STATELESS;
     delete process.env.MCP_HTTP_TOKEN;
+    if (originalAllowNoAuth === undefined) {
+      delete process.env.MCP_HTTP_ALLOW_NOAUTH;
+    } else {
+      process.env.MCP_HTTP_ALLOW_NOAUTH = originalAllowNoAuth;
+    }
     delete process.env.MCP_FS_IPC_DIR;
     delete process.env.CODEX_NODE_VERSION_OVERRIDE;
     const projectRoot = process.cwd();

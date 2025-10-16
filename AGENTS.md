@@ -1,258 +1,297 @@
-Parfait — je reprends **ta version actuelle** (celle que j’ai auditée à l’instant) et je te fournis une **liste de tâches à cocher** ultra-précise, **adressée directement à toi, l’agent**, pour finaliser, durcir et polir le serveur MCP.
-Objectif : livrer un build reproductible, des outils fiables, une observabilité exploitable, des I/O sûres, et une réduction intelligente de la surface d’outils.
+----------
+Voici ta **todo list exhaustive** (à cocher) destinée à un **agent IA**. Elle part de l’état **actuel** du code (les fichiers observés en `dist/*` et les modules présents) et de la **gap analysis** que j’ai effectuée.
+Règle d’or : **ne jamais éditer `dist/*` directement**. Si les sources TypeScript ne sont pas présentes, **crée-les** en respectant l’arborescence proposée ci-dessous et **branche la build** pour générer `dist/*`.
 
 ---
 
-# Brief pour toi, l’agent
+# BRIEF À L’AGENT — Objectifs & Contraintes
 
-* **But** : terminer le durcissement runtime (auth HTTP, readiness réel, backpressure SSE), fiabiliser I/O (sanitisation, spawn enfant), consolider l’idempotence, enrichir `metrics`, et **simplifier la surface d’outils** (moins d’outils visibles, mieux documentés, mieux routés).
-* **Contraintes build/tests** : toujours **`npm ci --include=dev && npm run build`** avant tout; exécuter **`npm run lint`**, **`npm run coverage`**, et le **smoke** `scripts/validation/run-smoke.mjs` ; seuils coverage inchangés (statements 85, etc.).
-* **État pointé** : config TS **NodeNext** OK, imports Node **préfixés `node:`** OK, registres MCP riches OK, endpoints `/healthz` `/readyz` `/metrics` présents, grosse suite de tests.
-* **Gaps à combler en priorité** : `.env.example` incomplet (manque `MCP_HTTP_TOKEN`), **readiness** à rendre strictement “réel”, `metrics` à enrichir (latences p95/p99 par façade, drops SSE, restarts enfants, conflits idempotence), et **réduction** des outils visibles.
+**Objectifs**
 
----
+* Élever le serveur MCP au **state of the art** : sûreté par défaut, **mémoire vectorielle (RAG)**, **raisonnement multi-voies (graph-of-thought)**, **sélection d’outils** contextuelle, **provenance** des sources, **auto-amélioration** (lessons), observabilité causale & **replay**, **harness d’évaluation** agentique.
+* Tout changement doit **s’intégrer** proprement aux briques existantes : `GraphState`, `ValueGraph`, `Consensus`, `Blackboard`, `ContractNet`, `Stigmergy`, `EventStore`, `ResourceRegistry`, `Dashboard`.
 
-# TODO – Par fichier (avec sous-étapes et critères d’acceptation)
+**Ce qu’il faut respecter (tests & build)**
 
-## 1) `.env.example` — compléter et expliquer
+* **Ne modifie pas** le JS de `dist/*`. Ajoute/édite les **sources TypeScript** sous `src/**` avec un mapping 1:1 vers les artefacts JS.
+* Ajoute/complete les **scripts NPM** :
 
-* [x] **Ajouter** les variables manquantes avec commentaires concis :
-
-  * [x] `MCP_HTTP_TOKEN=change-me` (jeton HTTP pour transport JSON-RPC)
-  * [x] `MCP_SSE_MAX_BUFFER=1048576` (seuil backpressure SSE, bytes)
-  * [x] `IDEMPOTENCY_TTL_MS=300000` (TTL des entrées idempotence)
-  * [x] `MCP_LOG_REDACT=true` (masquage naïf des secrets dans logs)
-  * [x] `MCP_LOG_ROTATE_SIZE=10MB` (rotation par taille)
-  * [x] `MCP_LOG_ROTATE_KEEP=5`
-* [x] **Critères** : `git diff` ne touche **que** `.env.example`; `scripts/validation/run-smoke.mjs` doit pouvoir charger ces variables; doc intégrée dans README (cf. § 10).
-
-## 2) `package.json` — durcir l’outillage
-
-* [x] **S’assurer** que `devDependencies["@types/node"]` est **pinné** compatible Node 20 (ex : `^20.x`), vu `engines.node: ">=20.0.0"`.
-* [x] **Ajouter** script rapide de build-only CI :
-
-  * [x] `"ci:build": "npm ci --include=dev && npm run build"`.
-* [x] **Critères** : `npm run ci:build` passe localement; pas de nouvel avertissement TS sur `types`.
-
-## 3) `src/http/auth.ts` — checker temps-constant (nouveau fichier)
-
-* [x] **Créer** un module d’auth HTTP dédié :
-
-  * [x] Compare `Authorization`/header perso au `MCP_HTTP_TOKEN` via `crypto.timingSafeEqual`.
-  * [x] Sur absence/erreur : **401** générique (pas de fuite d’info).
-* [x] **Intégrer** dans `src/httpServer.ts` avant le dispatch JSON-RPC.
-* [x] **Tests** : `tests/http/auth.test.ts`
-
-  * [x] Faux token même longueur ⇒ 401
-  * [x] Bon token ⇒ 200
-  * [x] Supporter le header de repli `X-MCP-Token` pour les clients sans `Authorization`.
-* [x] **Critères** : `/metrics` **n’expose jamais** le token; logs ne dumpent pas l’Authorization.
-
-## 4) `src/httpServer.ts` — readiness “réel” et métriques minimales
-
-* [x] **Readiness** (`/readyz`) ne renvoie **OK** qu’après :
-
-  * [x] **Préchargement** `graph-forge` (import dyn. réussi)
-  * [x] **Test R/W** sur `runs/` (touch fichier éphémère)
-  * [x] **Init store idempotence** (ping simple)
-  * [x] **Event-bus** opérationnel
-* [x] **Metrics** : ajouter compteurs/jauges base :
-
-* [x] Latence **par façade** (p50/p95/p99)
-* [x] `child_restarts_total`
-* [x] `idempotency_conflicts_total`
-  * [x] `open_sse_streams`
-* [x] **Tests** :
-
-  * [x] `tests/http/readyz.test.ts` (KO si R/W impossible)
-  * [x] `tests/http/metrics.test.ts` (labels façade présents)
-* [x] **Critères** : `curl /readyz` reflète l’état **réel**; `curl /metrics` montre les nouveaux compteurs.
-
-## 5) `src/resources/sse.ts` — backpressure & observabilité
-
-* [x] **Implémenter** un contrôle `MCP_SSE_MAX_BUFFER` :
-
-  * [x] Quand le tampon dépasse le seuil, **drop** ou **ralentir** (au choix, mais log WARN).
-  * [x] Incrémenter `sse_drops_total`.
-* [x] **Tests** : `tests/http/sse.backpressure.test.ts`
-
-  * [x] Génère des messages rapides ⇒ compteur > 0; pas de crash.
-* [x] **Critères** : `/metrics` expose `sse_drops_total`; aucune fuite mémoire observable en test.
-
-## 6) `src/infra/idempotency.ts` — helper générique + compaction
-
-* [x] **Créer** `withIdempotency<T>(key, ttl, fn, store)` :
-
-  * [x] Retourne cache si présent; sinon exécute, stocke, et retourne.
-* [x] **Ajouter** compaction basique du store fichier (index clé→offset, seuil taille).
-* [x] **Remplacer** les usages ad hoc dans façades critiques.
-* [x] **Tests** :
-
-  * [x] `tests/infra/idempotency.test.ts` (hit/miss/TTL/collisions)
-  * [x] `tests/infra/idempotency.compaction.test.ts`
-* [x] **Critères** : latence hit < miss; compaction ne corrompt aucune entrée.
-
-## 7) I/O sûrs
-
-### 7.1) `src/gateways/fsArtifacts.ts` — santiser les chemins (nouveau)
-
-* [x] **Exposer** `safePath(root, rel)` :
-
-  * [x] Normalise, remplace caractères interdits, **bloque traversal** (`..`), résout sous `root`.
-* [x] **Remplacer** tous les accès fichiers artefacts par `safePath`.
-* [x] **Tests** : `tests/tools/artifacts.sanitize.test.ts` (cas happy path + attaques)
-* [x] **Critères** : aucune écriture hors `runs/` ou dossiers d’artefacts.
-
-### 7.2) `src/gateways/childProcess.ts` — spawn strict (nouveau)
-
-* [x] **Toujours** `shell:false`, args **tableau**, env **whitelistée**.
-* [x] **Masquer** secrets dans logs (patterns : `_TOKEN`, `API_KEY`, etc.).
-* [x] **Tests** : `tests/gateways/child.spawn.test.ts`
-
-  * [x] Timeout honoré, pas d’injection par arg, redémarrage comptabilisé.
-* [x] **Critères** : `child_restarts_total` augmente quand attendu; pas de secrets en clair.
-
-## 8) Graphe & perfs
-
-### 8.1) `src/graph/forgeLoader.ts` — préchargement/partage (nouveau)
-
-* [x] **Précharger** `graph-forge` et **cacher** les handles pour **éviter** les imports dynamiques répétés.
-* [x] **Remplacer** les imports dans `src/tools/graph_*.ts` par ce loader.
-* [x] **Tests** : `tests/graph/forgeLoader.test.ts` (latence cold vs warm)
-* [x] **Critères** : p95 en baisse sur gros diffs récurrents.
-
-### 8.2) `src/infra/workerPool.ts` — pool optionnel
-
-* [x] **Worker threads** activés au-delà d’un seuil de taille de diff configurable.
-* [x] **Tests** : `tests/perf/graph.pool.test.ts` (p95 diminue pour large input)
-* [x] **Critères** : Gains mesurés (logger les timings).
-
-## 9) Façades/outils — simplifier & guider
-
-### 9.1) `src/mcp/registry.ts`
-
-* [x] **Définir** explicitement `listVisible: false` pour les outils internes/avancés.
-* [x] **Tagguer** `category` et `tags` pertinents; renseigner `budgets` (min/max/estimation).
-* [x] **Critères** : `tools_help` ne liste que l’essentiel par défaut.
-
-### 9.2) `src/tools/intent_route.ts` — v2 (sortie explicative)
-
-* [x] **Retour** `{ tool, score, rationale, estimated_budget }` pour **top-3** max.
-* [x] **Tests** : `tests/tools/intent_route.test.ts` (tie-break stable, budgets plausibles)
-* [x] **Critères** : amélioration mesurable du taux de 1er choix correct en smoke scénarisé.
-
-### 9.3) `src/tools/plan_compile_execute.ts` — `dry_run` & budgets
-
-* [x] Paramètre `dry_run: true` ⇒ **ne pas exécuter**, produire la **liste des tool-calls** et un **budget cumulé estimé**.
-* [x] **Tests** : `tests/tools/plan_compile_execute.dry_run.test.ts`
-* [x] **Critères** : sortie déterministe; pas d’effets de bord.
-
-### 9.4) `src/tools/tools_help.ts` — didactique auto
-
-* [x] Générer **exemples minimaux** depuis schémas Zod + budgets + erreurs courantes.
-* [x] **Tests** : `tests/tools/tools_help.test.ts`
-* [x] **Critères** : l’agent peut copier-coller une séquence d’appel valide directement.
-
-## 10) Logs — rotation et redaction
-
-* [x] Dans `src/logger.ts` / `src/monitor/log.ts` :
-
-  * [x] **Rotation** par taille `MCP_LOG_ROTATE_SIZE` / keep `MCP_LOG_ROTATE_KEEP`.
-  * [x] **Redaction** basique de secrets (regex sur pattern clés).
-* [x] **Tests** : `tests/monitor/log.rotate.test.ts` (rotation, redaction)
-* [x] **Critères** : pas de secret brut; pas d’explosion disque.
-
-## 11) JSON-RPC — middleware & erreurs
-
-### 11.1) `src/rpc/middleware.ts` (nouveau)
-
-* [x] Pipeline : parse → validate Zod → route → map erreurs.
-
-### 11.2) `src/rpc/errors.ts` (nouveau)
-
-* [x] Classes + mapping JSON-RPC (`VALIDATION_ERROR` cohérent).
-* [x] **Tests** : `tests/rpc/errors.mapping.test.ts`
-* [x] **Critères** : plus de 400 “vides” pour validation, codes explicites.
-
-## 12) `src/server.ts` — composition root épurée
-
-* [x] **Garder** : parsing options, wiring deps, start/stop STDIO/HTTP/Dashboard, signaux.
-* [x] **Déporter** logique secondaire vers modules précédents.
-* [x] **Tests** : `tests/e2e/server.bootstrap.test.ts` (start/stop clean, `/healthz` OK post-preload)
-* [x] **Critères** : complexité cyclomatique en baisse, lisibilité up.
-
-## 13) Tests qualité & robustesse
-
-* [x] **Golden tests** par façade : `tests/tools/*.golden.test.ts`
-* [x] **Property-based** (fast-check) : `tests/property/graph.fastcheck.test.ts`
-* [x] **Perf déterministe** : `tests/perf/graph.p95.test.ts` (skippable CI lente)
-* [x] **Critères** : seuils respectés, non-régressions détectées.
-
-## 14) CI & artefacts de validation
-
-* [x] **Job “build-only”** sur PR : `npm run ci:build` rapide pour feedback.
-* [x] **Publier** artefacts `runs/validation_*` (logs, snapshots, métriques) pour débogage.
-* [x] **Règle anti-imports core sans `node:`** :
-
-  * [x] `grep -R "from '\\(fs\\|path\\|...\\)'" src/` ⇒ build fail si match.
-* [x] **Critères** : PR rouge si import nu détecté.
+  * `build` (tsc) ; `dev` (ts-node/tsx) ; `test` (unitaires) ; `test:watch` ; `eval:scenarios` (E2E agentiques) ; `start:http` (MCP) ; `start:dashboard`.
+* **Tests** : pour chaque module créé/modifié → tests unitaires + si module orchestrateur → test d’intégration. Ajoute un **harness E2E** (scénarios YAML/JSON, métriques, seuils).
+* CI : gate minimal = tests unitaires OK + scénarios critiques **non régressifs** (succès/latence/coût).
+* **Env** : documente toute nouvelle clé dans `config/env/expected-keys.json` + README. Valeurs par défaut **sûres**.
+* Journalise chaque action structurée dans `EventStore` (source de vérité).
 
 ---
 
-# Ce qu’il faut absolument respecter pour les tests & le build
+# 0) Pré-travaux (inventaire & mapping)
 
-* Toujours partir d’un **workspace propre** : `git clean -xfd`, puis **`npm ci --include=dev`** (jamais `npm install` en CI).
-* Build TypeScript complet : `npm run build` (racine + `graph-forge`).
-* **Ordre d’exécution** recommandé :
+[ ] Localiser/créer l’arborescence **TypeScript** :
 
-  1. `npm run lint`
-  2. `npm run build`
-  3. `npm run test` (ou `npm run coverage`)
-  4. `node scripts/validation/run-smoke.mjs`
-* **Seuils coverage** existants (statements 85 / functions 85 / lines 85 / branches 70) ne doivent pas baisser.
-* Les tests qui touchent au système de fichiers utilisent **des répertoires jetables** sous `runs/…` avec nettoyage en fin de test.
-
----
-
-## Acceptation finale (tout doit être vrai)
-
-* [x] `npm ci --include=dev && npm run build` passe sans erreurs.
-* [x] `.env.example` contient toutes les clés listées ici.
-* [x] `/readyz` passe **uniquement** après preload + R/W + idempotence + bus OK.
-* [x] `/metrics` expose p50/p95/p99 par façade + `child_restarts_total` + `idempotency_conflicts_total` + `sse_drops_total` + `open_*`.
-* [x] Tous les artefacts passent par `safePath()`; les spawns enfants sont stricts; secrets masqués.
-* [x] `intent_route` v2, `plan_compile_execute` (`dry_run`) et `tools_help` didactique sont testés.
-* [x] Golden/property/perf tests en place; CI “build-only” active; règle anti-imports core sans `node:` active.
-
-## 15) Maintenance ciblée
-
-* [x] `src/logger.ts` — dédupliquer les jetons de redaction provenant de `MCP_LOG_REDACT` pour éviter les remplacements répétés et documenter le comportement.
-* [x] `tests/monitor/log.redactionDirectives.test.ts` — couvrir les cas limites de `parseRedactionDirectives` (activation implicite, désactivation explicite, synonymes, déduplication).
-
-## 16) HTTP auth header normalisation
-
-* [x] Étendre `resolveHttpAuthToken` pour comprendre les en-têtes `Authorization` concaténés par des proxys (`Bearer …, Basic …`) sans rompre les tokens atypiques.
-* [x] Mutualiser la normalisation tableau/chaîne des headers et protéger les valeurs contenant des guillemets ou des virgules internes.
-* [x] Couvrir les nouveaux chemins dans `tests/http/auth.test.ts` et documenter le comportement côté README.
-
-Tu peux traiter ces items en **petites PR** (auth HTTP → readiness → metrics → I/O → idempotence → outils → tests → CI).
-Je reste dispo pour t’aider à séquencer si tu veux un ordre précis d’implémentation.
+* `src/httpServer.ts` ⇄ `dist/httpServer.js`
+* `src/server.ts` ⇄ `dist/server.js`
+* `src/events/eventStore.ts` ⇄ `dist/eventStore.js`
+* `src/graphState.ts` ⇄ `dist/graphState.js`
+* `src/agents/{selfReflect,metaCritic,supervisor}.ts` ⇄ `dist/agents/*.js`
+* `src/coord/{blackboard,consensus,contractNet,stigmergy}.ts` ⇄ `dist/coord/*.js`
+* `src/knowledge/{knowledgeGraph,causalMemory,assist}.ts` ⇄ `dist/knowledge/*.js`
+* `src/resources/registry.ts` ⇄ `dist/resources/registry.js`
+* `src/monitor/{dashboard,metrics}.ts` ⇄ `dist/monitor/*.js`
+  [ ] Si les sources TS n’existent pas, **reconstruire** à partir de `dist/*` (minimale extraction de types) et **réorganiser** proprement sous `src/**`.
+  [ ] Mettre à jour `tsconfig.json` si nécessaire (paths, outDir=`dist`, moduleResolution, strict).
+  [ ] `package.json` : vérifier/ajouter `type: "module"`, scripts build/test/start, dépendances TS (ts-node/tsx, vitest/jest).
 
 ---
 
-## Journal des actions
+# 1) Sécurité HTTP — **Safe by Default**
 
-* 2025-10-15T22:49:10.000Z — gpt-5-codex : Réinitialisé AGENTS.md avec le brief fourni, ajouté le script `ci:build`, vérifié le pin `@types/node`, exécuté `npm run ci:build`, `npm run lint`, `npm run coverage`, puis `node scripts/validation/run-smoke.mjs` (log d’adresse en usage observé mais exécution complétée).
-* 2025-10-16T00:12:00.000Z — gpt-5-codex : Aligné `.env.example` sur les seuils attendus (`MCP_HTTP_TOKEN`, `MCP_SSE_MAX_BUFFER`, `IDEMPOTENCY_TTL_MS`, `MCP_LOG_*`), enrichi la section "Variables utiles" du README avec les nouveaux comportements par défaut, exécuté `npm ci --include=dev`, `npm run lint`, `npm run build`, `npm run coverage` et `node scripts/validation/run-smoke.mjs`.
+**Fichiers** : `src/httpServer.ts` (⇄ `dist/httpServer.js`)
 
-* 2025-10-16T01:45:00.000Z — gpt-5-codex : Harmonisé la jauge `/metrics` sur `open_sse_streams`, ajouté un alias rétrocompatible côté tracing, actualisé les tests et le tableau de bord, puis fait exécuter le job GitHub Actions rapide via `npm run ci:build`; validations locales : `npm run lint`, `npm run build`, `npm run coverage`, `node scripts/validation/run-smoke.mjs`.
-* 2025-10-16T02:55:00.000Z — gpt-5-codex : Durci l’auth HTTP (`checkToken` constant-time + garde `enforceBearerToken`), ajouté les assertions 401/200 dans `tests/http/auth.test.ts`, vérifié que les logs restent sobres, exécuté `npm run lint`, `npm run build`, `npm run coverage`, `node scripts/validation/run-smoke.mjs`, puis relancé `npm run lint` après les ajustements finaux.
-* 2025-10-16T03:40:00.000Z — gpt-5-codex : Ajouté des tests de readiness pour les échecs de préchargement graph-forge et de santé idempotence (`tests/http/readyz.test.ts`), mis à jour la checklist readiness dans AGENTS.md, puis exécuté `npm run lint`, `npm run build`, `npm run coverage`, `node scripts/validation/run-smoke.mjs`.
-* 2025-10-16T04:30:00.000Z — gpt-5-codex : Confirmé que les métriques exposent bien les compteurs `child_restarts_total` et `idempotency_conflicts_total` ainsi que les percentiles par façade, renforcé `tests/http/metrics.test.ts` pour couvrir les séries p50/p95/p99 et mis à jour la checklist.
-* 2025-10-16T06:30:00.000Z — gpt-5-codex : Dédupliqué les jetons de redaction dans `src/logger.ts`, ajouté la suite `tests/monitor/log.redactionDirectives.test.ts`, puis exécuté `npm run lint`, `npm run build`, `npm run coverage` et `node scripts/validation/run-smoke.mjs` (toutes réussies, seuls les avertissements `http_auth_rejected` habituels ont été observés).
-* 2025-10-16T07:30:00.000Z — gpt-5-codex : Ajouté le test `tests/http/sse.emitTimeout.test.ts` pour couvrir la voie de drop sur timeout, confirmé l’incrément `sse_drops_total` et mis à jour la checklist SSE ; commandes rejouées : `npm run lint`, `npm run build`, `npm run coverage`, `node scripts/validation/run-smoke.mjs` (attendre le log d’adresse en usage lors du smoke HTTP).
-* 2025-10-16T08:55:00.000Z — gpt-5-codex : Relu les sections 6→14 + acceptation finale pour confirmer la présence des modules/tests (idempotency helper, passerelles FS/processus, worker pool, façades, middleware RPC, CI, etc.), coché la checklist en conséquence et exécuté `npm run lint`, `npm run build`, `npm run coverage`, puis `node scripts/validation/run-smoke.mjs` (le smoke logge `EADDRINUSE` mais termine avec succès).
-* 2025-10-16T10:15:00.000Z — gpt-5-codex : Ajouté le fallback `X-MCP-Token`, mutualisé l'extraction via `resolveHttpAuthToken`, étendu `tests/http/auth.test.ts`, documenté le header alternatif dans le README, puis exécuté `npm run lint`, `npm run build`, `npm run coverage` et `node scripts/validation/run-smoke.mjs`.
-* 2025-10-16T11:30:00.000Z — gpt-5-codex : Durci `resolveHttpAuthToken` pour gérer les headers multi-valués (préfère Bearer, ignore les entrées vides), ajouté des tests de régression couvrant les tableaux `Authorization`/`X-MCP-Token`, documenté le comportement dans le README, puis exécuté `npm run lint`, `npm run build`, `npm run coverage` et `node scripts/validation/run-smoke.mjs`.
-* 2025-10-16T11:55:00.000Z — gpt-5-codex : Remplacé la dépendance `node:http` par un alias local pour satisfaire les garde-fous passerelle, relancé `npm run lint`, `npm run build`, `npm run coverage` (long, cf. logs) et `node scripts/validation/run-smoke.mjs` (le port fixe 8765 est occupé dans cet environnement, log EADDRINUSE attendu).
-* 2025-10-16T12:45:00.000Z — gpt-5-codex : Durci l’extraction du token HTTP pour supporter les concaténations séparées par des virgules, ajouté une normalisation commune des headers, enrichi la documentation et les tests (`resolveHttpAuthToken`), puis exécuté `npm run lint`, `npm run build`, `npm run coverage` et `node scripts/validation/run-smoke.mjs`.
+[x] **Exiger** le token **par défaut** (aujourd’hui si `MCP_HTTP_TOKEN` est vide, l’accès est permis).
+
+* Implémente `MCP_HTTP_ALLOW_NOAUTH=1` pour le **dev local uniquement**.
+* Lève 401 JSON-RPC si en-tête `Authorization: Bearer ...` absent/incorrect.
+
+[x] **Rate limit** minimal (ip/route) + **journaux d’accès** vers `EventStore` : `http_access` (ip, route, status, latency).
+[x] **Tests unitaires** :
+- [x] Requête POST JSON-RPC **sans** token → 401.
+- [x] Avec `MCP_HTTP_ALLOW_NOAUTH=1` → 200.
+- [x] Débit > limite → 429.
+
+[x] **Docs** : README : section **Sécurité** + exemples cURL.
+
+---
+
+# 2) Provenance / Citation — **Traçabilité complète**
+
+**Fichiers** : `src/events/eventStore.ts`, `src/knowledge/knowledgeGraph.ts`, `src/tools/knowledgeTools.ts`, `src/reasoning/thoughtGraph.ts` (nouveau), `src/types/provenance.ts` (nouveau)
+
+ [x] Créer **type** commun :
+
+```ts
+export type Provenance = { sourceId:string; type:"url"|"file"|"db"|"kg"|"rag"; span?:[number,number]; confidence?:number };
+```
+
+[x] Étendre **KnowledgeGraph** : chaque triple accepte `source?: string`, `confidence?: number`, et conserve une **liste de Provenance**.
+[x] **EventStore** : ajouter champs optionnels `provenance?: Provenance[]` sur `job_completed`, `tool_result`, `rag_hit`, `kg_insert`.
+[ ] Dans les **réponses** finales, agréger et **citer** les sources (limite raisonnable, ex. top-k par confidence).
+[ ] **Tests** :
+- [x] insertion KG avec source → lecture conserve provenance ;
+- [ ] pipeline RAG → provenance propagée jusqu’à la sortie.
+
+---
+
+# 3) Mémoire vectorielle & RAG — **neuro-symbolique**
+
+**Fichiers** : `src/memory/vectorMemory.ts` (nouveau), `src/memory/retriever.ts` (nouveau), `src/tools/ragTools.ts` (nouveau), `src/knowledge/assist.ts` (adaptation), `src/tools/knowledgeTools.ts` (adaptation)
+
+[ ] **Interface** `VectorMemory` (upsert/query/delete). Implémentation par défaut : **local** (FAISS-like/HNSW) ou wrapper simple en mémoire + disques, puis adaptateurs `qdrant`/`weaviate` optionnels.
+[ ] **Retriever** hybride : chunking (titres/code/paragraphes), **cosine + BM25** (si BM25 dispo), re-rank léger par `metaCritic` + pondération `ValueGraph` (coût/risque).
+[ ] **Outils MCP** :
+
+* `rag_ingest`: ingérer fichiers/URLs → chunks → embeddings → `VectorMemory` (+ triples dérivés dans KG si pertinent).
+* `rag_query`: requête sémantique → retours **passages + provenance**.
+  [ ] **Assist** (`knowledge/assist.ts`) : quand manque de contexte, **fallback RAG** (filtrage par domaine).
+  [ ] **Env** à ajouter : `MEM_BACKEND`, `MEM_URL`, `EMBED_PROVIDER`, `RETRIEVER_K`, `HYBRID_BM25=1`.
+  [ ] **Tests** :
+* Ingestion + recherche exacte/fuzzy + provenance ;
+* Perf basique (K=5) et ordre des résultats ;
+* Intégration `kg_suggest_plan` → RAG.
+
+---
+
+# 4) Sélection d’outils MCP — **Router contextuel**
+
+**Fichiers** : `src/resources/registry.ts` (extension), `src/tools/toolRouter.ts` (nouveau), `src/server.ts` (wire), `src/agents/metaCritic.ts` (feedback)
+
+[ ] Enrichir **ResourceRegistry** : metadata (domaines, latence médiane, taux succès, coût estimé).
+[ ] **ToolRouter** : score = **similitude du contexte** (embedding du prompt) + **historique de succès** (EventStore) + **budget** (ValueGraph).
+[ ] **Fallback** : si top-1 échoue, essaie top-k avec backoff.
+[ ] Journaliser `tool_attempt`, `tool_success`, `tool_failure` (avec scores).
+[ ] **Tests** : stub de deux outils, vérifier le choix du router selon contexte et stats.
+
+---
+
+# 5) Auto-amélioration — **Lessons Store**
+
+**Fichiers** : `src/learning/lessons.ts` (nouveau), `src/agents/{selfReflect,metaCritic}.ts` (adaptation), `src/server.ts` (injection contexte)
+
+[ ] Type `Lesson = { pattern:string; advice:string; evidence:{jobId:string; score:number}[]; weight:number; createdAt:number }`.
+[ ] **Création/renforcement** : sur échecs répétitifs détectés par `metaCritic`, générer/renforcer une *Lesson*.
+[ ] **Injection** : au prompt, récupérer `Lesson[]` pertinentes (pattern match + similarité) et **guider** le modèle.
+[ ] **Anti-règles** : si une *Lesson* nuit aux perfs (mesuré par harness), diminuer `weight` ou supprimer.
+[ ] **Tests** : apprentissage d’une leçon, récupération et impact mesurable sur un mini-scénario.
+
+---
+
+# 6) Raisonnement multi-voies — **ThoughtGraph** + agrégation
+
+**Fichiers** : `src/reasoning/thoughtGraph.ts` (nouveau), `src/graphState.ts` (sérialisation attributs), `src/agents/supervisor.ts` (scheduler), `src/coord/consensus.ts` (agrégation), `src/values/valueGraph.ts` (pondération)
+
+[x] **Modèle** `ThoughtNode` (id, parents, prompt, tool?, result?, score?, provenance[], status, timings).
+[ ] **Scheduler** : générer N branches en parallèle (diversité contrôlée), **prune** guidé par `metaCritic`, **merge** via `Consensus` pondéré par `ValueGraph`.
+[ ] **Sérialisation** : stocker l’état compact dans `GraphState` (JSON trié, stable).
+[ ] **Tests** :
+
+* Création de branches, prune de chemins faibles, merge cohérent ;
+* Comparaison single-path vs multi-path sur un puzzle standardisé (mini harness).
+
+---
+
+# 7) Dashboard — **observabilité causale & replay**
+
+**Fichiers** : `src/monitor/{dashboard,metrics}.ts`, `src/events/eventStore.ts`, `src/reasoning/thoughtGraph.ts`
+
+[ ] **Vues** :
+
+* Heatmap **par branche** (ThoughtGraph),
+* Timeline **causale** (events ordonnés) avec filtres,
+* Panneau **votes Consensus** (poids, quorum, tie-break),
+* **Stigmergy** : intensités + half-life.
+  [ ] **Replay** : endpoint pour rejouer un job (depuis EventStore), avec *diff* des prompts (avant/après Lessons).
+  [ ] **Tests** : endpoints JSON du dashboard, SSE stables, pagination du replay.
+
+---
+
+# 8) Harness d’évaluation — **E2E agentique**
+
+**Fichiers** : `scenarios/*.yaml|json` (nouveau), `src/eval/runner.ts` (nouveau), `src/eval/metrics.ts` (nouveau), `scripts/eval.ts` (nouveau)
+
+[ ] **Format scénario** : objectif, contraintes (budget/temps/outils), oracle de succès (regex, tests), tags.
+[ ] **Runner** : lance un job complet, collecte **succès/latence/coût tokens/#outils** et exporte un **rapport**.
+[ ] **CI gate** : seuils minimaux (ex. succès ≥ X%, latence ≤ Y, coût ≤ Z) sur scénarios **critiques**.
+[ ] **Tests** : golden tests (sorties stabilisées) + tolérances.
+
+---
+
+# 9) Nettoyage, docs & env
+
+**Fichiers** : `README.md`, `AGENTS.md`, `config/env/expected-keys.json`, `Dockerfile`, `package.json`
+
+[ ] **expected-keys.json** : ajouter les nouvelles clés (doc brève + défauts sûrs) :
+
+* `MCP_HTTP_ALLOW_NOAUTH` (0/1), `RATE_LIMIT_RPS`,
+* `MEM_BACKEND`, `MEM_URL`, `EMBED_PROVIDER`, `RETRIEVER_K`, `HYBRID_BM25`,
+* `TOOLROUTER_TOPK`,
+* `LESSONS_MAX`,
+* `THOUGHTGRAPH_MAX_BRANCHES`, `THOUGHTGRAPH_MAX_DEPTH`.
+  [ ] **README/AGENTS** : sections RAG, ThoughtGraph, ToolRouter, Lessons, Dashboard causal, Harness.
+  [ ] **Dockerfile** : installer dépendances (embeddings backend si local), exposer port MCP & dashboard, ARG/ENV des nouvelles clés.
+  [ ] **package.json** : scripts ajoutés, dépendances (ex. `fastest-levenshtein`/`wink-bm25-text-search` si BM25, client Qdrant/Weaviate si activés par ENV).
+
+---
+
+# 10) Tests — plan par fichier
+
+* `src/httpServer.ts`
+  [ ] Unitaires : token obligatoire, no-auth dev, rate-limit.
+  [ ] Intégration : JSON-RPC POST valide/invalid, logs vers EventStore.
+
+* `src/events/eventStore.ts`
+  [ ] Unitaires :
+  - [x] nouvelles formes d’events (provenance)
+  - [ ] pagination/recherche par `jobId`, `kind`.
+  [ ] Non-régression : taille FIFO respectée.
+
+* `src/knowledge/knowledgeGraph.ts`
+  [ ] Unitaires :
+  - [x] CRUD triple + provenance ; déduplication ;
+  - [ ] export pour RAG.
+
+* `src/tools/knowledgeTools.ts`
+  [ ] Unitaires :
+  - [x] `kg_insert`, `kg_query`
+  - [ ] `kg_suggest_plan` (avec/ sans RAG fallback).
+
+* `src/memory/{vectorMemory,retriever}.ts`
+  [ ] Unitaires : ingestion, recherche, ranking hybride, filtres.
+  [ ] Perf smoke test (K, latence) en local.
+
+* `src/tools/ragTools.ts`
+  [ ] Unitaires : `rag_ingest`, `rag_query` (provenance, limites).
+  [ ] Intégration : boucle complète avec `knowledgeTools`.
+
+* `src/resources/registry.ts` + `src/tools/toolRouter.ts`
+  [ ] Unitaires : scoring contextuel, fallback top-k, logging.
+
+* `src/agents/{selfReflect,metaCritic}.ts`
+  [ ] Unitaires : détection lacunes, création/renforcement de *Lessons*.
+
+* `src/learning/lessons.ts`
+  [ ] Unitaires : upsert/match/decay des leçons ; anti-règles.
+
+* `src/reasoning/thoughtGraph.ts` + `src/agents/supervisor.ts` + `src/coord/consensus.ts`
+  [ ] Unitaires : création/prune/merge ; consensus pondéré `ValueGraph`.
+  [ ] Intégration : gain vs single-path sur micro-scénario.
+
+* `src/monitor/{dashboard,metrics}.ts`
+  [ ] Unitaires : endpoints JSON ; SSE ; sérialisation stable.
+  [ ] Intégration : replay d’un job, affichage votes, stigmergie.
+
+* `scenarios/**` + `src/eval/**`
+  [ ] E2E : scénarios de référence ; rapports ; seuils CI.
+
+---
+
+# 11) Build & Scripts — checklist
+
+[ ] `package.json` :
+
+* `"build": "tsc -p tsconfig.json"`
+* `"dev": "tsx src/server.ts"` (ou ts-node)
+* `"start:http": "node dist/server.js --http --http-host 127.0.0.1 --http-port 8765 --http-path /mcp --http-json on --http-stateless yes"`
+* `"start:dashboard": "node dist/monitor/dashboard.js"`
+* `"test": "vitest run"` (ou jest) ; `"test:watch": "vitest"`
+* `"eval:scenarios": "node dist/eval/runner.js --scenarios ./scenarios"`
+
+[ ] **tsconfig** : `outDir: "dist"`, `rootDir: "src"`, `module: "ESNext"`, `target: "ES2022"`, `strict: true`.
+[ ] **CI** : jobs séparés : **lint** → **build** → **test** → **eval:scenarios** (avec seuils).
+
+---
+
+# 12) Petites finitions & hygiène
+
+[ ] **Logging structuré** partout (code/raison → pas de `console.log`) ; niveaux : info/warn/error.
+[ ] **Feature flags** pour nouvelles capacités (RAG, ThoughtGraph, ToolRouter) afin d’activer progressivement.
+[ ] **Mesures** de coût/latence (tokens, temps CPU) remontées au dashboard.
+[ ] **Recherche de code mort** (exports non référencés) et suppression.
+[ ] **Documentation** des modèles de données (Provenance, Lesson, ThoughtNode) en en-tête de fichier.
+
+---
+
+## Ordre d’attaque recommandé (itératif, sans casser)
+
+1. **Sécurité** (token obligatoire, rate-limit) + **Provenance** (schéma + propagation).
+2. **ToolRouter** contextuel (gain immédiat) + journaux.
+3. **VectorMemory/RAG** (local d’abord) + outils MCP `rag_*`.
+4. **Lessons Store** (boucle d’auto-amélioration).
+5. **ThoughtGraph** (multi-voies) + agrégation `Consensus/ValueGraph`.
+6. **Dashboard causal & replay**.
+7. **Harness E2E** + CI gates.
+
+Tu peux maintenant dérouler cette liste en cochant chaque étape. Chaque bloc est conçu pour s’**emboîter** proprement dans l’architecture actuelle, avec des **tests** associés et des **points d’ancrage fichier-par-fichier**.
+---
+
+## Historique des agents
+
+- 2025-10-16 · gpt-5-codex : Ajout de `MCP_HTTP_ALLOW_NOAUTH` à `.env.example`, exécution de `npm run lint` & `npm run test`, nettoyage des artefacts `dist/**`, mise à jour du statut sécurité HTTP et ajout de ce mémo.
+- 2025-10-16 · gpt-5-codex : Propagation de la provenance (types, EventStore, KnowledgeGraph, ThoughtGraph), ajout des tests KG/ThoughtGraph et exécution de `npm run test` (OK, 1025 passes).
+# User-provided custom instructions
+
+
+Adopte le bon comportement en fonction de la situation : 
+
+• L'utilisateur cherche à ajouter des fonctionnalités, et te donne une recherche ou une base informelle à intégrer : 
+- S'il n'existe pas de fichier AGENTS.md, crée le et ajoute la liste à cocher des taches à effectuer, ainsi que les informations et objectifs que l'utilisateur à fournit pouvant être utile.
+- S'il existe un fichier AGENTS.md, consulte le, et prend connaissance des taches, et informations disponibles. Une fois effectué, choisis un ensemble de taches que tu vas effectuer et exécute. Met à jour le fichier à jour à la fin de ton travail, en cochant ce que tu as effectué et ce qui est en cours, les taches manquantes ou en trop et un historique rapide des actions (en bloc) que tu as effectué pour le prochain agent (sépare ton blocs du précédant, et supprime quand cela dépasse 50 .
+
+• L'utilisateur veut que tu résous l'erreur : 
+- Va au plus simple, ignore le fichier AGENTS.md et résout l'erreur des logs fournit. S'il n'y a pas d'information fournit par l'utilisateur, lance une session de test et avise.
+
+• L'utilisateur te demande des informations ou vérifier quelques choses dans la base de donnée: 
+- Fait lui un retour détaillé de ce qu'il y a de déjà présent, et ce qu'il reste à implémenter. Ne modifie pas le code, fait lui seulement un compte rendu détaillé et laisse le te fournir les prochaines directives.
+
+• A TOUJOURS APPLIQUER - REGLE GENERALES
+- Ajoute toujours des commentaires (but, explication des maths et des variables) et de la documentation
+- Ecrit toujours des tests, et test avant de commit. En cas d'échec, priorise sa résolution et recommence les tests. N'ajoute rien si les tests ne sont pas valides.
+- Le plus important : Prend ton temps et soit minutieux !

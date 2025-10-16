@@ -87,6 +87,7 @@ describe("http idempotency propagation", () => {
   let originalLimiter: { disabled: boolean; rps: number; burst: number };
   let sandboxDir: string;
   let idempotencyStore: FileIdempotencyStore | null = null;
+  let allowSnapshot: string | undefined;
 
   before(async function () {
     const offlineGuard = (globalThis as { __OFFLINE_TEST_GUARD__?: string }).__OFFLINE_TEST_GUARD__;
@@ -100,6 +101,8 @@ describe("http idempotency propagation", () => {
       enableIdempotency: true,
     });
     delete process.env.MCP_HTTP_TOKEN;
+    allowSnapshot = process.env.MCP_HTTP_ALLOW_NOAUTH;
+    process.env.MCP_HTTP_ALLOW_NOAUTH = "1";
     originalLimiter = { ...__httpServerInternals.getRateLimiterConfig() };
     __httpServerInternals.configureRateLimiter({ disabled: true });
 
@@ -130,6 +133,11 @@ describe("http idempotency propagation", () => {
     __httpServerInternals.configureRateLimiter(originalLimiter);
     if (sandboxDir) {
       await rm(sandboxDir, { recursive: true, force: true });
+    }
+    if (allowSnapshot === undefined) {
+      delete process.env.MCP_HTTP_ALLOW_NOAUTH;
+    } else {
+      process.env.MCP_HTTP_ALLOW_NOAUTH = allowSnapshot;
     }
   });
   it("returns identical payloads when the idempotency key is reused", async () => {
