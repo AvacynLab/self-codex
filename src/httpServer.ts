@@ -12,7 +12,7 @@ import { HttpRuntimeOptions, createHttpSessionId } from "./serverOptions.js";
 import { applySecurityHeaders, ensureRequestId } from "./http/headers.js";
 import { rateLimitOk } from "./http/rateLimit.js";
 import { readJsonBody } from "./http/body.js";
-import { checkToken } from "./http/auth.js";
+import { checkToken, resolveHttpAuthToken } from "./http/auth.js";
 import type { HttpReadinessReport } from "./http/readiness.js";
 export type { HttpReadinessReport } from "./http/readiness.js";
 import { buildIdempotencyCacheKey } from "./infra/idempotency.js";
@@ -420,9 +420,7 @@ function enforceBearerToken(
     return true;
   }
 
-  const header = req.headers["authorization"];
-  const provided = Array.isArray(header) ? header[0] : header;
-  const token = typeof provided === "string" ? provided.replace(/^Bearer\s+/, "") : undefined;
+  const token = resolveHttpAuthToken(req.headers);
   const valid = typeof token === "string" && checkToken(token, requiredToken);
 
   if (valid) {

@@ -85,7 +85,12 @@ export function parseRedactionDirectives(raw: string | undefined): {
     enabled = tokens.length > 0;
   }
 
-  return { enabled, tokens };
+  // Deduplicate tokens while preserving insertion order. Operators occasionally
+  // repeat the same pattern (for example when composing shell snippets) and we
+  // do not want to spend time applying the same replacement multiple times.
+  const uniqueTokens = Array.from(new Set(tokens));
+
+  return { enabled, tokens: uniqueTokens };
 }
 
 /**

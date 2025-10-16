@@ -124,6 +124,63 @@ describe("http readyz", () => {
     }
   }).timeout(10_000);
 
+  it("surfaces graph-forge preload failures in the readiness report", async () => {
+    const tempRoot = await mkdtemp(join(tmpdir(), "readyz-graphforge-"));
+    let loadAttempts = 0;
+    const expectedError = new Error("graph forge bundle missing");
+
+    try {
+      const report = await evaluateHttpReadiness({
+        // The readiness probe must attempt to preload Graph Forge before claiming success.
+        loadGraphForge: async () => {
+          loadAttempts += 1;
+          throw expectedError;
+        },
+        runsRoot: tempRoot,
+        idempotencyStore: { checkHealth: async () => {} },
+        eventStore: {
+          getEventCount: () => 0,
+          getMaxHistory: () => 10,
+        },
+      });
+
+      expect(loadAttempts).to.equal(1);
+      expect(report.ok).to.equal(false);
+      expect(report.components.graphForge.ok).to.equal(false);
+      expect(report.components.graphForge.message).to.equal(expectedError.message);
+      expect(report.components.runsDirectory.ok).to.equal(true);
+    } finally {
+      await rm(tempRoot, { recursive: true, force: true });
+    }
+  }).timeout(10_000);
+
+  it("flags idempotency stores that fail their health check", async () => {
+    const tempRoot = await mkdtemp(join(tmpdir(), "readyz-idempotency-"));
+    const expectedError = new Error("wal locked");
+
+    try {
+      const report = await evaluateHttpReadiness({
+        loadGraphForge: async () => {},
+        runsRoot: tempRoot,
+        idempotencyStore: {
+          async checkHealth() {
+            throw expectedError;
+          },
+        },
+        eventStore: {
+          getEventCount: () => 0,
+          getMaxHistory: () => 50,
+        },
+      });
+
+      expect(report.ok).to.equal(false);
+      expect(report.components.idempotency.ok).to.equal(false);
+      expect(report.components.idempotency.message).to.equal(expectedError.message);
+    } finally {
+      await rm(tempRoot, { recursive: true, force: true });
+    }
+  }).timeout(10_000);
+
   it("propagates readiness failures for other components", async () => {
     const readiness: { check: () => Promise<HttpReadinessReport> } = {
       async check() {
