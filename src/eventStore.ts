@@ -1,4 +1,5 @@
 import { StructuredLogger } from "./logger.js";
+import { normaliseProvenanceList, type Provenance } from "./types/provenance.js";
 
 export type EventKind =
   | "PLAN"
@@ -17,7 +18,8 @@ export type EventKind =
   | "BT_RUN"
   | "SCHEDULER"
   | "AUTOSCALER"
-  | "COGNITIVE";
+  | "COGNITIVE"
+  | "HTTP_ACCESS"; // Structured audit log capturing HTTP access (ip/route/status/latency).
 
 export type EventLevel = "info" | "warn" | "error";
 export type EventSource = "orchestrator" | "child" | "system";
@@ -31,6 +33,7 @@ export interface OrchestratorEvent {
   jobId?: string;
   childId?: string;
   payload?: unknown;
+  provenance: Provenance[];
 }
 
 export interface EventStoreOptions {
@@ -45,6 +48,7 @@ export interface EmitEventInput {
   jobId?: string;
   childId?: string;
   payload?: unknown;
+  provenance?: Provenance[];
 }
 
 export interface EventFilters {
@@ -78,7 +82,8 @@ export class EventStore {
       source: input.source ?? "orchestrator",
       jobId: input.jobId,
       childId: input.childId,
-      payload: input.payload
+      payload: input.payload,
+      provenance: normaliseProvenanceList(input.provenance),
     };
 
     this.events.push(event);

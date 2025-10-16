@@ -89,4 +89,22 @@ describe("EventStore", () => {
     expect(debugEntry).to.not.be.undefined;
     expect((debugEntry?.payload as { limit: number }).limit).to.equal(2);
   });
+
+  it("normalises provenance metadata when emitting events", () => {
+    const store = new EventStore({ maxHistory: 4, logger: asStructuredLogger(new StubLogger()) });
+
+    const emitted = store.emit({
+      kind: "INFO",
+      provenance: [
+        { sourceId: " DocA ", type: "file", confidence: 0.4 },
+        { sourceId: "DocA", type: "file", confidence: 0.9 },
+        { sourceId: "Memory", type: "kg", span: [8, 2], confidence: -1 },
+      ],
+    });
+
+    expect(emitted.provenance).to.deep.equal([
+      { sourceId: "DocA", type: "file", confidence: 0.4 },
+      { sourceId: "Memory", type: "kg", span: [2, 8], confidence: 0 },
+    ]);
+  });
 });

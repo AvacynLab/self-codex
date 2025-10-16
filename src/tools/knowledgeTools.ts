@@ -3,6 +3,7 @@ import { z } from "zod";
 import type { KnowledgeGraph, KnowledgeTripleSnapshot } from "../knowledge/knowledgeGraph.js";
 import { suggestPlanFragments, type PlanAssistSuggestion } from "../knowledge/assist.js";
 import { StructuredLogger } from "../logger.js";
+import { PROVENANCE_TYPES, type Provenance } from "../types/provenance.js";
 
 /** Context injected by the server when invoking knowledge graph tools. */
 export interface KnowledgeToolContext {
@@ -13,6 +14,19 @@ export interface KnowledgeToolContext {
 }
 
 /** Schema describing a single triple accepted by the insert tool. */
+const ProvenanceSchema = z
+  .object({
+    sourceId: z.string().min(1, "sourceId must not be empty"),
+    type: z.enum(PROVENANCE_TYPES as ["url", "file", "db", "kg", "rag"]),
+    span: z
+      .tuple([z.number(), z.number()])
+      .refine((tuple) => tuple.every((value) => Number.isFinite(value)), "span values must be finite")
+      .refine((tuple) => tuple[1] >= tuple[0], "span end must be >= start")
+      .optional(),
+    confidence: z.number().min(0).max(1).optional(),
+  })
+  .strict();
+
 const KnowledgeTripleInputSchema = z
   .object({
     subject: z.string().min(1, "subject must not be empty"),
@@ -20,6 +34,7 @@ const KnowledgeTripleInputSchema = z
     object: z.string().min(1, "object must not be empty"),
     source: z.string().min(1).optional(),
     confidence: z.number().min(0).max(1).optional(),
+    provenance: z.array(ProvenanceSchema).max(50).optional(),
   })
   .strict();
 
@@ -72,6 +87,7 @@ interface SerializedTriple extends Record<string, unknown> {
   predicate: string;
   object: string;
   source: string | null;
+  provenance: Provenance[];
   confidence: number;
   inserted_at: number;
   updated_at: number;
@@ -196,6 +212,7 @@ function serializeTriple(snapshot: KnowledgeTripleSnapshot): SerializedTriple {
     predicate: snapshot.predicate,
     object: snapshot.object,
     source: snapshot.source,
+    provenance: snapshot.provenance.map((entry) => ({ ...entry })),
     confidence: snapshot.confidence,
     inserted_at: snapshot.insertedAt,
     updated_at: snapshot.updatedAt,

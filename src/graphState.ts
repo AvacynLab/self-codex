@@ -1,6 +1,7 @@
 import { MessageRecord } from "./types.js";
 import type { ChildRuntimeLimits } from "./childRuntime.js";
 import { ChildRecordSnapshot } from "./state/childrenIndex.js";
+import type { Provenance } from "./types/provenance.js";
 // NOTE: Node built-in modules are imported with the explicit `node:` prefix to guarantee ESM resolution in Node.js.
 type AttributeValue = string | number | boolean;
 
@@ -120,6 +121,7 @@ export interface EventSnapshot {
   level: string;
   jobId?: string;
   childId?: string;
+  provenance?: Provenance[];
 }
 
 export interface ChildInactivityFlag {
@@ -897,7 +899,8 @@ export class GraphState {
         kind: event.kind,
         level: event.level,
         job_id: normalizeString(event.jobId ?? null),
-        child_id: normalizeString(event.childId ?? null)
+        child_id: normalizeString(event.childId ?? null),
+        provenance: event.provenance ? JSON.stringify(event.provenance) : "[]",
       }
     });
     if (event.jobId) {

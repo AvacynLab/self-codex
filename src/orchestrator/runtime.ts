@@ -19,6 +19,7 @@ import {
   type LogEntry,
 } from "../logger.js";
 import { EventStore, OrchestratorEvent, type EventKind, type EventLevel, type EventSource } from "../eventStore.js";
+import type { Provenance } from "../types/provenance.js";
 import {
 // NOTE: Node built-in modules are imported with the explicit `node:` prefix to guarantee ESM resolution in Node.js.
   EventBus,
@@ -2176,6 +2177,7 @@ const EVENT_KIND_TO_CATEGORY: Record<EventKind, EventCategory> = {
   SCHEDULER: "scheduler",
   AUTOSCALER: "scheduler",
   COGNITIVE: "child",
+  HTTP_ACCESS: "graph",
 };
 
 function deriveEventCategory(kind: EventKind): EventCategory {
@@ -2520,6 +2522,7 @@ interface PushEventInput {
   component?: string | null;
   stage?: string | null;
   elapsedMs?: number | null;
+  provenance?: Provenance[];
 }
 
 function pushEvent(event: PushEventInput): OrchestratorEvent {
@@ -2531,7 +2534,8 @@ function pushEvent(event: PushEventInput): OrchestratorEvent {
     source: event.source,
     jobId: event.jobId ?? undefined,
     childId: event.childId ?? undefined,
-    payload: event.payload
+    payload: event.payload,
+    provenance: event.provenance,
   });
   graphState.recordEvent({
     seq: emitted.seq,
@@ -2539,7 +2543,8 @@ function pushEvent(event: PushEventInput): OrchestratorEvent {
     kind: emitted.kind,
     level: emitted.level,
     jobId: emitted.jobId,
-    childId: emitted.childId
+    childId: emitted.childId,
+    provenance: emitted.provenance,
   });
 
   const hints: EventCorrelationHints = {};

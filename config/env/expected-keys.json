@@ -2,6 +2,7 @@
   "required": [
     "START_HTTP",
     "MCP_HTTP_TOKEN",
+    "MCP_HTTP_ALLOW_NOAUTH",
     "MCP_HTTP_HOST",
     "MCP_HTTP_PORT",
     "MCP_HTTP_PATH",

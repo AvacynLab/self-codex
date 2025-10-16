@@ -25,6 +25,7 @@ const noopLogger = new Proxy(
 describe("ops probes", () => {
   let httpInternals: Awaited<ReturnType<typeof loadHttpServerInternals>>;
   let registerStub: sinon.SinonStub | undefined;
+  let originalAllow: string | undefined;
 
   async function loadHttpServerInternals() {
     return (await import("../../src/httpServer.js")).__httpServerInternals;
@@ -57,11 +58,18 @@ describe("ops probes", () => {
 
   beforeEach(() => {
     resetRateLimitBuckets();
+    originalAllow = process.env.MCP_HTTP_ALLOW_NOAUTH;
+    delete process.env.MCP_HTTP_ALLOW_NOAUTH;
   });
 
   afterEach(() => {
     resetRateLimitBuckets();
     delete process.env.MCP_HTTP_TOKEN;
+    if (originalAllow === undefined) {
+      delete process.env.MCP_HTTP_ALLOW_NOAUTH;
+    } else {
+      process.env.MCP_HTTP_ALLOW_NOAUTH = originalAllow;
+    }
   });
 
   it("exposes a healthy status without requiring authentication", async () => {

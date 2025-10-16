@@ -223,10 +223,12 @@ export async function runPreflightStage(options) {
   const tokenFingerprint = fingerprintToken(token);
   const tokenPreview = maskToken(token);
   const previousToken = process.env.MCP_HTTP_TOKEN;
+  const previousAllowNoAuth = process.env.MCP_HTTP_ALLOW_NOAUTH;
   let tokenRestored = false;
 
   if (tokenGenerated) {
     process.env.MCP_HTTP_TOKEN = token;
+    process.env.MCP_HTTP_ALLOW_NOAUTH = "0";
   }
   const startedAt = nowIso();
   let handle = null;
@@ -752,6 +754,11 @@ export async function runPreflightStage(options) {
     }
     if (!tokenRestored && previousToken !== undefined) {
       process.env.MCP_HTTP_TOKEN = previousToken;
+    }
+    if (previousAllowNoAuth === undefined) {
+      delete process.env.MCP_HTTP_ALLOW_NOAUTH;
+    } else {
+      process.env.MCP_HTTP_ALLOW_NOAUTH = previousAllowNoAuth;
     }
   }
 }

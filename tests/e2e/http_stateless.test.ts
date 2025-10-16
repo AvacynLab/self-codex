@@ -54,6 +54,7 @@ describe("http child context propagation", () => {
   let baseUrl: string;
   let originalFeatures: FeatureToggles;
   let originalToken: string | undefined;
+  let originalAllow: string | undefined;
   let handlers: Map<string, ToolsCallHandler> | undefined;
   let originalToolsCall: ToolsCallHandler | undefined;
   let captured: CapturedInvocation | null = null;
@@ -65,6 +66,8 @@ describe("http child context propagation", () => {
     }
     originalToken = process.env.MCP_HTTP_TOKEN;
     delete process.env.MCP_HTTP_TOKEN;
+    originalAllow = process.env.MCP_HTTP_ALLOW_NOAUTH;
+    process.env.MCP_HTTP_ALLOW_NOAUTH = "1";
     originalFeatures = getRuntimeFeatures();
     configureRuntimeFeatures({ ...originalFeatures, enableChildOpsFine: true });
 
@@ -123,6 +126,11 @@ describe("http child context propagation", () => {
       delete process.env.MCP_HTTP_TOKEN;
     } else {
       process.env.MCP_HTTP_TOKEN = originalToken;
+    }
+    if (originalAllow === undefined) {
+      delete process.env.MCP_HTTP_ALLOW_NOAUTH;
+    } else {
+      process.env.MCP_HTTP_ALLOW_NOAUTH = originalAllow;
     }
   });
 

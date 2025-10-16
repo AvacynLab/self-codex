@@ -166,6 +166,7 @@ describe("HTTP plan timeouts and cancellation", function () {
   const logger = new StructuredLogger();
   let originalFeatures: FeatureToggles;
   let originalToken: string | undefined;
+  let originalAllow: string | undefined;
   let handle: HttpServerHandle | null = null;
   let baseUrl = "";
 
@@ -177,6 +178,8 @@ describe("HTTP plan timeouts and cancellation", function () {
 
     originalToken = process.env.MCP_HTTP_TOKEN;
     delete process.env.MCP_HTTP_TOKEN;
+    originalAllow = process.env.MCP_HTTP_ALLOW_NOAUTH;
+    process.env.MCP_HTTP_ALLOW_NOAUTH = "1";
 
     originalFeatures = getRuntimeFeatures();
     configureRuntimeFeatures({
@@ -216,6 +219,11 @@ describe("HTTP plan timeouts and cancellation", function () {
       delete process.env.MCP_HTTP_TOKEN;
     } else {
       process.env.MCP_HTTP_TOKEN = originalToken;
+    }
+    if (originalAllow === undefined) {
+      delete process.env.MCP_HTTP_ALLOW_NOAUTH;
+    } else {
+      process.env.MCP_HTTP_ALLOW_NOAUTH = originalAllow;
     }
   });
 

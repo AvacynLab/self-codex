@@ -193,6 +193,7 @@ describe("HTTP autosave and Graph Forge end-to-end coverage", function () {
   let baseUrl = "";
   let originalFeatures: FeatureToggles;
   let originalToken: string | undefined;
+  let originalAllow: string | undefined;
   const autosaveRelativePath = join("tmp", "autosave-forge-tests", "graph-autosave.json");
   const autosaveAbsolutePath = resolvePath(autosaveRelativePath);
 
@@ -204,6 +205,8 @@ describe("HTTP autosave and Graph Forge end-to-end coverage", function () {
 
     originalToken = process.env.MCP_HTTP_TOKEN;
     delete process.env.MCP_HTTP_TOKEN;
+    originalAllow = process.env.MCP_HTTP_ALLOW_NOAUTH;
+    process.env.MCP_HTTP_ALLOW_NOAUTH = "1";
 
     originalFeatures = getRuntimeFeatures();
     configureRuntimeFeatures({
@@ -240,6 +243,11 @@ describe("HTTP autosave and Graph Forge end-to-end coverage", function () {
       delete process.env.MCP_HTTP_TOKEN;
     } else {
       process.env.MCP_HTTP_TOKEN = originalToken;
+    }
+    if (originalAllow === undefined) {
+      delete process.env.MCP_HTTP_ALLOW_NOAUTH;
+    } else {
+      process.env.MCP_HTTP_ALLOW_NOAUTH = originalAllow;
     }
     await rm(dirname(autosaveAbsolutePath), { recursive: true, force: true });
   });

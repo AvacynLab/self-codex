@@ -38,6 +38,9 @@ describe("persistent knowledge graph", () => {
       object: "contain",
       source: "playbook",
       confidence: 0.9,
+      provenance: [
+        { sourceId: "docs/incident.md", type: "file", span: [0, 25], confidence: 0.8 },
+      ],
     });
     expect(insert.created).to.equal(true);
 
@@ -46,6 +49,9 @@ describe("persistent knowledge graph", () => {
     expect(triples).to.have.length(1);
     expect(triples[0].object).to.equal("contain");
     expect(triples[0].confidence).to.equal(0.9);
+    expect(triples[0].provenance).to.deep.equal([
+      { sourceId: "docs/incident.md", type: "file", span: [0, 25], confidence: 0.8 },
+    ]);
   });
 
   it("increments revisions when upserting an existing triple", async () => {
@@ -59,6 +65,9 @@ describe("persistent knowledge graph", () => {
       object: "design",
       source: "library",
       confidence: 0.8,
+      provenance: [
+        { sourceId: "plan/design", type: "kg" },
+      ],
     });
     expect(updated.created).to.equal(false);
     expect(updated.updated).to.equal(true);
@@ -69,6 +78,7 @@ describe("persistent knowledge graph", () => {
     const triples = reload.query({ subject: "plan", predicate: "includes" });
     expect(triples[0].revision).to.equal(1);
     expect(triples[0].source).to.equal("library");
+    expect(triples[0].provenance).to.deep.equal([{ sourceId: "plan/design", type: "kg" }]);
   });
 
   it("refuses to persist the graph outside of the configured directory", async () => {

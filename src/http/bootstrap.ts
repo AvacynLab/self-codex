@@ -77,6 +77,10 @@ export async function prepareHttpRuntime(
   const extras: HttpServerExtras = {};
   let idempotencyStore: FileIdempotencyStore | null = null;
 
+  // Surface the orchestrator event store to the HTTP layer so it can emit
+  // structured access logs alongside the existing runtime events.
+  extras.eventStore = context.eventStore;
+
   if (context.options.stateless) {
     const directory = resolvePath(runsRoot, "idempotency");
     const createStore =
