@@ -107,20 +107,33 @@ class MockResponse implements TestResponse {
 /**
  * Decode a Unicode escape sequence (e.g. the hexadecimal payload `"2028"`)
  * at runtime without ever embedding the resulting control character directly in
- * source. The helper assembles the JSON string to parse from disjoint segments
- * (`"`, `\\u`, `<hex>`, `"`) so the TypeScript → JavaScript transform never
- * materialises the decoded character while building the bundle. Keeping the
- * escaped segments separate prevents esbuild from folding the expression into a
- * literal that would inject U+2028/U+2029 back into this file and recreate the
- * parse error that originally broke the suite.
+ * source. The implementation relies on the UTF-16 big-endian decoder instead of
+ * `JSON.parse` so bundlers such as esbuild cannot constant-fold the expression
+ * back into the literal U+2028/U+2029 characters. Constant-folding the JSON
+ * approach is what previously reintroduced the problematic characters and broke
+ * the TypeScript transform with "Expected ';' but found ':'" parse errors.
  */
+const utf16beDecoder = new TextDecoder("utf-16be");
+
 function decodeUnicodeEscape(hexPayload: string): string {
-  // `JSON.parse` expects a standard JSON string literal. By joining the
-  // segments at runtime we avoid ever embedding the decoded control character in
-  // source while still producing the exact runtime payload the dashboard code
-  // must sanitise.
-  const jsonSegments = ['"', '\\u', hexPayload, '"'];
-  return JSON.parse(jsonSegments.join(""));
+  // Strip any formatting characters while keeping the runtime string free of
+  // direct control-character literals. This ensures the helper tolerates
+  // whitespace or uppercase hex without leaking the decoded payload back into
+  // the TypeScript source.
+  const sanitised = hexPayload.replace(/[^0-9a-fA-F]/g, "").toLowerCase();
+  if (sanitised.length !== 4) {
+    throw new Error(`Expected a 4-digit hexadecimal escape but received "${hexPayload}"`);
+  }
+
+  // Convert the sanitised hex payload into a two-byte big-endian sequence and
+  // decode it via `TextDecoder`. Using the decoder prevents build-time constant
+  // folding because the helper now performs observable work with Node globals
+  // rather than a pure JSON parse.
+  const bytes = Uint8Array.from([
+    Number.parseInt(sanitised.slice(0, 2), 16),
+    Number.parseInt(sanitised.slice(2, 4), 16),
+  ]);
+  return utf16beDecoder.decode(bytes);
 }
 
 function createMockRequest(method: string, path: string, body?: unknown): IncomingMessage {
@@ -138,6 +151,13 @@ function createMockRequest(method: string, path: string, body?: unknown): Incomi
 
 describe("monitor/dashboard", function (this: Mocha.Suite) {
   this.timeout(10_000);
+
+  it("decodes Unicode escapes at runtime without embedding control characters in source", () => {
+    const lineSeparator = decodeUnicodeEscape("2028");
+    expect(lineSeparator.length).to.equal(1);
+    expect(lineSeparator.codePointAt(0)).to.equal(0x2028);
+    expect(lineSeparator).to.not.equal("\\u2028");
+  });
 
   it("computes heatmaps based on graph and events", () => {
     const graphState = new GraphState();
