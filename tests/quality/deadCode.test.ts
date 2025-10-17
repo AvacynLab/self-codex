@@ -6,7 +6,11 @@ describe("scanForDeadExports", () => {
   const fixtureRoot = join("tests", "fixtures", "dead-code", "project-a");
   const tsconfigPath = join(fixtureRoot, "tsconfig.json");
 
-  it("flags exports that are never referenced", () => {
+  it("flags exports that are never referenced", function () {
+    // Building the TypeScript language service for the fixture can take a few
+    // seconds on CI machines, so provide generous time before Mocha aborts the
+    // synchronous scan.
+    this.timeout(10_000);
     const result = scanForDeadExports({
       projectRoot: fixtureRoot,
       tsconfigPath,
@@ -20,7 +24,8 @@ describe("scanForDeadExports", () => {
     ]);
   });
 
-  it("supports ignoring entries via an allowlist", () => {
+  it("supports ignoring entries via an allowlist", function () {
+    this.timeout(10_000);
     const result = scanForDeadExports({
       projectRoot: fixtureRoot,
       tsconfigPath,

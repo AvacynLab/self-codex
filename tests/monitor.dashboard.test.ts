@@ -234,9 +234,19 @@ describe("monitor/dashboard", function (this: Mocha.Suite) {
     // We assemble the separators via `String.fromCharCode` so the test injects
     // the actual U+2028/U+2029 code points without embedding them directly in
     // source (which would confuse the TypeScript parser during transpilation).
-    const LINE_SEPARATOR = String.fromCharCode(0x2028);
-    const PARAGRAPH_SEPARATOR = String.fromCharCode(0x2029);
-    const maliciousReason = `<script>alert('x')</script>${LINE_SEPARATOR}next line${PARAGRAPH_SEPARATOR}paragraph`;
+    // The segments are stitched together with `Array#join` to avoid creating a
+    // literal template string that esbuild could partially inline during the
+    // tsx transform step, which previously manifested as a parse error.
+    const maliciousReason =
+      "<script>alert('x')</script>" +
+      // Inject a literal U+2028 LINE SEPARATOR at runtime so the test avoids
+      // embedding it directly in source, which previously broke the TS parser.
+      String.fromCharCode(0x2028) +
+      "next line" +
+      // Follow up with a U+2029 PARAGRAPH SEPARATOR to ensure both control
+      // characters are sanitised by the dashboard telemetry renderer.
+      String.fromCharCode(0x2029) +
+      "paragraph";
 next line paragraph";
     contractNetWatcherTelemetry.record({
       reason: maliciousReason,
