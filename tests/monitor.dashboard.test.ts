@@ -105,15 +105,22 @@ class MockResponse implements TestResponse {
 }
 
 /**
- * Decode a Unicode escape sequence (e.g. "\u2028") at runtime without ever embedding
- * the resulting control character directly in source. Relying on `String.fromCharCode`
- * with a literal code point encourages bundlers to fold the call into a literal during
- * transpilation, which would reintroduce the parse error that originally broke this
- * suite. Parsing a JSON string that contains the escaped sequence keeps the source
- * printable while still producing the intended runtime payload.
+ * Decode a Unicode escape sequence (e.g. the hexadecimal payload `"2028"`)
+ * at runtime without ever embedding the resulting control character directly in
+ * source. The helper assembles the JSON string to parse from disjoint segments
+ * (`"`, `\\u`, `<hex>`, `"`) so the TypeScript → JavaScript transform never
+ * materialises the decoded character while building the bundle. Keeping the
+ * escaped segments separate prevents esbuild from folding the expression into a
+ * literal that would inject U+2028/U+2029 back into this file and recreate the
+ * parse error that originally broke the suite.
  */
-function decodeUnicodeEscape(sequence: string): string {
-  return JSON.parse(`"${sequence}"`);
+function decodeUnicodeEscape(hexPayload: string): string {
+  // `JSON.parse` expects a standard JSON string literal. By joining the
+  // segments at runtime we avoid ever embedding the decoded control character in
+  // source while still producing the exact runtime payload the dashboard code
+  // must sanitise.
+  const jsonSegments = ['"', '\\u', hexPayload, '"'];
+  return JSON.parse(jsonSegments.join(""));
 }
 
 function createMockRequest(method: string, path: string, body?: unknown): IncomingMessage {
@@ -255,22 +262,33 @@ describe("monitor/dashboard", function (this: Mocha.Suite) {
     // literal template string that esbuild could partially inline during the
     // tsx transform step, which previously manifested as a parse error.
     const maliciousReasonSegments: string[] = [];
+    // Decode the control characters lazily so the TypeScript source never
+    // contains the literal U+2028/U+2029 code points that previously caused the
+    // esbuild parser to fail while transpiling this suite.
+    const lineSeparator = decodeUnicodeEscape("2028");
+    const paragraphSeparator = decodeUnicodeEscape("2029");
     // Start with HTML markup that would normally terminate the inline
     // bootstrap script if left unsanitised by the dashboard renderer.
     maliciousReasonSegments.push("<script>alert('x')</script>");
     // Inject a literal U+2028 LINE SEPARATOR at runtime while keeping the
     // source clear of the problematic character.
-    maliciousReasonSegments.push(decodeUnicodeEscape(String.raw`\u2028`));
+    maliciousReasonSegments.push(lineSeparator);
     // Add a plain-text token to highlight how the sanitiser bridges adjacent
     // segments when the control characters are removed.
     maliciousReasonSegments.push("next line");
     // Follow up with a U+2029 PARAGRAPH SEPARATOR to ensure both control
     // characters are sanitised by the dashboard telemetry renderer.
-    maliciousReasonSegments.push(decodeUnicodeEscape(String.raw`\u2029`));
+    maliciousReasonSegments.push(paragraphSeparator);
     // Final token to ensure the joined string still contains readable text
     // after sanitisation so the assertion can verify its placement.
     maliciousReasonSegments.push("paragraph");
     const maliciousReason = maliciousReasonSegments.join("");
+    // Sanity check that the assembled string actually includes the decoded
+    // control characters before the sanitiser processes the payload; comparing
+    // via `lineSeparator`/`paragraphSeparator` avoids embedding the literals in
+    // this source file.
+    expect(maliciousReason.includes(lineSeparator)).to.equal(true);
+    expect(maliciousReason.includes(paragraphSeparator)).to.equal(true);
 
     // Record an explicit telemetry snapshot so the router can surface the
     // latest Contract-Net watcher counters through `/metrics` and the HTML
