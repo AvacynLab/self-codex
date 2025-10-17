@@ -32,7 +32,11 @@ describe("vector memory index", () => {
   it("indexes documents and ranks results by cosine similarity", async () => {
     const index = await VectorMemoryIndex.create({ directory: rootDir, now: () => clock.now() });
 
-    await index.upsert({ text: "Incident response contain eradicate", tags: ["incident", "contain"] });
+    await index.upsert({
+      text: "Incident response contain eradicate",
+      tags: ["incident", "contain"],
+      provenance: [{ sourceId: "kb://incident-playbook", type: "kg" }],
+    });
     clock.advance(10);
     await index.upsert({ text: "Deploy automation pipeline and rollback", tags: ["deploy"] });
     clock.advance(10);
@@ -43,6 +47,9 @@ describe("vector memory index", () => {
     expect(hits[0].document.text).to.include("Incident response");
     expect(hits[1].document.text).to.include("Contain malware");
     expect(hits[0].score).to.be.greaterThan(hits[1].score);
+    expect(hits[0].document.provenance).to.deep.equal([
+      { sourceId: "kb://incident-playbook", type: "kg" },
+    ]);
   });
 
   it("persists entries on disk and reloads them on startup", async () => {
@@ -52,6 +59,9 @@ describe("vector memory index", () => {
       text: "Generate remediation plan and document findings",
       tags: ["plan", "remediation"],
       metadata: { source: "child_collect", child_id: "child-123" },
+      provenance: [
+        { sourceId: "https://kb.example.org/remediation", type: "url", span: [0, 32], confidence: 0.8 },
+      ],
     });
 
     const reloaded = await VectorMemoryIndex.create({ directory: rootDir });
@@ -60,6 +70,9 @@ describe("vector memory index", () => {
     const hits = reloaded.search("remediation plan", { limit: 1 });
     expect(hits).to.have.length(1);
     expect(hits[0].document.metadata.child_id).to.equal("child-123");
+    expect(hits[0].document.provenance).to.deep.equal([
+      { sourceId: "https://kb.example.org/remediation", type: "url", span: [0, 32], confidence: 0.8 },
+    ]);
   });
 
   it("evicts the oldest entries once the capacity is exceeded", async () => {
@@ -90,5 +103,22 @@ describe("vector memory index", () => {
     expect(() =>
       VectorMemoryIndex.createSync({ directory: rootDir, fileName: "..\\vector.json" }),
     ).to.throw(PathResolutionError);
+  });
+
+  it("removes documents via deleteMany and persists the truncated index", async () => {
+    const index = await VectorMemoryIndex.create({ directory: rootDir, now: () => clock.now() });
+
+    const first = await index.upsert({ text: "Alpha incident post-mortem" });
+    clock.advance(1);
+    const second = await index.upsert({ text: "Beta incident post-mortem" });
+
+    expect(index.size()).to.equal(2);
+
+    const removed = await index.deleteMany([first.id, "", second.id]);
+    expect(removed).to.equal(2);
+    expect(index.size()).to.equal(0);
+
+    const reloaded = await VectorMemoryIndex.create({ directory: rootDir });
+    expect(reloaded.size()).to.equal(0);
   });
 });

@@ -4,6 +4,7 @@ import { mkdirSync, readFileSync, existsSync } from "node:fs";
 import { dirname } from "node:path";
 
 import { safePath } from "../gateways/fsArtifacts.js";
+import { normaliseProvenanceList, type Provenance } from "../types/provenance.js";
 
 /** Normalised representation of a single vectorised memory document. */
 export interface VectorMemoryDocument {
@@ -15,6 +16,8 @@ export interface VectorMemoryDocument {
   tags: string[];
   /** Arbitrary metadata forwarded to downstream consumers. */
   metadata: Record<string, unknown>;
+  /** Structured provenance pointing at the artefacts backing the document. */
+  provenance: Provenance[];
   /** Timestamp (epoch milliseconds) captured when the entry was created. */
   createdAt: number;
   /** Timestamp (epoch milliseconds) captured when the entry was last updated. */
@@ -49,6 +52,7 @@ export interface VectorDocumentInput {
   text: string;
   tags?: string[];
   metadata?: Record<string, unknown>;
+  provenance?: ReadonlyArray<Provenance | null | undefined>;
   createdAt?: number;
 }
 
@@ -69,6 +73,7 @@ interface SerializedVectorDocument {
   text: string;
   tags: string[];
   metadata: Record<string, unknown>;
+  provenance?: Provenance[];
   created_at: number;
   updated_at: number;
   embedding: Record<string, number>;
@@ -139,6 +144,7 @@ export class VectorMemoryIndex {
     const tags = normaliseTags(input.tags);
     const text = input.text.trim();
     const metadata = input.metadata ? { ...input.metadata } : {};
+    const provenance = normaliseProvenanceList(input.provenance);
 
     const tokens = tokenise(text);
     const embedding = buildEmbedding(tokens);
@@ -152,6 +158,7 @@ export class VectorMemoryIndex {
       text,
       tags,
       metadata,
+      provenance,
       createdAt,
       updatedAt: timestamp,
       embedding,
@@ -162,7 +169,7 @@ export class VectorMemoryIndex {
     this.records.set(id, record);
     this.enforceCapacity();
     await this.persist();
-    return { ...record, metadata: { ...record.metadata } };
+    return { ...record, metadata: { ...record.metadata }, provenance: [...record.provenance] };
   }
 
   /** Searches the index using cosine similarity. Results are ranked descending. */
@@ -193,12 +200,51 @@ export class VectorMemoryIndex {
       }
       const score = cosineSimilarity(embedding, norm, record.embedding, record.norm);
       if (score >= minScore) {
-        hits.push({ document: { ...record, metadata: { ...record.metadata } }, score });
+        hits.push({
+          document: {
+            ...record,
+            metadata: { ...record.metadata },
+            provenance: [...record.provenance],
+          },
+          score,
+        });
       }
     }
 
     hits.sort((a, b) => b.score - a.score || b.document.updatedAt - a.document.updatedAt);
     return hits.slice(0, limit);
+  }
+
+  /**
+   * Deletes the provided document identifiers from the index. The helper
+   * persists the truncated snapshot whenever at least one entry is removed and
+   * returns the number of deleted documents so callers can emit accurate
+   * telemetry.
+   */
+  async deleteMany(ids: Iterable<string>): Promise<number> {
+    let removed = 0;
+    const unique = new Set<string>();
+    for (const id of ids) {
+      if (typeof id === "string" && id.trim().length > 0) {
+        unique.add(id);
+      }
+    }
+
+    if (unique.size === 0) {
+      return 0;
+    }
+
+    for (const id of unique) {
+      if (this.records.delete(id)) {
+        removed += 1;
+      }
+    }
+
+    if (removed > 0) {
+      await this.persist();
+    }
+
+    return removed;
   }
 
   /** Removes every stored document and truncates the on-disk index. */
@@ -248,6 +294,7 @@ export class VectorMemoryIndex {
         text: entry.text,
         tags: Array.isArray(entry.tags) ? entry.tags.map(String) : [],
         metadata: entry.metadata ?? {},
+        provenance: normaliseProvenanceList(entry.provenance),
         createdAt: entry.created_at,
         updatedAt: entry.updated_at,
         embedding: entry.embedding ?? {},
@@ -266,6 +313,7 @@ export class VectorMemoryIndex {
         text: record.text,
         tags: [...record.tags],
         metadata: { ...record.metadata },
+        provenance: [...record.provenance],
         created_at: record.createdAt,
         updated_at: record.updatedAt,
         embedding: record.embedding,

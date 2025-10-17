@@ -1,0 +1,42 @@
+id: introspection-smoke
+objective: Vérifier que l'introspection MCP et l'index des ressources répondent avec succès.
+tags:
+  - smoke
+  - critical
+constraints:
+  maxDurationMs: 4000
+  maxToolCalls: 3
+  requiredTools:
+    - mcp_info
+    - mcp_capabilities
+steps:
+  - id: info
+    description: Récupère les métadonnées du serveur.
+    tool: mcp_info
+    arguments: {}
+    expect:
+      success: true
+      match:
+        pattern: mcp-self-fork-orchestrator
+        flags: i
+  - id: capabilities
+    description: Liste les capacités MCP exposées.
+    tool: mcp_capabilities
+    arguments: {}
+    expect:
+      success: true
+      match:
+        pattern: resources_list
+        flags: i
+  - id: resources
+    description: Vérifie que la liste des ressources répond sans erreur.
+    tool: resources_list
+    arguments:
+      limit: 10
+    expect:
+      success: true
+oracles:
+  - type: regex
+    description: Le transcript doit mentionner le protocole MCP.
+    pattern: '"protocol"'
+    flags: i

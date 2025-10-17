@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import type { LessonSignal } from "../learning/lessons.js";
+
 /**
  * Shape accepted by the {@link reflect} helper. The orchestrator forwards
  * high level metadata about the processed deliverable so the heuristic can
@@ -36,6 +38,8 @@ export interface ReflectionResult {
   nextSteps: string[];
   /** Potential risks or failure modes worth tracking. */
   risks: string[];
+  /** Optional lessons distilled for long-term institutional memory. */
+  lessons?: LessonSignal[];
 }
 
 /**
@@ -179,5 +183,6 @@ export async function reflect(raw: ReflectionInput): Promise<ReflectionResult> {
     insights: truncateList(insights, 6),
     nextSteps: truncateList(nextSteps, 6),
     risks: truncateList(risks, 6),
+    lessons: [],
   };
 }

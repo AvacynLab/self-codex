@@ -15,7 +15,9 @@ import {
   INTENT_ROUTE_TOOL_NAME,
   createIntentRouteHandler,
 } from "../../../src/tools/intent_route.js";
-import type { ToolBudgets } from "../../../src/mcp/registry.js";
+import type { ToolBudgets, ToolManifest } from "../../../src/mcp/registry.js";
+import { ToolRouter } from "../../../src/tools/toolRouter.js";
+import type { ToolRouterDecisionRecord } from "../../../src/tools/toolRouter.js";
 
 /** Budgets mirroring the manifests registered in production. */
 const BUDGET_HINTS: Record<string, ToolBudgets> = {
@@ -31,6 +33,172 @@ const BUDGET_HINTS: Record<string, ToolBudgets> = {
   runtime_observe: { time_ms: 1_000, tool_calls: 1, bytes_out: 12_288 },
   tools_help: { time_ms: 1_000, tool_calls: 1, bytes_out: 16_384 },
 };
+
+/** Builds a router seeded with manifests mirroring the production catalogue. */
+function createToolRouter(): ToolRouter {
+  const router = new ToolRouter({
+    fallbacks: [
+      {
+        tool: "tools_help",
+        rationale: "aucune règle précise trouvée : proposer la documentation interactive",
+        score: 0.55,
+      },
+      {
+        tool: "artifact_search",
+        rationale: "aucune règle précise trouvée : suggérer l'exploration des artefacts",
+        score: 0.5,
+      },
+      {
+        tool: "child_orchestrate",
+        rationale: "aucune règle précise trouvée : envisager un enfant opérateur",
+        score: 0.45,
+      },
+    ],
+  });
+  const timestamp = new Date(2025, 0, 1).toISOString();
+  const register = (manifest: ToolManifest) => router.register(manifest);
+
+  const manifests: ToolManifest[] = [
+    {
+      name: "graph_apply_change_set",
+      title: "Graph apply change set",
+      description: "Appliquer un patch sur le graphe",
+      kind: "dynamic",
+      version: 1,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      category: "graph",
+      tags: ["graph", "mutation"],
+      hidden: false,
+      source: "runtime",
+    },
+    {
+      name: "graph_snapshot_time_travel",
+      title: "Graph snapshot time travel",
+      description: "Explorer les snapshots du graphe",
+      kind: "dynamic",
+      version: 1,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      category: "graph",
+      tags: ["graph", "snapshot"],
+      hidden: false,
+      source: "runtime",
+    },
+    {
+      name: "plan_compile_execute",
+      title: "Plan compile execute",
+      description: "Compiler et exécuter un plan",
+      kind: "dynamic",
+      version: 1,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      category: "plan",
+      tags: ["plan", "execution"],
+      hidden: false,
+      source: "runtime",
+    },
+    {
+      name: "artifact_write",
+      title: "Artifact write",
+      kind: "dynamic",
+      version: 1,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      category: "artifact",
+      tags: ["artifact", "write"],
+      hidden: false,
+      source: "runtime",
+    },
+    {
+      name: "artifact_read",
+      title: "Artifact read",
+      kind: "dynamic",
+      version: 1,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      category: "artifact",
+      tags: ["artifact", "read"],
+      hidden: false,
+      source: "runtime",
+    },
+    {
+      name: "artifact_search",
+      title: "Artifact search",
+      kind: "dynamic",
+      version: 1,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      category: "artifact",
+      tags: ["artifact", "search"],
+      hidden: false,
+      source: "runtime",
+    },
+    {
+      name: "memory_search",
+      title: "Memory search",
+      kind: "dynamic",
+      version: 1,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      category: "memory",
+      tags: ["memory", "search"],
+      hidden: false,
+      source: "runtime",
+    },
+    {
+      name: "memory_upsert",
+      title: "Memory upsert",
+      kind: "dynamic",
+      version: 1,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      category: "memory",
+      tags: ["memory", "write"],
+      hidden: false,
+      source: "runtime",
+    },
+    {
+      name: "child_orchestrate",
+      title: "Child orchestrate",
+      kind: "dynamic",
+      version: 1,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      category: "child",
+      tags: ["child", "orchestration"],
+      hidden: false,
+      source: "runtime",
+    },
+    {
+      name: "runtime_observe",
+      title: "Runtime observe",
+      kind: "dynamic",
+      version: 1,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      category: "runtime",
+      tags: ["metrics"],
+      hidden: false,
+      source: "runtime",
+    },
+    {
+      name: "tools_help",
+      title: "Tools help",
+      kind: "dynamic",
+      version: 1,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      category: "admin",
+      tags: ["facade"],
+      hidden: false,
+      source: "runtime",
+    },
+  ];
+
+  manifests.forEach(register);
+  return router;
+}
 
 /**
  * Builds a minimal `RequestHandlerExtra` object satisfying the MCP SDK typing
@@ -57,9 +225,13 @@ describe("intent_route facade", () => {
   it("routes graph related goals to the graph_apply_change_set façade", async () => {
     const entries: LogEntry[] = [];
     const logger = new StructuredLogger({ onEntry: (entry) => entries.push(entry) });
+    const router = createToolRouter();
+    const recordedDecisions: ToolRouterDecisionRecord[] = [];
     const handler = createIntentRouteHandler({
       logger,
       resolveBudget: (tool) => BUDGET_HINTS[tool],
+      toolRouter: router,
+      recordRouterDecision: (record) => recordedDecisions.push(record),
     });
     const extras = createRequestExtras("req-graph-1");
     const budget = new BudgetTracker({ toolCalls: 4 });
@@ -100,14 +272,20 @@ describe("intent_route facade", () => {
     expect((evaluationLog?.payload as Record<string, any> | undefined)?.top_tool).to.equal(
       "graph_apply_change_set",
     );
+    expect(recordedDecisions).to.have.length(1);
+    expect(recordedDecisions[0]?.decision.tool).to.be.a("string");
   });
 
   it("suggests fallback candidates when no heuristic matches", async () => {
     const entries: LogEntry[] = [];
     const logger = new StructuredLogger({ onEntry: (entry) => entries.push(entry) });
+    const router = createToolRouter();
+    const recordedDecisions: ToolRouterDecisionRecord[] = [];
     const handler = createIntentRouteHandler({
       logger,
       resolveBudget: (tool) => BUDGET_HINTS[tool],
+      toolRouter: router,
+      recordRouterDecision: (record) => recordedDecisions.push(record),
     });
     const extras = createRequestExtras("req-fallback-1");
     const budget = new BudgetTracker({ toolCalls: 3 });
@@ -126,32 +304,39 @@ describe("intent_route facade", () => {
     expect(structured.details.recommendations).to.deep.equal([
       {
         tool: "tools_help",
-        score: 0.55,
-        rationale: "aucune règle précise trouvée : proposer la documentation interactive",
+        score: 0.6,
+        rationale:
+          "routeur contextuel : aucune règle précise trouvée : proposer la documentation interactive",
         estimated_budget: { time_ms: 1_000, tool_calls: 1, bytes_out: 16_384 },
       },
       {
         tool: "artifact_search",
-        score: 0.5,
-        rationale: "aucune règle précise trouvée : suggérer l'exploration des artefacts",
+        score: 0.54,
+        rationale:
+          "routeur contextuel : aucune règle précise trouvée : suggérer l'exploration des artefacts",
         estimated_budget: { time_ms: 4_000, tool_calls: 1, bytes_out: 24_576 },
       },
       {
         tool: "child_orchestrate",
-        score: 0.45,
-        rationale: "aucune règle précise trouvée : envisager un enfant opérateur",
+        score: 0.48,
+        rationale:
+          "routeur contextuel : aucune règle précise trouvée : envisager un enfant opérateur",
         estimated_budget: { time_ms: 15_000, tool_calls: 1, bytes_out: 32_768 },
       },
     ]);
     expect(structured.details.diagnostics).to.be.an("array").that.is.not.empty;
+    expect(recordedDecisions).to.have.length(1);
+    expect(recordedDecisions[0]?.decision.tool).to.equal("tools_help");
   });
 
   it("returns a degraded response when the caller exhausted its budget", async () => {
     const entries: LogEntry[] = [];
     const logger = new StructuredLogger({ onEntry: (entry) => entries.push(entry) });
+    const router = createToolRouter();
     const handler = createIntentRouteHandler({
       logger,
       resolveBudget: (tool) => BUDGET_HINTS[tool],
+      toolRouter: router,
     });
     const extras = createRequestExtras("req-budget-1");
     const budget = new BudgetTracker({ toolCalls: 0 });
@@ -173,9 +358,13 @@ describe("intent_route facade", () => {
 
   it("orders multiple heuristic hits by confidence before adding fallbacks", async () => {
     const logger = new StructuredLogger();
+    const router = createToolRouter();
+    const recordedDecisions: ToolRouterDecisionRecord[] = [];
     const handler = createIntentRouteHandler({
       logger,
       resolveBudget: (tool) => BUDGET_HINTS[tool],
+      toolRouter: router,
+      recordRouterDecision: (record) => recordedDecisions.push(record),
     });
     const extras = createRequestExtras("req-memory-1");
     const budget = new BudgetTracker({ toolCalls: 5 });
@@ -196,6 +385,81 @@ describe("intent_route facade", () => {
     expect(recommendations[2].tool).to.equal("tools_help");
     expect(recommendations[0].score).to.be.greaterThan(recommendations[1].score);
     expect(recommendations[1].score).to.be.greaterThan(recommendations[2].score);
+    expect(recordedDecisions).to.have.length(1);
+  });
+
+  it("propagates planner metadata hints into the router context", async () => {
+    const logger = new StructuredLogger();
+    const router = createToolRouter();
+    const recordedDecisions: ToolRouterDecisionRecord[] = [];
+    const handler = createIntentRouteHandler({
+      logger,
+      resolveBudget: (tool) => BUDGET_HINTS[tool],
+      toolRouter: router,
+      recordRouterDecision: (record) => recordedDecisions.push(record),
+    });
+    const extras = createRequestExtras("req-router-metadata-1");
+    const budget = new BudgetTracker({ toolCalls: 4 });
+
+    const metadata = {
+      category: "Planner",
+      tags: ["Ops", " Graph  "],
+      domains: ["Reliability", "GraphOps"],
+      preferred_tools: ["plan_compile_execute", "artifact_write", ""],
+      router_context: {
+        category: "graph_operations",
+        tags: [" Planner ", "Fallback"],
+        preferred_tools: ["graph_apply_change_set"],
+        keywords: ["Graph maintenance", "patch"],
+      },
+      goal_keywords: ["GraphOps", "fix"],
+      keywords: "graph,maintenance",
+    } as Record<string, unknown>;
+
+    const result = await runWithRpcTrace(
+      {
+        method: `tools/${INTENT_ROUTE_TOOL_NAME}`,
+        traceId: "trace-router-metadata-1",
+        requestId: "req-router-metadata-1",
+      },
+      async () =>
+        await runWithJsonRpcContext({ requestId: "req-router-metadata-1", budget }, () =>
+          handler(
+            {
+              natural_language_goal: "Applique un patch précis sur le graphe",
+              metadata,
+            },
+            extras,
+          ),
+        ),
+    );
+
+    expect(recordedDecisions).to.have.length(1);
+    const context = recordedDecisions[0]!.context;
+    expect(context.goal).to.equal("applique un patch précis sur le graphe");
+    expect(context.metadata).to.deep.equal(metadata);
+    expect(context.category).to.equal("graph_operations");
+    expect(context.tags).to.include.members([
+      "ops",
+      "graph",
+      "reliability",
+      "graphops",
+      "planner",
+      "fallback",
+      "graph maintenance",
+      "patch",
+      "graph_mutation",
+      "fix",
+      "maintenance",
+    ]);
+    expect(context.preferredTools).to.include.members([
+      "plan_compile_execute",
+      "graph_apply_change_set",
+    ]);
+    expect(context.preferredTools).to.not.include("");
+
+    const structured = result.structuredContent as Record<string, any>;
+    expect(structured.details.metadata).to.deep.equal(metadata);
   });
 
   it("validates the natural language goal string", async () => {

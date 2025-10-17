@@ -54,6 +54,8 @@ describe('gateway hygiene', () => {
         'src/memory/kg.ts',
         'src/memory/vector.ts',
         'src/paths.ts',
+        // Evaluation harness reads declarative scenarios from disk before parsing them.
+        'src/eval/scenario.ts',
         // HTTP readiness probe persists readiness markers in the runs root.
         'src/http/readiness.ts',
         'src/monitor/log.ts',
@@ -68,6 +70,8 @@ describe('gateway hygiene', () => {
         'src/bridge/fsBridge.ts',
         'src/tools/planTools.ts',
         'src/graph/subgraphExtract.ts',
+        // Dead export scanner walks the TypeScript program graph from disk allowlist entries.
+        'src/quality/deadCode.ts',
         // State persistence relies on WAL and snapshot writers for replay.
         'src/state/snapshot.ts',
         'src/state/wal.ts',

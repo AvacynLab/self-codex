@@ -1,4 +1,13 @@
 /**
+ * ## Provenance data model
+ *
+ * Shared schema describing where knowledge artefacts originate from.  The
+ * orchestrator relies on these types to propagate deterministic citation
+ * metadata across the EventStore, KnowledgeGraph, ThoughtGraph, vector memory
+ * and tool runtimes.  Keep this module aligned with any new provenance-bearing
+ * subsystem so dashboards and audits remain trustworthy.
+ */
+/**
  * Enumerates the supported provenance categories for knowledge artefacts. The
  * list intentionally mirrors the sources orchestrators interact with so we can
  * derive analytics (e.g. RAG vs KG) without post-processing free-form strings.

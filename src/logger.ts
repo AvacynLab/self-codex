@@ -142,7 +142,7 @@ export interface LoggerOptions {
 }
 
 /** Phases covered by the cognitive logging helpers. */
-export type CognitiveLogPhase = "prompt" | "resume" | "score";
+export type CognitiveLogPhase = "prompt" | "resume" | "score" | "learn";
 
 /**
  * Shape describing a cognitive log event, i.e. a high-level reasoning artefact

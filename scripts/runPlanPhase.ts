@@ -1,52 +1,86 @@
 #!/usr/bin/env node
 import process from "node:process";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 
+import { createCliStructuredLogger } from "../src/validation/cliLogger.js";
 import { executePlanCli, parsePlanCliOptions } from "../src/validation/plansCli.js";
 import { PLAN_JSONL_FILES } from "../src/validation/plans.js";
 
+/** Identifier used to namespace structured log messages for this CLI. */
+const STAGE_ID = "plan_validation";
+
 /**
- * CLI entrypoint for the Stage 6 planning validation workflow. The script keeps
- * flag semantics aligned with previous stages so operators can chain executions
- * without memorising new conventions.
+ * Runs the Stage 6 planning validation workflow with structured logging. The
+ * helper remains reusable by tests so the script can be exercised without
+ * spawning a child process.
  */
-async function main(): Promise<void> {
-  const options = parsePlanCliOptions(process.argv.slice(2));
+export async function runPlanPhase(
+  argv: readonly string[],
+  env: NodeJS.ProcessEnv,
+  stageLogger = createCliStructuredLogger(STAGE_ID),
+): Promise<void> {
+  const { logger } = stageLogger;
 
-  const { runRoot, result } = await executePlanCli(options, process.env, console);
+  try {
+    const options = parsePlanCliOptions(argv);
+    const { runRoot, result } = await executePlanCli(options, env, stageLogger.console);
 
-  console.log("🧭 Planning validation summary:");
-  console.log(`   • graph id: ${result.summary.graphId ?? "unknown"}`);
-  console.log(`   • compile success: ${result.summary.compile.success}`);
-  console.log(
-    `   • plan_run_bt status: ${result.summary.runBt.status ?? "unknown"} (ticks=${
-      result.summary.runBt.ticks ?? "n/a"
-    })`,
-  );
-  console.log(
-    `   • plan_run_reactive status: ${result.summary.runReactive.status ?? "unknown"} (loop_ticks=${
-      result.summary.runReactive.loopTicks ?? "n/a"
-    })`,
-  );
-  if (result.summary.runReactive.cancelled) {
-    console.log(
-      `   • cancellation observed (error=${result.summary.runReactive.cancellationError ?? "n/a"})`,
-    );
+    logger.info("plan_validation.summary", {
+      runRoot,
+      graphId: result.summary.graphId ?? null,
+      compileStatus: result.summary.compile.success,
+      runBt: {
+        status: result.summary.runBt.status ?? null,
+        ticks: result.summary.runBt.ticks ?? null,
+      },
+      runReactive: {
+        status: result.summary.runReactive.status ?? null,
+        loopTicks: result.summary.runReactive.loopTicks ?? null,
+        cancelled: result.summary.runReactive.cancelled ?? null,
+        cancellationError: result.summary.runReactive.cancellationError ?? null,
+      },
+      lifecycle: result.summary.lifecycle.statusSnapshot ?? null,
+      artefacts: {
+        requests: join(runRoot, PLAN_JSONL_FILES.inputs),
+        responses: join(runRoot, PLAN_JSONL_FILES.outputs),
+        events: join(runRoot, PLAN_JSONL_FILES.events),
+        httpLog: join(runRoot, PLAN_JSONL_FILES.log),
+        summary: result.summaryPath,
+      },
+    });
+  } catch (error) {
+    logger.error("plan_validation.failed", {
+      message: error instanceof Error ? error.message : String(error),
+    });
+    throw error;
+  } finally {
+    await logger.flush();
   }
-  if (result.summary.lifecycle.statusSnapshot) {
-    console.log(
-      `   • lifecycle state: ${JSON.stringify(result.summary.lifecycle.statusSnapshot)}`,
-    );
-  }
-
-  console.log(`🧾 Requests log: ${join(runRoot, PLAN_JSONL_FILES.inputs)}`);
-  console.log(`📤 Responses log: ${join(runRoot, PLAN_JSONL_FILES.outputs)}`);
-  console.log(`📡 Events log: ${join(runRoot, PLAN_JSONL_FILES.events)}`);
-  console.log(`🗂️ HTTP snapshots: ${join(runRoot, PLAN_JSONL_FILES.log)}`);
-  console.log(`📝 Summary: ${result.summaryPath}`);
 }
 
-main().catch((error) => {
-  console.error("Failed to execute planning validation workflow:", error);
-  process.exitCode = 1;
-});
+/** Executes the CLI when the module is run directly from Node.js. */
+async function main(): Promise<void> {
+  try {
+    await runPlanPhase(process.argv.slice(2), process.env);
+  } catch (error) {
+    // The error has already been logged by {@link runPlanPhase}; propagate the
+    // failure to the shell without emitting duplicate console output.
+    process.exitCode = 1;
+    if (error instanceof Error && process.env.DEBUG_PLAN_PHASE === "1") {
+      // Developers occasionally need stack traces; gate them behind an opt-in
+      // environment flag to avoid polluting automation logs.
+      process.stderr.write(`${error.stack ?? error.message}\n`);
+    }
+  }
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]!).href) {
+  main().catch((error) => {
+    process.exitCode = 1;
+    if (process.env.DEBUG_PLAN_PHASE === "1") {
+      const stack = error instanceof Error ? error.stack ?? error.message : String(error);
+      process.stderr.write(`${stack}\n`);
+    }
+  });
+}

@@ -334,6 +334,9 @@ Les flags suivants contrôlent l'exposition des outils facultatifs :
 | `--enable-plan-lifecycle` | `enablePlanLifecycle` | Contrôle plan_pause/plan_resume (à venir). |
 | `--enable-child-ops-fine` | `enableChildOpsFine` | Active les outils de réglage fin des enfants (à venir). |
 | `--enable-values-explain` | `enableValuesExplain` | Publie `values_explain` (à venir). |
+| `--enable-rag` | `enableRag` | Expose `rag_ingest` / `rag_query` et les fallbacks RAG du knowledge assistant. |
+| `--enable-tool-router` | `enableToolRouter` | Active la façade `intent_route` et le suivi des décisions du routeur. |
+| `--enable-thought-graph` | `enableThoughtGraph` | Sérialise les branches multi-voies dans le ThoughtGraph. |
 | `--enable-assist` | `enableAssist` | Active `kg_suggest_plan` (fragments issus du graphe de connaissances). |
 
 Les modules marqués « à venir » seront ajoutés progressivement : cette référence
@@ -430,7 +433,10 @@ interface StigBatchResult {
 Le registre de connaissances accepte des triplets via `kg_insert`, peut être
 interrogé avec `kg_query` et exporté entièrement avec `kg_export`. Lorsque le
 flag `--enable-assist` est actif, l'outil `kg_suggest_plan` synthétise des
-fragments hiérarchiques prêts à être injectés dans les workflows de planification.
+fragments hiérarchiques prêts à être injectés dans les workflows de
+planification. `kg_export` accepte désormais `format: "rag_documents"` pour
+générer des passages directement ingérables par `rag_ingest` avec support des
+filtres `min_confidence`, `include_predicates` et `max_triples_per_subject`.
 
 ```ts
 const KgSuggestPlanInput = z

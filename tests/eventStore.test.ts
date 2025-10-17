@@ -47,6 +47,27 @@ describe("EventStore", () => {
     expect(perJob[0].seq).to.equal(second.seq);
   });
 
+  it("evicts the oldest entries in FIFO order when events interleave across jobs", () => {
+    // The regression guard below ensures that trimming honours insertion order even
+    // when multiple jobs contribute to the same EventStore window.
+    const store = new EventStore({ maxHistory: 2, logger: asStructuredLogger(new StubLogger()) });
+
+    const jobAFirst = store.emit({ kind: "INFO", jobId: "job_a" });
+    const jobBOnly = store.emit({ kind: "INFO", jobId: "job_b" });
+    const jobASecond = store.emit({ kind: "INFO", jobId: "job_a" });
+    const jobAThird = store.emit({ kind: "INFO", jobId: "job_a" });
+
+    const snapshot = store.getSnapshot();
+    expect(snapshot.map((event) => event.seq)).to.deep.equal([jobASecond.seq, jobAThird.seq]);
+
+    const jobAEvents = store.listForJob("job_a");
+    expect(jobAEvents.map((event) => event.seq)).to.deep.equal([jobASecond.seq, jobAThird.seq]);
+
+    const jobBEvents = store.listForJob("job_b");
+    expect(jobBEvents).to.have.length(1);
+    expect(jobBEvents[0].seq).to.equal(jobBOnly.seq);
+  });
+
   it("filters events by job, child and minimum sequence", () => {
     // Populate with three events touching two jobs and different children.
     const store = new EventStore({ maxHistory: 10, logger: asStructuredLogger(new StubLogger()) });
@@ -106,5 +127,140 @@ describe("EventStore", () => {
       { sourceId: "DocA", type: "file", confidence: 0.4 },
       { sourceId: "Memory", type: "kg", span: [2, 8], confidence: 0 },
     ]);
+  });
+
+  it("filters events by kind with pagination helpers", () => {
+    const store = new EventStore({ maxHistory: 10, logger: asStructuredLogger(new StubLogger()) });
+
+    const firstInfo = store.emit({ kind: "INFO", jobId: "job_a", childId: "child_shared" });
+    const firstWarn = store.emit({ kind: "WARN", jobId: "job_a", childId: "child_warn" });
+    const errorOtherJob = store.emit({ kind: "ERROR", jobId: "job_b" });
+    const secondInfo = store.emit({ kind: "INFO", jobId: "job_a", childId: "child_shared" });
+    const secondWarn = store.emit({ kind: "WARN", jobId: "job_a", childId: "child_warn" });
+
+    const warnAndError = store.list({ kinds: ["WARN", "ERROR"] });
+    expect(warnAndError.map((event) => event.seq)).to.deep.equal([
+      firstWarn.seq,
+      errorOtherJob.seq,
+      secondWarn.seq,
+    ]);
+
+    const latestWarnOnly = store.list({ kinds: ["WARN"], reverse: true, limit: 1 });
+    expect(latestWarnOnly).to.have.length(1);
+    expect(latestWarnOnly[0].seq).to.equal(secondWarn.seq);
+
+    const zeroLimit = store.list({ kinds: ["INFO"], limit: 0 });
+    expect(zeroLimit).to.deep.equal([]);
+
+    const jobWarns = store.listForJob("job_a", { kinds: ["WARN"], reverse: true });
+    expect(jobWarns.map((event) => event.seq)).to.deep.equal([secondWarn.seq, firstWarn.seq]);
+
+    const jobChildAfterFirst = store.listForJob("job_a", {
+      childId: "child_shared",
+      minSeq: firstInfo.seq,
+    });
+    expect(jobChildAfterFirst.map((event) => event.seq)).to.deep.equal([secondInfo.seq]);
+
+    const legacyMinSeq = store.listForJob("job_a", firstInfo.seq);
+    expect(legacyMinSeq.map((event) => event.seq)).to.deep.equal([
+      firstWarn.seq,
+      secondInfo.seq,
+      secondWarn.seq,
+    ]);
+
+    const limitedDescending = store.listForJob("job_a", {
+      kinds: ["INFO", "WARN"],
+      reverse: true,
+      limit: 2,
+    });
+    expect(limitedDescending.map((event) => event.seq)).to.deep.equal([secondWarn.seq, secondInfo.seq]);
+  });
+
+  it("émet un journal structuré pour chaque événement enregistré", () => {
+    const logger = new StubLogger();
+    const store = new EventStore({ maxHistory: 5, logger: asStructuredLogger(logger) });
+
+    const infoEvent = store.emit({
+      kind: "INFO",
+      level: "info",
+      jobId: "job_a",
+      payload: { status: "ok" },
+    });
+    const warnEvent = store.emit({ kind: "WARN", level: "warn", childId: "child_a" });
+    const errorEvent = store.emit({ kind: "ERROR", level: "error" });
+
+    const recordedEntries = logger.entries.filter((entry) => entry.message === "event_recorded");
+    expect(recordedEntries).to.have.length(3);
+
+    const infoLog = recordedEntries.find((entry) => entry.level === "info");
+    expect(infoLog?.payload).to.deep.include({
+      seq: infoEvent.seq,
+      kind: "INFO",
+      job_id: "job_a",
+      level: "info",
+      provenance_count: 0,
+    });
+    expect((infoLog?.payload as Record<string, unknown>).payload).to.deep.equal({ status: "ok" });
+
+    const warnLog = recordedEntries.find((entry) => entry.level === "warn");
+    expect(warnLog?.payload).to.deep.include({
+      seq: warnEvent.seq,
+      kind: "WARN",
+      child_id: "child_a",
+      level: "warn",
+    });
+
+    const errorLog = recordedEntries.find((entry) => entry.level === "error");
+    expect(errorLog?.payload).to.deep.include({
+      seq: errorEvent.seq,
+      kind: "ERROR",
+      level: "error",
+    });
+  });
+
+  it("résume les charges utiles impossibles à sérialiser", () => {
+    const logger = new StubLogger();
+    const store = new EventStore({ maxHistory: 3, logger: asStructuredLogger(logger) });
+
+    const circular: { self?: unknown } = {};
+    circular.self = circular;
+
+    store.emit({ kind: "INFO", payload: circular });
+
+    const summaryEntry = logger.entries.find(
+      (entry) => entry.message === "event_recorded" && entry.level === "info",
+    );
+    expect(summaryEntry).to.not.be.undefined;
+    expect(summaryEntry?.payload).to.have.property("payload_summary");
+    expect((summaryEntry?.payload as { payload_summary: { summary: string } }).payload_summary.summary).to.equal(
+      "payload_serialization_failed",
+    );
+  });
+
+  it("journalise les évictions avec le scope concerné", () => {
+    const logger = new StubLogger();
+    const store = new EventStore({ maxHistory: 1, logger: asStructuredLogger(logger) });
+
+    const first = store.emit({ kind: "INFO", jobId: "job_a" });
+    store.emit({ kind: "INFO", jobId: "job_a" });
+
+    const evictionEntries = logger.entries.filter((entry) => entry.message === "event_evicted");
+    expect(evictionEntries).to.have.length(2);
+
+    const globalEviction = evictionEntries.find((entry) => (entry.payload as { scope: string }).scope === "global");
+    expect(globalEviction?.payload).to.deep.include({
+      scope: "global",
+      seq: first.seq,
+      job_id: "job_a",
+      reason: "history_limit",
+    });
+
+    const jobEviction = evictionEntries.find((entry) => (entry.payload as { scope: string }).scope === "job");
+    expect(jobEviction?.payload).to.deep.include({
+      scope: "job",
+      seq: first.seq,
+      job_id: "job_a",
+      reason: "history_limit",
+    });
   });
 });

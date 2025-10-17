@@ -1,8 +1,6 @@
-# This GitHub Actions workflow enforces the build and quality gates described in AGENTS.md.
-# It mirrors the local developer workflow: install dependencies, compile the TypeScript
-# sources, lint the project, execute the full automated test suite, and publish coverage
-# artefacts. An optional smoke job builds the Docker image and exercises the HTTP health
-# probes to catch packaging regressions early.
+# This GitHub Actions workflow enforces the staged quality gates described in AGENTS.md.
+# Each job mirrors a step of the local workflow (lint → build → test → eval) so issues are
+# surfaced with precise feedback. A final Docker smoke test validates the production image.
 name: CI
 
 on:
@@ -12,26 +10,9 @@ on:
   pull_request:
 
 jobs:
-  build-quick:
-    name: Quick build gate
+  lint:
+    name: Lint source tree
     runs-on: ubuntu-latest
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Use Node.js 20.x
-        uses: actions/setup-node@v4
-        with:
-          node-version: "20.x"
-          cache: npm
-
-      - name: Install dependencies and compile
-        run: npm run ci:build && node -e "process.exit(0)"
-
-  build-and-verify:
-    name: Build, lint, test, and collect coverage
-    runs-on: ubuntu-latest
-    needs: build-quick
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -45,17 +26,54 @@ jobs:
       - name: Install dependencies
         run: npm ci --include=dev
 
-      - name: Compile TypeScript sources
-        run: npm run build
-
       - name: Run linters
         run: npm run lint
+
+  build:
+    name: Build TypeScript artefacts
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Use Node.js 20.x
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20.x"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --include=dev
+
+      - name: Compile orchestrator
+        run: npm run build
+
+  test:
+    name: Test and collect coverage
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Use Node.js 20.x
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20.x"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --include=dev
 
       - name: Execute automated tests
         run: npm run test
 
       - name: Generate coverage report
         run: npm run coverage
+
+      - name: Clean previous validation artefacts
+        run: rm -rf runs/validation_*
 
       - name: Run validation smoke harness
         run: node scripts/validation/run-smoke.mjs
@@ -74,18 +92,53 @@ jobs:
             coverage/lcov-report
           if-no-files-found: warn
 
-      - name: Upload validation artefacts
+      - name: Upload smoke artefacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: validation-artifacts
+          name: smoke-validation-artifacts
+          path: runs/validation_*
+          if-no-files-found: warn
+
+  eval-scenarios:
+    name: Evaluation scenarios harness
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Use Node.js 20.x
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20.x"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --include=dev
+
+      - name: Clean previous evaluation artefacts
+        run: rm -rf runs/validation_*
+
+      - name: Run evaluation scenarios
+        run: npm run eval:scenarios
+        env:
+          MCP_HTTP_PORT: "0"
+          MCP_HTTP_TOKEN: "ci-eval-token"
+          MCP_LOG_REDACT: "on"
+
+      - name: Upload evaluation artefacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-scenarios-artifacts
           path: runs/validation_*
           if-no-files-found: warn
 
   docker-smoke:
     name: Build Docker image and probe HTTP endpoints
     runs-on: ubuntu-latest
-    needs: build-and-verify
+    needs: eval-scenarios
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4

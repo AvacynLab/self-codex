@@ -19,6 +19,7 @@ import {
   type LogEntry,
 } from "../logger.js";
 import { EventStore, OrchestratorEvent, type EventKind, type EventLevel, type EventSource } from "../eventStore.js";
+import { aggregateCitationsFromEvents } from "../provenance/citations.js";
 import type { Provenance } from "../types/provenance.js";
 import {
 // NOTE: Node built-in modules are imported with the explicit `node:` prefix to guarantee ESM resolution in Node.js.
@@ -70,6 +71,25 @@ import { evaluateToolDeprecation, logToolDeprecation } from "../mcp/deprecations
 import { SharedMemoryStore } from "../memory/store.js";
 import { PersistentKnowledgeGraph } from "../memory/kg.js";
 import { VectorMemoryIndex } from "../memory/vector.js";
+import { LocalVectorMemory } from "../memory/vectorMemory.js";
+import { HybridRetriever } from "../memory/retriever.js";
+import {
+  LessonsStore,
+  type LessonRegressionResult,
+  type LessonRegressionSignal,
+  type LessonSignal,
+} from "../learning/lessons.js";
+import {
+  buildLessonManifestContext,
+  formatLessonsForPromptMessage,
+  recallLessons,
+  seedLessons as seedLessonsUtility,
+} from "../learning/lessonPrompts.js";
+import {
+  buildLessonsPromptPayload,
+  normalisePromptBlueprint,
+  normalisePromptMessages,
+} from "../learning/lessonPromptDiff.js";
 import { selectMemoryContext } from "../memory/attention.js";
 import { LoopDetector } from "../guard/loopDetector.js";
 import { BlackboardStore } from "../coord/blackboard.js";
@@ -177,6 +197,14 @@ import { registerMemoryUpsertTool } from "../tools/memory_upsert.js";
 import { registerMemorySearchTool } from "../tools/memory_search.js";
 import { registerChildOrchestrateTool } from "../tools/child_orchestrate.js";
 import { registerRuntimeObserveTool } from "../tools/runtime_observe.js";
+import {
+  ToolRouter,
+  resolveToolRouterTopKLimit,
+  type ToolRouterDecision,
+  type ToolRouterOutcomeEvent,
+  type ToolRoutingContext,
+} from "../tools/toolRouter.js";
+import { ThoughtGraphCoordinator } from "../reasoning/thoughtCoordinator.js";
 
 export type { JsonRpcRouteContext } from "../infra/runtime.js";
 import {
@@ -369,14 +397,26 @@ import {
   KgInsertInputShape,
   KgQueryInputSchema,
   KgQueryInputShape,
+  KgAssistInputSchema,
+  KgAssistInputShape,
   KgSuggestPlanInputSchema,
   KgSuggestPlanInputShape,
   KnowledgeToolContext,
   handleKgExport,
   handleKgInsert,
   handleKgQuery,
+  handleKgAssist,
   handleKgSuggestPlan,
 } from "../tools/knowledgeTools.js";
+import {
+  RagIngestInputSchema,
+  RagIngestInputShape,
+  RagQueryInputSchema,
+  RagQueryInputShape,
+  handleRagIngest,
+  handleRagQuery,
+  type RagToolContext,
+} from "../tools/ragTools.js";
 import {
   CausalExportInputSchema,
   CausalExportInputShape,
@@ -465,6 +505,61 @@ const graphLocks = new GraphLockManager();
 const blackboard = new BlackboardStore();
 /** Registry exposing normalised MCP resources (graphs, runs, logs, namespaces). */
 const resources = new ResourceRegistry({ blackboard });
+
+const toolRouter = new ToolRouter({
+  fallbacks: [
+    {
+      tool: "tools_help",
+      rationale: "aucune règle précise trouvée : proposer la documentation interactive",
+      score: 0.55,
+    },
+    {
+      tool: "artifact_search",
+      rationale: "aucune règle précise trouvée : suggérer l'exploration des artefacts",
+      score: 0.5,
+    },
+    {
+      tool: "child_orchestrate",
+      rationale: "aucune règle précise trouvée : envisager un enfant opérateur",
+      score: 0.45,
+    },
+  ],
+  acceptanceThreshold: 0.5,
+});
+toolRouter.on("decision", (payload: { context: ToolRoutingContext; decision: ToolRouterDecision }) => {
+  const limit = Math.max(1, resolveToolRouterTopKLimit());
+  const topCandidates = payload.decision.candidates.slice(0, limit).map((candidate) => ({
+    tool: candidate.tool,
+    score: candidate.score,
+    reliability: candidate.reliability,
+  }));
+  logger.info("tool_attempt", {
+    tool: payload.decision.tool,
+    score: payload.decision.score,
+    reason: payload.decision.reason,
+    decided_at: payload.decision.decidedAt,
+    candidates: topCandidates,
+    context_goal: payload.context.goal ?? null,
+    context_category: payload.context.category ?? null,
+    context_tags: payload.context.tags ?? null,
+  });
+});
+toolRouter.on("outcome", (event: ToolRouterOutcomeEvent) => {
+  const eventName = event.success ? "tool_success" : "tool_failure";
+  const log = event.success ? logger.info.bind(logger) : logger.warn.bind(logger);
+  log(eventName, {
+    tool: event.tool,
+    latency_ms: typeof event.latencyMs === "number" ? Math.max(0, Math.round(event.latencyMs)) : null,
+    reliability: Math.round(event.reliability * 1000) / 1000,
+    success_rate: Math.round(event.successRate * 1000) / 1000,
+    failure_streak: event.failureStreak,
+  });
+  resources.recordToolRouterOutcome({
+    tool: event.tool,
+    success: event.success,
+    latencyMs: event.latencyMs ?? null,
+  });
+});
 /** Shared stigmergic field coordinating pheromone-driven prioritisation. */
 const stigmergy = new StigmergyField();
 /** Shared contract-net coordinator balancing task assignments. */
@@ -498,6 +593,59 @@ function resolveVectorIndexCapacity(): number {
     return 1024;
   }
   return parsed;
+}
+
+/** Resolves the default configuration used by the hybrid RAG retriever. */
+function resolveHybridRetrieverOptions(): {
+  defaultLimit: number;
+  lexicalWeight: number;
+  vectorWeight: number;
+  overfetchFactor: number;
+  minVectorScore: number;
+} {
+  let defaultLimit = 6;
+  const rawLimit = process.env.RETRIEVER_K;
+  if (rawLimit) {
+    const parsed = Number.parseInt(rawLimit, 10);
+    if (Number.isFinite(parsed) && parsed > 0) {
+      defaultLimit = Math.min(10, parsed);
+    }
+  }
+
+  const bm25Raw = process.env.HYBRID_BM25 ?? "";
+  const bm25Enabled = /^(1|true|yes)$/i.test(bm25Raw.trim());
+  const lexicalWeight = bm25Enabled ? 0.4 : 0.25;
+  const vectorWeight = bm25Enabled ? 0.6 : 0.75;
+
+  return {
+    defaultLimit,
+    lexicalWeight,
+    vectorWeight,
+    overfetchFactor: 2,
+    minVectorScore: 0.1,
+  };
+}
+
+function resolveThoughtGraphOptions(): { maxBranches: number; maxDepth: number } {
+  const maxBranchesRaw = process.env.THOUGHTGRAPH_MAX_BRANCHES;
+  let maxBranches = 6;
+  if (maxBranchesRaw) {
+    const parsed = Number.parseInt(maxBranchesRaw, 10);
+    if (Number.isFinite(parsed) && parsed > 0) {
+      maxBranches = Math.min(20, parsed);
+    }
+  }
+
+  const maxDepthRaw = process.env.THOUGHTGRAPH_MAX_DEPTH;
+  let maxDepth = 4;
+  if (maxDepthRaw) {
+    const parsed = Number.parseInt(maxDepthRaw, 10);
+    if (Number.isFinite(parsed) && parsed > 0) {
+      maxDepth = Math.min(10, parsed);
+    }
+  }
+
+  return { maxBranches, maxDepth };
 }
 
 /** Resolves the worker-pool configuration responsible for heavy graph workloads. */
@@ -548,6 +696,16 @@ const vectorMemoryIndex = VectorMemoryIndex.createSync({
   directory: resolvePath(MEMORY_ROOT, "vector"),
   maxDocuments: resolveVectorIndexCapacity(),
 });
+/** Shared vector memory dedicated to RAG ingestion workflows. */
+const ragRetrieverOptions = resolveHybridRetrieverOptions();
+const ragMemoryBackend = (process.env.MEM_BACKEND ?? "local").toLowerCase();
+const ragMemoryPromise = LocalVectorMemory.create({
+  directory: resolvePath(MEMORY_ROOT, "rag"),
+  maxDocuments: resolveVectorIndexCapacity(),
+});
+let ragMemoryInstance: LocalVectorMemory | null = null;
+let ragRetrieverInstance: HybridRetriever | null = null;
+let ragBackendWarningEmitted = false;
 /** Durable knowledge graph shared across orchestrator restarts. */
 const knowledgeGraphPersistence = PersistentKnowledgeGraph.createSync({
   directory: resolvePath(MEMORY_ROOT, "kg"),
@@ -609,6 +767,9 @@ const DEFAULT_FEATURE_TOGGLES: FeatureToggles = {
   enablePlanLifecycle: false,
   enableChildOpsFine: false,
   enableValuesExplain: false,
+  enableRag: false,
+  enableToolRouter: false,
+  enableThoughtGraph: false,
   enableAssist: false,
 };
 
@@ -867,6 +1028,22 @@ export function configureLogFileOverride(logFile: string | null | undefined): vo
   });
 }
 const eventStore = new EventStore({ maxHistory: 5000, logger });
+/** Maximum number of recent job events inspected to derive final reply citations. */
+const FINAL_REPLY_EVENT_WINDOW = 200;
+/** Upper bound applied to the aggregated citation list propagated with final replies. */
+const FINAL_REPLY_CITATION_LIMIT = 5;
+
+/**
+ * Collects the most relevant provenance entries observed for the provided job
+ * so final replies can surface citations without recomputing them downstream.
+ */
+function collectFinalReplyCitations(jobId: string | null | undefined): Provenance[] {
+  if (!jobId) {
+    return [];
+  }
+  const recentEvents = eventStore.list({ jobId, reverse: true, limit: FINAL_REPLY_EVENT_WINDOW });
+  return aggregateCitationsFromEvents(recentEvents, { limit: FINAL_REPLY_CITATION_LIMIT });
+}
 const eventBus = new EventBus({ historyLimit: 5000 });
 
 const contractNetWatcherTelemetryListener = createContractNetWatcherTelemetryListener({
@@ -909,6 +1086,16 @@ if (activeLoggerOptions.logFile) {
 }
 const memoryStore = new SharedMemoryStore();
 const metaCritic = new MetaCritic();
+const lessonsStore = new LessonsStore();
+const thoughtGraphOptions = resolveThoughtGraphOptions();
+const thoughtGraphCoordinator = new ThoughtGraphCoordinator({
+  graphState,
+  logger,
+  metaCritic,
+  valueGraph,
+  maxBranches: thoughtGraphOptions.maxBranches,
+  maxDepth: thoughtGraphOptions.maxDepth,
+});
 let lastInactivityThresholdMs = 120_000;
 const loopDetector = new LoopDetector();
 const REFLECTION_PRIORITY_KINDS: ReadonlySet<ReviewKind> = new Set(["code", "plan", "text"]);
@@ -934,6 +1121,55 @@ export function configureQualityGateEnabled(next: boolean): void {
 /** Applies the quality threshold override while clamping it to the 0-100 band. */
 export function configureQualityGateThreshold(next: number): void {
   qualityGateThreshold = Math.min(100, Math.max(0, Math.round(next)));
+}
+
+/** Seeds the shared lessons store. Primarily used in integration tests. */
+export function seedLessons(signals: LessonSignal[]): void {
+  seedLessonsUtility(lessonsStore, signals);
+}
+
+/** Resets the shared lessons store. Intended for deterministic test setup. */
+export function resetLessons(): void {
+  lessonsStore.clear();
+}
+
+/**
+ * Applies regression feedback reported by the evaluation harness to the shared
+ * lessons catalogue. Penalised lessons are logged and mirrored in the
+ * EventStore so dashboards can surface the downgrade history.
+ */
+export function registerLessonRegression(
+  feedback: LessonRegressionSignal,
+): LessonRegressionResult {
+  const result = lessonsStore.applyRegression(feedback);
+
+  const payload = {
+    lesson_id: result.record?.id ?? feedback.lessonId ?? null,
+    topic: result.record?.topic ?? feedback.topic ?? null,
+    status: result.status,
+    severity: result.appliedSeverity,
+    penalty: result.appliedPenalty,
+    reason: feedback.reason ?? result.record?.lastRegressionReason ?? null,
+  } as const;
+
+  if (result.status === "ignored") {
+    logger.info("lesson_regression_ignored", payload);
+    return result;
+  }
+
+  const level = result.status === "removed" ? "warn" : "info";
+  if (result.status === "removed") {
+    logger.warn("lesson_regression_applied", payload);
+  } else {
+    logger.info("lesson_regression_applied", payload);
+  }
+  eventStore.emit({
+    kind: "INFO",
+    level,
+    payload: { event: "lesson_regression", ...payload },
+  });
+
+  return result;
 }
 
 let DEFAULT_CHILD_RUNTIME = "codex";
@@ -1632,6 +1868,8 @@ function getPlanToolContext(): PlanToolContext {
     planLifecycle,
     planLifecycleFeatureEnabled: runtimeFeatures.enablePlanLifecycle,
     idempotency: runtimeFeatures.enableIdempotency ? idempotencyRegistry : undefined,
+    lessonsStore,
+    thoughtManager: runtimeFeatures.enableThoughtGraph ? thoughtGraphCoordinator : undefined,
   };
 }
 
@@ -1688,8 +1926,82 @@ function getAgentToolContext(): AgentToolContext {
   return { autoscaler, logger };
 }
 
+/**
+ * Error raised when the runtime cannot initialise the shared RAG context.
+ * The code/hint pair mirrors other knowledge-tool errors so clients receive a
+ * deterministic diagnostic that can be surfaced in UX workflows.
+ */
+class RagContextUnavailableError extends Error {
+  public readonly code = "E-RAG-CONTEXT";
+  public readonly hint = "rag_context_unavailable";
+  public readonly details?: Record<string, unknown>;
+
+  constructor(message: string, details?: Record<string, unknown>) {
+    super(message);
+    this.name = "RagContextUnavailableError";
+    this.details = details;
+  }
+}
+
+async function getRagMemoryInstance(): Promise<LocalVectorMemory> {
+  if (ragMemoryBackend !== "local" && !ragBackendWarningEmitted) {
+    logger.warn("rag_memory_backend_unsupported", { backend: ragMemoryBackend });
+    ragBackendWarningEmitted = true;
+  }
+  if (!ragMemoryInstance) {
+    ragMemoryInstance = await ragMemoryPromise;
+  }
+  return ragMemoryInstance;
+}
+
+async function getRagRetrieverInstance(): Promise<HybridRetriever> {
+  if (!ragRetrieverInstance) {
+    const memory = await getRagMemoryInstance();
+    ragRetrieverInstance = new HybridRetriever(memory, logger, ragRetrieverOptions);
+  }
+  return ragRetrieverInstance;
+}
+
+/**
+ * Resolves the lazily initialised RAG tool context, logging and surfacing a
+ * structured error if the memory or retriever fail to materialise.
+ */
+async function getRagToolContext(): Promise<RagToolContext> {
+  try {
+    const memory = await getRagMemoryInstance();
+    const retriever = await getRagRetrieverInstance();
+    return { memory, retriever, logger };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    logger.error("rag_context_initialisation_failed", { message });
+    throw new RagContextUnavailableError("unable to initialise rag context", { cause: message });
+  }
+}
+
 function getKnowledgeToolContext(): KnowledgeToolContext {
-  return { knowledgeGraph, logger };
+  const ragEnabled = runtimeFeatures.enableRag;
+  const ragContext = ragEnabled
+    ? {
+        getRetriever: async () => {
+          try {
+            return await getRagRetrieverInstance();
+          } catch (error) {
+            logger.warn("rag_retriever_initialisation_failed", {
+              message: error instanceof Error ? error.message : String(error),
+            });
+            return null;
+          }
+        },
+        defaultDomainTags: [],
+        minScore: ragRetrieverOptions.minVectorScore,
+      }
+    : undefined;
+
+  return {
+    knowledgeGraph,
+    logger,
+    ...(ragContext ? { rag: ragContext } : {}),
+  };
 }
 
 function getMemoryVectorToolContext(): MemoryVectorToolContext {
@@ -1724,6 +2036,12 @@ async function maybeIndexChildCollectMemory(payload: ChildCollectMemoryPayload):
           ? {
               insights: payload.reflection.insights.slice(0, 3),
               next_steps: payload.reflection.nextSteps.slice(0, 3),
+              risks: payload.reflection.risks.slice(0, 3),
+              lessons: (payload.reflection.lessons ?? []).slice(0, 3).map((lesson) => ({
+                topic: lesson.topic,
+                summary: lesson.summary,
+                tags: lesson.tags.slice(0, 4),
+              })),
             }
           : null,
         source: "child_collect",
@@ -1820,6 +2138,31 @@ function ensureKnowledgeEnabled(toolName: string) {
         {
           type: "text" as const,
           text: j({ error: "KNOWLEDGE_DISABLED", tool: toolName, message: "knowledge module disabled" }),
+        },
+      ],
+    };
+  }
+  return null;
+}
+
+/** Guard helper ensuring RAG tooling is enabled before serving the request. */
+function ensureRagEnabled(toolName: string) {
+  const knowledgeDisabled = ensureKnowledgeEnabled(toolName);
+  if (knowledgeDisabled) {
+    return knowledgeDisabled;
+  }
+  if (!runtimeFeatures.enableRag) {
+    logger.warn(`${toolName}_disabled`, { tool: toolName, hint: "enable_rag" });
+    return {
+      isError: true,
+      content: [
+        {
+          type: "text" as const,
+          text: j({
+            error: "RAG_DISABLED",
+            tool: toolName,
+            message: "rag module disabled",
+          }),
         },
       ],
     };
@@ -3318,31 +3661,41 @@ const toolRegistry = await ToolRegistry.create({
 });
 process.once("exit", () => toolRegistry.close());
 
-await registerToolsHelpTool(toolRegistry, { logger });
-await registerIntentRouteTool(toolRegistry, {
+const toolsHelpManifest = await registerToolsHelpTool(toolRegistry, { logger });
+toolRouter.register(toolsHelpManifest);
+const intentRouteManifest = await registerIntentRouteTool(toolRegistry, {
   logger,
   resolveBudget: (tool) => toolRegistry.get(tool)?.budgets,
+  toolRouter,
+  recordRouterDecision: (record) => resources.recordToolRouterDecision(record),
+  isRouterEnabled: () => runtimeFeatures.enableToolRouter,
 });
-await registerRuntimeObserveTool(toolRegistry, { logger });
-await registerProjectScaffoldRunTool(toolRegistry, {
+toolRouter.register(intentRouteManifest);
+const runtimeObserveManifest = await registerRuntimeObserveTool(toolRegistry, { logger });
+toolRouter.register(runtimeObserveManifest);
+const projectScaffoldManifest = await registerProjectScaffoldRunTool(toolRegistry, {
   logger,
   workspaceRoot: process.cwd(),
   idempotency: runtimeFeatures.enableIdempotency ? idempotencyRegistry : undefined,
 });
-await registerArtifactWriteTool(toolRegistry, {
+toolRouter.register(projectScaffoldManifest);
+const artifactWriteManifest = await registerArtifactWriteTool(toolRegistry, {
   logger,
   childrenRoot: CHILDREN_ROOT,
   idempotency: runtimeFeatures.enableIdempotency ? idempotencyRegistry : undefined,
 });
-await registerArtifactReadTool(toolRegistry, {
+toolRouter.register(artifactWriteManifest);
+const artifactReadManifest = await registerArtifactReadTool(toolRegistry, {
   logger,
   childrenRoot: CHILDREN_ROOT,
 });
-await registerArtifactSearchTool(toolRegistry, {
+toolRouter.register(artifactReadManifest);
+const artifactSearchManifest = await registerArtifactSearchTool(toolRegistry, {
   logger,
   childrenRoot: CHILDREN_ROOT,
 });
-await registerGraphApplyChangeSetTool(toolRegistry, {
+toolRouter.register(artifactSearchManifest);
+const graphApplyManifest = await registerGraphApplyChangeSetTool(toolRegistry, {
   logger,
   transactions: graphTransactions,
   locks: graphLocks,
@@ -3350,7 +3703,8 @@ await registerGraphApplyChangeSetTool(toolRegistry, {
   idempotency: runtimeFeatures.enableIdempotency ? idempotencyRegistry : undefined,
   workerPool: graphWorkerPool ?? undefined,
 });
-await registerGraphSnapshotTimeTravelTool(toolRegistry, {
+toolRouter.register(graphApplyManifest);
+const graphSnapshotManifest = await registerGraphSnapshotTimeTravelTool(toolRegistry, {
   logger,
   transactions: graphTransactions,
   locks: graphLocks,
@@ -3358,26 +3712,31 @@ await registerGraphSnapshotTimeTravelTool(toolRegistry, {
   idempotency: runtimeFeatures.enableIdempotency ? idempotencyRegistry : undefined,
   runsRoot: process.env.MCP_RUNS_ROOT,
 });
-await registerPlanCompileExecuteTool(toolRegistry, {
+toolRouter.register(graphSnapshotManifest);
+const planCompileManifest = await registerPlanCompileExecuteTool(toolRegistry, {
   plan: getPlanToolContext(),
   logger,
   idempotency: runtimeFeatures.enableIdempotency ? idempotencyRegistry : undefined,
   resolveBudget: (tool) => toolRegistry.get(tool)?.budgets,
 });
-await registerChildOrchestrateTool(toolRegistry, {
+toolRouter.register(planCompileManifest);
+const childOrchestrateManifest = await registerChildOrchestrateTool(toolRegistry, {
   supervisor: childSupervisor,
   logger,
   idempotency: runtimeFeatures.enableIdempotency ? idempotencyRegistry : undefined,
 });
-await registerMemoryUpsertTool(toolRegistry, {
+toolRouter.register(childOrchestrateManifest);
+const memoryUpsertManifest = await registerMemoryUpsertTool(toolRegistry, {
   vectorIndex: vectorMemoryIndex,
   logger,
   idempotency: runtimeFeatures.enableIdempotency ? idempotencyRegistry : undefined,
 });
-await registerMemorySearchTool(toolRegistry, {
+toolRouter.register(memoryUpsertManifest);
+const memorySearchManifest = await registerMemorySearchTool(toolRegistry, {
   vectorIndex: vectorMemoryIndex,
   logger,
 });
+toolRouter.register(memorySearchManifest);
 
 // Keep the MCP capabilities export in sync with the tools registered on the
 // underlying `McpServer` instance. The SDK stores registrations in a private
@@ -5262,6 +5621,61 @@ server.registerTool(
 );
 
 server.registerTool(
+  "rag_ingest",
+  {
+    title: "RAG ingest",
+    description: "Ingeste des documents dans la mémoire vectorielle (chunking + provenance).",
+    inputSchema: RagIngestInputShape,
+  },
+  async (input: unknown) => {
+    const disabled = ensureRagEnabled("rag_ingest");
+    if (disabled) {
+      return disabled;
+    }
+    try {
+      const parsed = RagIngestInputSchema.parse(input);
+      const context = await getRagToolContext();
+      const result = await handleRagIngest(context, parsed);
+      return {
+        content: [{ type: "text" as const, text: j({ tool: "rag_ingest", result }) }],
+        structuredContent: result as unknown as Record<string, unknown>,
+      };
+    } catch (error) {
+      return knowledgeToolError(logger, "rag_ingest", error);
+    }
+  },
+);
+
+server.registerTool(
+  "rag_query",
+  {
+    title: "RAG query",
+    description: "Recherche hybride (cosine + lexical) avec provenance normalisée.",
+    inputSchema: RagQueryInputShape,
+  },
+  async (input: unknown) => {
+    const disabled = ensureRagEnabled("rag_query");
+    if (disabled) {
+      return disabled;
+    }
+    try {
+      const parsed = RagQueryInputSchema.parse(input);
+      const context = await getRagToolContext();
+      // Enforce the runtime-wide minimum score so callers ne puissent pas bypasser
+      // la barrière de bruit en passant une valeur trop faible dans min_score.
+      const minScore = Math.max(ragRetrieverOptions.minVectorScore, parsed.min_score ?? 0);
+      const result = await handleRagQuery(context, { ...parsed, min_score: minScore });
+      return {
+        content: [{ type: "text" as const, text: j({ tool: "rag_query", result }) }],
+        structuredContent: result as unknown as Record<string, unknown>,
+      };
+    } catch (error) {
+      return knowledgeToolError(logger, "rag_query", error);
+    }
+  },
+);
+
+server.registerTool(
   "kg_insert",
   {
     title: "Knowledge insert",
@@ -5378,13 +5792,42 @@ server.registerTool(
     }
     try {
       const parsed = KgSuggestPlanInputSchema.parse(input);
-      const result = handleKgSuggestPlan(getKnowledgeToolContext(), parsed);
+      const result = await handleKgSuggestPlan(getKnowledgeToolContext(), parsed);
       return {
         content: [{ type: "text" as const, text: j({ tool: "kg_suggest_plan", result }) }],
         structuredContent: result,
       };
     } catch (error) {
       return knowledgeToolError(logger, "kg_suggest_plan", error);
+    }
+  },
+);
+
+server.registerTool(
+  "kg_assist",
+  {
+    title: "Knowledge assist",
+    description: "Synthétise une réponse à partir du graphe de connaissances avec fallback RAG contrôlé.",
+    inputSchema: KgAssistInputShape,
+  },
+  async (input) => {
+    const knowledgeDisabled = ensureKnowledgeEnabled("kg_assist");
+    if (knowledgeDisabled) {
+      return knowledgeDisabled;
+    }
+    const assistDisabled = ensureAssistEnabled("kg_assist");
+    if (assistDisabled) {
+      return assistDisabled;
+    }
+    try {
+      const parsed = KgAssistInputSchema.parse(input);
+      const result = await handleKgAssist(getKnowledgeToolContext(), parsed);
+      return {
+        content: [{ type: "text" as const, text: j({ tool: "kg_assist", result }) }],
+        structuredContent: result,
+      };
+    } catch (error) {
+      return knowledgeToolError(logger, "kg_assist", error);
     }
   },
 );
@@ -7268,6 +7711,17 @@ server.registerTool(
         limit: 4,
       });
 
+      const lessonRecall = recallLessons(lessonsStore, {
+        metadata,
+        goals,
+        prompt: parsed.prompt,
+        additionalTags: tags,
+      });
+      const lessonManifest =
+        lessonRecall.matches.length > 0
+          ? buildLessonManifestContext(lessonRecall.matches, Date.now())
+          : null;
+
       if (goals.length > 0) {
         memoryStore.upsertKeyValue("orchestrator.last_goals", goals, {
           tags: goals,
@@ -7277,11 +7731,63 @@ server.registerTool(
       }
 
       const enrichedInput = { ...parsed } as z.infer<typeof ChildCreateInputSchema>;
+      if (lessonManifest && parsed.prompt) {
+        const promptWithLessons: ChildCreatePrompt = structuredClone(parsed.prompt);
+        const lessonSegment = formatLessonsForPromptMessage(lessonRecall.matches);
+        if (Array.isArray(promptWithLessons.system)) {
+          promptWithLessons.system = [lessonSegment, ...promptWithLessons.system];
+        } else if (typeof promptWithLessons.system === "string" && promptWithLessons.system.trim().length > 0) {
+          promptWithLessons.system = [lessonSegment, promptWithLessons.system];
+        } else {
+          promptWithLessons.system = lessonSegment;
+        }
+        enrichedInput.prompt = promptWithLessons;
+      }
       if (contextSelection.episodes.length > 0 || contextSelection.keyValues.length > 0) {
         enrichedInput.manifest_extras = {
           ...(parsed.manifest_extras ?? {}),
           memory_context: contextSelection,
         };
+      }
+      if (lessonManifest) {
+        enrichedInput.manifest_extras = {
+          ...(enrichedInput.manifest_extras ?? parsed.manifest_extras ?? {}),
+          lessons_context: lessonManifest,
+        };
+        logger.logCognitive({
+          actor: "lessons",
+          phase: "prompt",
+          childId: parsed.child_id ?? undefined,
+          content: lessonRecall.matches[0]?.summary ?? "lessons_injected",
+          metadata: {
+            topics: lessonRecall.matches.map((lesson) => lesson.topic),
+            tags: lessonRecall.tags,
+            count: lessonRecall.matches.length,
+            source: "child_create",
+          },
+        });
+      }
+
+      if (lessonManifest && lessonRecall.matches.length > 0) {
+        const originalPromptSnapshot = normalisePromptBlueprint(parsed.prompt);
+        const enrichedPromptSnapshot = normalisePromptBlueprint(enrichedInput.prompt);
+        const lessonsPromptPayload = buildLessonsPromptPayload({
+          source: "child_create",
+          before: originalPromptSnapshot,
+          after: enrichedPromptSnapshot,
+          topics: lessonRecall.matches.map((lesson) => lesson.topic),
+          tags: lessonRecall.tags,
+          totalLessons: lessonRecall.matches.length,
+        });
+        pushEvent({
+          kind: "PROMPT",
+          source: "orchestrator",
+          childId: parsed.child_id ?? undefined,
+          payload: {
+            operation: "child_create",
+            lessons_prompt: lessonsPromptPayload,
+          },
+        });
       }
 
       const result = await handleChildCreate(getChildToolContext(), enrichedInput);
@@ -7411,6 +7917,26 @@ server.registerTool(
             message: error instanceof Error ? error.message : String(error),
           });
         }
+      }
+
+      const lessonUpserts = lessonsStore.recordMany(review.lessons ?? [], Date.now());
+      if (reflectionSummary?.lessons) {
+        lessonUpserts.push(...lessonsStore.recordMany(reflectionSummary.lessons, Date.now()));
+      }
+      for (const upsert of lessonUpserts) {
+        logger.logCognitive({
+          actor: "lessons",
+          phase: "learn",
+          childId: parsed.child_id ?? undefined,
+          content: upsert.record.summary,
+          metadata: {
+            topic: upsert.record.topic,
+            tags: upsert.record.tags,
+            status: upsert.status,
+            occurrences: upsert.record.occurrences,
+            score: upsert.record.score,
+          },
+        });
       }
 
       const qualityComputation = computeQualityAssessment(summary.kind, summary.text, review);
@@ -7784,13 +8310,20 @@ server.registerTool(
 
       graphState.patchChild(child.id, { state: "waiting", waitingFor: null, pendingId: null });
 
+      const citations = collectFinalReplyCitations(jobId ?? null);
+      const payload: Record<string, unknown> = { final: true };
+      if (citations.length > 0) {
+        payload.citations = citations.map((entry) => ({ ...entry }));
+      }
+
       pushEvent({
         kind: "REPLY",
         jobId,
         childId: correlation.childId ?? child.id,
         source: "child",
-        payload: { final: true },
+        payload,
         correlation,
+        provenance: citations,
       });
 
     }
@@ -7842,13 +8375,20 @@ server.registerTool(
     const correlation = resolveChildEventCorrelation(child.id, { child });
     const jobId = correlation.jobId ?? undefined;
 
+    const citations = collectFinalReplyCitations(jobId ?? null);
+    const payload: Record<string, unknown> = { length: content.length, final: true };
+    if (citations.length > 0) {
+      payload.citations = citations.map((entry) => ({ ...entry }));
+    }
+
     pushEvent({
       kind: "REPLY",
       jobId,
       childId: correlation.childId ?? child.id,
       source: "child",
-      payload: { length: content.length, final: true },
+      payload,
       correlation,
+      provenance: citations,
     });
 
 
@@ -9566,6 +10106,7 @@ export {
   graphState,
   childSupervisor,
   resources,
+  toolRouter,
   logJournal,
   logger,
   eventStore,

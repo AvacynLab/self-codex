@@ -715,6 +715,125 @@ describe("resources registry", () => {
     expect(invalidKinds.filters?.blackboard).to.equal(undefined);
   });
 
+  it("records tool router decisions and exposes them through read and watch APIs", async () => {
+    const registry = new ResourceRegistry();
+
+    registry.recordToolRouterDecision({
+      context: {
+        goal: "évaluer une suggestion",
+        category: "plan",
+        tags: ["analysis"],
+        preferredTools: ["graph_apply_change_set"],
+        metadata: { source: "test" },
+      },
+      decision: {
+        tool: "tools_help",
+        score: 0.5,
+        reason: "fallback:tools_help",
+        candidates: [
+          { tool: "tools_help", score: 0.5, reliability: 1, rationale: "fallback" },
+          { tool: "artifact_search", score: 0.45, reliability: 1, rationale: "fallback" },
+        ],
+        decidedAt: 1_234,
+      },
+      requestId: "req-router-1",
+      traceId: "trace-router-1",
+      runId: null,
+      jobId: null,
+      childId: "child-router",
+      elapsedMs: 12,
+    });
+
+    const entries = registry.list("sc://tool-router");
+    expect(entries).to.deep.equal([
+      {
+        uri: "sc://tool-router/decisions",
+        kind: "tool_router_decisions",
+        metadata: {
+          decision_count: 1,
+          latest_seq: 1,
+          domains: ["plan"],
+          success_rate: null,
+          median_latency_ms: null,
+          estimated_cost_ms: null,
+        },
+      },
+    ]);
+
+    const read = registry.read("sc://tool-router/decisions");
+    expect(read.kind).to.equal("tool_router_decisions");
+    expect(read.payload).to.deep.equal({
+      decisions: [
+        {
+          seq: 1,
+          ts: 1_234,
+          tool: "tools_help",
+          score: 0.5,
+          reason: "fallback:tools_help",
+          candidates: [
+            { tool: "tools_help", score: 0.5, reliability: 1, rationale: "fallback" },
+            { tool: "artifact_search", score: 0.45, reliability: 1, rationale: "fallback" },
+          ],
+          context: {
+            goal: "évaluer une suggestion",
+            category: "plan",
+            tags: ["analysis"],
+            preferredTools: ["graph_apply_change_set"],
+            metadata: { source: "test" },
+          },
+          requestId: "req-router-1",
+          traceId: "trace-router-1",
+          runId: null,
+          jobId: null,
+          childId: "child-router",
+          elapsedMs: 12,
+        },
+      ],
+      latestSeq: 1,
+      aggregates: {
+        decisionCount: 1,
+        successRate: null,
+        medianLatencyMs: null,
+        estimatedCostMs: null,
+        domains: ["plan"],
+      },
+    });
+
+    const watch = registry.watch("sc://tool-router/decisions", { fromSeq: 0 });
+    expect(watch.events).to.have.length(1);
+    expect(watch.events[0]).to.include({ tool: "tools_help", seq: 1 });
+    expect(watch.nextSeq).to.equal(1);
+
+    const stream = registry.watchStream("sc://tool-router/decisions", { fromSeq: 0, limit: 5 });
+    const iterator = stream[Symbol.asyncIterator]();
+    const first = await iterator.next();
+    expect(first.done).to.equal(false);
+    expect(first.value.events).to.have.length(1);
+    await iterator.return?.();
+
+    registry.recordToolRouterOutcome({ tool: "tools_help", success: true, latencyMs: 120 });
+    registry.recordToolRouterOutcome({ tool: "artifact_search", success: false, latencyMs: 260 });
+
+    const entriesWithOutcomes = registry.list("sc://tool-router");
+    expect(entriesWithOutcomes[0]?.metadata).to.deep.equal({
+      decision_count: 1,
+      latest_seq: 1,
+      domains: ["plan"],
+      success_rate: 0.5,
+      median_latency_ms: 190,
+      estimated_cost_ms: 190,
+    });
+
+    const readAfterOutcomes = registry.read("sc://tool-router/decisions");
+    expect(readAfterOutcomes.payload.aggregates).to.deep.equal({
+      decisionCount: 1,
+      successRate: 0.5,
+      medianLatencyMs: 190,
+      estimatedCostMs: 190,
+      domains: ["plan"],
+    });
+  });
+
   it("raises domain errors for unsupported operations", () => {
     const registry = new ResourceRegistry();
     expect(() => registry.read("sc://graphs/unknown")).to.throw(ResourceNotFoundError);

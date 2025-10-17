@@ -22,6 +22,7 @@ import {
 import { writeArtifact } from "../src/artifacts.js";
 import { StigmergyField } from "../src/coord/stigmergy.js";
 import type { EventCorrelationHints } from "../src/events/correlation.js";
+import { ThoughtGraphCoordinator } from "../src/reasoning/thoughtCoordinator.js";
 
 const mockRunnerPath = fileURLToPath(new URL("./fixtures/mock-runner.js", import.meta.url));
 const stubbornRunnerPath = fileURLToPath(new URL("./fixtures/stubborn-runner.js", import.meta.url));
@@ -41,8 +42,11 @@ function createPlanContext(options: {
   logger: StructuredLogger;
   defaultRuntime?: string;
   events: RecordedEvent[];
+  thoughtManager?: ThoughtGraphCoordinator;
 }): PlanToolContext {
   const stigmergy = new StigmergyField();
+  const thoughtManager = options.thoughtManager
+    ?? new ThoughtGraphCoordinator({ graphState: options.graphState, logger: options.logger });
   return {
     supervisor: options.supervisor,
     graphState: options.graphState,
@@ -59,6 +63,7 @@ function createPlanContext(options: {
       });
     },
     stigmergy,
+    thoughtManager,
   };
 }
 
@@ -164,6 +169,13 @@ describe("plan tools", () => {
       const messages = entries.map((entry) => entry.message);
       expect(messages).to.include("plan_fanout");
       expect(messages.some((message) => message.startsWith("plan_fanout_"))).to.equal(true);
+
+      const thoughtGraph = graphState.getThoughtGraph(result.job_id);
+      expect(thoughtGraph, "thought graph snapshot should exist after fanout").to.not.equal(null);
+      const branchNodes = thoughtGraph!.nodes.filter((node) => node.parents.includes(`run:${result.run_id}`));
+      expect(branchNodes).to.have.length(result.child_ids.length);
+      expect(branchNodes.map((node) => node.id).sort()).to.deep.equal([...result.child_ids].sort());
+      expect(branchNodes.every((node) => node.status === "pending" || node.status === "running")).to.equal(true);
     } finally {
       await logger.flush();
       await supervisor.disposeAll();
@@ -475,6 +487,14 @@ describe("plan tools", () => {
       );
       expect(joinQuorum.satisfied).to.equal(true);
       expect(joinQuorum.quorum_threshold).to.equal(2);
+
+      const thoughtAfterJoins = graphState.getThoughtGraph(fanout.job_id);
+      expect(thoughtAfterJoins, "thought graph snapshot should persist after joins").to.not.equal(null);
+      const joinedBranches = thoughtAfterJoins!.nodes.filter((node) => node.parents.includes(`run:${fanout.run_id}`));
+      expect(joinedBranches.every((node) => ["completed", "errored", "pruned"].includes(node.status))).to.equal(true);
+      const joinedWinner = joinedBranches.find((node) => node.id === joinFirst.winning_child_id);
+      expect(joinedWinner?.status).to.equal("completed");
+      expect(joinedWinner?.result).to.be.a("string");
 
       // Prepare artifacts and summaries to test the reduce strategies.
       for (const [index, childId] of fanout.child_ids.entries()) {

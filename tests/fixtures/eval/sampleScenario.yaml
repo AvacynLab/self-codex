@@ -1,0 +1,25 @@
+id: sample
+objective: Exercices unitaires pour le parseur de scénarios.
+tags: [smoke]
+constraints:
+  maxDurationMs: 1000
+  maxToolCalls: 2
+  requiredTools: [alpha]
+steps:
+  - id: step-1
+    tool: alpha
+    arguments:
+      foo: bar
+    expect:
+      success: true
+      match: ok
+  - id: step-2
+    tool: beta
+    expect:
+      success: false
+oracles:
+  - type: regex
+    pattern: ok
+  - type: script
+    module: tests/fixtures/eval/sampleOracle.mjs
+    description: Oracle de test

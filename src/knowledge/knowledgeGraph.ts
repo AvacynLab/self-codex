@@ -1,5 +1,45 @@
 import { mergeProvenance, normaliseProvenanceList, type Provenance } from "../types/provenance.js";
 
+/**
+ * Options accepted by {@link KnowledgeGraph.exportForRag}. They control the
+ * filtering performed before synthesising RAG friendly documents.
+ */
+export interface KnowledgeRagExportOptions {
+  /** Drops triples whose confidence is lower than the provided threshold. */
+  minConfidence?: number;
+  /** Restricts the export to triples whose predicate is part of the allow-list. */
+  includePredicates?: string[];
+  /**
+   * Caps the number of triples exported per subject so that extremely dense
+   * nodes do not generate overly long passages.
+   */
+  maxTriplesPerSubject?: number;
+}
+
+/**
+ * Document synthesised from knowledge graph triples so it can be ingested by
+ * the RAG pipeline. The structure mirrors the expectations of the
+ * `rag_ingest` tool: textual content, optional tags, metadata, and provenance.
+ */
+export interface KnowledgeRagDocument {
+  /** Stable identifier derived from the subject the document summarises. */
+  id: string;
+  /** Human readable summary describing the subject and its facts. */
+  text: string;
+  /** Tags extracted from subjects/predicates/sources to aid domain filtering. */
+  tags: string[];
+  /** Structured metadata providing additional context for auditing. */
+  metadata: {
+    subject: string;
+    triple_count: number;
+    predicates: string[];
+    sources: string[];
+    average_confidence: number | null;
+  };
+  /** Aggregated provenance covering every triple contributing to the document. */
+  provenance: Provenance[];
+}
+
 /** Options accepted by the {@link KnowledgeGraph} constructor. */
 export interface KnowledgeGraphOptions {
   /** Clock providing monotonic timestamps. Defaults to {@link Date.now}. */
@@ -233,6 +273,107 @@ export class KnowledgeGraph {
   /** Returns every triple ordered by insertion time. */
   exportAll(): KnowledgeTripleSnapshot[] {
     return this.query({}, { order: "asc" });
+  }
+
+  /**
+   * Synthesises RAG friendly documents by grouping triples per subject. Each
+   * document contains a textual summary, automatically derived tags, metadata
+   * describing the aggregated triples, and merged provenance entries. The
+   * resulting payload can be ingested directly via `rag_ingest` to bootstrap
+   * semantic recall from the knowledge graph content.
+   */
+  exportForRag(options: KnowledgeRagExportOptions = {}): KnowledgeRagDocument[] {
+    const minConfidence = clampThreshold(options.minConfidence);
+    const includePredicates = normalisePredicateAllowList(options.includePredicates);
+    const maxTriplesPerSubject = clampPositiveInteger(options.maxTriplesPerSubject);
+
+    const buckets = new Map<string, KnowledgeTripleSnapshot[]>();
+    const orderedSubjects: string[] = [];
+
+    for (const triple of this.exportAll()) {
+      if (triple.confidence < minConfidence) {
+        continue;
+      }
+      if (includePredicates.size > 0 && !includePredicates.has(triple.predicate)) {
+        continue;
+      }
+
+      let bucket = buckets.get(triple.subject);
+      if (!bucket) {
+        bucket = [];
+        buckets.set(triple.subject, bucket);
+        orderedSubjects.push(triple.subject);
+      }
+
+      if (maxTriplesPerSubject !== null && bucket.length >= maxTriplesPerSubject) {
+        continue;
+      }
+
+      bucket.push(triple);
+    }
+
+    const documents: KnowledgeRagDocument[] = [];
+
+    for (const subject of orderedSubjects) {
+      const triples = buckets.get(subject);
+      if (!triples || triples.length === 0) {
+        continue;
+      }
+
+      const tags = new Set<string>(["kg", `subject:${slugifyTag(subject)}`]);
+      const predicateSet = new Set<string>();
+      const sourceSet = new Set<string>();
+      let provenance: Provenance[] = [];
+      let confidenceSum = 0;
+
+      const lines = [`Subject: ${subject}`];
+
+      for (const triple of triples) {
+        predicateSet.add(triple.predicate);
+        tags.add(`predicate:${slugifyTag(triple.predicate)}`);
+
+        if (triple.source) {
+          sourceSet.add(triple.source);
+          tags.add(`source:${slugifyTag(triple.source)}`);
+        }
+
+        const enrichedProvenance = appendSourceProvenance(triple.provenance, triple.source);
+        provenance = mergeProvenance(provenance, enrichedProvenance);
+        confidenceSum += triple.confidence;
+
+        const qualifiers: string[] = [];
+        if (triple.source) {
+          qualifiers.push(`source=${triple.source}`);
+        }
+        if (Math.abs(triple.confidence - 1) > 1e-6) {
+          qualifiers.push(`confidence=${formatConfidence(triple.confidence)}`);
+        }
+        if (triple.provenance.length > 0) {
+          qualifiers.push(`provenance=${triple.provenance.length}`);
+        }
+
+        const qualifierSuffix = qualifiers.length ? ` (${qualifiers.join(", ")})` : "";
+        lines.push(`- ${triple.predicate}: ${triple.object}${qualifierSuffix}`);
+      }
+
+      const averageConfidence = triples.length > 0 ? Number((confidenceSum / triples.length).toFixed(4)) : null;
+
+      documents.push({
+        id: subject,
+        text: lines.join("\n"),
+        tags: Array.from(tags).sort(),
+        metadata: {
+          subject,
+          triple_count: triples.length,
+          predicates: Array.from(predicateSet).sort(),
+          sources: Array.from(sourceSet).sort(),
+          average_confidence: averageConfidence,
+        },
+        provenance,
+      });
+    }
+
+    return documents;
   }
 
   /**
@@ -499,4 +640,68 @@ function toNumber(value: string | undefined): number | null {
   }
   const num = Number(value);
   return Number.isFinite(num) ? num : null;
+}
+
+/** Clamps the caller provided confidence threshold within the inclusive [0, 1] range. */
+function clampThreshold(value: number | undefined): number {
+  if (typeof value !== "number" || Number.isNaN(value)) {
+    return 0;
+  }
+  if (value < 0) {
+    return 0;
+  }
+  if (value > 1) {
+    return 1;
+  }
+  return value;
+}
+
+/** Converts the predicate allow-list to a trimmed set while dropping blanks. */
+function normalisePredicateAllowList(predicates: string[] | undefined): Set<string> {
+  if (!predicates || predicates.length === 0) {
+    return new Set();
+  }
+  const allowList = new Set<string>();
+  for (const predicate of predicates) {
+    const trimmed = predicate.trim();
+    if (trimmed) {
+      allowList.add(trimmed);
+    }
+  }
+  return allowList;
+}
+
+/** Normalises counts expressed as numbers so that `NaN` or sub-unit values are ignored. */
+function clampPositiveInteger(value: number | undefined): number | null {
+  if (typeof value !== "number" || Number.isNaN(value)) {
+    return null;
+  }
+  const truncated = Math.floor(value);
+  if (truncated <= 0) {
+    return null;
+  }
+  return truncated;
+}
+
+/** Turns arbitrary strings into lowercase tags compatible with the RAG memory constraints. */
+function slugifyTag(raw: string): string {
+  const lower = raw.toLowerCase();
+  const replaced = lower.replace(/[^a-z0-9]+/g, "_");
+  const trimmed = replaced.replace(/^_+|_+$/g, "");
+  const fallback = trimmed || "value";
+  return fallback.length > 64 ? fallback.slice(0, 64) : fallback;
+}
+
+/** Extends provenance lists with a synthetic `kg` entry derived from the triple source. */
+function appendSourceProvenance(base: Provenance[], source: string | null): Provenance[] {
+  if (!source) {
+    return base;
+  }
+  const sourceEntry: Provenance = { sourceId: source, type: "kg" };
+  return mergeProvenance(base, [sourceEntry]);
+}
+
+/** Formats confidence scores with a consistent precision for textual summaries. */
+function formatConfidence(value: number): string {
+  return value.toFixed(2);
 }

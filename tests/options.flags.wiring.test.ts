@@ -31,24 +31,8 @@ afterEach(() => {
 describe("options avancées", () => {
   it("maintient les autres modules désactivés lorsque seul un flag est fourni", () => {
     const result = parseOrchestratorRuntimeOptions(["--enable-resources"]);
-
-    expect(result.features).to.include({
-      enableResources: true,
-    });
-    expect(result.features).to.include({
-      enableMcpIntrospection: false,
-      enableEventsBus: false,
-      enableCancellation: false,
-      enableTx: false,
-      enableBulk: false,
-      enableIdempotency: false,
-      enableLocks: false,
-      enableDiffPatch: false,
-      enablePlanLifecycle: false,
-      enableChildOpsFine: false,
-      enableValuesExplain: false,
-      enableAssist: false,
-    });
+    const expected = { ...FEATURE_FLAG_DEFAULTS, enableResources: true };
+    expect(result.features).to.deep.equal(expected);
   });
 
   it("honore les désactivations explicites même après un flag --enable", () => {
@@ -57,8 +41,10 @@ describe("options avancées", () => {
       "--enable-resources",
       "--enable-events-bus",
       "--enable-assist",
+      "--enable-rag",
       "--disable-resources",
       "--disable-mcp-introspection",
+      "--disable-rag",
     ]);
 
     expect(result.features).to.include({
@@ -66,6 +52,22 @@ describe("options avancées", () => {
       enableResources: false,
       enableEventsBus: true,
       enableAssist: true,
+      enableRag: false,
+    });
+  });
+
+  it("expose les nouveaux toggles de RAG, ThoughtGraph et ToolRouter", () => {
+    const result = parseOrchestratorRuntimeOptions([
+      "--enable-rag",
+      "--enable-thought-graph",
+      "--enable-tool-router",
+      "--disable-tool-router",
+    ]);
+
+    expect(result.features).to.include({
+      enableRag: true,
+      enableThoughtGraph: true,
+      enableToolRouter: false,
     });
   });
 });

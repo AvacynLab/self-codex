@@ -398,6 +398,166 @@ export async function run(options = {}) {
   return { runId, summaryPath, runRoot: runContext.rootDir, operations };
 }
 
+/**
+ * Lightweight CLI argument parser used when the harness is invoked directly
+ * from `node scripts/validation/run-eval.mjs`.  The parser purposely avoids any
+ * third-party dependency so the script stays compatible with minimal CI
+ * environments that only provide Node.js.
+ *
+ * Recognised flags:
+ *   --run-id <string>
+ *   --run-root <path>
+ *   --workspace-root <path>
+ *   --timestamp <iso8601>
+ *   --graph-id <string>
+ *   --trace-seed <string>
+ *   --feature <key=value>
+ *   --help / -h
+ *
+ * @param {string[]} argv raw CLI arguments (typically `process.argv.slice(2)`).
+ * @returns {{ options: { runId?: string, runRoot?: string, workspaceRoot?: string, timestamp?: string, graphId?: string, traceSeed?: string, featureOverrides: Record<string, unknown> }, errors: string[], helpRequested: boolean }}
+ */
+export function parseCliArgs(argv) {
+  const options = {
+    featureOverrides: {},
+  };
+  const errors = [];
+  let helpRequested = false;
+
+  /** Coerces CLI values into sensible JavaScript primitives. */
+  function coerceValue(raw) {
+    if (raw === "true" || raw === "false") {
+      return raw === "true";
+    }
+    if (raw === "null") {
+      return null;
+    }
+    if (raw === "undefined") {
+      return undefined;
+    }
+    const numeric = Number(raw);
+    if (!Number.isNaN(numeric) && raw.trim() !== "") {
+      return numeric;
+    }
+    return raw;
+  }
+
+  for (let index = 0; index < argv.length; index += 1) {
+    const token = argv[index];
+
+    if (token === "--help" || token === "-h") {
+      helpRequested = true;
+      continue;
+    }
+
+    const consumeValue = () => {
+      index += 1;
+      const value = argv[index];
+      if (value === undefined) {
+        errors.push(`Missing value for ${token}`);
+        return undefined;
+      }
+      return value;
+    };
+
+    switch (token) {
+      case "--run-id": {
+        const value = consumeValue();
+        if (value !== undefined) {
+          options.runId = value;
+        }
+        break;
+      }
+      case "--run-root": {
+        const value = consumeValue();
+        if (value !== undefined) {
+          options.runRoot = resolve(value);
+        }
+        break;
+      }
+      case "--workspace-root": {
+        const value = consumeValue();
+        if (value !== undefined) {
+          options.workspaceRoot = resolve(value);
+        }
+        break;
+      }
+      case "--timestamp": {
+        const value = consumeValue();
+        if (value !== undefined) {
+          options.timestamp = value;
+        }
+        break;
+      }
+      case "--graph-id": {
+        const value = consumeValue();
+        if (value !== undefined) {
+          options.graphId = value;
+        }
+        break;
+      }
+      case "--trace-seed": {
+        const value = consumeValue();
+        if (value !== undefined) {
+          options.traceSeed = value;
+        }
+        break;
+      }
+      case "--feature": {
+        const value = consumeValue();
+        if (value !== undefined) {
+          const [key, rawValue] = value.split("=", 2);
+          if (!key || rawValue === undefined) {
+            errors.push(`Invalid feature override "${value}". Expected key=value.`);
+          } else {
+            options.featureOverrides[key] = coerceValue(rawValue);
+          }
+        }
+        break;
+      }
+      default: {
+        if (token.startsWith("--feature=")) {
+          const raw = token.slice("--feature=".length);
+          const [key, rawValue] = raw.split("=", 2);
+          if (!key || rawValue === undefined) {
+            errors.push(`Invalid feature override "${raw}". Expected key=value.`);
+          } else {
+            options.featureOverrides[key] = coerceValue(rawValue);
+          }
+          break;
+        }
+
+        if (token.startsWith("--")) {
+          errors.push(`Unknown option ${token}`);
+        } else {
+          errors.push(`Unexpected argument ${token}`);
+        }
+        break;
+      }
+    }
+  }
+
+  return { options, errors, helpRequested };
+}
+
+/** Prints the CLI usage banner for the evaluation harness. */
+function printHelp() {
+  const lines = [
+    "Usage: node scripts/validation/run-eval.mjs [options]",
+    "",
+    "Options:",
+    "  --run-id <id>           Override the validation run identifier.",
+    "  --run-root <path>       Write artefacts under the provided directory.",
+    "  --workspace-root <path> Explicit workspace root (defaults to repo root).",
+    "  --timestamp <iso8601>   Timestamp used for artefact naming.",
+    "  --graph-id <string>     Graph identifier exercised by the campaign.",
+    "  --trace-seed <string>   Deterministic seed for trace identifiers.",
+    "  --feature key=value     Override evaluation feature toggles (repeatable).",
+    "  -h, --help              Display this help message.",
+  ];
+  console.log(lines.join("\n"));
+}
+
 function isMainModule() {
   const entry = process.argv[1];
   if (!entry) {
@@ -407,13 +567,35 @@ function isMainModule() {
 }
 
 if (isMainModule()) {
-  run()
-    .then((result) => {
-      console.log(`Evaluation validation completed: ${result.runId}`);
-      console.log(`Summary written to ${result.summaryPath}`);
+  const { options, errors, helpRequested } = parseCliArgs(process.argv.slice(2));
+
+  if (errors.length > 0) {
+    for (const error of errors) {
+      console.error(error);
+    }
+    if (!helpRequested) {
+      console.error("Use --help to display the list of supported options.");
+    }
+    process.exitCode = 64; // EX_USAGE from sysexits.h
+  } else if (helpRequested) {
+    printHelp();
+  } else {
+    run({
+      runId: options.runId,
+      runRoot: options.runRoot,
+      workspaceRoot: options.workspaceRoot,
+      timestamp: options.timestamp,
+      graphId: options.graphId,
+      traceSeed: options.traceSeed,
+      featureOverrides: Object.keys(options.featureOverrides).length > 0 ? options.featureOverrides : undefined,
     })
-    .catch((error) => {
-      console.error(error instanceof Error ? error.stack ?? error.message : error);
-      process.exitCode = 1;
-    });
+      .then((result) => {
+        console.log(`Evaluation validation completed: ${result.runId}`);
+        console.log(`Summary written to ${result.summaryPath}`);
+      })
+      .catch((error) => {
+        console.error(error instanceof Error ? error.stack ?? error.message : error);
+        process.exitCode = 1;
+      });
+  }
 }

@@ -86,6 +86,12 @@ export interface FeatureToggles {
   enableChildOpsFine: boolean;
   /** Run value graph explanations alongside dry-runs. */
   enableValuesExplain: boolean;
+  /** Enable the Retrieval-Augmented Generation toolchain (ingest/query). */
+  enableRag: boolean;
+  /** Enable the contextual tool router and its `intent_route` façade. */
+  enableToolRouter: boolean;
+  /** Enable ThoughtGraph projection for multi-branch planning. */
+  enableThoughtGraph: boolean;
   /** Suggest alternative fragments leveraging the knowledge graph. */
   enableAssist: boolean;
 }
@@ -120,6 +126,9 @@ export const FEATURE_FLAG_DEFAULTS: Readonly<FeatureToggles> = Object.freeze(
     enablePlanLifecycle: false,
     enableChildOpsFine: false,
     enableValuesExplain: false,
+    enableRag: false,
+    enableToolRouter: false,
+    enableThoughtGraph: false,
     enableAssist: false,
   } satisfies FeatureToggles,
 );
@@ -607,6 +616,24 @@ export function parseOrchestratorRuntimeOptions(argv: string[]): OrchestratorRun
         break;
       case "--disable-values-explain":
         state.featureToggles.enableValuesExplain = false;
+        break;
+      case "--enable-rag":
+        state.featureToggles.enableRag = true;
+        break;
+      case "--disable-rag":
+        state.featureToggles.enableRag = false;
+        break;
+      case "--enable-tool-router":
+        state.featureToggles.enableToolRouter = true;
+        break;
+      case "--disable-tool-router":
+        state.featureToggles.enableToolRouter = false;
+        break;
+      case "--enable-thought-graph":
+        state.featureToggles.enableThoughtGraph = true;
+        break;
+      case "--disable-thought-graph":
+        state.featureToggles.enableThoughtGraph = false;
         break;
       case "--enable-assist":
         state.featureToggles.enableAssist = true;

@@ -6,7 +6,11 @@
 import { describe, it } from "mocha";
 import { expect } from "chai";
 
-import { parseOrchestratorRuntimeOptions, createHttpSessionId } from "../src/serverOptions.js";
+import {
+  FEATURE_FLAG_DEFAULTS,
+  parseOrchestratorRuntimeOptions,
+  createHttpSessionId,
+} from "../src/serverOptions.js";
 
 describe("parseOrchestratorRuntimeOptions", () => {
   it("retourne la configuration stdio par défaut", () => {
@@ -24,32 +28,7 @@ describe("parseOrchestratorRuntimeOptions", () => {
     expect(result.enableReflection).to.equal(true);
     expect(result.enableQualityGate).to.equal(true);
     expect(result.qualityThreshold).to.equal(70);
-    expect(result.features).to.deep.equal({
-      enableBT: false,
-      enableReactiveScheduler: false,
-      enableBlackboard: false,
-      enableStigmergy: false,
-      enableCNP: false,
-      enableConsensus: false,
-      enableAutoscaler: false,
-      enableSupervisor: false,
-      enableKnowledge: false,
-      enableCausalMemory: false,
-      enableValueGuard: false,
-      enableMcpIntrospection: false,
-      enableResources: false,
-      enableEventsBus: false,
-      enableCancellation: false,
-      enableTx: false,
-      enableBulk: false,
-      enableIdempotency: false,
-      enableLocks: false,
-      enableDiffPatch: false,
-      enablePlanLifecycle: false,
-      enableChildOpsFine: false,
-      enableValuesExplain: false,
-      enableAssist: false,
-    });
+    expect(result.features).to.deep.equal(FEATURE_FLAG_DEFAULTS);
     expect(result.timings).to.deep.equal({
       btTickMs: 50,
       stigHalfLifeMs: 30_000,
@@ -190,7 +169,8 @@ describe("parseOrchestratorRuntimeOptions", () => {
       "--enable-assist",
     ]);
 
-    expect(result.features).to.deep.equal({
+    const expectedFeatures = {
+      ...FEATURE_FLAG_DEFAULTS,
       enableBT: true,
       enableReactiveScheduler: true,
       enableBlackboard: true,
@@ -215,7 +195,8 @@ describe("parseOrchestratorRuntimeOptions", () => {
       enableChildOpsFine: true,
       enableValuesExplain: true,
       enableAssist: true,
-    });
+    };
+    expect(result.features).to.deep.equal(expectedFeatures);
   });
 
   it("applique les délais personnalisés", () => {
