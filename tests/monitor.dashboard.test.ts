@@ -1,7 +1,7 @@
 import { describe, it } from "mocha";
 import { expect } from "chai";
 import { Readable } from "node:stream";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { IncomingMessage, ServerResponse } from "node:http";
@@ -26,10 +26,17 @@ import {
 import { ChildShutdownResult } from "../src/childRuntime.js";
 import { LogJournal } from "../src/monitor/log.js";
 
-const maliciousTelemetryFixturePath = new URL(
-  "./fixtures/monitor/dashboard-malicious-reason.txt",
-  import.meta.url,
-);
+function buildMaliciousTelemetryReason(): string {
+  // Construct the malicious reason string without embedding control characters
+  // directly in the TypeScript source. Using String.fromCodePoint defers the
+  // creation of the U+2028 (line separator) and U+2029 (paragraph separator)
+  // characters to runtime so esbuild never encounters them while transforming
+  // the test file.
+  const scriptInjection = "<script>alert('x')</script>";
+  const lineSeparator = String.fromCodePoint(0x2028);
+  const paragraphSeparator = String.fromCodePoint(0x2029);
+  return [scriptInjection, lineSeparator, "next line", paragraphSeparator, "paragraph"].join("");
+}
 
 class StubSupervisor {
   public cancelled: string[] = [];
@@ -238,12 +245,12 @@ describe("monitor/dashboard", function (this: Mocha.Suite) {
     let telemetryNow = 42;
     const contractNetWatcherTelemetry = new ContractNetWatcherTelemetryRecorder(() => telemetryNow);
 
-    // Load an intentionally hostile telemetry payload from disk so the test can
-    // inject literal U+2028/U+2029 separators at runtime without ever embedding
-    // those control characters in the TypeScript source. Keeping them out of the
-    // source prevents esbuild from tripping over "Expected ';' but found ':'"
-    // parse errors during the mocha transform step.
-    const maliciousReason = await readFile(maliciousTelemetryFixturePath, "utf8");
+    // Build an intentionally hostile telemetry payload at runtime so the test
+    // injects literal U+2028/U+2029 separators without embedding those control
+    // characters in the TypeScript source. Keeping them out of the source
+    // prevents esbuild from tripping over "Expected ';' but found ':'" parse
+    // errors during the mocha transform step.
+    const maliciousReason = buildMaliciousTelemetryReason();
     const includesLineSeparator = Array.from(maliciousReason).some(
       (char) => char.codePointAt(0) === 0x2028,
     );
