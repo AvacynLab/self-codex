@@ -1,0 +1,9 @@
+{
+  "segments": [
+    { "literal": "<script>alert('x')</script>" },
+    { "codePoint": 8232 },
+    { "literal": "next line" },
+    { "codePoint": 8233 },
+    { "literal": "paragraph" }
+  ]
+}

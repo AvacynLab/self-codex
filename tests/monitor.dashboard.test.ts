@@ -1,6 +1,7 @@
 import { describe, it } from "mocha";
 import { expect } from "chai";
 import { Readable } from "node:stream";
+import { readFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -26,16 +27,29 @@ import {
 import { ChildShutdownResult } from "../src/childRuntime.js";
 import { LogJournal } from "../src/monitor/log.js";
 
+const maliciousTelemetryReason = (() => {
+  // Read the hostile dashboard payload from a JSON fixture so the escaped
+  // Unicode separators are expanded strictly at runtime. Performing the
+  // deserialisation here keeps the TypeScript source free from U+2028/U+2029,
+  // avoiding esbuild constant-folding the helper back into a literal string
+  // that would reintroduce the control characters during transformation.
+  const fixturePath = new URL("./fixtures/monitor-dashboard-malicious-reason.json", import.meta.url);
+  const raw = readFileSync(fixturePath, "utf8");
+  const parsed = JSON.parse(raw) as { segments: Array<{ literal?: string; codePoint?: number }> };
+  const segments = parsed.segments.map((segment) => {
+    if (typeof segment.literal === "string") {
+      return segment.literal;
+    }
+    if (typeof segment.codePoint === "number") {
+      return String.fromCodePoint(segment.codePoint);
+    }
+    throw new Error("Invalid malicious reason segment in fixture");
+  });
+  return segments.join("");
+})();
+
 function buildMaliciousTelemetryReason(): string {
-  // Construct the malicious reason string without embedding control characters
-  // directly in the TypeScript source. Using String.fromCodePoint defers the
-  // creation of the U+2028 (line separator) and U+2029 (paragraph separator)
-  // characters to runtime so esbuild never encounters them while transforming
-  // the test file.
-  const scriptInjection = "<script>alert('x')</script>";
-  const lineSeparator = String.fromCodePoint(0x2028);
-  const paragraphSeparator = String.fromCodePoint(0x2029);
-  return [scriptInjection, lineSeparator, "next line", paragraphSeparator, "paragraph"].join("");
+  return maliciousTelemetryReason;
 }
 
 class StubSupervisor {
