@@ -231,7 +231,11 @@ describe("monitor/dashboard", function (this: Mocha.Suite) {
     // Include HTML markup and Unicode line/paragraph separators to ensure the
     // dashboard bootstrap escapes characters that could otherwise terminate the
     // inline script prematurely when serialised into the HTML payload.
-    const maliciousReason = "<script>alert('x')</script> next line paragraph";
+    // The malicious payload intentionally exercises line separator (\u2028) and
+    // paragraph separator (\u2029) characters to ensure the dashboard escapes
+    // inputs that would otherwise terminate inline scripts when serialised.
+    const maliciousReason = "<script>alert('x')</script>\u2028next line\u2029paragraph";
+next line paragraph";
     contractNetWatcherTelemetry.record({
       reason: maliciousReason,
       receivedUpdates: 1,
