@@ -104,6 +104,18 @@ class MockResponse implements TestResponse {
   }
 }
 
+/**
+ * Decode a Unicode escape sequence (e.g. "\u2028") at runtime without ever embedding
+ * the resulting control character directly in source. Relying on `String.fromCharCode`
+ * with a literal code point encourages bundlers to fold the call into a literal during
+ * transpilation, which would reintroduce the parse error that originally broke this
+ * suite. Parsing a JSON string that contains the escaped sequence keeps the source
+ * printable while still producing the intended runtime payload.
+ */
+function decodeUnicodeEscape(sequence: string): string {
+  return JSON.parse(`"${sequence}"`);
+}
+
 function createMockRequest(method: string, path: string, body?: unknown): IncomingMessage {
   const payload = body === undefined ? [] : [Buffer.from(JSON.stringify(body))];
   const stream = Readable.from(payload);
@@ -236,7 +248,7 @@ describe("monitor/dashboard", function (this: Mocha.Suite) {
     // Include HTML markup plus Unicode line/paragraph separators to ensure the
     // dashboard bootstrap escapes characters that could otherwise terminate the
     // inline script prematurely when serialised into the HTML payload. We
-    // assemble the separators via `String.fromCharCode` so the test injects the
+    // assemble the separators via `decodeUnicodeEscape` so the test injects the
     // actual U+2028/U+2029 code points without embedding them directly in
     // source (which would confuse the TypeScript parser during transpilation).
     // The segments are stitched together with `Array#join` to avoid creating a
@@ -246,15 +258,15 @@ describe("monitor/dashboard", function (this: Mocha.Suite) {
     // Start with HTML markup that would normally terminate the inline
     // bootstrap script if left unsanitised by the dashboard renderer.
     maliciousReasonSegments.push("<script>alert('x')</script>");
-    // Inject a literal U+2028 LINE SEPARATOR at runtime so the test avoids
-    // embedding it directly in source, which previously broke the TS parser.
-    maliciousReasonSegments.push(String.fromCharCode(0x2028));
+    // Inject a literal U+2028 LINE SEPARATOR at runtime while keeping the
+    // source clear of the problematic character.
+    maliciousReasonSegments.push(decodeUnicodeEscape(String.raw`\u2028`));
     // Add a plain-text token to highlight how the sanitiser bridges adjacent
     // segments when the control characters are removed.
     maliciousReasonSegments.push("next line");
     // Follow up with a U+2029 PARAGRAPH SEPARATOR to ensure both control
     // characters are sanitised by the dashboard telemetry renderer.
-    maliciousReasonSegments.push(String.fromCharCode(0x2029));
+    maliciousReasonSegments.push(decodeUnicodeEscape(String.raw`\u2029`));
     // Final token to ensure the joined string still contains readable text
     // after sanitisation so the assertion can verify its placement.
     maliciousReasonSegments.push("paragraph");
