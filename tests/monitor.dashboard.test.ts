@@ -1,7 +1,7 @@
 import { describe, it } from "mocha";
 import { expect } from "chai";
 import { Readable } from "node:stream";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { IncomingMessage, ServerResponse } from "node:http";
@@ -25,6 +25,11 @@ import {
 } from "../src/learning/lessonPromptDiff.js";
 import { ChildShutdownResult } from "../src/childRuntime.js";
 import { LogJournal } from "../src/monitor/log.js";
+
+const maliciousTelemetryFixturePath = new URL(
+  "./fixtures/monitor/dashboard-malicious-reason.txt",
+  import.meta.url,
+);
 
 class StubSupervisor {
   public cancelled: string[] = [];
@@ -104,38 +109,6 @@ class MockResponse implements TestResponse {
   }
 }
 
-/**
- * Decode a Unicode escape sequence (e.g. the hexadecimal payload `"2028"`)
- * at runtime without ever embedding the resulting control character directly in
- * source. The implementation relies on the UTF-16 big-endian decoder instead of
- * `JSON.parse` so bundlers such as esbuild cannot constant-fold the expression
- * back into the literal U+2028/U+2029 characters. Constant-folding the JSON
- * approach is what previously reintroduced the problematic characters and broke
- * the TypeScript transform with "Expected ';' but found ':'" parse errors.
- */
-const utf16beDecoder = new TextDecoder("utf-16be");
-
-function decodeUnicodeEscape(hexPayload: string): string {
-  // Strip any formatting characters while keeping the runtime string free of
-  // direct control-character literals. This ensures the helper tolerates
-  // whitespace or uppercase hex without leaking the decoded payload back into
-  // the TypeScript source.
-  const sanitised = hexPayload.replace(/[^0-9a-fA-F]/g, "").toLowerCase();
-  if (sanitised.length !== 4) {
-    throw new Error(`Expected a 4-digit hexadecimal escape but received "${hexPayload}"`);
-  }
-
-  // Convert the sanitised hex payload into a two-byte big-endian sequence and
-  // decode it via `TextDecoder`. Using the decoder prevents build-time constant
-  // folding because the helper now performs observable work with Node globals
-  // rather than a pure JSON parse.
-  const bytes = Uint8Array.from([
-    Number.parseInt(sanitised.slice(0, 2), 16),
-    Number.parseInt(sanitised.slice(2, 4), 16),
-  ]);
-  return utf16beDecoder.decode(bytes);
-}
-
 function createMockRequest(method: string, path: string, body?: unknown): IncomingMessage {
   const payload = body === undefined ? [] : [Buffer.from(JSON.stringify(body))];
   const stream = Readable.from(payload);
@@ -151,13 +124,6 @@ function createMockRequest(method: string, path: string, body?: unknown): Incomi
 
 describe("monitor/dashboard", function (this: Mocha.Suite) {
   this.timeout(10_000);
-
-  it("decodes Unicode escapes at runtime without embedding control characters in source", () => {
-    const lineSeparator = decodeUnicodeEscape("2028");
-    expect(lineSeparator.length).to.equal(1);
-    expect(lineSeparator.codePointAt(0)).to.equal(0x2028);
-    expect(lineSeparator).to.not.equal("\\u2028");
-  });
 
   it("computes heatmaps based on graph and events", () => {
     const graphState = new GraphState();
@@ -272,43 +238,20 @@ describe("monitor/dashboard", function (this: Mocha.Suite) {
     let telemetryNow = 42;
     const contractNetWatcherTelemetry = new ContractNetWatcherTelemetryRecorder(() => telemetryNow);
 
-    // Include HTML markup plus Unicode line/paragraph separators to ensure the
-    // dashboard bootstrap escapes characters that could otherwise terminate the
-    // inline script prematurely when serialised into the HTML payload. We
-    // assemble the separators via `decodeUnicodeEscape` so the test injects the
-    // actual U+2028/U+2029 code points without embedding them directly in
-    // source (which would confuse the TypeScript parser during transpilation).
-    // The segments are stitched together with `Array#join` to avoid creating a
-    // literal template string that esbuild could partially inline during the
-    // tsx transform step, which previously manifested as a parse error.
-    const maliciousReasonSegments: string[] = [];
-    // Decode the control characters lazily so the TypeScript source never
-    // contains the literal U+2028/U+2029 code points that previously caused the
-    // esbuild parser to fail while transpiling this suite.
-    const lineSeparator = decodeUnicodeEscape("2028");
-    const paragraphSeparator = decodeUnicodeEscape("2029");
-    // Start with HTML markup that would normally terminate the inline
-    // bootstrap script if left unsanitised by the dashboard renderer.
-    maliciousReasonSegments.push("<script>alert('x')</script>");
-    // Inject a literal U+2028 LINE SEPARATOR at runtime while keeping the
-    // source clear of the problematic character.
-    maliciousReasonSegments.push(lineSeparator);
-    // Add a plain-text token to highlight how the sanitiser bridges adjacent
-    // segments when the control characters are removed.
-    maliciousReasonSegments.push("next line");
-    // Follow up with a U+2029 PARAGRAPH SEPARATOR to ensure both control
-    // characters are sanitised by the dashboard telemetry renderer.
-    maliciousReasonSegments.push(paragraphSeparator);
-    // Final token to ensure the joined string still contains readable text
-    // after sanitisation so the assertion can verify its placement.
-    maliciousReasonSegments.push("paragraph");
-    const maliciousReason = maliciousReasonSegments.join("");
-    // Sanity check that the assembled string actually includes the decoded
-    // control characters before the sanitiser processes the payload; comparing
-    // via `lineSeparator`/`paragraphSeparator` avoids embedding the literals in
-    // this source file.
-    expect(maliciousReason.includes(lineSeparator)).to.equal(true);
-    expect(maliciousReason.includes(paragraphSeparator)).to.equal(true);
+    // Load an intentionally hostile telemetry payload from disk so the test can
+    // inject literal U+2028/U+2029 separators at runtime without ever embedding
+    // those control characters in the TypeScript source. Keeping them out of the
+    // source prevents esbuild from tripping over "Expected ';' but found ':'"
+    // parse errors during the mocha transform step.
+    const maliciousReason = await readFile(maliciousTelemetryFixturePath, "utf8");
+    const includesLineSeparator = Array.from(maliciousReason).some(
+      (char) => char.codePointAt(0) === 0x2028,
+    );
+    const includesParagraphSeparator = Array.from(maliciousReason).some(
+      (char) => char.codePointAt(0) === 0x2029,
+    );
+    expect(includesLineSeparator).to.equal(true);
+    expect(includesParagraphSeparator).to.equal(true);
 
     // Record an explicit telemetry snapshot so the router can surface the
     // latest Contract-Net watcher counters through `/metrics` and the HTML
