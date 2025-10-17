@@ -1,4 +1,4 @@
-import { distance as levenshteinDistance } from "fastest-levenshtein";
+import { levenshteinDistance } from "./levenshtein.js";
 
 import { StructuredLogger } from "../logger.js";
 import type { Provenance } from "../types/provenance.js";

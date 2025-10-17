@@ -69,6 +69,23 @@ jobs:
       - name: Execute automated tests
         run: npm run test
 
+      # Surface the collected MCP test harness log directly in the Action output so
+      # CI failures retain enough context for debugging without downloading
+      # artefacts.
+      - name: Show unit test log file
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          LOG_FILE="/tmp/self-codex.test.log"
+          if [ -f "$LOG_FILE" ]; then
+            echo "::group::Unit test log ($LOG_FILE)"
+            cat "$LOG_FILE"
+            echo "::endgroup::"
+          else
+            echo "Expected unit test log file '$LOG_FILE' was not generated."
+          fi
+
       - name: Generate coverage report
         run: npm run coverage
 
