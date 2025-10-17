@@ -228,13 +228,15 @@ describe("monitor/dashboard", function (this: Mocha.Suite) {
     const btStatusRegistry = new BehaviorTreeStatusRegistry();
     let telemetryNow = 42;
     const contractNetWatcherTelemetry = new ContractNetWatcherTelemetryRecorder(() => telemetryNow);
-    // Include HTML markup and Unicode line/paragraph separators to ensure the
+    // Include HTML markup plus Unicode line/paragraph separators to ensure the
     // dashboard bootstrap escapes characters that could otherwise terminate the
     // inline script prematurely when serialised into the HTML payload.
-    // The malicious payload intentionally exercises line separator (\u2028) and
-    // paragraph separator (\u2029) characters to ensure the dashboard escapes
-    // inputs that would otherwise terminate inline scripts when serialised.
-    const maliciousReason = "<script>alert('x')</script>\u2028next line\u2029paragraph";
+    // We assemble the separators via `String.fromCharCode` so the test injects
+    // the actual U+2028/U+2029 code points without embedding them directly in
+    // source (which would confuse the TypeScript parser during transpilation).
+    const LINE_SEPARATOR = String.fromCharCode(0x2028);
+    const PARAGRAPH_SEPARATOR = String.fromCharCode(0x2029);
+    const maliciousReason = `<script>alert('x')</script>${LINE_SEPARATOR}next line${PARAGRAPH_SEPARATOR}paragraph`;
 next line paragraph";
     contractNetWatcherTelemetry.record({
       reason: maliciousReason,
