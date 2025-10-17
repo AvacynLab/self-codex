@@ -237,17 +237,22 @@ describe("monitor/dashboard", function (this: Mocha.Suite) {
     // The segments are stitched together with `Array#join` to avoid creating a
     // literal template string that esbuild could partially inline during the
     // tsx transform step, which previously manifested as a parse error.
-    const maliciousReasonSegments = [
-      "<script>alert('x')</script>",
-      // Inject a literal U+2028 LINE SEPARATOR at runtime so the test avoids
-      // embedding it directly in source, which previously broke the TS parser.
-      String.fromCharCode(0x2028),
-      "next line",
-      // Follow up with a U+2029 PARAGRAPH SEPARATOR to ensure both control
-      // characters are sanitised by the dashboard telemetry renderer.
-      String.fromCharCode(0x2029),
-      "paragraph",
-    ];
+    const maliciousReasonSegments: string[] = [];
+    // Start with HTML markup that would normally terminate the inline
+    // bootstrap script if left unsanitised by the dashboard renderer.
+    maliciousReasonSegments.push("<script>alert('x')</script>");
+    // Inject a literal U+2028 LINE SEPARATOR at runtime so the test avoids
+    // embedding it directly in source, which previously broke the TS parser.
+    maliciousReasonSegments.push(String.fromCharCode(0x2028));
+    // Add a plain-text token to highlight how the sanitiser bridges adjacent
+    // segments when the control characters are removed.
+    maliciousReasonSegments.push("next line");
+    // Follow up with a U+2029 PARAGRAPH SEPARATOR to ensure both control
+    // characters are sanitised by the dashboard telemetry renderer.
+    maliciousReasonSegments.push(String.fromCharCode(0x2029));
+    // Final token to ensure the joined string still contains readable text
+    // after sanitisation so the assertion can verify its placement.
+    maliciousReasonSegments.push("paragraph");
     const maliciousReason = maliciousReasonSegments.join("");
 next line paragraph";
     contractNetWatcherTelemetry.record({
