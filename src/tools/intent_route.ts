@@ -517,7 +517,7 @@ function buildRouterDisabledResult() {
   } as const;
   return {
     isError: true,
-    content: [{ type: "text", text: JSON.stringify(payload) }],
+    content: [{ type: "text" as const, text: JSON.stringify(payload) }],
     structuredContent: payload,
   };
 }

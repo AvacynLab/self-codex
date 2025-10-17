@@ -131,7 +131,7 @@ function createLanguageServiceHost(
 ): ts.LanguageServiceHost {
   const snapshots = new Map<string, ts.IScriptSnapshot>();
   return {
-    getScriptFileNames: () => files,
+    getScriptFileNames: () => [...files],
     getCompilationSettings: () => options,
     getCurrentDirectory: () => currentDirectory,
     getDefaultLibFileName: (compilerOptions) => ts.getDefaultLibFilePath(compilerOptions),

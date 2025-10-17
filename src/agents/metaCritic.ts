@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
 // NOTE: Node built-in modules are imported with the explicit `node:` prefix to guarantee ESM resolution in Node.js.
 
+import type { LessonSignal } from "../learning/lessons.js";
+
 /**
  * Type of artefact being reviewed by the {@link MetaCritic}. The heuristics
  * are tuned per category so the critic can surface actionable insights without
@@ -51,6 +53,8 @@ export interface ReviewResult {
   breakdown: ReviewBreakdownEntry[];
   /** Fingerprint of the analysed payload for traceability in logs. */
   fingerprint: string;
+  /** Optional lessons extracted for the institutional memory pipeline. */
+  lessons?: LessonSignal[];
 }
 
 /** Internal representation used while executing the heuristics. */
@@ -488,6 +492,7 @@ export class MetaCritic {
       suggestions: uniqueSuggestions,
       breakdown,
       fingerprint: fingerprintPayload(context.raw),
+      lessons: [],
     };
   }
 }

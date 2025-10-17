@@ -367,7 +367,13 @@ export class EventStore {
    */
   private serialisePayloadForLogging(
     payload: unknown,
-  ): { status: "success"; value: unknown } | { status: "summary"; value: { summary: string; length: number } } {
+  ): {
+    status: "success";
+    value: unknown;
+  } | {
+    status: "summary";
+    value: { summary: string; length: number; error?: string };
+  } {
     try {
       const json = JSON.stringify(payload);
       if (json === undefined) {

@@ -1439,6 +1439,7 @@ async function spawnChildWithRetry(
   const guardDecision = plan.valueDecision ?? null;
   const guardSnapshot = serialiseValueGuardDecision(guardDecision);
 
+  const eventCorrelation = toEventCorrelationHints(correlation);
   const correlationLogFields = {
     run_id: correlation.runId,
     op_id: correlation.opId,

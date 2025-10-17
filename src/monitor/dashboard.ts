@@ -496,12 +496,12 @@ export function createDashboardRouter(options: DashboardRouterOptions): Dashboar
         const limitParam = requestUrl.searchParams.get("limit");
         const cursorParam = requestUrl.searchParams.get("cursor");
         const parsedLimit = limitParam === null ? undefined : Number.parseInt(limitParam, 10);
-        if (limitParam !== null && (!Number.isFinite(parsedLimit) || parsedLimit <= 0)) {
+        if (parsedLimit !== undefined && (!Number.isFinite(parsedLimit) || parsedLimit <= 0)) {
           writeJson(res, 400, { error: "INVALID_INPUT", message: "limit must be a positive integer" });
           return;
         }
         const parsedCursor = cursorParam === null ? undefined : Number.parseInt(cursorParam, 10);
-        if (cursorParam !== null && (!Number.isFinite(parsedCursor) || parsedCursor < 0)) {
+        if (parsedCursor !== undefined && (!Number.isFinite(parsedCursor) || parsedCursor < 0)) {
           writeJson(res, 400, { error: "INVALID_INPUT", message: "cursor must be a non-negative integer" });
           return;
         }
@@ -3168,21 +3168,21 @@ function parseLogTailQuery(params: URLSearchParams): LogTailQueryParseResult {
 
   const filtersResult = buildTailFilters(params);
   if (filtersResult.error) {
-    return { ok: false, message: filtersResult.error, issues: filtersResult.issues };
+    return { ok: false, message: filtersResult.error, issues: filtersResult.issues ?? [] };
   }
 
   return {
     ok: true,
-    query: {
-      stream,
-      bucketId,
-      fromSeq: fromSeqResult.value,
-      limit: limitResult.value,
-      levels: levelsResult.value,
-      filters: filtersResult.filters,
-    },
-  };
-}
+      query: {
+        stream,
+        bucketId,
+        fromSeq: fromSeqResult.value,
+        limit: limitResult.value,
+        levels: levelsResult.value ?? null,
+        filters: filtersResult.filters,
+      },
+    };
+  }
 
 /** Serialises {@link LogTailFilters} for JSON responses. */
 function serialiseFiltersForResponse(filters: LogTailFilters | null): Record<string, unknown> | null {
@@ -3342,6 +3342,10 @@ interface FilterParseResult {
 }
 
 /** Builds {@link LogTailFilters} from the query string, guarding invalid ranges. */
+type MutableLogTailFilters = {
+  -readonly [Key in keyof LogTailFilters]: LogTailFilters[Key];
+};
+
 function buildTailFilters(params: URLSearchParams): FilterParseResult {
   const runIds = collectQueryStrings(params, "runId", "run_id", "runIds", "run_ids");
   const jobIds = collectQueryStrings(params, "jobId", "job_id", "jobIds", "job_ids");
@@ -3370,43 +3374,43 @@ function buildTailFilters(params: URLSearchParams): FilterParseResult {
     return { filters: null, error: untilTs.error, issues: ["untilTs"] };
   }
 
-  const filters: LogTailFilters = {};
+  const filters: Partial<MutableLogTailFilters> = {};
   let hasFilters = false;
 
   if (runIds.length > 0) {
-    filters.runIds = runIds;
+    filters.runIds = [...runIds];
     hasFilters = true;
   }
   if (jobIds.length > 0) {
-    filters.jobIds = jobIds;
+    filters.jobIds = [...jobIds];
     hasFilters = true;
   }
   if (opIds.length > 0) {
-    filters.opIds = opIds;
+    filters.opIds = [...opIds];
     hasFilters = true;
   }
   if (graphIds.length > 0) {
-    filters.graphIds = graphIds;
+    filters.graphIds = [...graphIds];
     hasFilters = true;
   }
   if (nodeIds.length > 0) {
-    filters.nodeIds = nodeIds;
+    filters.nodeIds = [...nodeIds];
     hasFilters = true;
   }
   if (childIds.length > 0) {
-    filters.childIds = childIds;
+    filters.childIds = [...childIds];
     hasFilters = true;
   }
   if (components.length > 0) {
-    filters.components = components;
+    filters.components = [...components];
     hasFilters = true;
   }
   if (stages.length > 0) {
-    filters.stages = stages;
+    filters.stages = [...stages];
     hasFilters = true;
   }
   if (messageIncludes.length > 0) {
-    filters.messageIncludes = messageIncludes;
+    filters.messageIncludes = [...messageIncludes];
     hasFilters = true;
   }
 
@@ -3427,7 +3431,7 @@ function buildTailFilters(params: URLSearchParams): FilterParseResult {
     hasFilters = true;
   }
 
-  return { filters: hasFilters ? filters : null };
+  return { filters: hasFilters ? (Object.freeze({ ...filters }) as LogTailFilters) : null };
 }
 
 function serialiseSnapshotForInlineScript(snapshot: DashboardSnapshot): string {

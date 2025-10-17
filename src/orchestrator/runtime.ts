@@ -2037,7 +2037,7 @@ async function maybeIndexChildCollectMemory(payload: ChildCollectMemoryPayload):
               insights: payload.reflection.insights.slice(0, 3),
               next_steps: payload.reflection.nextSteps.slice(0, 3),
               risks: payload.reflection.risks.slice(0, 3),
-              lessons: payload.reflection.lessons.slice(0, 3).map((lesson) => ({
+              lessons: (payload.reflection.lessons ?? []).slice(0, 3).map((lesson) => ({
                 topic: lesson.topic,
                 summary: lesson.summary,
                 tags: lesson.tags.slice(0, 4),
@@ -5638,7 +5638,7 @@ server.registerTool(
       const result = await handleRagIngest(context, parsed);
       return {
         content: [{ type: "text" as const, text: j({ tool: "rag_ingest", result }) }],
-        structuredContent: result,
+        structuredContent: result as unknown as Record<string, unknown>,
       };
     } catch (error) {
       return knowledgeToolError(logger, "rag_ingest", error);
@@ -5667,7 +5667,7 @@ server.registerTool(
       const result = await handleRagQuery(context, { ...parsed, min_score: minScore });
       return {
         content: [{ type: "text" as const, text: j({ tool: "rag_query", result }) }],
-        structuredContent: result,
+        structuredContent: result as unknown as Record<string, unknown>,
       };
     } catch (error) {
       return knowledgeToolError(logger, "rag_query", error);
@@ -7757,7 +7757,7 @@ server.registerTool(
         logger.logCognitive({
           actor: "lessons",
           phase: "prompt",
-          childId: parsed.child_id ?? null,
+          childId: parsed.child_id ?? undefined,
           content: lessonRecall.matches[0]?.summary ?? "lessons_injected",
           metadata: {
             topics: lessonRecall.matches.map((lesson) => lesson.topic),
@@ -7919,15 +7919,15 @@ server.registerTool(
         }
       }
 
-      const lessonUpserts = lessonsStore.recordMany(review.lessons, Date.now());
-      if (reflectionSummary) {
+      const lessonUpserts = lessonsStore.recordMany(review.lessons ?? [], Date.now());
+      if (reflectionSummary?.lessons) {
         lessonUpserts.push(...lessonsStore.recordMany(reflectionSummary.lessons, Date.now()));
       }
       for (const upsert of lessonUpserts) {
         logger.logCognitive({
           actor: "lessons",
           phase: "learn",
-          childId: parsed.child_id,
+          childId: parsed.child_id ?? undefined,
           content: upsert.record.summary,
           metadata: {
             topic: upsert.record.topic,

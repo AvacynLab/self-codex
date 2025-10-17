@@ -2317,7 +2317,9 @@ export class ResourceRegistry {
 
         const buildResult = (
           page: {
-            events: Array<ResourceRunEvent | ResourceChildLogEntry | ResourceBlackboardEvent>;
+            events: Array<
+              ResourceRunEvent | ResourceChildLogEntry | ResourceBlackboardEvent | ResourceToolRouterDecision
+            >;
             nextSeq: number;
           },
         ): ResourceWatchResult => {

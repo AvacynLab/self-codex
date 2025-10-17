@@ -154,7 +154,7 @@ export class HybridRetriever {
     ranked.sort((left, right) =>
       right.score - left.score ||
       right.vectorScore - left.vectorScore ||
-      right.metadata.updated_at - left.metadata.updated_at ||
+      right.updatedAt - left.updatedAt ||
       right.text.length - left.text.length,
     );
 
