@@ -1,7 +1,6 @@
 import { describe, it } from "mocha";
 import { expect } from "chai";
 import { Readable } from "node:stream";
-import { readFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -27,29 +26,29 @@ import {
 import { ChildShutdownResult } from "../src/childRuntime.js";
 import { LogJournal } from "../src/monitor/log.js";
 
-const maliciousTelemetryReason = (() => {
-  // Read the hostile dashboard payload from a JSON fixture so the escaped
-  // Unicode separators are expanded strictly at runtime. Performing the
-  // deserialisation here keeps the TypeScript source free from U+2028/U+2029,
-  // avoiding esbuild constant-folding the helper back into a literal string
-  // that would reintroduce the control characters during transformation.
-  const fixturePath = new URL("./fixtures/monitor-dashboard-malicious-reason.json", import.meta.url);
-  const raw = readFileSync(fixturePath, "utf8");
-  const parsed = JSON.parse(raw) as { segments: Array<{ literal?: string; codePoint?: number }> };
-  const segments = parsed.segments.map((segment) => {
-    if (typeof segment.literal === "string") {
-      return segment.literal;
-    }
-    if (typeof segment.codePoint === "number") {
-      return String.fromCodePoint(segment.codePoint);
-    }
-    throw new Error("Invalid malicious reason segment in fixture");
-  });
-  return segments.join("");
-})();
+const MALICIOUS_REASON_SEGMENTS = [
+  // Encode the hostile HTML/Unicode payload using escaped code points so the
+  // TypeScript source never embeds literal U+2028/U+2029 characters. Leaving
+  // those separators unescaped would cause esbuild to treat them as line
+  // terminators while transforming the test suite, yielding
+  // "Expected ';' but found ':'" syntax errors in CI.
+  "<script>alert('x')</script>",
+  "\\u2028next line",
+  "\\u2029paragraph",
+] as const;
+
+function decodeUnicodeEscapes(segment: string): string {
+  // Replace every \uXXXX sequence on demand so the control characters are only
+  // materialised at runtime. Using a regex-driven decode prevents esbuild from
+  // constant-folding the string back into the source file because the actual
+  // separator characters are produced strictly within the test execution.
+  return segment.replace(/\\u([0-9a-fA-F]{4})/g, (_, hex) =>
+    String.fromCodePoint(Number.parseInt(hex, 16)),
+  );
+}
 
 function buildMaliciousTelemetryReason(): string {
-  return maliciousTelemetryReason;
+  return MALICIOUS_REASON_SEGMENTS.map(decodeUnicodeEscapes).join("");
 }
 
 class StubSupervisor {
