@@ -4,11 +4,9 @@ import { Readable } from "node:stream";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { IncomingMessage, ServerResponse } from "node:http";
-
 import { EventStore } from "../src/eventStore.js";
 import { GraphState } from "../src/graphState.js";
-import { StructuredLogger, type LogEntry } from "../src/logger.js";
+import { StructuredLogger } from "../src/logger.js";
 import { StigmergyField } from "../src/coord/stigmergy.js";
 import { ContractNetWatcherTelemetryRecorder } from "../src/coord/contractNetWatchers.js";
 import { BehaviorTreeStatusRegistry } from "../src/monitor/btStatusRegistry.js";
@@ -16,47 +14,62 @@ import {
   createDashboardRouter,
   computeDashboardHeatmap,
   summariseRuntimeCosts,
-  type DashboardSnapshot,
 } from "../src/monitor/dashboard.js";
 import {
   buildLessonsPromptPayload,
   normalisePromptBlueprint,
   normalisePromptMessages,
 } from "../src/learning/lessonPromptDiff.js";
-import { ChildShutdownResult } from "../src/childRuntime.js";
 import { LogJournal } from "../src/monitor/log.js";
 
-class StubSupervisor {
-  public cancelled: string[] = [];
+/** @typedef {import("node:http").IncomingMessage} IncomingMessage */
+/** @typedef {import("node:http").ServerResponse} ServerResponse */
+/** @typedef {import("../src/logger.js").LogEntry} LogEntry */
+/** @typedef {import("../src/monitor/dashboard.js").DashboardSnapshot} DashboardSnapshot */
+/** @typedef {import("../src/childRuntime.js").ChildShutdownResult} ChildShutdownResult */
 
-  async cancel(childId: string): Promise<ChildShutdownResult> {
+class StubSupervisor {
+  constructor() {
+    /** @type {string[]} */
+    this.cancelled = [];
+  }
+
+  /**
+   * Record the cancelled child identifier so assertions can verify the
+   * dashboard control endpoints.
+   * @param {string} childId
+   * @returns {Promise<ChildShutdownResult>}
+   */
+  async cancel(childId) {
     this.cancelled.push(childId);
-    return {
-      code: 0,
-      signal: null,
-      forced: false,
-      durationMs: 0,
-    };
+    return { code: 0, signal: null, forced: false, durationMs: 0 };
   }
 }
 
-interface TestResponse {
-  statusCode: number | null;
-  headersSent: boolean;
-  finished: boolean;
-  body: string;
-  headers: Record<string, string>;
-}
+/**
+ * Lightweight stand-in for Node's ServerResponse used to capture headers and
+ * body payloads during the tests.
+ */
+class MockResponse {
+  constructor() {
+    /** @type {number | null} */
+    this.statusCode = null;
+    this.headersSent = false;
+    this.finished = false;
+    /** @type {Record<string, string>} */
+    this.headers = {};
+    /** @type {Buffer[]} */
+    this._chunks = [];
+    /** @type {Array<() => void>} */
+    this._closeHandlers = [];
+  }
 
-class MockResponse implements TestResponse {
-  public statusCode: number | null = null;
-  public headersSent = false;
-  public finished = false;
-  public headers: Record<string, string> = {};
-  private readonly chunks: Buffer[] = [];
-  private readonly closeHandlers: Array<() => void> = [];
-
-  writeHead(status: number, headers?: Record<string, string | number>): ServerResponse {
+  /**
+   * @param {number} status
+   * @param {Record<string, string | number>} [headers]
+   * @returns {ServerResponse}
+   */
+  writeHead(status, headers) {
     this.statusCode = status;
     if (headers) {
       for (const [key, value] of Object.entries(headers)) {
@@ -64,26 +77,37 @@ class MockResponse implements TestResponse {
       }
     }
     this.headersSent = true;
-    return this as unknown as ServerResponse;
+    return /** @type {ServerResponse} */ (this);
   }
 
-  setHeader(name: string, value: string | number): void {
+  /**
+   * @param {string} name
+   * @param {string | number} value
+   */
+  setHeader(name, value) {
     this.headers[name.toLowerCase()] = String(value);
   }
 
-  write(chunk: string | Uint8Array): boolean {
+  /**
+   * @param {string | Uint8Array} chunk
+   * @returns {boolean}
+   */
+  write(chunk) {
     const buffer = typeof chunk === "string" ? Buffer.from(chunk, "utf8") : Buffer.from(chunk);
-    this.chunks.push(buffer);
+    this._chunks.push(buffer);
     this.headersSent = true;
     return true;
   }
 
-  end(chunk?: string | Uint8Array): void {
+  /**
+   * @param {string | Uint8Array} [chunk]
+   */
+  end(chunk) {
     if (chunk) {
       this.write(chunk);
     }
     this.finished = true;
-    for (const handler of this.closeHandlers) {
+    for (const handler of this._closeHandlers) {
       try {
         handler();
       } catch {
@@ -92,32 +116,47 @@ class MockResponse implements TestResponse {
     }
   }
 
-  get body(): string {
-    return Buffer.concat(this.chunks).toString("utf8");
+  /**
+   * @returns {string}
+   */
+  get body() {
+    return Buffer.concat(this._chunks).toString("utf8");
   }
 
-  on(event: string, listener: () => void): this {
+  /**
+   * @param {string} event
+   * @param {() => void} listener
+   * @returns {this}
+   */
+  on(event, listener) {
     if (event === "close") {
-      this.closeHandlers.push(listener);
+      this._closeHandlers.push(listener);
     }
     return this;
   }
 }
 
-function createMockRequest(method: string, path: string, body?: unknown): IncomingMessage {
+/**
+ * Create a mock IncomingMessage populated with an optional JSON payload.
+ * @param {string} method
+ * @param {string} path
+ * @param {unknown} [body]
+ * @returns {IncomingMessage}
+ */
+function createMockRequest(method, path, body) {
   const payload = body === undefined ? [] : [Buffer.from(JSON.stringify(body))];
   const stream = Readable.from(payload);
-  const request = stream as unknown as IncomingMessage;
+  const request = /** @type {IncomingMessage} */ (stream);
   request.method = method;
   request.url = path;
   request.headers = {
     host: "dashboard.test",
     "content-type": "application/json",
-  } as Record<string, string>;
+  };
   return request;
 }
 
-describe("monitor/dashboard", function (this: Mocha.Suite) {
+describe("monitor/dashboard", function () {
   this.timeout(10_000);
 
   it("computes heatmaps based on graph and events", () => {
@@ -219,7 +258,8 @@ describe("monitor/dashboard", function (this: Mocha.Suite) {
   });
 
   it("exposes HTTP endpoints for monitoring and control", async () => {
-    const entries: LogEntry[] = [];
+    /** @type {LogEntry[]} */
+    const entries = [];
     const logger = new StructuredLogger({
       // Capture every emitted entry so the assertions can validate the
       // structured log payloads produced by the dashboard router.
@@ -273,13 +313,14 @@ describe("monitor/dashboard", function (this: Mocha.Suite) {
 
     try {
       const healthRes = new MockResponse();
-      await router.handleRequest(createMockRequest("GET", "/health"), healthRes as unknown as ServerResponse);
+      await router.handleRequest(createMockRequest("GET", "/health"), healthRes);
       expect(healthRes.statusCode).to.equal(200);
       expect(JSON.parse(healthRes.body)).to.deep.equal({ status: "ok" });
 
       const metricsRes = new MockResponse();
-      await router.handleRequest(createMockRequest("GET", "/metrics"), metricsRes as unknown as ServerResponse);
-      const metrics = JSON.parse(metricsRes.body) as DashboardSnapshot;
+      await router.handleRequest(createMockRequest("GET", "/metrics"), metricsRes);
+      /** @type {DashboardSnapshot} */
+      const metrics = JSON.parse(metricsRes.body);
       expect(metrics.children[0]).to.include({ id: "child-1" });
       expect(metrics.stigmergy.bounds).to.not.equal(null);
       expect(metrics.stigmergy.rows[0]?.value).to.not.equal("n/a");
@@ -303,7 +344,7 @@ describe("monitor/dashboard", function (this: Mocha.Suite) {
       });
 
       const uiRes = new MockResponse();
-      await router.handleRequest(createMockRequest("GET", "/"), uiRes as unknown as ServerResponse);
+      await router.handleRequest(createMockRequest("GET", "/"), uiRes);
       expect(uiRes.statusCode).to.equal(200);
       expect(uiRes.headers["content-type"]).to.equal("text/html; charset=utf-8");
       expect(uiRes.body).to.contain("Contract-Net Watcher");
@@ -318,15 +359,16 @@ describe("monitor/dashboard", function (this: Mocha.Suite) {
       expect(scriptPayload?.[1]).to.include(telemetryReason);
 
       const streamRes = new MockResponse();
-      await router.handleRequest(createMockRequest("GET", "/stream"), streamRes as unknown as ServerResponse);
+      await router.handleRequest(createMockRequest("GET", "/stream"), streamRes);
       expect(streamRes.statusCode).to.equal(200);
       expect(streamRes.body).to.contain("data:");
       router.broadcast();
 
-      const pauseRes = new MockResponse();
-      await router.handleRequest(
-        createMockRequest("POST", "/controls/pause", { childId: "child-1" }),
-        pauseRes as unknown as ServerResponse,
+        logRes,
+      const lastPayload = lastEntry?.payload;
+      expect(typeof lastPayload === "object" && lastPayload !== null ? lastPayload.context : undefined).to.deep.equal({
+        invalidLogRes,
+        pauseRes,
       );
       expect(JSON.parse(pauseRes.body)).to.deep.equal({ status: "paused" });
       expect(graphState.getChild("child-1")?.state).to.equal("paused");
@@ -334,7 +376,7 @@ describe("monitor/dashboard", function (this: Mocha.Suite) {
       const prioritiseRes = new MockResponse();
       await router.handleRequest(
         createMockRequest("POST", "/controls/prioritise", { childId: "child-1", priority: 3 }),
-        prioritiseRes as unknown as ServerResponse,
+        prioritiseRes,
       );
       expect(JSON.parse(prioritiseRes.body)).to.deep.equal({ status: "prioritised", priority: 3 });
       expect(graphState.getChild("child-1")?.priority).to.equal(3);
@@ -342,7 +384,7 @@ describe("monitor/dashboard", function (this: Mocha.Suite) {
       const cancelRes = new MockResponse();
       await router.handleRequest(
         createMockRequest("POST", "/controls/cancel", { childId: "child-1" }),
-        cancelRes as unknown as ServerResponse,
+        cancelRes,
       );
       expect(JSON.parse(cancelRes.body)).to.deep.equal({ status: "cancelled" });
       expect(supervisor.cancelled).to.deep.equal(["child-1"]);
@@ -447,16 +489,13 @@ describe("monitor/dashboard", function (this: Mocha.Suite) {
       level: "info",
       jobId: "job-replay",
       childId: "child-99",
-      payload: { operation: "plan_fanout", lessons_prompt: lessonsPayload },
-    });
-    eventStore.emit({
-      kind: "REPLY",
-      source: "child",
-      level: "info",
-      jobId: "job-replay",
-      childId: "child-99",
-      payload: { text: "ack" },
-    });
+        pageOneRes,
+      const pageOne = JSON.parse(pageOneRes.body);
+        pageTwoRes,
+      const pageTwo = JSON.parse(pageTwoRes.body);
+      await router.handleRequest(createMockRequest("GET", "/replay"), missingJobRes);
+        badLimitRes,
+        badCursorRes,
 
     const router = createDashboardRouter({
       graphState,
@@ -567,21 +606,13 @@ describe("monitor/dashboard", function (this: Mocha.Suite) {
       logJournal.record({
         stream: "server",
         bucketId: "orchestrator",
-        seq: 1,
-        ts: now - 250,
-        level: "info",
-        message: "runtime_started",
-        component: "server",
-        stage: "runtime_started",
-      });
-      logJournal.record({
-        stream: "server",
-        bucketId: "orchestrator",
-        seq: 2,
-        ts: now,
-        level: "error",
-        message: "scheduler_failed",
-        data: { reason: "timeout" },
+        response,
+      const body = JSON.parse(response.body);
+      response,
+    expect(JSON.parse(response.body)).to.deep.equal({
+      error: "LOGS_UNAVAILABLE",
+      message: "log journal not configured",
+    });
         runId: "run-log-1",
         jobId: "job-log-1",
         component: "scheduler",
