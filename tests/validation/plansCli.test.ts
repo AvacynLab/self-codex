@@ -3,8 +3,10 @@ import { expect } from "chai";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import sinon from "sinon";
 
 import { executePlanCli, parsePlanCliOptions } from "../../src/validation/plansCli.js";
+import { createCliStructuredLogger } from "../../src/validation/cliLogger.js";
 import { PLAN_JSONL_FILES } from "../../src/validation/plans.js";
 
 /** CLI-level tests ensuring the Stage 6 workflow remains ergonomic. */
@@ -82,30 +84,36 @@ describe("planning validation CLI", () => {
       });
     }) as typeof fetch;
 
-    const logs: unknown[][] = [];
-    const logger = { log: (...args: unknown[]) => logs.push(args) };
+    const cliLogger = createCliStructuredLogger("plan_cli");
+    const stdoutStub = sinon.stub(process.stdout, "write");
 
-    const { runRoot, result } = await executePlanCli(
-      { baseDir: workingDir, runId: "validation_cli", tickMs: 200, timeoutMs: 5000 },
-      {
-        MCP_HTTP_HOST: "127.0.0.1",
-        MCP_HTTP_PORT: "9000",
-        MCP_HTTP_PATH: "/mcp",
-        MCP_HTTP_TOKEN: "cli-token",
-      } as NodeJS.ProcessEnv,
-      logger,
-    );
+    try {
+      const { runRoot, result } = await executePlanCli(
+        { baseDir: workingDir, runId: "validation_cli", tickMs: 200, timeoutMs: 5000 },
+        {
+          MCP_HTTP_HOST: "127.0.0.1",
+          MCP_HTTP_PORT: "9000",
+          MCP_HTTP_PATH: "/mcp",
+          MCP_HTTP_TOKEN: "cli-token",
+        } as NodeJS.ProcessEnv,
+        cliLogger.console,
+      );
 
-    expect(runRoot).to.equal(join(workingDir, "validation_cli"));
-    expect(result.summary.runBt.status).to.equal("success");
-    expect(result.summary.runReactive.loopTicks).to.equal(3);
-    expect(result.summary.opCancel.ok).to.equal(true);
+      expect(runRoot).to.equal(join(workingDir, "validation_cli"));
+      expect(result.summary.runBt.status).to.equal("success");
+      expect(result.summary.runReactive.loopTicks).to.equal(3);
+      expect(result.summary.opCancel.ok).to.equal(true);
 
-    const summaryDocument = JSON.parse(await readFile(result.summaryPath, "utf8"));
-    expect(summaryDocument.artefacts.requestsJsonl).to.equal(join(runRoot, PLAN_JSONL_FILES.inputs));
+      const summaryDocument = JSON.parse(await readFile(result.summaryPath, "utf8"));
+      expect(summaryDocument.artefacts.requestsJsonl).to.equal(join(runRoot, PLAN_JSONL_FILES.inputs));
 
-    const flattenedLogs = logs.flat().join(" ");
-    expect(flattenedLogs).to.contain(PLAN_JSONL_FILES.inputs);
-    expect(flattenedLogs).to.contain("Summary");
+      await cliLogger.logger.flush();
+
+      const combined = cliLogger.entries.map((entry) => entry.text).join(" ");
+      expect(combined).to.contain(PLAN_JSONL_FILES.inputs);
+      expect(combined).to.contain("Summary");
+    } finally {
+      stdoutStub.restore();
+    }
   });
 });

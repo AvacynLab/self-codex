@@ -175,9 +175,16 @@ describe("monitor/dashboard streams", () => {
       expect(firstSnapshot.heatmap.boundsTooltip).to.be.a("string");
       expect(firstSnapshot.stigmergy.bounds).to.not.equal(null);
       expect(firstSnapshot.stigmergy.rows[0]?.value).to.not.equal("n/a");
+      expect(firstSnapshot.runtimeCosts.totalTokens).to.equal(0);
+      expect(firstSnapshot.runtimeCosts.perChild).to.be.an("array");
 
       graphState.patchChild("child-1", { state: "completed", lastTs: createdAt + 800 });
-      eventStore.emit({ kind: "REPLY", level: "info", childId: "child-1", payload: { tokens: 12 } });
+      eventStore.emit({
+        kind: "REPLY",
+        level: "info",
+        childId: "child-1",
+        payload: { tokens: 12, elapsed_ms: 45 },
+      });
       stigmergy.mark("node-alpha", "progress", 2);
       btStatusRegistry.record("tree-demo", "node-root", "success", createdAt + 900);
       supervisorAgent.snapshot = {
@@ -195,11 +202,19 @@ describe("monitor/dashboard streams", () => {
       const latestSnapshot = JSON.parse(afterBroadcast[afterBroadcast.length - 1]) as DashboardSnapshot;
       expect(latestSnapshot.children[0].state).to.equal("completed");
       expect(latestSnapshot.heatmap.tokens[0]?.value ?? 0).to.be.greaterThan(0);
+      expect(latestSnapshot.heatmap.latency[0]?.value ?? 0).to.be.greaterThan(0);
+      expect(latestSnapshot.runtimeCosts.totalTokens).to.be.greaterThan(0);
+      expect(latestSnapshot.runtimeCosts.totalLatencyMs).to.be.greaterThan(0);
       expect(latestSnapshot.scheduler.backlog).to.equal(1);
       expect(latestSnapshot.behaviorTrees[0]?.nodes[0]?.status).to.equal("success");
       expect(latestSnapshot.pheromoneBounds?.normalisation_ceiling ?? 0).to.be.greaterThan(0);
       expect(latestSnapshot.heatmap.boundsTooltip).to.be.a("string");
       expect(latestSnapshot.stigmergy.rows.find((row) => row.label === "Max intensity")?.value).to.not.equal("n/a");
+      expect(latestSnapshot.timeline.events).to.be.an("array");
+      expect(latestSnapshot.timeline.events.some((event) => event.kind === "REPLY")).to.equal(true);
+      expect(latestSnapshot.timeline.filters.kinds).to.include("REPLY");
+      expect(latestSnapshot.consensus.recent).to.be.an("array");
+      expect(latestSnapshot.thoughtGraph).to.be.an("array");
     } finally {
       await router.close();
     }

@@ -7,7 +7,11 @@ import type {
   BlackboardEvent,
   BlackboardEventKind,
 } from "../coord/blackboard.js";
+import type { ToolRoutingContext, ToolRouterDecisionRecord } from "../tools/toolRouter.js";
 import type { NormalisedGraph } from "../graph/types.js";
+
+/** Maximum number of tool router decisions preserved in memory. */
+const TOOL_ROUTER_HISTORY_LIMIT = 200;
 
 /** Supported resource kinds exposed through the registry. */
 export type ResourceKind =
@@ -20,7 +24,8 @@ export type ResourceKind =
   | "validation_input"
   | "validation_output"
   | "validation_events"
-  | "validation_logs";
+  | "validation_logs"
+  | "tool_router_decisions";
 
 /** Options accepted when instantiating the resource registry. */
 export interface ResourceRegistryOptions {
@@ -147,7 +152,8 @@ export interface ResourceReadResult extends Record<string, unknown> {
     | { runId: string; events: ResourceRunEvent[]; jsonl: string }
     | { childId: string; logs: ResourceChildLogEntry[] }
     | { namespace: string; entries: BlackboardEntrySnapshot[] }
-    | ValidationResourcePayload;
+    | ValidationResourcePayload
+    | ResourceToolRouterPayload;
 }
 
 /** Internal representation tracked for validation artefacts. */
@@ -181,6 +187,61 @@ export interface ValidationResourcePayload {
   data: unknown;
   metadata?: Record<string, unknown>;
 }
+
+/** Snapshot describing a decision emitted by the contextual tool router. */
+export interface ResourceToolRouterDecision {
+  seq: number;
+  ts: number;
+  tool: string;
+  score: number;
+  reason: string;
+  candidates: Array<{
+    tool: string;
+    score: number;
+    reliability: number;
+    rationale: string;
+  }>;
+  context: ToolRoutingContext;
+  requestId: string | null;
+  traceId: string | null;
+  runId: string | null;
+  jobId: string | null;
+  childId: string | null;
+  elapsedMs: number | null;
+}
+
+/** Payload returned when inspecting router decisions. */
+export interface ResourceToolRouterPayload {
+  decisions: ResourceToolRouterDecision[];
+  latestSeq: number;
+  aggregates: {
+    decisionCount: number;
+    successRate: number | null;
+    medianLatencyMs: number | null;
+    estimatedCostMs: number | null;
+    domains: string[];
+  };
+}
+
+/** Internal ring buffer tracking router decisions. */
+interface ToolRouterHistory {
+  decisions: ResourceToolRouterDecision[];
+  lastSeq: number;
+  emitter: EventEmitter;
+  aggregates: ToolRouterAggregates;
+}
+
+/** Aggregated statistics derived from router decisions and outcomes. */
+interface ToolRouterAggregates {
+  decisionCount: number;
+  domains: Set<string>;
+  successes: number;
+  failures: number;
+  latencies: number[];
+}
+
+/** Maximum number of latency samples preserved for tool router aggregates. */
+const TOOL_ROUTER_LATENCY_LIMIT = 100;
 
 /** Options accepted when registering a validation artefact. */
 export interface ValidationArtifactInput {
@@ -290,7 +351,7 @@ export interface ResourceWatchBlackboardFilters {
 export interface ResourceWatchResult {
   uri: string;
   kind: ResourceKind;
-  events: Array<ResourceRunEvent | ResourceChildLogEntry | ResourceBlackboardEvent>;
+  events: Array<ResourceRunEvent | ResourceChildLogEntry | ResourceBlackboardEvent | ResourceToolRouterDecision>;
   nextSeq: number;
   /** Optional filters applied when collecting the page. */
   filters?: {
@@ -402,14 +463,14 @@ interface BlackboardNamespaceHistory {
 /** Internal context passed when creating an async watch stream. */
 interface WatchStreamContext {
   uri: string;
-  kind: "run_events" | "child_logs" | "blackboard_namespace";
+  kind: "run_events" | "child_logs" | "blackboard_namespace" | "tool_router_decisions";
   emitter: EventEmitter;
   fromSeq: number;
   limit: number;
   signal: AbortSignal | null | undefined;
   filters?: ResourceWatchResult["filters"];
   slice: (fromSeq: number, limit: number) => {
-    events: Array<ResourceRunEvent | ResourceChildLogEntry | ResourceBlackboardEvent>;
+    events: Array<ResourceRunEvent | ResourceChildLogEntry | ResourceBlackboardEvent | ResourceToolRouterDecision>;
     nextSeq: number;
   };
 }
@@ -1220,6 +1281,68 @@ function cloneBlackboardFilterDescriptor(
   return Object.keys(snapshot).length > 0 ? snapshot : undefined;
 }
 
+/** Normalises heterogeneous metadata fields into lowercase domain labels. */
+function extractRouterDomains(context: ToolRoutingContext): string[] {
+  const domains = new Set<string>();
+  const append = (value: unknown) => {
+    if (typeof value !== "string") {
+      return;
+    }
+    const trimmed = value.trim().toLowerCase();
+    if (trimmed.length > 0) {
+      domains.add(trimmed);
+    }
+  };
+
+  if (context.category) {
+    append(context.category);
+  }
+  if (context.metadata) {
+    const metadata = context.metadata as Record<string, unknown>;
+    if (metadata.category !== undefined) {
+      append(metadata.category);
+    }
+    if (Array.isArray(metadata.categories)) {
+      for (const value of metadata.categories) {
+        append(value);
+      }
+    }
+    if (metadata.domain !== undefined) {
+      append(metadata.domain);
+    }
+    if (Array.isArray(metadata.domains)) {
+      for (const value of metadata.domains) {
+        append(value);
+      }
+    }
+  }
+  return Array.from(domains);
+}
+
+/** Computes the integer median of the provided samples. */
+function computeMedian(values: number[]): number | null {
+  if (!values.length) {
+    return null;
+  }
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  if (sorted.length % 2 === 1) {
+    return sorted[mid]!;
+  }
+  const lower = sorted[mid - 1]!;
+  const upper = sorted[mid]!;
+  return Math.round((lower + upper) / 2);
+}
+
+/** Computes the rounded arithmetic mean of the provided samples. */
+function computeAverage(values: number[]): number | null {
+  if (!values.length) {
+    return null;
+  }
+  const sum = values.reduce((acc, value) => acc + value, 0);
+  return Math.round(sum / values.length);
+}
+
 /** Maintains deterministic MCP resource metadata and snapshots. */
 export class ResourceRegistry {
   private readonly graphHistories = new Map<string, GraphHistory>();
@@ -1233,6 +1356,19 @@ export class ResourceRegistry {
   private readonly blackboardHistories = new Map<string, BlackboardNamespaceHistory>();
 
   private readonly validationArtifacts = new Map<string, ValidationArtifactRecord>();
+
+  private readonly toolRouterHistory: ToolRouterHistory = {
+    decisions: [],
+    lastSeq: 0,
+    emitter: new EventEmitter(),
+    aggregates: {
+      decisionCount: 0,
+      domains: new Set<string>(),
+      successes: 0,
+      failures: 0,
+      latencies: [],
+    },
+  };
 
   private readonly runHistoryLimit: number;
 
@@ -1404,6 +1540,55 @@ export class ResourceRegistry {
       history.events.splice(0, history.events.length - this.runHistoryLimit);
     }
     history.emitter.emit("event", payload);
+  }
+
+  /** Records a decision emitted by the contextual tool router. */
+  recordToolRouterDecision(record: ToolRouterDecisionRecord): void {
+    const history = this.toolRouterHistory;
+    const seq = history.lastSeq + 1;
+    const entry: ResourceToolRouterDecision = {
+      seq,
+      ts: record.decision.decidedAt ?? Date.now(),
+      tool: record.decision.tool,
+      score: record.decision.score,
+      reason: record.decision.reason,
+      candidates: record.decision.candidates.map((candidate) => clone(candidate)),
+      context: clone(record.context),
+      requestId: record.requestId ?? null,
+      traceId: record.traceId ?? null,
+      runId: record.runId ?? null,
+      jobId: record.jobId ?? null,
+      childId: record.childId ?? null,
+      elapsedMs: record.elapsedMs ?? null,
+    };
+    history.decisions.push(entry);
+    if (history.decisions.length > TOOL_ROUTER_HISTORY_LIMIT) {
+      history.decisions.splice(0, history.decisions.length - TOOL_ROUTER_HISTORY_LIMIT);
+    }
+    history.lastSeq = seq;
+    const aggregates = history.aggregates;
+    aggregates.decisionCount += 1;
+    for (const domain of extractRouterDomains(record.context)) {
+      aggregates.domains.add(domain);
+    }
+    history.emitter.emit("event", entry);
+  }
+
+  /** Records an outcome emitted by the contextual tool router. */
+  recordToolRouterOutcome(outcome: { tool: string; success: boolean; latencyMs?: number | null }): void {
+    const aggregates = this.toolRouterHistory.aggregates;
+    if (outcome.success) {
+      aggregates.successes += 1;
+    } else {
+      aggregates.failures += 1;
+    }
+    if (Number.isFinite(outcome.latencyMs)) {
+      const latency = Math.max(0, Math.round(outcome.latencyMs as number));
+      aggregates.latencies.push(latency);
+      if (aggregates.latencies.length > TOOL_ROUTER_LATENCY_LIMIT) {
+        aggregates.latencies.splice(0, aggregates.latencies.length - TOOL_ROUTER_LATENCY_LIMIT);
+      }
+    }
   }
 
   /** Records a log entry produced by a child runtime. */
@@ -1614,6 +1799,26 @@ export class ResourceRegistry {
       entries.push({ uri, kind: artifact.kind, metadata });
     }
 
+    if (this.toolRouterHistory.decisions.length > 0) {
+      const aggregates = this.toolRouterHistory.aggregates;
+      const outcomeCount = aggregates.successes + aggregates.failures;
+      const successRate = outcomeCount > 0 ? aggregates.successes / outcomeCount : null;
+      const medianLatency = computeMedian(aggregates.latencies);
+      const averageLatency = computeAverage(aggregates.latencies);
+      entries.push({
+        uri: "sc://tool-router/decisions",
+        kind: "tool_router_decisions",
+        metadata: {
+          decision_count: this.toolRouterHistory.decisions.length,
+          latest_seq: this.toolRouterHistory.lastSeq,
+          domains: aggregates.domains.size > 0 ? Array.from(aggregates.domains).sort() : [],
+          success_rate: successRate !== null ? Math.round(successRate * 1000) / 1000 : null,
+          median_latency_ms: medianLatency,
+          estimated_cost_ms: averageLatency,
+        },
+      });
+    }
+
     const filtered = prefix ? entries.filter((entry) => entry.uri.startsWith(prefix)) : entries;
     return filtered.sort((a, b) => a.uri.localeCompare(b.uri));
   }
@@ -1743,6 +1948,29 @@ export class ResourceRegistry {
         };
         return { uri, kind: parsed.kind, payload };
       }
+      case "tool_router_decisions": {
+        const decisions = this.toolRouterHistory.decisions.map((entry) => clone(entry));
+        const aggregates = this.toolRouterHistory.aggregates;
+        const outcomeCount = aggregates.successes + aggregates.failures;
+        const successRate = outcomeCount > 0 ? aggregates.successes / outcomeCount : null;
+        const medianLatency = computeMedian(aggregates.latencies);
+        const averageLatency = computeAverage(aggregates.latencies);
+        return {
+          uri,
+          kind: "tool_router_decisions",
+          payload: {
+            decisions,
+            latestSeq: this.toolRouterHistory.lastSeq,
+            aggregates: {
+              decisionCount: aggregates.decisionCount,
+              successRate: successRate !== null ? Math.round(successRate * 1000) / 1000 : null,
+              medianLatencyMs: medianLatency,
+              estimatedCostMs: averageLatency,
+              domains: aggregates.domains.size > 0 ? Array.from(aggregates.domains).sort() : [],
+            },
+          },
+        };
+      }
       default:
         throw new ResourceNotFoundError(uri);
     }
@@ -1817,6 +2045,10 @@ export class ResourceRegistry {
         }
         return result;
       }
+      case "tool_router_decisions": {
+        const page = this.sliceToolRouterHistory(this.toolRouterHistory, fromSeq, limit);
+        return { uri, kind: "tool_router_decisions", events: page.events, nextSeq: page.nextSeq };
+      }
       default:
         throw new ResourceWatchUnsupportedError(uri);
     }
@@ -1883,6 +2115,18 @@ export class ResourceRegistry {
                 }
               : undefined,
           slice: (cursor, pageLimit) => this.sliceBlackboardHistory(history, cursor, pageLimit, filter),
+        });
+      }
+      case "tool_router_decisions": {
+        const history = this.toolRouterHistory;
+        return this.createWatchStream({
+          uri,
+          kind: "tool_router_decisions",
+          emitter: history.emitter,
+          fromSeq,
+          limit,
+          signal: options.signal ?? null,
+          slice: (cursor, pageLimit) => this.sliceToolRouterHistory(history, cursor, pageLimit),
         });
       }
       default:
@@ -1970,6 +2214,32 @@ export class ResourceRegistry {
         if (events.length >= limit) {
           break;
         }
+      }
+    }
+    let nextSeq: number;
+    if (events.length > 0) {
+      nextSeq = Math.max(events[events.length - 1]!.seq, fromSeq);
+    } else if (processedAny) {
+      nextSeq = Math.max(lastProcessedSeq, fromSeq, history.lastSeq);
+    } else {
+      nextSeq = Math.max(fromSeq, history.lastSeq);
+    }
+    return { events, nextSeq };
+  }
+
+  private sliceToolRouterHistory(history: ToolRouterHistory, fromSeq: number, limit: number) {
+    const sorted = history.decisions
+      .filter((entry) => entry.seq > fromSeq)
+      .sort((a, b) => a.seq - b.seq);
+    const events: ResourceToolRouterDecision[] = [];
+    let lastProcessedSeq = fromSeq;
+    let processedAny = false;
+    for (const entry of sorted) {
+      processedAny = true;
+      lastProcessedSeq = entry.seq;
+      events.push(clone(entry));
+      if (events.length >= limit) {
+        break;
       }
     }
     let nextSeq: number;
@@ -2261,6 +2531,7 @@ export class ResourceRegistry {
     | { kind: "snapshot"; graphId: string; txId: string }
     | { kind: "run_events"; runId: string }
     | { kind: "child_logs"; childId: string }
+    | { kind: "tool_router_decisions" }
     | { kind: "blackboard_namespace"; namespace: string }
     | {
         kind: ValidationResourceKind;
@@ -2308,6 +2579,9 @@ export class ResourceRegistry {
         throw new ResourceNotFoundError(uri);
       }
       return { kind: "child_logs", childId };
+    }
+    if (body === "tool-router/decisions") {
+      return { kind: "tool_router_decisions" };
     }
     if (body.startsWith("blackboard/")) {
       const namespace = body.slice("blackboard/".length);

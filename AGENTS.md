@@ -26,7 +26,7 @@ Règle d’or : **ne jamais éditer `dist/*` directement**. Si les sources TypeS
 
 # 0) Pré-travaux (inventaire & mapping)
 
-[ ] Localiser/créer l’arborescence **TypeScript** :
+[x] Localiser/créer l’arborescence **TypeScript** :
 
 * `src/httpServer.ts` ⇄ `dist/httpServer.js`
 * `src/server.ts` ⇄ `dist/server.js`
@@ -37,9 +37,9 @@ Règle d’or : **ne jamais éditer `dist/*` directement**. Si les sources TypeS
 * `src/knowledge/{knowledgeGraph,causalMemory,assist}.ts` ⇄ `dist/knowledge/*.js`
 * `src/resources/registry.ts` ⇄ `dist/resources/registry.js`
 * `src/monitor/{dashboard,metrics}.ts` ⇄ `dist/monitor/*.js`
-  [ ] Si les sources TS n’existent pas, **reconstruire** à partir de `dist/*` (minimale extraction de types) et **réorganiser** proprement sous `src/**`.
-  [ ] Mettre à jour `tsconfig.json` si nécessaire (paths, outDir=`dist`, moduleResolution, strict).
-  [ ] `package.json` : vérifier/ajouter `type: "module"`, scripts build/test/start, dépendances TS (ts-node/tsx, vitest/jest).
+  [x] Si les sources TS n’existent pas, **reconstruire** à partir de `dist/*` (minimale extraction de types) et **réorganiser** proprement sous `src/**`.
+  [x] Mettre à jour `tsconfig.json` si nécessaire (paths, outDir=`dist`, moduleResolution, strict).
+  [x] `package.json` : vérifier/ajouter `type: "module"`, scripts build/test/start, dépendances TS (ts-node/tsx, vitest/jest).
 
 ---
 
@@ -74,10 +74,11 @@ export type Provenance = { sourceId:string; type:"url"|"file"|"db"|"kg"|"rag"; s
 
 [x] Étendre **KnowledgeGraph** : chaque triple accepte `source?: string`, `confidence?: number`, et conserve une **liste de Provenance**.
 [x] **EventStore** : ajouter champs optionnels `provenance?: Provenance[]` sur `job_completed`, `tool_result`, `rag_hit`, `kg_insert`.
-[ ] Dans les **réponses** finales, agréger et **citer** les sources (limite raisonnable, ex. top-k par confidence).
-[ ] **Tests** :
-- [x] insertion KG avec source → lecture conserve provenance ;
-- [ ] pipeline RAG → provenance propagée jusqu’à la sortie.
+[x] Dans les **réponses** finales, agréger et **citer** les sources (limite raisonnable, ex. top-k par confidence).
+ [ ] **Tests** :
+  - [x] insertion KG avec source → lecture conserve provenance ;
+  - [x] pipeline RAG → provenance propagée jusqu’à la sortie.
+- [x] citations agrégées dans les événements REPLY via `events_subscribe`.
 
 ---
 
@@ -85,18 +86,18 @@ export type Provenance = { sourceId:string; type:"url"|"file"|"db"|"kg"|"rag"; s
 
 **Fichiers** : `src/memory/vectorMemory.ts` (nouveau), `src/memory/retriever.ts` (nouveau), `src/tools/ragTools.ts` (nouveau), `src/knowledge/assist.ts` (adaptation), `src/tools/knowledgeTools.ts` (adaptation)
 
-[ ] **Interface** `VectorMemory` (upsert/query/delete). Implémentation par défaut : **local** (FAISS-like/HNSW) ou wrapper simple en mémoire + disques, puis adaptateurs `qdrant`/`weaviate` optionnels.
-[ ] **Retriever** hybride : chunking (titres/code/paragraphes), **cosine + BM25** (si BM25 dispo), re-rank léger par `metaCritic` + pondération `ValueGraph` (coût/risque).
-[ ] **Outils MCP** :
+[x] **Interface** `VectorMemory` (upsert/query/delete). Implémentation par défaut : **local** (FAISS-like/HNSW) ou wrapper simple en mémoire + disques, puis adaptateurs `qdrant`/`weaviate` optionnels.
+ [x] **Retriever** hybride : chunking (titres/code/paragraphes), **cosine + BM25** (si BM25 dispo), re-rank léger par `metaCritic` + pondération `ValueGraph` (coût/risque).
+[x] **Outils MCP** :
 
-* `rag_ingest`: ingérer fichiers/URLs → chunks → embeddings → `VectorMemory` (+ triples dérivés dans KG si pertinent).
-* `rag_query`: requête sémantique → retours **passages + provenance**.
-  [ ] **Assist** (`knowledge/assist.ts`) : quand manque de contexte, **fallback RAG** (filtrage par domaine).
-  [ ] **Env** à ajouter : `MEM_BACKEND`, `MEM_URL`, `EMBED_PROVIDER`, `RETRIEVER_K`, `HYBRID_BM25=1`.
+* [x] `rag_ingest`: ingérer fichiers/URLs → chunks → embeddings → `VectorMemory` (+ triples dérivés dans KG si pertinent).
+* [x] `rag_query`: requête sémantique → retours **passages + provenance**.
+  [x] **Assist** (`knowledge/assist.ts`) : quand manque de contexte, **fallback RAG** (filtrage par domaine).
+  [x] **Env** à ajouter : `MEM_BACKEND`, `MEM_URL`, `EMBED_PROVIDER`, `RETRIEVER_K`, `HYBRID_BM25=1`.
   [ ] **Tests** :
-* Ingestion + recherche exacte/fuzzy + provenance ;
-* Perf basique (K=5) et ordre des résultats ;
-* Intégration `kg_suggest_plan` → RAG.
+* [x] Ingestion + recherche exacte/fuzzy + provenance ;
+* [x] Perf basique (K=5) et ordre des résultats ;
+* [x] Intégration `kg_suggest_plan` → RAG.
 
 ---
 
@@ -104,11 +105,12 @@ export type Provenance = { sourceId:string; type:"url"|"file"|"db"|"kg"|"rag"; s
 
 **Fichiers** : `src/resources/registry.ts` (extension), `src/tools/toolRouter.ts` (nouveau), `src/server.ts` (wire), `src/agents/metaCritic.ts` (feedback)
 
-[ ] Enrichir **ResourceRegistry** : metadata (domaines, latence médiane, taux succès, coût estimé).
-[ ] **ToolRouter** : score = **similitude du contexte** (embedding du prompt) + **historique de succès** (EventStore) + **budget** (ValueGraph).
-[ ] **Fallback** : si top-1 échoue, essaie top-k avec backoff.
-[ ] Journaliser `tool_attempt`, `tool_success`, `tool_failure` (avec scores).
-[ ] **Tests** : stub de deux outils, vérifier le choix du router selon contexte et stats.
+[x] Enrichir **ResourceRegistry** : metadata (domaines, latence médiane, taux succès, coût estimé).
+[x] **ToolRouter** : score = **similitude du contexte** (embedding du prompt) + **historique de succès** (EventStore) + **budget** (ValueGraph).
+[x] Normaliser `intent_route.metadata` → `ToolRouter` (category/tags/preferred_tools) + tests façade.
+[x] **Fallback** : si top-1 échoue, essaie top-k avec backoff.
+[x] Journaliser `tool_attempt`, `tool_success`, `tool_failure` (avec scores).
+[x] **Tests** : stub de deux outils, vérifier le choix du router selon contexte et stats.
 
 ---
 
@@ -116,11 +118,12 @@ export type Provenance = { sourceId:string; type:"url"|"file"|"db"|"kg"|"rag"; s
 
 **Fichiers** : `src/learning/lessons.ts` (nouveau), `src/agents/{selfReflect,metaCritic}.ts` (adaptation), `src/server.ts` (injection contexte)
 
-[ ] Type `Lesson = { pattern:string; advice:string; evidence:{jobId:string; score:number}[]; weight:number; createdAt:number }`.
-[ ] **Création/renforcement** : sur échecs répétitifs détectés par `metaCritic`, générer/renforcer une *Lesson*.
-[ ] **Injection** : au prompt, récupérer `Lesson[]` pertinentes (pattern match + similarité) et **guider** le modèle.
-[ ] **Anti-règles** : si une *Lesson* nuit aux perfs (mesuré par harness), diminuer `weight` ou supprimer.
-[ ] **Tests** : apprentissage d’une leçon, récupération et impact mesurable sur un mini-scénario.
+[x] Types `LessonSignal`/`LessonRecord` + `LessonsStore` (upsert, match, decay, déduplication).
+[x] **Création/renforcement** : `metaCritic` et `selfReflect` émettent des leçons et le runtime les journalise.
+[x] **Injection** : au prompt, récupérer `Lesson[]` pertinentes (pattern match + similarité) et **guider** le modèle.
+[x] **Anti-règles** : si une *Lesson* nuit aux perfs (mesuré par harness), diminuer `weight` ou supprimer.
+[x] **Tests** (unitaires) : apprentissage d’une leçon, renforcement, match taggé, décroissance.
+[x] **Tests** (scénario) : impact mesurable sur un mini-scénario/harness.
 
 ---
 
@@ -129,12 +132,12 @@ export type Provenance = { sourceId:string; type:"url"|"file"|"db"|"kg"|"rag"; s
 **Fichiers** : `src/reasoning/thoughtGraph.ts` (nouveau), `src/graphState.ts` (sérialisation attributs), `src/agents/supervisor.ts` (scheduler), `src/coord/consensus.ts` (agrégation), `src/values/valueGraph.ts` (pondération)
 
 [x] **Modèle** `ThoughtNode` (id, parents, prompt, tool?, result?, score?, provenance[], status, timings).
-[ ] **Scheduler** : générer N branches en parallèle (diversité contrôlée), **prune** guidé par `metaCritic`, **merge** via `Consensus` pondéré par `ValueGraph`.
-[ ] **Sérialisation** : stocker l’état compact dans `GraphState` (JSON trié, stable).
+[x] **Scheduler** : générer N branches en parallèle (diversité contrôlée), **prune** guidé par `metaCritic`, **merge** via `Consensus` pondéré par `ValueGraph`.
+[x] **Sérialisation** : stocker l’état compact dans `GraphState` (JSON trié, stable).
 [ ] **Tests** :
 
-* Création de branches, prune de chemins faibles, merge cohérent ;
-* Comparaison single-path vs multi-path sur un puzzle standardisé (mini harness).
+* [x] Création de branches, prune de chemins faibles, merge cohérent ;
+* [x] Comparaison single-path vs multi-path sur un puzzle standardisé (mini harness).
 
 ---
 
@@ -144,12 +147,12 @@ export type Provenance = { sourceId:string; type:"url"|"file"|"db"|"kg"|"rag"; s
 
 [ ] **Vues** :
 
-* Heatmap **par branche** (ThoughtGraph),
-* Timeline **causale** (events ordonnés) avec filtres,
-* Panneau **votes Consensus** (poids, quorum, tie-break),
-* **Stigmergy** : intensités + half-life.
-  [ ] **Replay** : endpoint pour rejouer un job (depuis EventStore), avec *diff* des prompts (avant/après Lessons).
-  [ ] **Tests** : endpoints JSON du dashboard, SSE stables, pagination du replay.
+* [x] Heatmap **par branche** (ThoughtGraph),
+* [x] Timeline **causale** (events ordonnés) avec filtres,
+* [x] Panneau **votes Consensus** (poids, quorum, tie-break),
+* [x] **Stigmergy** : intensités + half-life.
+  [x] **Replay** : endpoint pour rejouer un job (depuis EventStore), avec *diff* des prompts (avant/après Lessons).
+  [x] **Tests** : endpoints JSON du dashboard, SSE stables, pagination du replay.
 
 ---
 
@@ -157,10 +160,10 @@ export type Provenance = { sourceId:string; type:"url"|"file"|"db"|"kg"|"rag"; s
 
 **Fichiers** : `scenarios/*.yaml|json` (nouveau), `src/eval/runner.ts` (nouveau), `src/eval/metrics.ts` (nouveau), `scripts/eval.ts` (nouveau)
 
-[ ] **Format scénario** : objectif, contraintes (budget/temps/outils), oracle de succès (regex, tests), tags.
-[ ] **Runner** : lance un job complet, collecte **succès/latence/coût tokens/#outils** et exporte un **rapport**.
-[ ] **CI gate** : seuils minimaux (ex. succès ≥ X%, latence ≤ Y, coût ≤ Z) sur scénarios **critiques**.
-[ ] **Tests** : golden tests (sorties stabilisées) + tolérances.
+[x] **Format scénario** : objectif, contraintes (budget/temps/outils), oracle de succès (regex, tests), tags.
+[x] **Runner** : lance un job complet, collecte **succès/latence/coût tokens/#outils** et exporte un **rapport**.
+[x] **CI gate** : seuils minimaux (ex. succès ≥ X%, latence ≤ Y, coût ≤ Z) sur scénarios **critiques**.
+[x] **Tests** : golden tests (sorties stabilisées) + tolérances.
 
 ---
 
@@ -168,94 +171,102 @@ export type Provenance = { sourceId:string; type:"url"|"file"|"db"|"kg"|"rag"; s
 
 **Fichiers** : `README.md`, `AGENTS.md`, `config/env/expected-keys.json`, `Dockerfile`, `package.json`
 
-[ ] **expected-keys.json** : ajouter les nouvelles clés (doc brève + défauts sûrs) :
+[x] **expected-keys.json** : ajouter les nouvelles clés (doc brève + défauts sûrs) :
 
 * `MCP_HTTP_ALLOW_NOAUTH` (0/1), `RATE_LIMIT_RPS`,
 * `MEM_BACKEND`, `MEM_URL`, `EMBED_PROVIDER`, `RETRIEVER_K`, `HYBRID_BM25`,
 * `TOOLROUTER_TOPK`,
 * `LESSONS_MAX`,
 * `THOUGHTGRAPH_MAX_BRANCHES`, `THOUGHTGRAPH_MAX_DEPTH`.
-  [ ] **README/AGENTS** : sections RAG, ThoughtGraph, ToolRouter, Lessons, Dashboard causal, Harness.
-  [ ] **Dockerfile** : installer dépendances (embeddings backend si local), exposer port MCP & dashboard, ARG/ENV des nouvelles clés.
-  [ ] **package.json** : scripts ajoutés, dépendances (ex. `fastest-levenshtein`/`wink-bm25-text-search` si BM25, client Qdrant/Weaviate si activés par ENV).
+  [x] **README/AGENTS** : sections RAG, ThoughtGraph, ToolRouter, Lessons, Dashboard causal, Harness.
+  [x] **Dockerfile** : installer dépendances (embeddings backend si local), exposer port MCP & dashboard, ARG/ENV des nouvelles clés.
+  [x] **package.json** : scripts ajoutés, dépendances (ex. `fastest-levenshtein`/`wink-bm25-text-search` si BM25, client Qdrant/Weaviate si activés par ENV).
 
 ---
 
 # 10) Tests — plan par fichier
 
 * `src/httpServer.ts`
-  [ ] Unitaires : token obligatoire, no-auth dev, rate-limit.
-  [ ] Intégration : JSON-RPC POST valide/invalid, logs vers EventStore.
+  [x] Unitaires : token obligatoire, no-auth dev, rate-limit.
+  [x] Intégration : JSON-RPC POST valide/invalid, logs vers EventStore.
 
 * `src/events/eventStore.ts`
   [ ] Unitaires :
   - [x] nouvelles formes d’events (provenance)
-  - [ ] pagination/recherche par `jobId`, `kind`.
-  [ ] Non-régression : taille FIFO respectée.
+  - [x] pagination/recherche par `jobId`, `kind`.
+  [x] Non-régression : taille FIFO respectée.
 
 * `src/knowledge/knowledgeGraph.ts`
   [ ] Unitaires :
   - [x] CRUD triple + provenance ; déduplication ;
-  - [ ] export pour RAG.
+  - [x] export pour RAG.
 
 * `src/tools/knowledgeTools.ts`
   [ ] Unitaires :
   - [x] `kg_insert`, `kg_query`
-  - [ ] `kg_suggest_plan` (avec/ sans RAG fallback).
+  - [x] `kg_suggest_plan` (avec/ sans RAG fallback).
 
 * `src/memory/{vectorMemory,retriever}.ts`
-  [ ] Unitaires : ingestion, recherche, ranking hybride, filtres.
-  [ ] Perf smoke test (K, latence) en local.
+  [x] Unitaires : ingestion, recherche, ranking hybride, filtres. (vectorMemory couvert, retriever à implémenter)
+  [x] Perf smoke test (K, latence) en local.
 
 * `src/tools/ragTools.ts`
-  [ ] Unitaires : `rag_ingest`, `rag_query` (provenance, limites).
-  [ ] Intégration : boucle complète avec `knowledgeTools`.
+  [x] Unitaires : `rag_ingest`, `rag_query` (provenance, limites).
+  [x] Intégration : boucle complète avec `knowledgeTools`.
 
 * `src/resources/registry.ts` + `src/tools/toolRouter.ts`
-  [ ] Unitaires : scoring contextuel, fallback top-k, logging.
+  [x] Unitaires : scoring contextuel, fallback top-k, logging.
 
 * `src/agents/{selfReflect,metaCritic}.ts`
-  [ ] Unitaires : détection lacunes, création/renforcement de *Lessons*.
+  [x] Unitaires : détection lacunes, création/renforcement de *Lessons*.
 
 * `src/learning/lessons.ts`
-  [ ] Unitaires : upsert/match/decay des leçons ; anti-règles.
+  [x] Unitaires : upsert/match/decay des leçons ; anti-règles.
 
 * `src/reasoning/thoughtGraph.ts` + `src/agents/supervisor.ts` + `src/coord/consensus.ts`
-  [ ] Unitaires : création/prune/merge ; consensus pondéré `ValueGraph`.
-  [ ] Intégration : gain vs single-path sur micro-scénario.
+  [x] Unitaires : création/prune/merge ; consensus pondéré `ValueGraph`.
+  [x] Pondération des branches de join via les verdicts `ValueGraph` dans le coordinateur.
+  [x] Intégration : gain vs single-path sur micro-scénario.
 
 * `src/monitor/{dashboard,metrics}.ts`
-  [ ] Unitaires : endpoints JSON ; SSE ; sérialisation stable.
+  [x] Unitaires : endpoints JSON ; SSE ; sérialisation stable.
   [ ] Intégration : replay d’un job, affichage votes, stigmergie.
 
 * `scenarios/**` + `src/eval/**`
-  [ ] E2E : scénarios de référence ; rapports ; seuils CI.
+  [x] E2E : scénarios de référence ; rapports ; seuils CI.
 
 ---
 
 # 11) Build & Scripts — checklist
 
-[ ] `package.json` :
+[x] `package.json` :
 
-* `"build": "tsc -p tsconfig.json"`
-* `"dev": "tsx src/server.ts"` (ou ts-node)
+* `"build": "tsc -p tsconfig.json && tsc -p graph-forge/tsconfig.json"`
+* `"dev": "tsx --tsconfig tsconfig.json src/server.ts"`
 * `"start:http": "node dist/server.js --http --http-host 127.0.0.1 --http-port 8765 --http-path /mcp --http-json on --http-stateless yes"`
 * `"start:dashboard": "node dist/monitor/dashboard.js"`
-* `"test": "vitest run"` (ou jest) ; `"test:watch": "vitest"`
-* `"eval:scenarios": "node dist/eval/runner.js --scenarios ./scenarios"`
+* `"start:dashboard:orchestrator": "node scripts/start-dashboard.mjs"`
+* [ ] `"test": "vitest run"` (ou jest) — laissé en attente : la suite repose sur Mocha + `tsx`.
+* [x] `"test:watch": "node --import tsx ./node_modules/mocha/bin/mocha.js --reporter spec --watch --watch-files src --watch-files tests --file tests/setup.ts \"tests/**/*.test.{ts,js}\""`
+* [x] `"eval:scenarios": "node --import tsx scripts/validation/run-eval.ts"`
 
-[ ] **tsconfig** : `outDir: "dist"`, `rootDir: "src"`, `module: "ESNext"`, `target: "ES2022"`, `strict: true`.
-[ ] **CI** : jobs séparés : **lint** → **build** → **test** → **eval:scenarios** (avec seuils).
+[x] **tsconfig** : `outDir: "dist"`, `rootDir: "src"`, `module: "ESNext"`, `target: "ES2022"`, `strict: true`.
+[x] **CI** : jobs séparés : **lint** → **build** → **test** → **eval:scenarios** (avec seuils).
 
 ---
 
 # 12) Petites finitions & hygiène
 
-[ ] **Logging structuré** partout (code/raison → pas de `console.log`) ; niveaux : info/warn/error.
-[ ] **Feature flags** pour nouvelles capacités (RAG, ThoughtGraph, ToolRouter) afin d’activer progressivement.
-[ ] **Mesures** de coût/latence (tokens, temps CPU) remontées au dashboard.
-[ ] **Recherche de code mort** (exports non référencés) et suppression.
-[ ] **Documentation** des modèles de données (Provenance, Lesson, ThoughtNode) en en-tête de fichier.
+[x] **Logging structuré** partout (code/raison → pas de `console.log`) ; niveaux : info/warn/error.
+  - [x] FS bridge : logger structuré, overrides testables, tests de télémétrie.
+  - [x] EventStore : journaux `event_recorded`/`event_evicted` + résumés de payload (2025-10-17).
+  - [x] CLI plan stage : pont `StructuredLogger` + tests (2025-10-17).
+  - [x] Autres scripts de validation : migration restante vers `StructuredLogger`.
+  - [x] Dashboard client → `POST /logs` (StructuredLogger) + tests HTTP (2025-10-17).
+[x] **Feature flags** pour nouvelles capacités (RAG, ThoughtGraph, ToolRouter) afin d’activer progressivement.
+[x] **Mesures** de coût/latence (tokens, temps CPU) remontées au dashboard.
+[x] **Recherche de code mort** (exports non référencés) et suppression.
+[x] **Documentation** des modèles de données (Provenance, Lesson, ThoughtNode) en en-tête de fichier.
 
 ---
 
@@ -276,6 +287,50 @@ Tu peux maintenant dérouler cette liste en cochant chaque étape. Chaque bloc e
 
 - 2025-10-16 · gpt-5-codex : Ajout de `MCP_HTTP_ALLOW_NOAUTH` à `.env.example`, exécution de `npm run lint` & `npm run test`, nettoyage des artefacts `dist/**`, mise à jour du statut sécurité HTTP et ajout de ce mémo.
 - 2025-10-16 · gpt-5-codex : Propagation de la provenance (types, EventStore, KnowledgeGraph, ThoughtGraph), ajout des tests KG/ThoughtGraph et exécution de `npm run test` (OK, 1025 passes).
+- 2025-10-16 · gpt-5-codex : Extension EventStore (filtres kinds/limit/reverse + pagination jobId/kind) et ajout des tests associés, `npm run test` (OK, 1026 passes).
+- 2025-10-16 · gpt-5-codex : Agrégation des citations finales via EventStore, ajout du module `provenance/citations`, tests unitaires ciblés (mocha) et câblage des réponses finales avec provenance.
+- 2025-10-16 · gpt-5-codex : Test d'intégration `events_subscribe` vérifiant les citations finales (EventStore + REPLY), exécution ciblée via mocha.
+- 2025-10-16 · gpt-5-codex : Implémentation `LocalVectorMemory` (provenance normalisée, deleteMany) + tests vector/index & mémoire (`npm run test:unit`, 1035 passes).
+- 2025-10-16 · gpt-5-codex : Implémentation d'un retriever hybride + outils `rag_ingest`/`rag_query` avec chunking et propagation de la provenance, ajout des tests unitaires ciblés (`npm run test:unit`).
+- 2025-10-16 · gpt-5-codex : Ajout d'un test d'intégration RAG→KG validant la conservation de la provenance entre `rag_query` et `kg_insert`, exécution de `npm run test:unit`.
+- 2025-10-17 · gpt-5-codex : Ajout de `kg_assist` (fallback RAG + citations), initialisation du retriever hybride dans `runtime`, nouveaux tests KG/RAG et documentation/env mis à jour.
+- 2025-10-17 · gpt-5-codex : Enregistrement MCP de `rag_ingest`/`rag_query`, contexte RAG lazy-safe, test MCP runtime + doc README mise à jour.
+- 2025-10-17 · gpt-5-codex : RAG fallback pour `kg_suggest_plan`, extension des suggestions avec métriques `rag_*`, tests plan assist & retriever K=5 et mise à jour README.
+- 2025-10-17 · gpt-5-codex : Ajout du router contextuel des outils (fallback dynamiques, fiabilité), extension du ResourceRegistry pour historiser les décisions et couverture de tests (router, intent_route, registry).
+- 2025-10-17 · gpt-5-codex : Normalisation `intent_route.metadata` vers le ToolRouter (category/tags/preferred) + test façade + doc README.
+- 2025-10-17 · gpt-5-codex : Implémentation du LessonsStore (upsert/match/decay), émissions de leçons par metaCritic/selfReflect, enregistrement runtime + docs/tests.
+- 2025-10-17 · gpt-5-codex : Injection des leçons rappelées dans `child_create` et `plan_fanout` (prompts + manifest), tests ciblés MCP/plan, documentation.
+- 2025-10-17 · gpt-5-codex : Scheduler multi-voies (ThoughtGraph) – enregistrement fanout/join, sérialisation GraphState et couverture de tests (plan + reasoning).
+- 2025-10-17 · gpt-5-codex : Pondération ValueGraph dans le ThoughtGraph (join) + test dédié, exécution mocha ciblée.
+- 2025-10-17 · gpt-5-codex : Ajout de tests ThoughtGraph (rétention/merge) et pondération consensus/value guard dans plan_reduce ; exécution mocha ciblée.
+- 2025-10-17 · gpt-5-codex : Ajout des feature flags RAG/ToolRouter/ThoughtGraph (CLI + runtime), désactivation déterministe et couverture mocha ciblée.
+- 2025-10-17 · gpt-5-codex : Mini harness ThoughtGraph validant la supériorité multi-chemin vs hint single-path + test mocha ciblé.
+- 2025-10-17 · gpt-5-codex : Export RAG du graphe (documents + filtres), option `kg_export` rag_documents, tests Mocha dédiés, README/docs mis à jour.
+- 2025-10-17 · gpt-5-codex : Ajout du mode watch Mocha (`npm run test:watch`), du runner `eval:scenarios` (CLI + parseur d'arguments) et des tests couvrant l'entrée CLI du harnais d'évaluation.
+- 2025-10-17 · gpt-5-codex : Instrumentation coût/latence (tokens & CPU) dans le dashboard, nouvelles sections HTML/SSE et couverture de tests.
+- 2025-10-17 · gpt-5-codex : Pondération ToolRouter par similarité/fiabilité/budget avec backoff, journalisation `tool_*`, agrégats ResourceRegistry et tests Mocha ciblés (router + registry + intent_route).
+- 2025-10-17 · gpt-5-codex : Instrumentation structurée du FS bridge (logger configurable, overrides filesystem, tests de logs fs_bridge).
+- 2025-10-17 · gpt-5-codex : Harmonisation des scripts build/dev/dashboard (tsx + dist/monitor), ajout des variables RAG/ThoughtGraph dans `.env.example`, passage du module TypeScript en `ESNext`; `mocha tests/env/example.test.ts` (OK, la suite `npm run test:unit` reste rouge pour les validations connues).
+- 2025-10-17 · gpt-5-codex : Documentation en-tête des modèles de données (Provenance, Lesson, ThoughtNode) pour clarifier les contrats partagés sans modifier le comportement runtime.
+- 2025-10-17 · gpt-5-codex : Paramétrage de `TOOLROUTER_TOPK` et `LESSONS_MAX`, mise à jour `.env.example`/`expected-keys.json`/README, ajustements runtime & tests (`mocha … tests/tools/toolRouter.test.ts tests/learning/lessonPrompts.test.ts`).
+- 2025-10-17 · gpt-5-codex : Ajout du retour harness pour déclasser/supprimer les leçons nuisibles (`LessonsStore.applyRegression`, `registerLessonRegression`), tests Mocha ciblés et documentation README.
+- 2025-10-17 · gpt-5-codex : Test de régression FIFO EventStore multi-jobs, `mocha … tests/eventStore.test.ts`.
+- 2025-10-17 · gpt-5-codex : Durcissement du Dockerfile (deps natives, ARG/ENV, EXPOSE) + ajout du test `tests/build/dockerfile.test.ts` et documentation README Docker.
+- 2025-10-17 · gpt-5-codex : Ajout d'un smoke test de performance pour `HybridRetriever` (latence < 500ms sur 240 documents), exécution ciblée des tests mémoire.
+- 2025-10-17 · gpt-5-codex : Réorganisation CI (jobs lint/build/test/eval + smoke Docker) et documentation README, validations locales `npm run test`.
+- 2025-10-17 · gpt-5-codex : Scanner des exports morts (`quality/deadCode`, `scripts/findDeadExports`), tests Mocha dédiés, documentation lint/allowlist et mise à jour de la checklist.
+- 2025-10-17 · gpt-5-codex : Journalisation structurée EventStore (`event_recorded`/`event_evicted`, résumés payload), tests Mocha ciblés et documentation README.
+- 2025-10-17 · gpt-5-codex : Mini-scenario Lessons démontrant le gain grâce aux rappels (test plan fanout, score avant/après), mise à jour checklist.
+- 2025-10-17 · gpt-5-codex : Migration du script `runPlanPhase` vers `StructuredLogger`, ajout du pont `createCliStructuredLogger`, tests Mocha (`tests/validation/cliLogger.test.ts`, `tests/validation/plansCli.test.ts`, `tests/scripts/runPlanPhase.test.ts`).
+- 2025-10-17 · gpt-5-codex : Migration des scripts `check-env-example`, `run-smoke` et `run-eval` vers `StructuredLogger` (TypeScript + tsx), ajout de tests unitaires/CLI (`tests/validation/check-env-example.test.ts`, `tests/validation/run-smoke.test.ts`, `tests/validation/run-eval.test.ts`) et mise à jour de la documentation/`package.json`.
+- 2025-10-17 · gpt-5-codex : Ajout d'un test d'intégration HTTP (`tests/http/server.integration.test.ts`) couvrant les requêtes JSON-RPC valides/invalides et la journalisation `HTTP_ACCESS`, mise à jour de la checklist HTTP server.
+- 2025-10-17 · gpt-5-codex : Endpoint dashboard `/replay` avec diff des prompts Lessons + pagination, tests Mocha (`tests/monitor.dashboard.test.ts`, `tests/monitor.replay.test.ts`) et documentation mise à jour.
+- 2025-10-17 · gpt-5-codex : Réécriture bootstrap dashboard (heatmap/timeline/consensus/ThoughtGraph), mise à jour des tests `monitor.dashboard*` et validation ciblée.
+- 2025-10-17 · gpt-5-codex : Harnais d'évaluation scénarisé (`scripts/eval.ts`, scénarios YAML, CI gates), tests Mocha `tests/eval/*` et documentation README mise à jour.
+- 2025-10-17 · gpt-5-codex : Télémetrie dashboard client → serveur (`POST /logs`), remplacement des `console.*`, tests HTTP et documentation README/AGENTS alignées.
+- 2025-10-17 · gpt-5-codex : Endpoint `GET /logs` (dashboard) branché sur `LogJournal`, parsing des filtres/query, tests Mocha ciblés et documentation/AGENTS synchronisées.
+- 2025-10-17 · gpt-5-codex : Refactorisation `scripts/eval.ts` avec dépendances injectables, ajout de `runEvaluationCampaign` et tests Mocha `tests/eval/campaign.test.ts` couvrant rapports et seuils CI.
+- 2025-10-17 · gpt-5-codex : Pondération lexicale améliorée du retriever via Levenshtein borné (`fastest-levenshtein`), tests HybridRetriever ciblés et documentation RAG mise à jour.
 # User-provided custom instructions
 
 

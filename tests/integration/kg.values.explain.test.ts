@@ -26,7 +26,7 @@ import { StructuredLogger } from "../../src/logger.js";
  * rich explanations that downstream validation campaigns can persist as artefacts.
  */
 describe("knowledge + values tool integration", () => {
-  it("validates payloads and returns detailed plan explanations", () => {
+  it("validates payloads and returns detailed plan explanations", async () => {
     let now = 100;
     const knowledgeGraph = new KnowledgeGraph({ now: () => now });
     const valueGraph = new ValueGraph({ now: () => now });
@@ -54,7 +54,7 @@ describe("knowledge + values tool integration", () => {
     );
     expect(queryResult.triples.map((triple) => triple.object)).to.deep.equal(["design", "ship"]);
 
-    const suggestion = handleKgSuggestPlan(
+    const suggestion = await handleKgSuggestPlan(
       knowledgeContext,
       KgSuggestPlanInputSchema.parse({ goal: "project", context: { preferred_sources: ["playbook"] } }),
     );

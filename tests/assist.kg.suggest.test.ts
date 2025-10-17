@@ -1,5 +1,8 @@
 import { describe, it } from "mocha";
 import { expect } from "chai";
+import { mkdtemp, rm } from "node:fs/promises";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 
 import { KnowledgeGraph } from "../src/knowledge/knowledgeGraph.js";
 import { suggestPlanFragments } from "../src/knowledge/assist.js";
@@ -9,6 +12,8 @@ import {
   type KnowledgeToolContext,
 } from "../src/tools/knowledgeTools.js";
 import { StructuredLogger } from "../src/logger.js";
+import { LocalVectorMemory } from "../src/memory/vectorMemory.js";
+import { HybridRetriever } from "../src/memory/retriever.js";
 
 function seedLaunchPlan(graph: KnowledgeGraph): void {
   graph.insert({
@@ -40,8 +45,13 @@ function seedLaunchPlan(graph: KnowledgeGraph): void {
   graph.insert({ subject: "task:review", predicate: "duration", object: "3" });
 }
 
+/** Creates a logger that records every entry for assertions without printing output. */
+function createCapturingLogger(entries: Array<{ message: string; payload?: unknown }>): StructuredLogger {
+  return new StructuredLogger({ onEntry: (entry) => entries.push({ message: entry.message, payload: entry.payload }) });
+}
+
 describe("knowledge graph plan suggestions", () => {
-  it("builds fragments prioritising preferred sources while preserving dependencies", () => {
+  it("builds fragments prioritising preferred sources while preserving dependencies", async () => {
     const knowledgeGraph = new KnowledgeGraph({ now: () => 0 });
     seedLaunchPlan(knowledgeGraph);
 
@@ -60,6 +70,7 @@ describe("knowledge graph plan suggestions", () => {
     ]);
     expect(suggestion.preferred_sources_applied).to.deep.equal(["playbook"]);
     expect(suggestion.preferred_sources_ignored).to.deep.equal([]);
+    expect(suggestion.coverage.rag_hits).to.equal(0);
     expect(suggestion.rationale[0]).to.match(/Plan 'launch'/);
 
     const preferredFragment = suggestion.fragments[0];
@@ -85,7 +96,7 @@ describe("knowledge graph plan suggestions", () => {
     expect(reviewNode?.attributes).to.include({ kg_seed: true, kg_group: "sources complémentaires" });
   });
 
-  it("reports excluded tasks and missing dependencies", () => {
+  it("reports excluded tasks and missing dependencies", async () => {
     const knowledgeGraph = new KnowledgeGraph({ now: () => 0 });
     seedLaunchPlan(knowledgeGraph);
 
@@ -107,9 +118,9 @@ describe("knowledge graph plan suggestions", () => {
     expect(fragment.nodes.map((node) => node.id)).to.deep.equal(["implement", "review"]);
   });
 
-  it("invokes the tool handler and logs the summary", () => {
+  it("invokes the tool handler and logs the summary", async () => {
     const entries: Array<{ message: string; payload?: unknown }> = [];
-    const logger = new StructuredLogger({ onEntry: (entry) => entries.push({ message: entry.message, payload: entry.payload }) });
+    const logger = createCapturingLogger(entries);
     const knowledgeGraph = new KnowledgeGraph({ now: () => 0 });
     seedLaunchPlan(knowledgeGraph);
     const context: KnowledgeToolContext = { knowledgeGraph, logger };
@@ -119,9 +130,62 @@ describe("knowledge graph plan suggestions", () => {
       context: { preferred_sources: ["playbook"], max_fragments: 2 },
     });
 
-    const result = handleKgSuggestPlan(context, parsedInput);
+    const result = await handleKgSuggestPlan(context, parsedInput);
     expect(result.goal).to.equal("launch");
     expect(result.fragments).to.have.length(2);
-    expect(entries.some((entry) => entry.message === "kg_suggest_plan")).to.equal(true);
+    const logEntry = entries.find((entry) => entry.message === "kg_suggest_plan");
+    expect(logEntry).to.not.equal(undefined);
+    expect((logEntry?.payload as Record<string, unknown>)?.rag_hits).to.equal(0);
+  });
+
+  it("falls back to RAG passages when the graph lacks coverage", async () => {
+    const tmpDir = await mkdtemp(join(tmpdir(), "plan-rag-"));
+    try {
+      const knowledgeGraph = new KnowledgeGraph({ now: () => 0 });
+      const ragMemory = await LocalVectorMemory.create({ directory: tmpDir, now: (() => {
+        let current = 0;
+        return () => (current += 1);
+      })() });
+      await ragMemory.upsert([
+        {
+          id: "incident-plan",
+          text: "Incident response plan détaillé : identifier, contenir, éradiquer puis récupérer. Inclure communication et revue.",
+          tags: ["security", "incident"],
+          provenance: [{ sourceId: "https://kb.example.org/ir", type: "url" }],
+        },
+      ]);
+
+      const retriever = new HybridRetriever(ragMemory, new StructuredLogger());
+      const entries: Array<{ message: string; payload?: unknown }> = [];
+      const logger = createCapturingLogger(entries);
+
+      const context: KnowledgeToolContext = {
+        knowledgeGraph,
+        logger,
+        rag: {
+          getRetriever: async () => retriever,
+          defaultDomainTags: ["security"],
+          minScore: 0.1,
+        },
+      };
+
+      const result = await handleKgSuggestPlan(
+        context,
+        KgSuggestPlanInputSchema.parse({ goal: "incident response" }),
+      );
+
+      expect(result.fragments).to.deep.equal([]);
+      expect(result.coverage.rag_hits).to.equal(1);
+      expect(result.rag_evidence).to.have.length(1);
+      expect(result.rag_evidence?.[0].matched_terms).to.include("incident");
+      expect(result.rag_domain_tags).to.deep.equal(["security"]);
+      expect(result.rag_min_score).to.equal(0.1);
+      expect(result.rag_query).to.be.a("string").and.to.contain("Plan recherché");
+
+      const logEntry = entries.find((entry) => entry.message === "kg_suggest_plan");
+      expect((logEntry?.payload as Record<string, unknown>)?.rag_hits).to.equal(1);
+    } finally {
+      await rm(tmpDir, { recursive: true, force: true });
+    }
   });
 });

@@ -71,6 +71,9 @@ describe("mcp introspection helpers", () => {
       enableBlackboard: true,
       enableKnowledge: true,
       enableValueGuard: true,
+      enableRag: true,
+      enableToolRouter: true,
+      enableThoughtGraph: true,
     };
     configureRuntimeFeatures(toggles);
 
@@ -134,6 +137,9 @@ describe("mcp introspection helpers", () => {
       "coord-blackboard",
       "memory-knowledge",
       "values-guard",
+      "memory-rag",
+      "plan-thought-graph",
+      "tools-router",
     ]);
     expect(info.features).to.not.include("resources");
     expect(info.flags).to.deep.equal(toggles);
@@ -178,6 +184,9 @@ describe("mcp introspection helpers", () => {
     expect(namespaces).to.not.include("coord.consensus");
     expect(namespaces).to.not.include("agents.supervisor");
     expect(namespaces).to.not.include("memory.causal");
+    expect(namespaces).to.not.include("memory.rag");
+    expect(namespaces).to.not.include("plan.thought-graph");
+    expect(namespaces).to.not.include("tools.router");
 
     const toolSummaries = new Map(capabilities.tools.map((entry) => [entry.name, entry.inputSchemaSummary]));
     expect(toolSummaries.get("graph_mutate")).to.be.a("string").and.to.have.length.greaterThan(0);
@@ -255,5 +264,33 @@ describe("mcp introspection helpers", () => {
       "child_set_limits",
       "child_status",
     ]);
+  });
+
+  it("désactive la façade intent_route lorsque le router contextuel est coupé", async () => {
+    configureRuntimeFeatures({ ...originalFeatures, enableToolRouter: false });
+
+    const intentRouteCallback = getRegisteredToolCallback("intent_route");
+    const disabledResponse = await intentRouteCallback({
+      natural_language_goal: "ouvrir un fichier",
+    });
+    expect(disabledResponse).to.have.property("isError", true);
+    const disabledPayload = JSON.parse(disabledResponse.content?.[0]?.text ?? "{}");
+    expect(disabledPayload).to.include({ error: "TOOL_ROUTER_DISABLED", tool: "intent_route" });
+
+    const disabledCapabilities = getMcpCapabilities();
+    const disabledTools = disabledCapabilities.tools.map((entry) => entry.name);
+    expect(disabledTools).to.not.include("intent_route");
+
+    const toggles: FeatureToggles = { ...originalFeatures, enableToolRouter: true };
+    configureRuntimeFeatures(toggles);
+
+    const enabledResponse = await intentRouteCallback({
+      natural_language_goal: "ouvrir un fichier",
+    });
+    expect(enabledResponse).to.not.have.property("isError", true);
+
+    const enabledCapabilities = getMcpCapabilities();
+    const enabledTools = enabledCapabilities.tools.map((entry) => entry.name);
+    expect(enabledTools).to.include("intent_route");
   });
 });

@@ -23,7 +23,7 @@ configuration éventuelle de `~/.codex/config.toml`.
 ## Build
 
 - **Prerequis** : Node.js ≥ 20 et `npm ci` pour respecter le lockfile existant.
-- **Pipeline officiel** : `npm ci && npm run build` construit `dist/` et `graph-forge/`.
+- **Pipeline officiel** : `npm ci && npm run build` construit `dist/` et `graph-forge/` en invoquant explicitement `tsc -p tsconfig.json` pour éviter toute surprise liée au cwd courant.
 - **Types Node** : `@types/node` reste dans `dependencies` afin que les conteneurs
   cloud récupèrent automatiquement les définitions lors d'un `npm ci` minimal.
 - **Fallback portable** : `npm run build:portable` détecte l'absence de `tsc` dans
@@ -38,17 +38,64 @@ configuration éventuelle de `~/.codex/config.toml`.
   `tsx`, ainsi que les fichiers `tsconfig.json` et `package-lock.json`. Pratique
   pour confirmer qu'un conteneur CI respecte les prérequis Node ≥ 20.
 
+## Développement local
+
+- `npm run dev` démarre l'orchestrateur via `tsx --tsconfig tsconfig.json src/server.ts`. Le loader Typescript natif garantit que les résolutions `NodeNext` restent respectées tout en profitant du rechargement rapide proposé par `tsx`.
+
 ## Tests
 
 - `npm run test:unit` exécute l'intégralité de la suite avec un garde-fou
   réseau qui bloque toute sortie non-loopback. C'est la commande par défaut en
   CI et pour les revues locales rapides.
+- `npm run test:watch` bascule Mocha en mode watch avec `tsx` pour recharger
+  automatiquement les tests lors des modifications sous `src/` et `tests/`.
 - `npm run test:e2e:http` active automatiquement `MCP_TEST_ALLOW_LOOPBACK=yes`
   puis relance Mocha avec les scénarios HTTP de bout en bout. Utilisez cette
   commande lorsque vous souhaitez valider les chemins réseau : elle laisse la
   garde activée pour l'Internet public, mais autorise `127.0.0.1`/`::1`.
 - Les suites peuvent recevoir des flags Mocha supplémentaires via
   `npm run test:e2e:http -- --grep "http"` (transmis tel quel au runner).
+
+## Évaluation scénarisée
+
+- `npm run eval:scenarios` exécute le nouveau harnais `scripts/eval.ts`. Les
+  artefacts (entrées/sorties, logs JSONL, rapport Markdown) sont stockés par
+  défaut sous `evaluation_runs/<run-id>/report/`.
+- Options CLI principales :
+  - `--scenario <fichier>` : cible un ou plusieurs scénarios (`scenarios/*.yaml`
+    par défaut).
+  - `--tag <tag>` : filtre les scénarios par tag (ex. `critical`, `latency`).
+  - `--gate-success-rate`, `--gate-latency-p95`, `--gate-max-tokens` : définissent
+    les seuils CI appliqués aux scénarios marqués `critical`.
+  - `--feature key=value` : applique des overrides runtime (fusionnés avec les
+    overrides définis dans le fichier de scénario).
+  - `--run-id`, `--run-root`, `--trace-seed` : contrôlent respectivement les
+    identifiants, le répertoire de sortie et la reproductibilité des traces.
+- Format YAML minimal d'un scénario :
+
+  ```yaml
+  id: introspection-smoke
+  objective: Vérifier l'introspection MCP.
+  tags: [smoke, critical]
+  constraints:
+    maxDurationMs: 4000
+    maxToolCalls: 3
+    requiredTools: [mcp_info, mcp_capabilities]
+  steps:
+    - id: info
+      tool: mcp_info
+      expect:
+        match: mcp-self-fork-orchestrator
+    - id: resources
+      tool: resources_list
+  oracles:
+    - type: regex
+      pattern: '"protocol"'
+  ```
+
+  Chaque scénario décrit les étapes MCP, les contraintes (latence, tokens,
+  outils requis) ainsi que des oracles (regex ou script JS) pour valider le
+  transcript final.
 
 
 ## Environnement Cloud
@@ -87,6 +134,26 @@ configuration éventuelle de `~/.codex/config.toml`.
     `10MB`).
   - `MCP_*_ROOT` : `MCP_RUNS_ROOT` et `MCP_CHILDREN_ROOT` redirigent les
     répertoires d'exécution vers des volumes persistants.
+  - `MEM_BACKEND` / `MEM_URL` : sélectionnent l'implémentation mémoire pour la
+    RAG (`local` par défaut). Les backends non pris en charge retombent sur le
+    mode local avec un avertissement.
+  - `EMBED_PROVIDER` : documente le fournisseur d'embeddings utilisé pour la
+    RAG et la persistance locale.
+  - `RETRIEVER_K` / `HYBRID_BM25` : ajustent respectivement le nombre de
+    passages sur lesquels le retriever hybride travaille et le poids attribué au
+    BM25/lexical (`HYBRID_BM25=1` renforce le score lexical).
+  - `TOOLROUTER_TOPK` : borne le nombre de candidats que le router contextuel
+    expose lors d'une décision. La valeur est plafonnée à 10 pour maintenir des
+    journaux compacts.
+  - `THOUGHTGRAPH_MAX_BRANCHES` / `THOUGHTGRAPH_MAX_DEPTH` : bornent le nombre
+    de branches actives conservées par le scheduler multi-voies et la profondeur
+    maximale des fan-outs enregistrés. Les valeurs par défaut (`6` branches,
+    profondeur `4`) garantissent un suivi détaillé sans saturer le tableau de
+    bord.
+
+  - `LESSONS_MAX` : limite le nombre de leçons institutionnelles injectées dans
+    les prompts générés (défaut : 3, plafond : 6). Augmentez cette valeur pour
+    surfacer des rappels plus riches lors de scénarios spécialisés.
   - `MCP_QUALITY_*` : active le garde-fou qualité (`MCP_QUALITY_GATE`,
     `MCP_QUALITY_THRESHOLD`).
   - `MCP_TOOLS_MODE` et `MCP_TOOL_PACK` sélectionnent respectivement le mode
@@ -101,12 +168,52 @@ configuration éventuelle de `~/.codex/config.toml`.
   puis génère un dossier `runs/validation_<date>/` avec les requêtes JSONL,
   réponses, événements, journaux et rapports synthétiques.
 
+## Déploiement Docker
+
+- **Image multi-étage** : le `Dockerfile` fournit un builder Node 20 Alpine qui
+  installe `python3`, `make` et `g++` afin de compiler les dépendances natives
+  utilisées par la mémoire vectorielle locale. Le runtime bascule ensuite sur
+  `gcr.io/distroless/nodejs20-debian12` pour livrer un conteneur minimal sans
+  shell ni gestionnaire de paquets.
+- **Ports exposés** : `EXPOSE 8765 4100` documente respectivement le transport
+  MCP HTTP et le tableau de bord. Les opérateurs peuvent ainsi publier les deux
+  endpoints via `docker run -P` sans avoir à relire le code.
+- **Arguments de build** : toutes les variables critiques (token HTTP, limites
+  RAG, flags ThoughtGraph, top-k du router) sont exposées en `ARG` puis
+  reflétées en `ENV`. Exemple :
+
+  ```bash
+  docker build \
+    --build-arg MCP_HTTP_TOKEN=tok_prod_XXXX \
+    --build-arg MCP_HTTP_PORT=4000 \
+    --build-arg MCP_DASHBOARD_PORT=4100 \
+    -t mcp-orchestrator:latest .
+  ```
+
+- **Overrides runtime** : lors du `docker run`, redéfinissez les variables via
+  `-e` pour adapter l'environnement sans reconstruire l'image :
+
+  ```bash
+  docker run --rm -p 8765:8765 -p 4100:4100 \
+    -e MCP_HTTP_TOKEN=tok_local_dev \
+    -e MEM_BACKEND=local \
+    -e RETRIEVER_K=8 \
+    mcp-orchestrator:latest
+  ```
+
+- **Sécurité par défaut** : l'image garde `MCP_HTTP_ALLOW_NOAUTH=0` par défaut
+  et ne définit pas de token. Fournissez `MCP_HTTP_TOKEN` avant d'exposer le
+  service ; sans valeur, le serveur renverra systématiquement un `401` pour les
+  requêtes JSON-RPC comme rappel de sécurité.
+
 ## Transports disponibles
 
 - **STDIO (par défaut)** — `npm run start` ou `node dist/server.js`. C'est le
   mode attendu par Codex CLI.
 - **HTTP optionnel** — `npm run start:http` active le transport streamable HTTP
   (`--no-stdio`). À réserver aux scénarios cloud avec reverse proxy MCP.
+- **Dashboard autonome** — `npm run start:dashboard` publie `dist/monitor/dashboard.js` sans démarrer l'orchestrateur complet, pratique pour rejouer un flux SSE enregistré.
+- **Dashboard + orchestrateur** — `npm run start:dashboard:orchestrator` relance `scripts/start-dashboard.mjs` afin d'exposer simultanément le serveur HTTP et l'interface temps réel.
 
 ## Sécurité HTTP
 
@@ -140,6 +247,20 @@ curl -s -H "Authorization: Bearer ${MCP_HTTP_TOKEN}" \
   http://127.0.0.1:8765/mcp
 ```
 
+## Journalisation structurée de l'orchestrateur
+
+- **EventStore traçable** — chaque appel à `EventStore.emit` produit désormais
+  une entrée JSON (`event_recorded`) via `StructuredLogger`. La charge utile
+  inclut la séquence, le job, l'enfant concerné et un aperçu du `payload`
+  lorsque celui-ci reste raisonnable (< 4 Kio). Au-delà, un résumé
+  `payload_truncated` ou `payload_serialization_failed` est enregistré pour
+  éviter d'inonder les journaux.
+- **Évictions auditables** — lorsque l'historique borné est dépassé (limite
+  globale ou par job), un log `event_evicted` précise le scope touché, la
+  séquence supprimée et le nombre d'entrées restantes (`remaining`). Cela
+  facilite la corrélation avec les limites configurées (`maxHistory`) et les
+  campagnes d'audit SSE ou dashboard.
+
 ## Façades haut niveau
 
 Les façades MCP exposées en mode `basic` encapsulent les primitives internes en
@@ -149,6 +270,30 @@ timeouts définis dans `src/rpc/timeouts.ts`. Chaque appel renvoie un triplet
 composants sous-jacents. Les exemples suivants utilisent directement la forme
 JSON-RPC `tools/call` — adaptez la commande (`curl`, CLI MCP, SDK) selon votre
 transport.
+
+## Auto-amélioration (Lessons)
+
+- Le méta-critique (`MetaCritic.review`) et la réflexion (`selfReflect.reflect`)
+  produisent désormais des signaux structurés `lessons` décrivant les lacunes
+  détectées (tests manquants, TODO laissés dans le code, plans trop courts…).
+- Ces signaux sont persistés par `LessonsStore` (`src/learning/lessons.ts`) qui
+  applique une déduplication, un renforcement automatique et une décroissance
+  exponentielle configurable.
+- Les campagnes d'évaluation (`scripts/validation/run-eval.mjs`) peuvent
+  notifier le runtime via `registerLessonRegression` pour signaler les leçons
+  qui dégradent les performances. Le `LessonsStore.applyRegression` applique
+  alors une pénalité proportionnelle à la sévérité et supprime l'entrée si les
+  régressions s'accumulent.
+- Les événements `child_meta_review` et `child_reflection` exposent la liste
+  des leçons agrégées, ce qui permet aux tableaux de bord ou aux agents de
+  récupérer rapidement les habitudes à renforcer ou les anti-patterns à bannir.
+- Les journaux cognitifs (`StructuredLogger.logCognitive`) publient un événement
+  `phase: "learn"` à chaque création/renforcement pour tracer l'historique des
+  apprentissages orchestrateur ↔ enfants.
+- Lors de la création de clones ad-hoc (`child_create`) comme des fan-outs
+  planificateur, le runtime rappelle automatiquement les leçons associées aux
+  tags/domaines de la requête. Elles sont injectées en tête du prompt (message
+  système) et archivées dans `manifest.lessons_context` pour audit.
 
 ### Façades métier (mode `basic`)
 
@@ -389,6 +534,9 @@ transport.
 - **intent_route** — Mappe une intention en langage naturel vers la façade la
   plus pertinente ou suggère un ensemble réduit de candidats.
 
+  Active le flag `--enable-tool-router` pour exposer la façade et enregistrer les
+  décisions du routeur contextuel.
+
   ```json
   {
     "jsonrpc": "2.0",
@@ -402,6 +550,18 @@ transport.
     }
   }
   ```
+
+  Les orchestrateurs peuvent fournir un bloc facultatif `metadata` pour guider le
+  routeur contextuel. Les champs suivants sont pris en charge et sont normalisés
+  avant d'être transmis au `ToolRouter` :
+
+  - `category`, `categories[]` ou `router_context.category` → indice principal.
+  - `tags[]`, `domains[]`, `goal_keywords[]`, `keywords` (liste ou chaîne
+    séparée par des virgules) → enrichissent les `tags` transmis au routeur.
+  - `preferred_tools[]` ou `router_context.preferred_tools[]` → liste ordonnée
+    des façades à favoriser.
+  - `router_context.tags[]` et `router_context.keywords[]` → hints de plus
+    haute priorité, conservés tels quels (après trim / lowercase).
 
 ## Introspection MCP & négociation
 
@@ -1122,6 +1282,27 @@ résultats `plan_fanout`/`plan_reduce`.
 Les résultats incluent les révisions, timestamps et ordinal pour permettre des
 replays déterministes.
 
+```json
+{
+  "tool": "kg_export",
+  "input": {
+    "format": "rag_documents",
+    "min_confidence": 0.6,
+    "include_predicates": ["includes", "label"],
+    "max_triples_per_subject": 8
+  }
+}
+```
+
+La variante `format: "rag_documents"` regroupe les triples par sujet pour
+produire des passages directement compatibles avec `rag_ingest`. Chaque entrée
+comprend un résumé textuel, des tags dérivés des sujets/predicates/sources, des
+métadonnées (`triple_count`, `average_confidence`, `predicates`, `sources`) et
+la provenance agrégée. Les filtres optionnels permettent d'exclure les triples
+peu confiants (`min_confidence`), de restreindre le vocabulaire couvert
+(`include_predicates`) et de borner la taille des documents
+(`max_triples_per_subject`).
+
 ### Suggérer un plan depuis le graphe de connaissances
 
 Avec `--enable-knowledge` et `--enable-assist` actifs, tu peux demander au
@@ -1149,13 +1330,110 @@ La réponse fournit :
 * `rationale` – phrases prêtes à l'emploi résumant la couverture (`Plan '...' :
   X/Y tâches`), les exclusions et les dépendances inconnues.
 * `coverage` – compteurs détaillés (`suggested_tasks`, `excluded_tasks`,
-  `missing_dependencies`, `unknown_dependencies`).
+  `missing_dependencies`, `unknown_dependencies`, `rag_hits`).
 * `sources` – répartition par playbook, ainsi que
   `preferred_sources_applied` / `preferred_sources_ignored` pour savoir si les
   préférences ont matché.
+* `rag_evidence` – extraits RAG optionnels lorsque le graphe ne couvre pas
+  entièrement le plan, accompagnés de `rag_domain_tags`, `rag_min_score` et de
+  la requête `rag_query` utilisée pour documenter la recherche.
 
 Enchaîne avec `values_explain` pour vérifier les contraintes puis `graph_patch`
 afin d'intégrer le fragment proposé au graphe principal.
+
+### Répondre via le graphe de connaissances (fallback RAG)
+
+```json
+{
+  "tool": "kg_assist",
+  "input": {
+    "query": "Quels risques lors du déploiement ?",
+    "limit": 3,
+    "domain_tags": ["security"],
+    "min_score": 0.1
+  }
+}
+```
+
+La réponse structure :
+
+* `answer` – synthèse textuelle combinant faits du graphe et passages RAG.
+* `citations` – provenance agrégée (`type: "kg"` et/ou `"rag"`).
+* `knowledge_evidence` / `rag_evidence` – faits retenus (scores, tags,
+  provenance) pour audit.
+* `coverage` – suivi du nombre de termes de la requête couverts et de la part
+  RAG.
+* `rationale` – justification compacte (nombre de faits mobilisés, domaines
+  filtrés, couverture des tokens).
+
+`domain_tags` permet de restreindre la recherche RAG à un domaine donné (tags
+normalisés en minuscules). `RETRIEVER_K` contrôle le top-k prélevé dans la
+mémoire vectorielle, `HYBRID_BM25=1` augmente le poids du score lexical.
+
+### Ingérer et requêter la mémoire RAG
+
+Active `--enable-knowledge` (et renseigne `MEM_BACKEND=local` si tu veux
+persister les vecteurs) pour exposer les outils `rag_ingest` et `rag_query`.
+
+```json
+{
+  "tool": "rag_ingest",
+  "input": {
+    "documents": [
+      {
+        "id": "handbook",
+        "text": "Playbook incident réponse...",
+        "tags": ["secops", "runbook"],
+        "provenance": [{ "sourceId": "file://ir.md", "type": "file" }]
+      }
+    ],
+    "chunk_size": 512,
+    "chunk_overlap": 64
+  }
+}
+```
+
+```json
+{
+  "tool": "rag_query",
+  "input": {
+    "query": "containment guidance",
+    "limit": 4,
+    "min_score": 0.1,
+    "required_tags": ["secops"],
+    "include_metadata": true
+  }
+}
+```
+
+`rag_ingest` découpe et stocke les documents (provenance normalisée), tandis que
+`rag_query` renvoie les passages re-rankés (`score`, `vector_score`,
+`lexical_score`, `matched_tags`). Le runtime applique les limites déclarées dans
+`RETRIEVER_K` et `HYBRID_BM25` pour initialiser le retriever hybride.
+
+Le score lexical accorde un crédit partiel aux variantes proches (ex.
+`analyse`/`analyze`) via une distance de Levenshtein bornée pour stabiliser les
+différences d’orthographe sans compromettre la latence.
+
+Active `--enable-knowledge` **et** `--enable-rag` pour exposer `rag_ingest` /
+`rag_query` et autoriser les fallbacks du knowledge assistant.
+
+### Suivi multi-voies (ThoughtGraph)
+
+- `plan_fanout` enregistre chaque clone dans le **ThoughtGraph** (nœud racine
+  `run:<id>`, branches `child_*`). Les prompts et métadonnées (lessons, tags,
+  runtime) sont stockés dans `graphState` avec un ordre stable.
+- `plan_join` actualise les branches avec le statut terminal (`completed`,
+  `errored`, `timeout`) et applique un score dérivé du **MetaCritic** pour
+  alimenter le ranking multi-voies. Les branches excédentaires sont marquées
+  `pruned` lorsque la limite `THOUGHTGRAPH_MAX_BRANCHES` est atteinte.
+- Les snapshots peuvent être récupérés via `graphState.getThoughtGraph(jobId)`
+  pour alimenter un tableau de bord ou une analyse post-mortem.
+- Ajustez `THOUGHTGRAPH_MAX_DEPTH` si un plan imbriqué génère trop de niveaux de
+  fan-out.
+
+Active `--enable-thought-graph` pour sérialiser ces branches et alimenter le
+dashboard multi-voies.
 
 ### Mémoire causale
 
@@ -1632,10 +1910,15 @@ Le script `retry-flaky.sh` relance une commande sensible plusieurs fois afin de
 débusquer les instabilités en local sans saturer la CI.
 
 ```bash
-npm run lint   # tsc noEmit sur src/ et graph-forge/
+npm run lint   # tsc --noEmit, imports Node autorisés et exports orphelins
 npm test       # build + mocha (ts-node ESM)
 npm run build  # compilation dist/
 ```
+
+Le linter agrège désormais un scanner d'exports morts : toute fonction,
+constante ou type exporté mais jamais référencé dans le monorepo échoue la
+commande. Les rares API exposées à l'extérieur peuvent être autorisées via
+`config/dead-code-allowlist.json`.
 
 Les nouveaux outils ajoutent systématiquement des tests unitaires (mocks enfant,
 planification, algorithmes de graphes, simulation/optimisation).
@@ -1662,9 +1945,23 @@ Installez les dépendances (`npm ci`) avant l'exécution pour disposer de `tsx`.
 
 ## Intégration continue
 
-Le pipeline GitHub Actions (matrice Node 18/20/22) enchaîne `npm install`,
-`npm run build`, `npm run lint` puis `npm test`. Toute erreur TypeScript, test ou
-contrat JSON-RPC bloque la livraison.
+Le pipeline GitHub Actions suit le même enchaînement que la checklist
+opérationnelle :
+
+1. **Lint** (`npm run lint`) sur Node 20 pour détecter immédiatement les
+   problèmes de types ou d'import interdits.
+2. **Build** (`npm run build`) afin de valider la génération de `dist/` avant
+   tout test.
+3. **Tests** (`npm run test` puis `npm run coverage`) qui produisent un rapport
+   `c8` publié en artefact et exécutent le smoke test `scripts/validation/run-smoke.mjs`.
+4. **Évaluation scénarisée** (`npm run eval:scenarios`) qui rejoue la batterie
+   agentique complète et publie les journaux `runs/validation_*`.
+5. **Smoke Docker** : construction de l'image et vérification de `/healthz` et
+   `/readyz` via un conteneur éphémère.
+
+Chaque job dépend du précédent, ce qui fournit un diagnostic précis dès qu'une
+étape échoue. Les artefacts de couverture et de validation sont conservés pour
+les revues.
 
 ## Annexe — Exemples détaillés par outil
 
@@ -1935,8 +2232,15 @@ Activez/désactivez ces heuristiques via les flags CLI (`--no-reflection`,
   (≥2 plans) puis fusion partielle pilotée par score.
 - **Sandbox** (`sim/sandbox.ts`) : isolement I/O complet, horloge mockée et
   gestion explicite des timeouts/erreurs.
-- **Dashboard** (`monitor/dashboard.ts`) : endpoints `GET /health` et
-  `GET /graph/state`, flux SSE et commandes pause/cancel/prioritise.
+- **Dashboard** (`monitor/dashboard.ts`) : endpoints `GET /health`,
+  `GET /metrics`, `GET /replay` (pagination + diff des prompts avant/après
+  leçons) et `GET /logs` (tail des journaux corrélés : `stream=server|run|child`,
+  filtres `levels=error,warn`, `runId=...`, `messageIncludes=...`, fenêtres
+  temporelles `sinceTs`/`untilTs`). Flux SSE, commandes
+  pause/cancel/prioritise et visualisation des coûts/latences agrégés (tokens &
+  temps CPU) par enfant. Le client forwarde aussi les anomalies (`POST /logs`)
+  vers le `StructuredLogger` serveur pour un suivi homogène des erreurs de
+  parsing ou des déconnexions SSE.
 - **Détecteur de boucles** (`guard/loopDetector.ts`) : branché sur `child_send`,
   il logge les alertes dans `logs/cognitive.jsonl`.
 

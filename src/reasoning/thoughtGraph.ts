@@ -1,7 +1,21 @@
+/**
+ * ## ThoughtGraph data model
+ *
+ * Captures the structure of reasoning branches produced by the orchestrator
+ * (planner fanouts, tool invocations, critic feedback).  The snapshots defined
+ * here are serialised into the EventStore, replay logs, and dashboards, so a
+ * clear specification is essential for long-term compatibility and for
+ * multi-agent safety reviews.
+ */
 import { mergeProvenance, normaliseProvenanceList, type Provenance } from "../types/provenance.js";
 
 /** Accepted runtime states for a reasoning branch. */
-export type ThoughtNodeStatus = "pending" | "running" | "completed" | "errored";
+export type ThoughtNodeStatus =
+  | "pending"
+  | "running"
+  | "completed"
+  | "errored"
+  | "pruned";
 
 /**
  * Snapshot describing a reasoning branch within the orchestrator. The structure

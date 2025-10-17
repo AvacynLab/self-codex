@@ -20,6 +20,7 @@ import {
   orchestratorSupervisor,
   stigmergy,
   btStatusRegistry,
+  logJournal,
   IDEMPOTENCY_TTL_OVERRIDE,
 } from "./orchestrator/runtime.js";
 import { parseOrchestratorRuntimeOptions } from "./serverOptions.js";
@@ -93,6 +94,7 @@ async function main(): Promise<void> {
         supervisorAgent: orchestratorSupervisor,
         logger,
         contractNetWatcherTelemetry,
+        logJournal,
       });
       cleanup.push(handle.close);
     } catch (error) {

@@ -71,6 +71,16 @@ import {
   PromptVariablesSchema,
   renderPromptTemplate,
 } from "../prompts.js";
+import type { LessonsStore } from "../learning/lessons.js";
+import {
+  buildLessonManifestContext,
+  formatLessonsForPromptMessage,
+  recallLessons,
+} from "../learning/lessonPrompts.js";
+import {
+  buildLessonsPromptPayload,
+  normalisePromptMessages,
+} from "../learning/lessonPromptDiff.js";
 import { applyAll, createInlineSubgraphRule, createRerouteAvoidRule, createSplitParallelRule, type RewriteHistoryEntry } from "../graph/rewrite.js";
 import { resolveOperationId } from "./operationIds.js";
 import { flatten } from "../graph/hierarchy.js";
@@ -87,6 +97,7 @@ import {
 } from "../executor/cancel.js";
 import { BehaviorTreeCancellationError } from "../executor/bt/nodes.js";
 import { GraphDescriptorSchema, normaliseGraphDescriptor } from "./graphTools.js";
+import { ThoughtGraphCoordinator, type ThoughtBranchGuardSnapshot } from "../reasoning/thoughtCoordinator.js";
 
 /**
  * Type used when emitting orchestration events. The server injects a concrete
@@ -229,6 +240,10 @@ export interface PlanToolContext {
   planLifecycleFeatureEnabled?: boolean;
   /** Optional idempotency registry replaying cached Behaviour Tree results. */
   idempotency?: IdempotencyRegistry;
+  /** Optional lessons store used to inject institutional guardrails into prompts. */
+  lessonsStore?: LessonsStore;
+  /** Optional coordinator projecting fan-out/join activity onto ThoughtGraph. */
+  thoughtManager?: ThoughtGraphCoordinator;
 }
 
 /**
@@ -381,6 +396,21 @@ function serialiseValueGuardDecision(
     total: decision.total,
     threshold: decision.threshold,
     violations: decision.violations,
+  };
+}
+
+/**
+ * Reduces a value guard decision to the subset of fields required by the
+ * ThoughtGraph coordinator. The lightweight payload keeps join telemetry
+ * compact while still conveying how far the branch was from the threshold.
+ */
+function toThoughtGuardSnapshot(decision: ValueFilterDecision): ThoughtBranchGuardSnapshot {
+  return {
+    allowed: decision.allowed,
+    score: decision.score,
+    total: decision.total,
+    threshold: decision.threshold,
+    violationCount: decision.violations.length,
   };
 }
 
@@ -1442,7 +1472,47 @@ async function spawnChildWithRetry(
     child_index: childIndex,
   };
 
-  const { messages, summary } = renderPromptForChild(template, variables);
+  const lessonStore = context.lessonsStore ?? null;
+  const lessonRecall =
+    lessonStore !== null
+      ? recallLessons(lessonStore, {
+          metadata: plan.metadata,
+          goals: plan.goals ?? [],
+          variables,
+          additionalTags: ["plan", plan.runtime ?? ""],
+        })
+      : { matches: [], tags: [] };
+  const lessonManifest =
+    lessonStore && lessonRecall.matches.length > 0
+      ? buildLessonManifestContext(lessonRecall.matches, Date.now())
+      : null;
+  const lessonMessage =
+    lessonStore && lessonRecall.matches.length > 0
+      ? formatLessonsForPromptMessage(lessonRecall.matches)
+      : null;
+
+  const rendered = renderPromptForChild(template, variables);
+  const promptBeforeLessons = normalisePromptMessages(rendered.messages);
+  let messages = rendered.messages;
+  let summary = rendered.summary;
+  if (lessonMessage) {
+    messages = [{ role: "system", content: lessonMessage }, ...messages];
+    summary = messages
+      .map((message) => `[${message.role}] ${message.content}`)
+      .join("\n");
+  }
+  const promptAfterLessons = normalisePromptMessages(messages);
+  const lessonsPromptPayload =
+    lessonManifest && lessonRecall.matches.length > 0
+      ? buildLessonsPromptPayload({
+          source: "plan_fanout",
+          before: promptBeforeLessons,
+          after: promptAfterLessons,
+          topics: lessonRecall.matches.map((lesson) => lesson.topic),
+          tags: lessonRecall.tags,
+          totalLessons: lessonRecall.matches.length,
+        })
+      : null;
 
   let attempt = 0;
   while (attempt < retryPolicy.max_attempts) {
@@ -1456,13 +1526,18 @@ async function spawnChildWithRetry(
         ...correlationLogFields,
       });
 
+      const manifestExtras = buildFanoutManifestExtras(plan, correlation);
+      if (lessonManifest) {
+        manifestExtras.lessons_context = lessonManifest;
+      }
+
       const created = await context.supervisor.createChild({
         childId,
         command: plan.command,
         args: plan.args,
         env: plan.env,
         metadata: buildFanoutChildMetadata(plan, variables, guardSnapshot, correlation),
-        manifestExtras: buildFanoutManifestExtras(plan, correlation),
+        manifestExtras,
         waitForReady: true,
       });
 
@@ -1475,6 +1550,19 @@ async function spawnChildWithRetry(
         runtimeStatus.lastHeartbeatAt ?? Date.now(),
       );
       context.graphState.patchChild(childId, { state: "ready" });
+
+      if (lessonsPromptPayload) {
+        context.emitEvent({
+          kind: "PROMPT",
+          jobId,
+          childId,
+          payload: {
+            operation: "plan_fanout",
+            lessons_prompt: lessonsPromptPayload,
+          },
+          correlation: eventCorrelation,
+        });
+      }
 
       await context.supervisor.send(childId, {
         type: "prompt",
@@ -1494,6 +1582,21 @@ async function spawnChildWithRetry(
       });
 
       cancellation.throwIfCancelled();
+
+      if (lessonManifest) {
+        context.logger.logCognitive({
+          actor: "lessons",
+          phase: "prompt",
+          childId,
+          content: lessonRecall.matches[0]?.summary ?? "lessons_injected",
+          metadata: {
+            topics: lessonRecall.matches.map((lesson) => lesson.topic),
+            tags: lessonRecall.tags,
+            count: lessonRecall.matches.length,
+            source: "plan_fanout",
+          },
+        });
+      }
 
       if (guardDecision && context.valueGuard) {
         context.valueGuard.registry.set(childId, guardDecision);
@@ -1786,6 +1889,23 @@ export async function handlePlanFanout(
 
     cancellation.throwIfCancelled();
 
+    if (spawned.length > 0) {
+      context.thoughtManager?.recordFanout({
+        jobId,
+        runId,
+        goal: input.goal ?? null,
+        parentChildId,
+        plannerNodeId: nodeId,
+        branches: spawned.map((child) => ({
+          childId: child.childId,
+          name: child.name,
+          prompt: child.promptSummary,
+          runtime: child.runtime,
+        })),
+        startedAt: createdAt,
+      });
+    }
+
     const runDirectory = await ensureDirectory(context.childrenRoot, runId);
     const mappingPath = resolveWithin(runDirectory, "fanout.json");
     const serialisedRejections = rejectedPlans.map((entry) => ({
@@ -1972,6 +2092,10 @@ export async function handlePlanJoin(
     input.children.map((childId) => observeChildForJoin(context, childId, timeoutMs)),
   );
 
+  const primaryChildSnapshot = context.graphState.getChild(input.children[0]);
+  const jobId = providedCorrelation?.jobId ?? primaryChildSnapshot?.jobId ?? null;
+  const runId = providedCorrelation?.runId ?? (jobId ? `join-${jobId}` : "join-orphan");
+
   const successes = observations.filter((obs) => obs.status === "success");
   const failures = observations.filter((obs) => obs.status !== "success");
   const sorted = [...observations].sort((a, b) => {
@@ -2051,7 +2175,7 @@ export async function handlePlanJoin(
       satisfied = false;
   }
 
-  const winningChild = sorted.find((obs) => obs.status === "success")?.childId ?? null;
+  let winningChild = sorted.find((obs) => obs.status === "success")?.childId ?? null;
 
   const consensusPayload = consensusDecision
     ? {
@@ -2091,6 +2215,33 @@ export async function handlePlanJoin(
       runId: correlationHints.runId ?? null,
       opId: correlationHints.opId ?? null,
     });
+  }
+
+  const guardSummaries = new Map<string, ThoughtBranchGuardSnapshot>();
+  if (context.valueGuard) {
+    for (const childId of input.children) {
+      const decision = context.valueGuard.registry.get(childId);
+      if (decision) {
+        guardSummaries.set(childId, toThoughtGuardSnapshot(decision));
+      }
+    }
+  }
+
+  const thoughtOutcome = context.thoughtManager?.recordJoin({
+    jobId,
+    runId,
+    policy: input.join_policy,
+    satisfied,
+    candidateWinner: winningChild,
+    observations: observations.map((obs) => ({
+      childId: obs.childId,
+      status: obs.status,
+      summary: obs.summary,
+      valueGuard: guardSummaries.get(obs.childId) ?? null,
+    })),
+  });
+  if (thoughtOutcome) {
+    winningChild = thoughtOutcome.winner ?? winningChild;
   }
 
   context.emitEvent({

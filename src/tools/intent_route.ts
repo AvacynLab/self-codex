@@ -14,6 +14,14 @@ import type {
   ToolImplementation,
   ToolBudgets,
 } from "../mcp/registry.js";
+import type {
+  ToolRouter,
+  ToolRouterDecision,
+  ToolRouterDecisionRecord,
+  ToolRoutingCandidate,
+  ToolRoutingContext,
+} from "./toolRouter.js";
+import { resolveToolRouterTopKLimit } from "./toolRouter.js";
 import {
   IntentRouteInputSchema,
   IntentRouteOutputSchema,
@@ -43,6 +51,12 @@ export interface IntentRouteToolContext {
   readonly logger: StructuredLogger;
   /** Optional lookup returning the budgets advertised by a façade manifest. */
   readonly resolveBudget?: (tool: string) => ToolBudgets | undefined;
+  /** Optional contextual tool router used to refine fallback candidates. */
+  readonly toolRouter?: ToolRouter;
+  /** Callback recording router decisions for observability dashboards. */
+  readonly recordRouterDecision?: (record: ToolRouterDecisionRecord) => void;
+  /** Feature toggle guard returning `true` when the router is available. */
+  readonly isRouterEnabled?: () => boolean;
 }
 
 /** Canonical name advertised by the façade manifest. */
@@ -270,6 +284,7 @@ function clampScore(confidence: number): number {
 function buildRecommendations(
   evaluations: Array<{ rule: IntentHeuristicRule; matched: boolean }>,
   context: IntentRouteToolContext,
+  routerCandidates?: ToolRoutingCandidate[],
 ): IntentRouteRecommendation[] {
   const recommendations: IntentRouteRecommendation[] = [];
   const matched = evaluations.filter((entry) => entry.matched);
@@ -287,20 +302,39 @@ function buildRecommendations(
     });
   });
 
-  for (const fallback of FALLBACK_CANDIDATES) {
-    if (recommendations.length >= 3) {
-      break;
+  if (routerCandidates && routerCandidates.length > 0) {
+    for (const candidate of routerCandidates) {
+      if (recommendations.length >= 3) {
+        break;
+      }
+      if (recommendations.some((entry) => entry.tool === candidate.tool)) {
+        continue;
+      }
+      recommendations.push({
+        tool: candidate.tool,
+        score: clampScore(candidate.score),
+        rationale: `routeur contextuel : ${candidate.rationale}`,
+        estimated_budget: lookupEstimatedBudget(context, candidate.tool),
+      });
     }
-    if (recommendations.some((entry) => entry.tool === fallback)) {
-      continue;
+  }
+
+  if (recommendations.length < 3) {
+    for (const fallback of FALLBACK_CANDIDATES) {
+      if (recommendations.length >= 3) {
+        break;
+      }
+      if (recommendations.some((entry) => entry.tool === fallback)) {
+        continue;
+      }
+      const scoreOffset = 0.55 - recommendations.length * 0.05;
+      recommendations.push({
+        tool: fallback,
+        score: clampScore(scoreOffset),
+        rationale: FALLBACK_RATIONALES[fallback],
+        estimated_budget: lookupEstimatedBudget(context, fallback),
+      });
     }
-    const scoreOffset = 0.55 - recommendations.length * 0.05;
-    recommendations.push({
-      tool: fallback,
-      score: clampScore(scoreOffset),
-      rationale: FALLBACK_RATIONALES[fallback],
-      estimated_budget: lookupEstimatedBudget(context, fallback),
-    });
   }
 
   if (recommendations.length === 0) {
@@ -314,6 +348,144 @@ function buildRecommendations(
   }
 
   return recommendations.slice(0, 3);
+}
+
+/**
+ * Normalises the routing context forwarded to the contextual tool router. The helper extracts
+ * optional hints from the user-provided metadata (category, tags, preferred tools) and enriches
+ * the context with matched heuristic labels so the router can learn from existing rules.
+ */
+function buildRoutingContext(
+  goal: string,
+  metadata: Record<string, unknown> | undefined,
+  diagnostics: Array<{ label: string; tool: string; matched: boolean }>,
+): ToolRoutingContext {
+  /**
+   * Collects tags emitted by both heuristics and planner metadata. The helper is scoped to the
+   * routing-context builder so we can keep the normalisation rules (trim, lowercase) close to the
+   * logic that consumes them.
+   */
+  const appendTag = (bucket: Set<string>, value: unknown) => {
+    if (typeof value !== "string") {
+      return;
+    }
+    const trimmed = value.trim().toLowerCase();
+    if (trimmed.length > 0) {
+      bucket.add(trimmed);
+    }
+  };
+
+  /** Normalises tool names advertised by planners without forcing lowercase (tool ids are case-sensitive). */
+  const appendPreferredTool = (bucket: Set<string>, value: unknown) => {
+    if (typeof value !== "string") {
+      return;
+    }
+    const trimmed = value.trim();
+    if (trimmed.length > 0) {
+      bucket.add(trimmed);
+    }
+  };
+
+  /** Extracts a lowercase category hint from heterogeneous planner metadata. */
+  const normaliseCategory = (value: unknown): string | undefined => {
+    if (typeof value !== "string") {
+      return undefined;
+    }
+    const trimmed = value.trim();
+    if (trimmed.length === 0) {
+      return undefined;
+    }
+    return trimmed.toLowerCase();
+  };
+
+  const tags = new Set<string>();
+  const preferred = new Set<string>();
+  let category: string | undefined;
+
+  // Preserve the caller metadata reference so it can be forwarded verbatim in structured responses.
+  const metadataRecord = metadata ?? undefined;
+  // Upstream planners can embed a nested `router_context` block. When present, it overrides generic
+  // hints so we treat it as the most precise source of routing directives.
+  const routerContext = metadataRecord && typeof metadataRecord.router_context === "object"
+    ? (metadataRecord.router_context as Record<string, unknown>)
+    : null;
+
+  // Accumulate potential category hints by priority (router_context > metadata.category > fallbacks).
+  const candidateCategories: Array<string | undefined> = [];
+  if (routerContext?.category !== undefined) {
+    candidateCategories.push(normaliseCategory(routerContext.category));
+  }
+  if (metadataRecord?.category !== undefined) {
+    candidateCategories.push(normaliseCategory(metadataRecord.category));
+  }
+  if (Array.isArray(metadataRecord?.categories)) {
+    for (const entry of metadataRecord.categories as unknown[]) {
+      const normalised = normaliseCategory(entry);
+      if (normalised) {
+        candidateCategories.push(normalised);
+        break;
+      }
+    }
+  }
+  if (typeof metadataRecord?.domain === "string") {
+    candidateCategories.push(normaliseCategory(metadataRecord.domain));
+  }
+
+  category = candidateCategories.find((value) => typeof value === "string");
+
+  // Normalises a wide range of metadata shapes (`string`, arrays, comma separated lists) and forwards
+  // the entries to the provided handler.
+  const ingestStringCollection = (
+    values: unknown,
+    handler: (bucket: Set<string>, entry: unknown) => void,
+    bucket: Set<string>,
+  ) => {
+    if (!values) {
+      return;
+    }
+    if (Array.isArray(values)) {
+      for (const entry of values) {
+        handler(bucket, entry);
+      }
+      return;
+    }
+    if (typeof values === "string" && /[,;\n]/.test(values)) {
+      for (const chunk of values.split(/[,;\n]/)) {
+        handler(bucket, chunk);
+      }
+      return;
+    }
+    handler(bucket, values);
+  };
+
+  if (metadataRecord) {
+    ingestStringCollection(metadataRecord.tags, appendTag, tags);
+    ingestStringCollection((metadataRecord as Record<string, unknown>).goal_keywords, appendTag, tags);
+    ingestStringCollection((metadataRecord as Record<string, unknown>).keywords, appendTag, tags);
+    ingestStringCollection(metadataRecord.domains, appendTag, tags);
+    ingestStringCollection(metadataRecord.domain, appendTag, tags);
+    ingestStringCollection((metadataRecord as Record<string, unknown>).preferred_tools, appendPreferredTool, preferred);
+  }
+
+  if (routerContext) {
+    ingestStringCollection(routerContext.tags, appendTag, tags);
+    ingestStringCollection(routerContext.keywords, appendTag, tags);
+    ingestStringCollection(routerContext.domains, appendTag, tags);
+    ingestStringCollection(routerContext.preferred_tools, appendPreferredTool, preferred);
+  }
+
+  // Enrich the context with heuristic labels so the router can learn from legacy routing rules.
+  diagnostics
+    .filter((entry) => entry.matched)
+    .forEach((entry) => appendTag(tags, entry.label));
+
+  return {
+    goal,
+    category,
+    tags: tags.size > 0 ? Array.from(tags) : undefined,
+    preferredTools: preferred.size > 0 ? Array.from(preferred) : undefined,
+    metadata,
+  };
 }
 
 /** Builds a failure response when budget consumption raises an error. */
@@ -336,6 +508,20 @@ function buildBudgetExceededResult(
   };
 }
 
+/** Returns a deterministic error payload when the feature flag disables routing. */
+function buildRouterDisabledResult() {
+  const payload = {
+    error: "TOOL_ROUTER_DISABLED",
+    tool: INTENT_ROUTE_TOOL_NAME,
+    message: "tool router feature disabled",
+  } as const;
+  return {
+    isError: true,
+    content: [{ type: "text", text: JSON.stringify(payload) }],
+    structuredContent: payload,
+  };
+}
+
 /**
  * Creates the asynchronous handler invoked by the MCP server once the façade
  * is registered. The handler takes care of validation, budget consumption,
@@ -352,6 +538,14 @@ export function createIntentRouteHandler(
       input && typeof input === "object" && !Array.isArray(input)
         ? (input as Record<string, unknown>)
         : {};
+
+    if (context.isRouterEnabled && !context.isRouterEnabled()) {
+      context.logger.warn("intent_route_feature_disabled", {
+        request_id: extra?.requestId ?? null,
+      });
+      return buildRouterDisabledResult();
+    }
+
     const parsed = IntentRouteInputSchema.parse(args);
 
     const rpcContext = getJsonRpcContext();
@@ -396,7 +590,26 @@ export function createIntentRouteHandler(
 
     const goal = parsed.natural_language_goal.trim().toLowerCase();
     const { primary, diagnostics, evaluations } = evaluateHeuristics(goal);
-    const recommendations = buildRecommendations(evaluations, context);
+    let routerDecision: ToolRouterDecision | null = null;
+    let routerCandidates: ToolRoutingCandidate[] | undefined;
+    let routingContext: ToolRoutingContext | null = null;
+    const routerTopKLimit = resolveToolRouterTopKLimit();
+
+    const routerActive = !context.isRouterEnabled || context.isRouterEnabled();
+    if (context.toolRouter && routerActive) {
+      routingContext = buildRoutingContext(goal, parsed.metadata, diagnostics);
+      try {
+        routerDecision = context.toolRouter.route(routingContext);
+        routerCandidates = routerDecision.candidates.slice(0, routerTopKLimit);
+      } catch (error) {
+        context.logger.warn("intent_route_router_failed", {
+          goal: parsed.natural_language_goal,
+          message: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
+    const recommendations = buildRecommendations(evaluations, context, routerCandidates);
 
     const structured: IntentRouteResult = {
       ok: true,
@@ -412,14 +625,40 @@ export function createIntentRouteHandler(
       },
     };
 
+    if (routerDecision && routingContext && context.recordRouterDecision && routerActive) {
+      const requestIdSource = rpcContext?.requestId ?? extra?.requestId ?? null;
+      const requestId =
+        typeof requestIdSource === "string" || typeof requestIdSource === "number"
+          ? String(requestIdSource)
+          : null;
+      context.recordRouterDecision({
+        context: routingContext,
+        decision: routerDecision,
+        requestId,
+        traceId: traceContext?.traceId ?? null,
+        childId: rpcContext?.childId ?? null,
+        runId: null,
+        jobId: null,
+        elapsedMs: null,
+      });
+    }
+
     context.logger.info("intent_route_evaluated", {
       goal: parsed.natural_language_goal,
       top_tool: recommendations[0]?.tool ?? null,
       primary_rule: primary ? primary.label : null,
       recommendations,
       diagnostics,
+      router_decision: routerDecision
+        ? {
+            tool: routerDecision.tool,
+            score: routerDecision.score,
+            reason: routerDecision.reason,
+          }
+        : null,
+      router_candidates: routerDecision ? (routerCandidates ?? routerDecision.candidates.slice(0, routerTopKLimit)) : null,
       idempotency_key: idempotencyKey,
-      request_id: rpcContext?.requestId ?? extra.requestId ?? null,
+      request_id: rpcContext?.requestId ?? extra?.requestId ?? null,
       trace_id: traceContext?.traceId ?? null,
     });
 

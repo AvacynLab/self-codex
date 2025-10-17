@@ -16,6 +16,7 @@ import {
   handlePlanReduce,
 } from "../src/tools/planTools.js";
 import { StigmergyField } from "../src/coord/stigmergy.js";
+import { ValueGraph, type ValueFilterDecision } from "../src/values/valueGraph.js";
 
 const mockRunnerPath = fileURLToPath(new URL("./fixtures/mock-runner.js", import.meta.url));
 
@@ -29,6 +30,7 @@ function createPlanContext(options: {
   graphState: GraphState;
   logger: StructuredLogger;
   events: Array<{ kind: string; payload?: unknown }>;
+  valueGuard?: PlanToolContext["valueGuard"];
 }): PlanToolContext {
   const stigmergy = new StigmergyField();
   return {
@@ -41,6 +43,7 @@ function createPlanContext(options: {
       options.events.push({ kind: event.kind, payload: event.payload });
     },
     stigmergy,
+    valueGuard: options.valueGuard,
   };
 }
 
@@ -243,6 +246,119 @@ describe("plan_reduce tool", () => {
           "choix-B": 1,
         },
       });
+    } finally {
+      await logger.flush();
+      await supervisor.disposeAll();
+      await rm(childrenRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("ponders consensus votes using the value guard scores", async function () {
+    this.timeout(10_000);
+    const childrenRoot = await mkdtemp(path.join(tmpdir(), "plan-reduce-guard-"));
+    const supervisor = new ChildSupervisor({
+      childrenRoot,
+      defaultCommand: process.execPath,
+      defaultArgs: [mockRunnerPath],
+    });
+    const graphState = new GraphState();
+    const logger = new StructuredLogger({ logFile: path.join(childrenRoot, "tmp", "orchestrator.log") });
+    const events: Array<{ kind: string; payload?: unknown }> = [];
+
+    const valueGraph = new ValueGraph();
+    valueGraph.set({
+      values: [
+        { id: "safety", weight: 1, tolerance: 0.05, label: "Safety" },
+      ],
+      defaultThreshold: 0.6,
+    });
+    const guardRegistry = new Map<string, ValueFilterDecision>();
+
+    const context = createPlanContext({
+      childrenRoot,
+      supervisor,
+      graphState,
+      logger,
+      events,
+      valueGuard: { graph: valueGraph, registry: guardRegistry },
+    });
+
+    try {
+      const fanout = await handlePlanFanout(
+        context,
+        PlanFanoutInputSchema.parse({
+          goal: "Évaluer la sûreté",
+          prompt_template: {
+            system: "Clone {{child_name}}",
+            user: "Analyse {{goal}}",
+          },
+          children_spec: { count: 2, name_prefix: "guard" },
+        }),
+      );
+
+      const [safeChild, riskyChild] = fanout.child_ids;
+      const safeVote = "approve";
+      const riskyVote = "reject";
+
+      await sendPromptAndWait(supervisor, safeChild!, safeVote);
+      await sendPromptAndWait(supervisor, riskyChild!, riskyVote);
+
+      // The safety guard endorses the first child and rejects the second one.
+      const safeDecision = valueGraph.filter({
+        id: `${safeChild}-plan`,
+        impacts: [{ value: "safety", impact: "support", severity: 0.9 }],
+      });
+      const riskyDecision = valueGraph.filter({
+        id: `${riskyChild}-plan`,
+        impacts: [{ value: "safety", impact: "risk", severity: 0.9 }],
+      });
+      expect(safeDecision.score).to.be.greaterThan(riskyDecision.score);
+
+      guardRegistry.set(safeChild!, safeDecision);
+      guardRegistry.set(riskyChild!, riskyDecision);
+
+      const reduceResult = await handlePlanReduce(
+        context,
+        PlanReduceInputSchema.parse({
+          children: fanout.child_ids,
+          reducer: "vote",
+          spec: { mode: "weighted" },
+        }),
+      );
+
+      expect(reduceResult.aggregate).to.include({
+        mode: "weighted",
+        value: safeVote,
+        satisfied: true,
+        tie: false,
+        threshold: 1,
+      });
+      expect(reduceResult.aggregate.total_weight).to.be.closeTo(
+        safeDecision.score + Math.max(0, riskyDecision.score),
+        1e-6,
+      );
+      expect((reduceResult.aggregate.tally as Record<string, number>)[safeVote]).to.be.closeTo(
+        safeDecision.score,
+        1e-6,
+      );
+      expect((reduceResult.aggregate.tally as Record<string, number>)[riskyVote]).to.be.closeTo(
+        Math.max(0, riskyDecision.score),
+        1e-6,
+      );
+
+      const details = reduceResult.trace.details as {
+        consensus?: Record<string, unknown>;
+        value_guard_weights?: Record<string, number>;
+      } | null;
+      expect(details?.consensus).to.not.equal(undefined);
+      expect(details?.value_guard_weights?.[safeChild!]).to.be.closeTo(safeDecision.score, 1e-6);
+      expect(details?.value_guard_weights?.[riskyChild!]).to.be.closeTo(Math.max(0, riskyDecision.score), 1e-6);
+
+      const perChildGuard = reduceResult.trace.per_child.map((entry) => entry.value_guard?.score ?? null);
+      expect(perChildGuard[0]).to.be.closeTo(safeDecision.score, 1e-6);
+      expect(perChildGuard[1]).to.be.closeTo(riskyDecision.score, 1e-6);
+
+      expect(context.valueGuard?.registry.size).to.equal(0);
     } finally {
       await logger.flush();
       await supervisor.disposeAll();
