@@ -22,6 +22,12 @@ unset NPM_CONFIG_PRODUCTION || true
 unset NPM_CONFIG_OMIT || true
 export NODE_ENV=development
 
+# ⬇️ Ajouts pour nettoyer les proxies NPM
+unset NPM_CONFIG_HTTP_PROXY   || true
+unset NPM_CONFIG_HTTPS_PROXY  || true
+unset npm_config_http_proxy   || true   # variantes en minuscule parfois injectées
+unset npm_config_https_proxy  || true
+
 echo "🔧 Installation (npm ci, inclut devDeps)"
 npm ci --include=dev
 
