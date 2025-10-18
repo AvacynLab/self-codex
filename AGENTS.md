@@ -24,6 +24,17 @@ Règle d’or : **ne jamais éditer `dist/*` directement**. Si les sources TypeS
 
 ---
 
+## Migration tests TypeScript (progress)
+
+- [x] `tests/monitor.dashboard.test.ts` migré et stabilisé (agent précédent).
+- [x] `tests/validation/run-eval.test.ts` converti en TypeScript (CLI + typings dédiés).
+- [x] Types d'appoint `scripts/validation/run-eval.d.mts` pour le harnais d'évaluation.
+- [ ] Migrer les autres tests JS/fixtures restants (`tests/fixtures/*.js`, …).
+- [ ] Étendre `tsconfig.json` (`include: ["src", "tests"]`) une fois l'ensemble des suites tapées.
+- [ ] Élargir `eslint.config.js` / `lint:test` à tout `tests/**/*` après migration complète.
+
+---
+
 # 0) Pré-travaux (inventaire & mapping)
 
 [x] Localiser/créer l’arborescence **TypeScript** :
@@ -330,6 +341,7 @@ Tu peux maintenant dérouler cette liste en cochant chaque étape. Chaque bloc e
 - 2025-10-17 · gpt-5-codex : Télémetrie dashboard client → serveur (`POST /logs`), remplacement des `console.*`, tests HTTP et documentation README/AGENTS alignées.
 - 2025-10-17 · gpt-5-codex : Endpoint `GET /logs` (dashboard) branché sur `LogJournal`, parsing des filtres/query, tests Mocha ciblés et documentation/AGENTS synchronisées.
 - 2025-10-17 · gpt-5-codex : Refactorisation `scripts/eval.ts` avec dépendances injectables, ajout de `runEvaluationCampaign` et tests Mocha `tests/eval/campaign.test.ts` couvrant rapports et seuils CI.
+- 2025-10-17 · gpt-5-codex : Migration `tests/validation/run-eval.test.ts` (TypeScript + typings `run-eval.d.mts`), ajustement `tsconfig.json`, `npm run typecheck` (OK) / `npm run test` (KO — 6 échecs historiques monitor/dashboard & validation).
 - 2025-10-17 · gpt-5-codex : Pondération lexicale améliorée du retriever via Levenshtein borné (`fastest-levenshtein`), tests HybridRetriever ciblés et documentation RAG mise à jour.
 # User-provided custom instructions
 
