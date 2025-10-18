@@ -1,6 +1,7 @@
 import { describe, it } from "mocha";
 import { expect } from "chai";
 import { readdir, readFile } from "node:fs/promises";
+import type { ErrnoException } from "../src/nodePrimitives.js";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -22,7 +23,20 @@ describe("repository hygiene", () => {
 
   async function collectFiles(relativeDir: string): Promise<string[]> {
     const absoluteDir = path.resolve(repoRoot, relativeDir);
-    const entries = await readdir(absoluteDir, { withFileTypes: true });
+    let entries;
+    try {
+      entries = await readdir(absoluteDir, { withFileTypes: true });
+    } catch (error) {
+      const errno = error as ErrnoException;
+      if (errno.code === "ENOENT") {
+        // Lorsque certains sous-répertoires (ex. l'ancien `graph-forge/test/`)
+        // sont supprimés, nous considérons simplement qu'il n'y a rien à
+        // analyser. Cela permet de conserver la garde tout en laissant la base
+        // évoluer sans faire échouer la suite d'hygiène.
+        return [];
+      }
+      throw error;
+    }
     const files: string[] = [];
     for (const entry of entries) {
       if (IGNORED_DIRECTORIES.has(entry.name)) {

@@ -13,6 +13,7 @@ une riche boîte à outils d'ingénierie de graphes sans dépendance réseau.
 ```bash
 npm install              # n'écrit pas de lockfile (utilise --no-save si nécessaire)
 npm run build            # compile src/ et graph-forge/
+npm run typecheck        # vérifie les sources + tests sans générer dist/
 ```
 
 Les scripts d'environnement de production doivent rester "sans écriture" pour
@@ -23,7 +24,7 @@ configuration éventuelle de `~/.codex/config.toml`.
 ## Build
 
 - **Prerequis** : Node.js ≥ 20 et `npm ci` pour respecter le lockfile existant.
-- **Pipeline officiel** : `npm ci && npm run build` construit `dist/` et `graph-forge/` en invoquant explicitement `tsc -p tsconfig.json` pour éviter toute surprise liée au cwd courant.
+- **Pipeline officiel** : `npm ci && npm run build` construit `dist/` et `graph-forge/` en invoquant explicitement `tsc -p tsconfig.json` pour éviter toute surprise liée au cwd courant. Enchaînez immédiatement `npm run typecheck` pour valider les suites de tests TypeScript.
 - **Types Node** : `@types/node` reste dans `dependencies` afin que les conteneurs
   cloud récupèrent automatiquement les définitions lors d'un `npm ci` minimal.
 - **Fallback portable** : `npm run build:portable` détecte l'absence de `tsc` dans
@@ -44,6 +45,7 @@ configuration éventuelle de `~/.codex/config.toml`.
 
 ## Tests
 
+- `npm run test` exécute `build` → `typecheck` → `test:unit` en mode TAP, ce qui garantit une compilation propre suivie des assertions. Utilisez cette commande pour reproduire le pipeline CI localement.
 - `npm run test:unit` exécute l'intégralité de la suite avec un garde-fou
   réseau qui bloque toute sortie non-loopback. C'est la commande par défaut en
   CI et pour les revues locales rapides.
