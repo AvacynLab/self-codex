@@ -3,7 +3,6 @@ import { expect } from "chai";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 
 import {
   ChildSupervisor,
@@ -16,14 +15,16 @@ import {
   configureChildSafetyLimits,
   getChildSafetyLimits,
 } from "../src/server.js";
+import { resolveFixture, runnerArgs } from "./helpers/childRunner.js";
 
-const mockRunnerPath = fileURLToPath(new URL("./fixtures/mock-runner.js", import.meta.url));
+const mockRunnerPath = resolveFixture(import.meta.url, "./fixtures/mock-runner.ts");
+const mockRunnerArgs = (...extra: string[]): string[] => runnerArgs(mockRunnerPath, ...extra);
 
 function createSupervisorOptions(childrenRoot: string, overrides: { maxChildren: number; memoryLimitMb: number; cpuPercent: number }) {
   return {
     childrenRoot,
     defaultCommand: process.execPath,
-    defaultArgs: [mockRunnerPath],
+    defaultArgs: mockRunnerArgs(),
     defaultEnv: process.env,
     safety: {
       maxChildren: overrides.maxChildren,

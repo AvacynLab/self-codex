@@ -3,7 +3,6 @@ import { expect } from "chai";
 import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 
 import { ChildSupervisor } from "../src/childSupervisor.js";
 import type { ChildCollectedOutputs, ChildRuntimeMessage } from "../src/childRuntime.js";
@@ -23,9 +22,13 @@ import { writeArtifact } from "../src/artifacts.js";
 import { StigmergyField } from "../src/coord/stigmergy.js";
 import type { EventCorrelationHints } from "../src/events/correlation.js";
 import { ThoughtGraphCoordinator } from "../src/reasoning/thoughtCoordinator.js";
+import { resolveFixture, runnerArgs } from "./helpers/childRunner.js";
 
-const mockRunnerPath = fileURLToPath(new URL("./fixtures/mock-runner.js", import.meta.url));
-const stubbornRunnerPath = fileURLToPath(new URL("./fixtures/stubborn-runner.js", import.meta.url));
+const mockRunnerPath = resolveFixture(import.meta.url, "./fixtures/mock-runner.ts");
+const stubbornRunnerPath = resolveFixture(import.meta.url, "./fixtures/stubborn-runner.ts");
+
+const mockRunnerArgs = (...extra: string[]): string[] => runnerArgs(mockRunnerPath, ...extra);
+const stubbornRunnerArgs = (...extra: string[]): string[] => runnerArgs(stubbornRunnerPath, ...extra);
 
 interface RecordedEvent {
   kind: string;
@@ -74,7 +77,7 @@ describe("plan tools", () => {
     const supervisor = new ChildSupervisor({
       childrenRoot,
       defaultCommand: process.execPath,
-      defaultArgs: [mockRunnerPath],
+      defaultArgs: mockRunnerArgs(),
     });
     const graphState = new GraphState();
     const orchestratorLog = path.join(childrenRoot, "tmp", "orchestrator.log");
@@ -189,7 +192,7 @@ describe("plan tools", () => {
     const supervisor = new ChildSupervisor({
       childrenRoot,
       defaultCommand: process.execPath,
-      defaultArgs: [mockRunnerPath],
+      defaultArgs: mockRunnerArgs(),
     });
     const graphState = new GraphState();
     const orchestratorLog = path.join(childrenRoot, "tmp", "orchestrator.log");
@@ -375,7 +378,7 @@ describe("plan tools", () => {
     const supervisor = new ChildSupervisor({
       childrenRoot,
       defaultCommand: process.execPath,
-      defaultArgs: [mockRunnerPath],
+      defaultArgs: mockRunnerArgs(),
     });
     const graphState = new GraphState();
     const orchestratorLog = path.join(childrenRoot, "tmp", "orchestrator.log");
@@ -588,7 +591,7 @@ describe("plan tools", () => {
     const supervisor = new ChildSupervisor({
       childrenRoot,
       defaultCommand: process.execPath,
-      defaultArgs: [mockRunnerPath],
+      defaultArgs: mockRunnerArgs(),
     });
     const graphState = new GraphState();
     const orchestratorLog = path.join(childrenRoot, "tmp", "orchestrator.log");
@@ -612,7 +615,7 @@ describe("plan tools", () => {
               {
                 name: "gamma",
                 command: process.execPath,
-                args: [stubbornRunnerPath],
+                args: stubbornRunnerArgs(),
               },
             ],
           },

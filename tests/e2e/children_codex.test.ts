@@ -3,10 +3,10 @@ import { expect } from "chai";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 
 import type { FeatureToggles } from "../../src/serverOptions.js";
 import type { EventEnvelope } from "../../src/events/bus.js";
+import { resolveFixture, runnerArgs } from "../helpers/childRunner.js";
 
 /**
  * High fidelity end-to-end coverage of the Codex child lifecycle when the
@@ -26,7 +26,7 @@ import type { EventEnvelope } from "../../src/events/bus.js";
  * 5. Terminate the child with `child_kill`, confirm the supervisor index marks
  *    the child as killed, and finally reclaim the resources via `child_gc`.
  *
- * The mock runner located under `tests/fixtures/mock-runner.js` acts as a
+ * The mock runner located under `tests/fixtures/mock-runner.ts` acts as a
  * deterministic stand-in for a Codex binary: it emits a ready handshake, echoes
  * JSON payloads, and terminates cleanly on `SIGTERM`.  By forcing the MCP server
  * to spawn this runner we guarantee that the entire toolchain (supervisor,
@@ -48,7 +48,7 @@ describe("codex child lifecycle (process-backed)", function () {
     }
 
     tempChildrenRoot = await mkdtemp(join(tmpdir(), "codex-child-e2e-"));
-    const runnerPath = fileURLToPath(new URL("../fixtures/mock-runner.js", import.meta.url));
+    const runnerPath = resolveFixture(import.meta.url, "../fixtures/mock-runner.ts");
 
     originalEnv.MCP_CHILDREN_ROOT = process.env.MCP_CHILDREN_ROOT;
     originalEnv.MCP_CHILD_ARGS = process.env.MCP_CHILD_ARGS;
@@ -56,7 +56,7 @@ describe("codex child lifecycle (process-backed)", function () {
     originalEnv.MCP_HTTP_STATELESS = process.env.MCP_HTTP_STATELESS;
 
     process.env.MCP_CHILDREN_ROOT = tempChildrenRoot;
-    process.env.MCP_CHILD_ARGS = JSON.stringify([runnerPath, "--scenario", "codex-child-e2e"]);
+    process.env.MCP_CHILD_ARGS = JSON.stringify(runnerArgs(runnerPath, "--scenario", "codex-child-e2e"));
     process.env.MCP_CHILD_COMMAND = process.execPath;
     process.env.MCP_HTTP_STATELESS = "no";
 

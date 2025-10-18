@@ -1,7 +1,6 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 
 import { expect } from "chai";
 import { describe, it, beforeEach, afterEach } from "mocha";
@@ -19,12 +18,14 @@ import { BudgetTracker } from "../../../src/infra/budget.js";
 import { IdempotencyRegistry } from "../../../src/infra/idempotency.js";
 import { runWithJsonRpcContext } from "../../../src/infra/jsonRpcContext.js";
 import { runWithRpcTrace } from "../../../src/infra/tracing.js";
+import { resolveFixture, runnerArgs } from "../../helpers/childRunner.js";
 import {
   CHILD_ORCHESTRATE_TOOL_NAME,
   createChildOrchestrateHandler,
 } from "../../../src/tools/child_orchestrate.js";
 
-const mockRunnerPath = fileURLToPath(new URL("../../fixtures/mock-runner.js", import.meta.url));
+const mockRunnerPath = resolveFixture(import.meta.url, "../../fixtures/mock-runner.ts");
+const mockRunnerArgs = (...extra: string[]): string[] => runnerArgs(mockRunnerPath, ...extra);
 
 function createRequestExtras(requestId: string): RequestHandlerExtra<ServerRequest, ServerNotification> {
   const controller = new AbortController();
@@ -50,7 +51,7 @@ describe("child_orchestrate facade", () => {
     supervisor = new ChildSupervisor({
       childrenRoot,
       defaultCommand: process.execPath,
-      defaultArgs: [mockRunnerPath, "--role", "friendly"],
+      defaultArgs: mockRunnerArgs("--role", "friendly"),
       idleTimeoutMs: 250,
       idleCheckIntervalMs: 50,
     });

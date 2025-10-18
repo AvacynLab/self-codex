@@ -3,7 +3,6 @@ import { expect } from "chai";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 
 import { BlackboardStore } from "../src/coord/blackboard.js";
 import { StigmergyField } from "../src/coord/stigmergy.js";
@@ -38,6 +37,7 @@ import {
 import { GraphMutationLockedError } from "../src/graph/locks.js";
 import { GraphVersionConflictError } from "../src/graph/tx.js";
 import { ERROR_CODES } from "../src/types.js";
+import { resolveFixture, runnerArgs } from "./helpers/childRunner.js";
 import { ChildLimitExceededError } from "../src/childSupervisor.js";
 import { BulkOperationError } from "../src/tools/bulkError.js";
 
@@ -72,7 +72,8 @@ function createGraphBatchFixture(clock: { now: number }): {
   return { context, graphId: committed.graphId, baseVersion: committed.version };
 }
 
-const mockRunnerPath = fileURLToPath(new URL("./fixtures/mock-runner.js", import.meta.url));
+const mockRunnerPath = resolveFixture(import.meta.url, "./fixtures/mock-runner.ts");
+const mockRunnerArgs = (...extra: string[]): string[] => runnerArgs(mockRunnerPath, ...extra);
 
 async function createChildBatchFixture(options: {
   maxChildren?: number;
@@ -86,7 +87,7 @@ async function createChildBatchFixture(options: {
   const supervisor = new ChildSupervisor({
     childrenRoot,
     defaultCommand: process.execPath,
-    defaultArgs: [mockRunnerPath, "--role", "friendly"],
+    defaultArgs: mockRunnerArgs("--role", "friendly"),
     idleTimeoutMs: 200,
     idleCheckIntervalMs: 40,
     // The supervisor now expects guardrails to be provided through the `safety`

@@ -4,5 +4,6 @@ runs/
 children/
 !src/children/
 !tests/children/
+tmp/
 .mcp_http.pid
 .mcp_http.out

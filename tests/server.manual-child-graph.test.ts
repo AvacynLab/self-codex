@@ -2,19 +2,20 @@ import { describe, it } from "mocha";
 import { expect } from "chai";
 import path from "node:path";
 import { readFile } from "node:fs/promises";
-import { fileURLToPath } from "node:url";
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 
 import { server, graphState, seedLessons, resetLessons } from "../src/server.js";
+import { resolveFixture, runnerArgs } from "./helpers/childRunner.js";
 
 /**
  * Integration test ensuring manual `child_create` calls produce the same graph
  * artefacts (job + child nodes) as planner-orchestrated runs. This keeps the
  * dashboard consistent when operators spawn ad-hoc clones for troubleshooting.
  */
-const mockRunnerPath = fileURLToPath(new URL("./fixtures/mock-runner.js", import.meta.url));
+const mockRunnerPath = resolveFixture(import.meta.url, "./fixtures/mock-runner.ts");
+const mockRunnerArgs = (...extra: string[]): string[] => runnerArgs(mockRunnerPath, ...extra);
 
 describe("child_create graph integration", () => {
   it("materialises manual children inside GraphState", async () => {
@@ -36,7 +37,7 @@ describe("child_create graph integration", () => {
         name: "child_create",
         arguments: {
           command: process.execPath,
-          args: [mockRunnerPath, "--role", "friendly"],
+          args: mockRunnerArgs("--role", "friendly"),
           metadata: {
             job_id: "adhoc-experiment",
             name: "Manual Friendly Runner",
@@ -114,7 +115,7 @@ describe("child_create graph integration", () => {
         name: "child_create",
         arguments: {
           command: process.execPath,
-          args: [mockRunnerPath, "--role", "reviewer"],
+          args: mockRunnerArgs("--role", "reviewer"),
           metadata: {
             tags: ["code"],
             goal: "stabiliser une correction",

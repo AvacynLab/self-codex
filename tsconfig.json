@@ -32,8 +32,6 @@
   },
   "include": [
     "src",
-    "tests/monitor.dashboard.test.ts",
-    "tests/validation/run-eval.test.ts",
     "scripts/**/*.d.mts"
   ],
   "exclude": ["dist", "node_modules"]

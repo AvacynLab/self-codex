@@ -3,7 +3,6 @@ import { expect } from "chai";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 
 import { ChildSupervisor } from "../src/childSupervisor.js";
 import { GraphState } from "../src/graphState.js";
@@ -12,8 +11,10 @@ import { PlanFanoutInputSchema, handlePlanFanout, type PlanToolContext } from ".
 import { StigmergyField } from "../src/coord/stigmergy.js";
 import type { EventCorrelationHints } from "../src/events/correlation.js";
 import { LessonsStore } from "../src/learning/lessons.js";
+import { resolveFixture, runnerArgs } from "./helpers/childRunner.js";
 
-const mockRunnerPath = fileURLToPath(new URL("./fixtures/mock-runner.js", import.meta.url));
+const mockRunnerPath = resolveFixture(import.meta.url, "./fixtures/mock-runner.ts");
+const mockRunnerArgs = (...extra: string[]): string[] => runnerArgs(mockRunnerPath, ...extra);
 
 interface RecordedEvent {
   kind: string;
@@ -59,7 +60,7 @@ describe("plan tools lessons integration", () => {
     const supervisor = new ChildSupervisor({
       childrenRoot,
       defaultCommand: process.execPath,
-      defaultArgs: [mockRunnerPath],
+      defaultArgs: mockRunnerArgs(),
     });
     const graphState = new GraphState();
     const orchestratorLog = path.join(childrenRoot, "tmp", "orchestrator.log");

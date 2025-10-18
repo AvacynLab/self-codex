@@ -3,7 +3,6 @@ import { expect } from "chai";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 
 import { ChildSupervisor } from "../src/childSupervisor.js";
 import {
@@ -18,16 +17,20 @@ import {
   handleChildSpawnCodex,
 } from "../src/tools/childTools.js";
 import { StructuredLogger } from "../src/logger.js";
+import { resolveFixture, runnerArgs } from "./helpers/childRunner.js";
 
-const mockRunnerPath = fileURLToPath(new URL("./fixtures/mock-runner.js", import.meta.url));
+const mockRunnerPath = resolveFixture(import.meta.url, "./fixtures/mock-runner.ts");
+const mockRunnerArgs = (...extra: string[]): string[] => runnerArgs(mockRunnerPath, ...extra);
 
-describe("child spawn/attach/limits tools", () => {
+describe("child spawn/attach/limits tools", function () {
+  this.timeout(15_000);
+
   it("spawns a codex child, updates role and limits, then refreshes the manifest", async () => {
     const childrenRoot = await mkdtemp(path.join(tmpdir(), "child-spawn-codex-"));
     const supervisor = new ChildSupervisor({
       childrenRoot,
       defaultCommand: process.execPath,
-      defaultArgs: [mockRunnerPath, "--role", "friendly"],
+      defaultArgs: mockRunnerArgs("--role", "friendly"),
       idleTimeoutMs: 200,
       idleCheckIntervalMs: 40,
     });

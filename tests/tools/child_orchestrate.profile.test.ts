@@ -1,7 +1,6 @@
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 
 import { expect } from "chai";
 import { afterEach, beforeEach, describe, it } from "mocha";
@@ -17,12 +16,14 @@ import { StructuredLogger } from "../../src/logger.js";
 import { BudgetTracker } from "../../src/infra/budget.js";
 import { runWithJsonRpcContext } from "../../src/infra/jsonRpcContext.js";
 import { runWithRpcTrace } from "../../src/infra/tracing.js";
+import { resolveFixture, runnerArgs } from "../helpers/childRunner.js";
 import {
   CHILD_ORCHESTRATE_TOOL_NAME,
   createChildOrchestrateHandler,
 } from "../../src/tools/child_orchestrate.js";
 
-const mockRunnerPath = fileURLToPath(new URL("../fixtures/mock-runner.js", import.meta.url));
+const mockRunnerPath = resolveFixture(import.meta.url, "../fixtures/mock-runner.ts");
+const mockRunnerArgs = (...extra: string[]): string[] => runnerArgs(mockRunnerPath, ...extra);
 
 /**
  * Builds the `RequestHandlerExtra` stub used by tests to inject transport
@@ -57,7 +58,7 @@ describe("child_orchestrate sandbox profiles", () => {
     supervisor = new ChildSupervisor({
       childrenRoot,
       defaultCommand: process.execPath,
-      defaultArgs: [mockRunnerPath, "--role", "sandbox"],
+      defaultArgs: mockRunnerArgs("--role", "sandbox"),
       idleTimeoutMs: 250,
       idleCheckIntervalMs: 50,
     });

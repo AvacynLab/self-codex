@@ -1,4 +1,3 @@
-#!/usr/bin/env node
 import readline from "node:readline";
 
 /**
@@ -11,13 +10,13 @@ const rl = readline.createInterface({
   crlfDelay: Infinity,
 });
 
-const emit = (payload) => {
+const emit = (payload: { type: string; [key: string]: unknown }): void => {
   process.stdout.write(`${JSON.stringify(payload)}\n`);
 };
 
 emit({ type: "ready", mode: "silent", pid: process.pid });
 
-rl.on("line", (line) => {
+rl.on("line", (line: string) => {
   if (!line.trim()) {
     return;
   }
@@ -28,11 +27,16 @@ rl.on("line", (line) => {
   try {
     JSON.parse(line);
   } catch (error) {
-    emit({ type: "error", message: "invalid-json", detail: (error instanceof Error && error.message) || String(error) });
+    emit({
+      type: "error",
+      message: "invalid-json",
+      detail: error instanceof Error ? error.message : String(error),
+    });
   }
 });
 
 // Keep the process alive so the orchestrator is forced to rely on timeouts.
 setInterval(() => {
   emit({ type: "heartbeat", ts: Date.now() });
-}, 5000);
+}, 5000).unref();
+

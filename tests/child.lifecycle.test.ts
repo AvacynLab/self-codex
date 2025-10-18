@@ -6,7 +6,6 @@ import { PassThrough } from "node:stream";
 import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 
 import {
   ChildRuntime,
@@ -23,9 +22,13 @@ import {
 import { PathResolutionError, childWorkspacePath } from "../src/paths.js";
 import { writeArtifact } from "../src/artifacts.js";
 import type { ChildProcessGateway } from "../src/gateways/childProcess.js";
+import { resolveFixture, runnerArgs } from "./helpers/childRunner.js";
 
-const mockRunnerPath = fileURLToPath(new URL("./fixtures/mock-runner.js", import.meta.url));
-const stubbornRunnerPath = fileURLToPath(new URL("./fixtures/stubborn-runner.js", import.meta.url));
+const mockRunnerPath = resolveFixture(import.meta.url, "./fixtures/mock-runner.ts");
+const stubbornRunnerPath = resolveFixture(import.meta.url, "./fixtures/stubborn-runner.ts");
+
+const mockRunnerArgs = (...extra: string[]): string[] => runnerArgs(mockRunnerPath, ...extra);
+const stubbornRunnerArgs = (...extra: string[]): string[] => runnerArgs(stubbornRunnerPath, ...extra);
 
 class StubGatewayChildProcess extends EventEmitter implements ChildProcessWithoutNullStreams {
   public readonly stdin = new PassThrough();
@@ -83,11 +86,13 @@ describe("child runtime lifecycle", () => {
     let runtime: ChildRuntime | null = null;
 
     try {
+      const runnerLaunchArgs = mockRunnerArgs("--role", "tester");
+
       runtime = await startChildRuntime({
         childId,
         childrenRoot,
         command: process.execPath,
-        args: [mockRunnerPath, "--role", "tester"],
+        args: runnerLaunchArgs,
         metadata: { role: "tester" },
         manifestExtras: { runner: "mock" },
         limits: { tokens: 2048, maxDurationMs: 120_000 },
@@ -152,7 +157,7 @@ describe("child runtime lifecycle", () => {
 
       expect(manifest.childId).to.equal(childId);
       expect(manifest.command).to.equal(process.execPath);
-      expect(manifest.args).to.deep.equal([mockRunnerPath, "--role", "tester"]);
+      expect(manifest.args).to.deep.equal(runnerLaunchArgs);
       expect(manifest.metadata).to.deep.equal({ role: "tester" });
       expect(manifest.runner).to.equal("mock");
       expect(Array.isArray(manifest.envKeys)).to.equal(true);
@@ -240,7 +245,7 @@ describe("child runtime lifecycle", () => {
         childId,
         childrenRoot,
         command: process.execPath,
-        args: [mockRunnerPath, "--role", "env-propagation"],
+        args: mockRunnerArgs("--role", "env-propagation"),
         env: {
           PATH: "/usr/bin",
           MCP_SECRET: "classified",
@@ -278,7 +283,7 @@ describe("child runtime lifecycle", () => {
         childId,
         childrenRoot,
         command: process.execPath,
-        args: [stubbornRunnerPath],
+        args: stubbornRunnerArgs(),
         metadata: { role: "stubborn" },
       });
 
@@ -330,11 +335,11 @@ it("retries spawning children when configured with exponential backoff", async (
   let attempts = 0;
 
   try {
-    runtime = await startChildRuntime({
-      childId,
-      childrenRoot,
-      command: process.execPath,
-      args: [mockRunnerPath],
+      runtime = await startChildRuntime({
+        childId,
+        childrenRoot,
+        command: process.execPath,
+        args: mockRunnerArgs(),
       spawnRetry: { attempts: 3, initialDelayMs: 10, backoffFactor: 2, maxDelayMs: 40 },
       spawnFactory: (command, args, options) => {
         attempts += 1;
@@ -402,11 +407,11 @@ it("rejects invalid pagination parameters when streaming child messages", async 
   let runtime: ChildRuntime | null = null;
 
   try {
-    runtime = await startChildRuntime({
-      childId,
-      childrenRoot,
-      command: process.execPath,
-      args: [mockRunnerPath, "--role", "pagination"],
+      runtime = await startChildRuntime({
+        childId,
+        childrenRoot,
+        command: process.execPath,
+        args: mockRunnerArgs("--role", "pagination"),
     });
 
     await runtime.waitForMessage(

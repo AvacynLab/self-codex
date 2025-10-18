@@ -2,7 +2,6 @@ import { describe, it } from "mocha";
 import { expect } from "chai";
 import { rm } from "node:fs/promises";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import sinon from "sinon";
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -16,6 +15,7 @@ import {
   getRuntimeFeatures,
 } from "../src/server.js";
 import { childWorkspacePath, resolveWithin } from "../src/paths.js";
+import { resolveFixture, runnerArgs } from "./helpers/childRunner.js";
 
 /**
  * Integration scenarios ensuring plan orchestration tools publish correlated events retrievable via
@@ -24,7 +24,8 @@ import { childWorkspacePath, resolveWithin } from "../src/paths.js";
  * planner activity.
  */
 describe("events subscribe plan correlation", () => {
-  const mockRunnerPath = fileURLToPath(new URL("./fixtures/mock-runner.js", import.meta.url));
+  const mockRunnerPath = resolveFixture(import.meta.url, "./fixtures/mock-runner.ts");
+  const mockRunnerArgs = (...extra: string[]): string[] => runnerArgs(mockRunnerPath, ...extra);
   const childrenRoot = process.env.MCP_CHILDREN_ROOT
     ? path.resolve(process.cwd(), process.env.MCP_CHILDREN_ROOT)
     : path.resolve(process.cwd(), "children");
@@ -499,7 +500,7 @@ describe("events subscribe plan correlation", () => {
               {
                 name: "scout",
                 command: process.execPath,
-                args: [mockRunnerPath, "--role", "scout"],
+                args: mockRunnerArgs("--role", "scout"),
                 metadata: { origin: "plan-coverage" },
               },
             ],

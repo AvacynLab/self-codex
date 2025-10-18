@@ -3,24 +3,29 @@ import { expect } from "chai";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 
 import { ChildSupervisor, type ChildLogEventSnapshot } from "../src/childSupervisor.js";
 import { EventBus } from "../src/events/bus.js";
 import { writeArtifact } from "../src/artifacts.js";
 import type { FileSystemGateway } from "../src/gateways/fs.js";
+import { resolveFixture, runnerArgs } from "./helpers/childRunner.js";
 
-const mockRunnerPath = fileURLToPath(new URL("./fixtures/mock-runner.js", import.meta.url));
-const stubbornRunnerPath = fileURLToPath(new URL("./fixtures/stubborn-runner.js", import.meta.url));
-const neverReadyRunnerPath = fileURLToPath(new URL("./fixtures/never-ready-runner.js", import.meta.url));
+const mockRunnerPath = resolveFixture(import.meta.url, "./fixtures/mock-runner.ts");
+const stubbornRunnerPath = resolveFixture(import.meta.url, "./fixtures/stubborn-runner.ts");
+const neverReadyRunnerPath = resolveFixture(import.meta.url, "./fixtures/never-ready-runner.ts");
 
-describe("child supervisor", () => {
+const mockRunnerArgs = (...extra: string[]): string[] => runnerArgs(mockRunnerPath, ...extra);
+const stubbornRunnerArgs = (...extra: string[]): string[] => runnerArgs(stubbornRunnerPath, ...extra);
+
+describe("child supervisor", function () {
+  this.timeout(15_000);
+
   it("spawns a child, exchanges messages, collects outputs and recycles the workspace", async () => {
     const childrenRoot = await mkdtemp(path.join(tmpdir(), "supervisor-friendly-"));
     const supervisor = new ChildSupervisor({
       childrenRoot,
       defaultCommand: process.execPath,
-      defaultArgs: [mockRunnerPath, "--role", "friendly"],
+      defaultArgs: mockRunnerArgs("--role", "friendly"),
       idleTimeoutMs: 150,
       idleCheckIntervalMs: 25,
     });
@@ -89,7 +94,7 @@ describe("child supervisor", () => {
     const supervisor = new ChildSupervisor({
       childrenRoot,
       defaultCommand: process.execPath,
-      defaultArgs: [stubbornRunnerPath],
+      defaultArgs: stubbornRunnerArgs(),
       idleTimeoutMs: 150,
       idleCheckIntervalMs: 25,
     });
@@ -112,7 +117,7 @@ describe("child supervisor", () => {
     const supervisor = new ChildSupervisor({
       childrenRoot,
       defaultCommand: process.execPath,
-      defaultArgs: [mockRunnerPath, "--role", "friendly"],
+      defaultArgs: mockRunnerArgs("--role", "friendly"),
       idleTimeoutMs: 80,
       idleCheckIntervalMs: 20,
     });
@@ -137,7 +142,7 @@ describe("child supervisor", () => {
     const supervisor = new ChildSupervisor({
       childrenRoot,
       defaultCommand: process.execPath,
-      defaultArgs: [neverReadyRunnerPath],
+      defaultArgs: runnerArgs(neverReadyRunnerPath),
       idleTimeoutMs: 50,
       idleCheckIntervalMs: 25,
     });
@@ -182,7 +187,7 @@ describe("child supervisor", () => {
     const supervisor = new ChildSupervisor({
       childrenRoot,
       defaultCommand: process.execPath,
-      defaultArgs: [mockRunnerPath, "--role", "friendly"],
+      defaultArgs: mockRunnerArgs("--role", "friendly"),
       recordChildLogEntry: (childId, entry) => {
         recorded.push({ childId, snapshot: { ...entry } });
       },
@@ -232,7 +237,7 @@ describe("child supervisor", () => {
     const supervisor = new ChildSupervisor({
       childrenRoot,
       defaultCommand: process.execPath,
-      defaultArgs: [mockRunnerPath, "--role", "friendly"],
+      defaultArgs: mockRunnerArgs("--role", "friendly"),
       // Resolver intentionally returns sparse hints with undefined fields to
       // mirror real-world resolvers that only override specific identifiers.
       resolveChildCorrelation: () => ({ childId: undefined, runId: undefined, opId: undefined }),
@@ -275,7 +280,7 @@ describe("child supervisor", () => {
     const supervisor = new ChildSupervisor({
       childrenRoot,
       defaultCommand: process.execPath,
-      defaultArgs: [mockRunnerPath, "--role", "friendly"],
+      defaultArgs: mockRunnerArgs("--role", "friendly"),
       eventBus: bus,
     });
 
