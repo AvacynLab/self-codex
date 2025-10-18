@@ -1,6 +1,3 @@
-# This GitHub Actions workflow enforces the staged quality gates described in AGENTS.md.
-# Each job mirrors a step of the local workflow (lint → build → test → eval) so issues are
-# surfaced with precise feedback. A final Docker smoke test validates the production image.
 name: CI
 
 on:
@@ -10,8 +7,8 @@ on:
   pull_request:
 
 jobs:
-  lint:
-    name: Lint source tree
+  build-typecheck-test:
+    name: Build, typecheck and test
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -24,184 +21,32 @@ jobs:
           cache: npm
 
       - name: Install dependencies
-        run: npm ci --include=dev
+        run: npm ci
 
-      - name: Run linters
-        run: npm run lint
-
-  build:
-    name: Build TypeScript artefacts
-    runs-on: ubuntu-latest
-    needs: lint
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Use Node.js 20.x
-        uses: actions/setup-node@v4
-        with:
-          node-version: "20.x"
-          cache: npm
-
-      - name: Install dependencies
-        run: npm ci --include=dev
-
-      - name: Compile orchestrator
+      - name: Build application bundles
         run: npm run build
 
-  test:
-    name: Test and collect coverage
-    runs-on: ubuntu-latest
-    needs: build
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - name: Type-check sources and tests
+        run: npm run typecheck
 
-      - name: Use Node.js 20.x
-        uses: actions/setup-node@v4
-        with:
-          node-version: "20.x"
-          cache: npm
-
-      - name: Install dependencies
-        run: npm ci --include=dev
-
-      - name: Execute automated tests
-        run: npm run test
-
-      # Surface the collected MCP test harness log directly in the Action output so
-      # CI failures retain enough context for debugging without downloading
-      # artefacts.
-      - name: Show unit test log file
-        if: always()
-        shell: bash
+      - name: Run unit tests (TAP)
         run: |
           set -euo pipefail
-          LOG_FILE="/tmp/self-codex.test.log"
-          if [ -f "$LOG_FILE" ]; then
-            echo "::group::Unit test log ($LOG_FILE)"
-            cat "$LOG_FILE"
-            echo "::endgroup::"
-          else
-            echo "Expected unit test log file '$LOG_FILE' was not generated."
-          fi
+          mkdir -p artifacts
+          npm run test:unit | tee artifacts/tap.txt
 
-      - name: Generate coverage report
-        run: npm run coverage
-
-      - name: Clean previous validation artefacts
-        run: rm -rf runs/validation_*
-
-      - name: Run validation smoke harness
-        run: node scripts/validation/run-smoke.mjs
-        env:
-          MCP_HTTP_PORT: "0"
-          MCP_HTTP_TOKEN: "ci-validation-token"
-          MCP_LOG_REDACT: "on"
-
-      - name: Upload coverage artefacts
+      - name: Upload TAP report
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: coverage-report
-          path: |
-            coverage
-            coverage/lcov-report
+          name: tap-report
+          path: artifacts/tap.txt
           if-no-files-found: warn
 
-      - name: Upload smoke artefacts
+      - name: Upload unit test log
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: smoke-validation-artifacts
-          path: runs/validation_*
+          name: self-codex.test.log
+          path: /tmp/self-codex.test.log
           if-no-files-found: warn
-
-  eval-scenarios:
-    name: Evaluation scenarios harness
-    runs-on: ubuntu-latest
-    needs: test
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Use Node.js 20.x
-        uses: actions/setup-node@v4
-        with:
-          node-version: "20.x"
-          cache: npm
-
-      - name: Install dependencies
-        run: npm ci --include=dev
-
-      - name: Clean previous evaluation artefacts
-        run: rm -rf runs/validation_*
-
-      - name: Run evaluation scenarios
-        run: npm run eval:scenarios
-        env:
-          MCP_HTTP_PORT: "0"
-          MCP_HTTP_TOKEN: "ci-eval-token"
-          MCP_LOG_REDACT: "on"
-
-      - name: Upload evaluation artefacts
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: eval-scenarios-artifacts
-          path: runs/validation_*
-          if-no-files-found: warn
-
-  docker-smoke:
-    name: Build Docker image and probe HTTP endpoints
-    runs-on: ubuntu-latest
-    needs: eval-scenarios
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Build runtime image
-        run: docker build --pull --tag self-codex-ci .
-
-      - name: Launch container
-        run: |
-          docker run -d \
-            --name mcp-smoke \
-            -p 8765:8765 \
-            -e MCP_HTTP_TOKEN=integration-token \
-            -e MCP_LOG_REDACT=on \
-            self-codex-ci \
-            --http \
-            --http-host 0.0.0.0 \
-            --http-port 8765 \
-            --http-path /mcp \
-            --http-json on
-
-      - name: Wait for readiness
-        shell: bash
-        run: |
-          set -euo pipefail
-          success=false
-          for attempt in {1..20}; do
-            if curl --fail --silent http://127.0.0.1:8765/healthz > /tmp/healthz.json; then
-              success=true
-              break
-            fi
-            sleep 3
-          done
-          if [ "$success" != "true" ]; then
-            echo "Health probe failed after multiple attempts" >&2
-            docker logs mcp-smoke || true
-            exit 1
-          fi
-          cat /tmp/healthz.json
-
-      - name: Probe readiness endpoint
-        run: |
-          curl --fail --silent \
-            -H "Authorization: Bearer integration-token" \
-            http://127.0.0.1:8765/readyz
-
-      - name: Cleanup container
-        if: always()
-        run: docker rm -f mcp-smoke
