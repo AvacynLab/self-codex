@@ -10,6 +10,10 @@ import { spawn } from "node:child_process";
 import { readFile, stat, readdir } from "node:fs/promises";
 import { resolve, extname } from "node:path";
 import process from "node:process";
+import { createRequire } from "node:module";
+
+const require = createRequire(import.meta.url);
+const tsxLoaderModule = require.resolve("tsx");
 
 const ROOT_DIR = resolve(process.cwd());
 const NODE_BIN = process.execPath;
@@ -24,7 +28,7 @@ const DEPENDENCY_ALLOWLIST = new Set(["@types/node"]);
 
 async function runNodeBuiltinCheck() {
   await new Promise((resolvePromise, rejectPromise) => {
-    const child = spawn(NODE_BIN, ["--import", "tsx", NODE_BUILTIN_SCRIPT], {
+    const child = spawn(NODE_BIN, ["--import", tsxLoaderModule, NODE_BUILTIN_SCRIPT], {
       stdio: "inherit",
       cwd: ROOT_DIR,
     });

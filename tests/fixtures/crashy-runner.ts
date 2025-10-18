@@ -1,4 +1,5 @@
-#!/usr/bin/env node
+import readline from "node:readline";
+
 /**
  * Minimal child runner used by robustness tests to simulate a sudden crash.
  *
@@ -8,7 +9,16 @@
  * runner might disappear while leaving the orchestrator in charge of cleaning
  * the workspace and recovering the plan.
  */
-import readline from "node:readline";
+interface ExplodeCommand {
+  readonly type: "explode";
+  readonly exitCode?: number;
+  readonly reason?: string;
+}
+
+type CrashyCommand =
+  | { readonly type: "prompt"; readonly content?: unknown }
+  | ExplodeCommand
+  | { readonly type: string; readonly [key: string]: unknown };
 
 process.stdin.setEncoding("utf8");
 
@@ -19,23 +29,28 @@ const rl = readline.createInterface({
 
 let counter = 0;
 
-function emit(payload) {
+const emit = (payload: { type: string; [key: string]: unknown }): void => {
   process.stdout.write(`${JSON.stringify(payload)}\n`);
-}
+};
 
 emit({ type: "ready", mode: "crashy", pid: process.pid });
 
-rl.on("line", (line) => {
+rl.on("line", (line: string) => {
   const trimmed = line.trim();
   if (!trimmed) {
     return;
   }
 
-  let payload;
+  let payload: CrashyCommand;
   try {
-    payload = JSON.parse(trimmed);
-  } catch {
-    emit({ type: "error", message: "invalid-json", raw: trimmed });
+    payload = JSON.parse(trimmed) as CrashyCommand;
+  } catch (error) {
+    emit({
+      type: "error",
+      message: "invalid-json",
+      raw: trimmed,
+      detail: error instanceof Error ? error.message : String(error),
+    });
     return;
   }
 
@@ -60,7 +75,7 @@ rl.on("line", (line) => {
   emit({ type: "event", id: counter, payload });
 });
 
-const graceful = (signal) => {
+const graceful = (signal: NodeJS.Signals | string): void => {
   emit({ type: "shutdown", signal });
   rl.close();
   process.exit(0);
@@ -72,3 +87,4 @@ process.on("SIGTERM", () => graceful("SIGTERM"));
 rl.on("close", () => {
   emit({ type: "closed" });
 });
+

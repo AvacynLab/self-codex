@@ -3,7 +3,6 @@ import { expect } from "chai";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 
 import { ChildSupervisor } from "../src/childSupervisor.js";
 import { GraphState } from "../src/graphState.js";
@@ -19,8 +18,10 @@ import {
   handlePlanReduce,
 } from "../src/tools/planTools.js";
 import { StigmergyField } from "../src/coord/stigmergy.js";
+import { resolveFixture, runnerArgs } from "./helpers/childRunner.js";
 
-const mockRunnerPath = fileURLToPath(new URL("./fixtures/mock-runner.js", import.meta.url));
+const mockRunnerPath = resolveFixture(import.meta.url, "./fixtures/mock-runner.ts");
+const mockRunnerArgs = (...extra: string[]): string[] => runnerArgs(mockRunnerPath, ...extra);
 
 /**
  * Builds a plan tool context wired with a configured value guard. The helper
@@ -78,7 +79,7 @@ describe("plan tools value guard integration", () => {
     const supervisor = new ChildSupervisor({
       childrenRoot,
       defaultCommand: process.execPath,
-      defaultArgs: [mockRunnerPath],
+      defaultArgs: mockRunnerArgs(),
     });
     const graphState = new GraphState();
     const logger = new StructuredLogger({ logFile: path.join(childrenRoot, "tmp", "orchestrator.log") });
@@ -132,7 +133,7 @@ describe("plan tools value guard integration", () => {
     const supervisor = new ChildSupervisor({
       childrenRoot,
       defaultCommand: process.execPath,
-      defaultArgs: [mockRunnerPath],
+      defaultArgs: mockRunnerArgs(),
     });
     const graphState = new GraphState();
     const logger = new StructuredLogger({ logFile: path.join(childrenRoot, "tmp", "orchestrator.log") });
@@ -195,7 +196,7 @@ describe("plan tools value guard integration", () => {
     const supervisor = new ChildSupervisor({
       childrenRoot,
       defaultCommand: process.execPath,
-      defaultArgs: [mockRunnerPath],
+      defaultArgs: mockRunnerArgs(),
     });
     const graphState = new GraphState();
     const logger = new StructuredLogger({ logFile: path.join(childrenRoot, "tmp", "orchestrator.log") });

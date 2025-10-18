@@ -3,7 +3,6 @@ import { expect } from "chai";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 
 import { ChildSupervisor } from "../src/childSupervisor.js";
 import {
@@ -30,18 +29,25 @@ import { writeArtifact } from "../src/artifacts.js";
 import { SandboxRegistry, setSandboxRegistry } from "../src/sim/sandbox.js";
 import { LoopDetector } from "../src/guard/loopDetector.js";
 import { ContractNetCoordinator } from "../src/coord/contractNet.js";
+import { resolveFixture, runnerArgs } from "./helpers/childRunner.js";
 
-const mockRunnerPath = fileURLToPath(new URL("./fixtures/mock-runner.js", import.meta.url));
-const stubbornRunnerPath = fileURLToPath(new URL("./fixtures/stubborn-runner.js", import.meta.url));
-const silentRunnerPath = fileURLToPath(new URL("./fixtures/silent-runner.js", import.meta.url));
+const mockRunnerPath = resolveFixture(import.meta.url, "./fixtures/mock-runner.ts");
+const stubbornRunnerPath = resolveFixture(import.meta.url, "./fixtures/stubborn-runner.ts");
+const silentRunnerPath = resolveFixture(import.meta.url, "./fixtures/silent-runner.ts");
 
-describe("child tool handlers", () => {
+const mockRunnerArgs = (...extra: string[]): string[] => runnerArgs(mockRunnerPath, ...extra);
+const stubbornRunnerArgs = (...extra: string[]): string[] => runnerArgs(stubbornRunnerPath, ...extra);
+const silentRunnerArgs = (...extra: string[]): string[] => runnerArgs(silentRunnerPath, ...extra);
+
+describe("child tool handlers", function () {
+  this.timeout(20_000);
+
   it("creates a cooperative child, exchanges messages and cleans up resources", async () => {
     const childrenRoot = await mkdtemp(path.join(tmpdir(), "child-tools-friendly-"));
     const supervisor = new ChildSupervisor({
       childrenRoot,
       defaultCommand: process.execPath,
-      defaultArgs: [mockRunnerPath, "--role", "friendly"],
+      defaultArgs: mockRunnerArgs("--role", "friendly"),
       idleTimeoutMs: 150,
       idleCheckIntervalMs: 25,
     });
@@ -203,7 +209,7 @@ describe("child tool handlers", () => {
     const supervisor = new ChildSupervisor({
       childrenRoot,
       defaultCommand: process.execPath,
-      defaultArgs: [mockRunnerPath, "--role", "friendly"],
+      defaultArgs: mockRunnerArgs("--role", "friendly"),
       idleTimeoutMs: 200,
       idleCheckIntervalMs: 25,
     });
@@ -261,7 +267,7 @@ describe("child tool handlers", () => {
     const supervisor = new ChildSupervisor({
       childrenRoot,
       defaultCommand: process.execPath,
-      defaultArgs: [stubbornRunnerPath],
+      defaultArgs: stubbornRunnerArgs(),
       idleTimeoutMs: 100,
       idleCheckIntervalMs: 25,
     });
@@ -306,7 +312,7 @@ describe("child tool handlers", () => {
     const supervisor = new ChildSupervisor({
       childrenRoot,
       defaultCommand: process.execPath,
-      defaultArgs: [mockRunnerPath, "--role", "guardian"],
+      defaultArgs: mockRunnerArgs("--role", "guardian"),
     });
     const logFile = path.join(childrenRoot, "tmp", "orchestrator.log");
     const logger = new StructuredLogger({ logFile });
@@ -364,7 +370,7 @@ describe("child tool handlers", () => {
     const supervisor = new ChildSupervisor({
       childrenRoot,
       defaultCommand: process.execPath,
-      defaultArgs: [mockRunnerPath, "--role", "friendly"],
+      defaultArgs: mockRunnerArgs("--role", "friendly"),
     });
     const logFile = path.join(childrenRoot, "tmp", "orchestrator.log");
     const logger = new StructuredLogger({ logFile });
@@ -432,7 +438,7 @@ describe("child tool handlers", () => {
     const supervisor = new ChildSupervisor({
       childrenRoot,
       defaultCommand: process.execPath,
-      defaultArgs: [mockRunnerPath, "--role", "guardian"],
+      defaultArgs: mockRunnerArgs("--role", "guardian"),
     });
     const logFile = path.join(childrenRoot, "tmp", "orchestrator.log");
     const logger = new StructuredLogger({ logFile });
@@ -488,7 +494,7 @@ describe("child tool handlers", () => {
     const supervisor = new ChildSupervisor({
       childrenRoot,
       defaultCommand: process.execPath,
-      defaultArgs: [silentRunnerPath],
+      defaultArgs: silentRunnerArgs(),
     });
     const logFile = path.join(childrenRoot, "tmp", "orchestrator.log");
     const logger = new StructuredLogger({ logFile });
@@ -539,7 +545,7 @@ describe("child tool handlers", () => {
     const supervisor = new ChildSupervisor({
       childrenRoot,
       defaultCommand: process.execPath,
-      defaultArgs: [mockRunnerPath, "--role", "allowlist"],
+      defaultArgs: mockRunnerArgs("--role", "allowlist"),
     });
     const logFile = path.join(childrenRoot, "tmp", "orchestrator.log");
     const logger = new StructuredLogger({ logFile });

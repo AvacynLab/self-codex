@@ -3,7 +3,6 @@ import { expect } from 'chai';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 import { ensureRunDirectories, createTraceIdFactory, type RunContext } from '../lib/runContext.js';
 import { ArtifactRecorder } from '../lib/artifactRecorder.js';
@@ -11,6 +10,7 @@ import { runChildOrchestrationStage } from '../lib/children.js';
 
 import { getRuntimeFeatures, configureRuntimeFeatures, server } from '../../../src/server.js';
 import type { FeatureToggles } from '../../../src/serverOptions.js';
+import { resolveFixture, runnerArgs } from '../../../tests/helpers/childRunner.js';
 
 /**
  * Deterministic clock helper ensuring artefact timestamps remain stable across
@@ -29,7 +29,8 @@ describe('Stage 4 – Child orchestration and cancellation checks', () => {
   let tempRoot: string;
   let baselineFeatures: FeatureToggles;
 
-  const mockRunnerPath = fileURLToPath(new URL('../../../tests/fixtures/mock-runner.js', import.meta.url));
+  const mockRunnerPath = resolveFixture(import.meta.url, '../../../tests/fixtures/mock-runner.ts');
+  const mockRunnerArgs = (...extra: string[]): string[] => runnerArgs(mockRunnerPath, ...extra);
 
   beforeEach(async () => {
     tempRoot = await mkdtemp(path.join(tmpdir(), 'mcp-children-'));
@@ -54,7 +55,7 @@ describe('Stage 4 – Child orchestration and cancellation checks', () => {
     const result = await runChildOrchestrationStage({
       context,
       recorder,
-      childRunner: { command: process.execPath, args: [mockRunnerPath, '--role', 'fixture'] },
+      childRunner: { command: process.execPath, args: mockRunnerArgs('--role', 'fixture') },
     });
 
     expect(result.children).to.have.lengthOf(3);

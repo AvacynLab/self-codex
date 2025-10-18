@@ -24,8 +24,12 @@ import { existsSync } from "node:fs";
 import { once } from "node:events";
 import { spawn } from "node:child_process";
 import { dirname, resolve, relative } from "node:path";
+import { createRequire } from "node:module";
 import { setTimeout as delay } from "node:timers/promises";
 import { performance } from "node:perf_hooks";
+
+const require = createRequire(import.meta.url);
+const tsxLoaderModule = require.resolve("tsx");
 
 const TEST_MODE = process.env.CODEX_RECORD_RUN_TEST === "1";
 const workspaceRoot = resolve(process.cwd());
@@ -466,8 +470,8 @@ async function startServer({ host, port, path, token }) {
     throw new Error("record-run requires a compiled server. Run `npm run build` first.");
   }
 
-  const childRunner = resolve(workspaceRoot, "tests/fixtures/mock-runner.js");
-  const childArgs = JSON.stringify([childRunner, "--scenario", "record-run"]);
+  const childRunner = resolve(workspaceRoot, "tests/fixtures/mock-runner.ts");
+  const childArgs = JSON.stringify(["--import", tsxLoaderModule, childRunner, "--scenario", "record-run"]);
   const childEnv = {
     ...process.env,
     MCP_HTTP_TOKEN: token,

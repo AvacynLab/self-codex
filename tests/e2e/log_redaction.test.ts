@@ -3,10 +3,10 @@ import { expect } from "chai";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 
 import { HttpServerHarness } from "../helpers/httpServerHarness.js";
+import { resolveFixture, runnerArgs } from "../helpers/childRunner.js";
 
 /**
  * Validates that enabling log redaction through the environment variables keeps
@@ -36,7 +36,7 @@ describe("http log redaction", function () {
     logDirectory = await mkdtemp(join(tmpdir(), "mcp-log-redaction-"));
     childrenRoot = await mkdtemp(join(tmpdir(), "mcp-children-redaction-"));
     logFile = join(logDirectory, "orchestrator.log");
-    const runnerPath = fileURLToPath(new URL("../fixtures/mock-runner.js", import.meta.url));
+    const runnerPath = resolveFixture(import.meta.url, "../fixtures/mock-runner.ts");
 
     // The orchestrator reads its logging configuration at startup.  By passing
     // `secretToken` alongside the checklist-mandated `on` flag we simultaneously
@@ -56,7 +56,7 @@ describe("http log redaction", function () {
         MCP_LOG_REDACT: `${secretToken},on`,
         MCP_CHILDREN_ROOT: childrenRoot,
         MCP_CHILD_COMMAND: process.execPath,
-        MCP_CHILD_ARGS: JSON.stringify([runnerPath, "--scenario", "log-redaction"]),
+        MCP_CHILD_ARGS: JSON.stringify(runnerArgs(runnerPath, "--scenario", "log-redaction")),
       },
     });
 

@@ -3,11 +3,12 @@ import { expect } from "chai";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 
 import { ChildSupervisor } from "../src/childSupervisor.js";
+import { resolveFixture, runnerArgs } from "./helpers/childRunner.js";
 
-const crashyRunnerPath = fileURLToPath(new URL("./fixtures/crashy-runner.js", import.meta.url));
+const crashyRunnerPath = resolveFixture(import.meta.url, "./fixtures/crashy-runner.ts");
+const crashyRunnerArgs = (...extra: string[]): string[] => runnerArgs(crashyRunnerPath, ...extra);
 
 /**
  * Chaos-style regression ensuring a crashing child process is surfaced as an
@@ -24,7 +25,7 @@ describe("robustness: child crash recovery", () => {
     const supervisor = new ChildSupervisor({
       childrenRoot,
       defaultCommand: process.execPath,
-      defaultArgs: [crashyRunnerPath],
+      defaultArgs: crashyRunnerArgs(),
       idleTimeoutMs: 150,
       idleCheckIntervalMs: 30,
     });

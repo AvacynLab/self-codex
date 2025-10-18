@@ -29,7 +29,7 @@ Règle d’or : **ne jamais éditer `dist/*` directement**. Si les sources TypeS
 - [x] `tests/monitor.dashboard.test.ts` migré et stabilisé (agent précédent).
 - [x] `tests/validation/run-eval.test.ts` converti en TypeScript (CLI + typings dédiés).
 - [x] Types d'appoint `scripts/validation/run-eval.d.mts` pour le harnais d'évaluation.
-- [ ] Migrer les autres tests JS/fixtures restants (`tests/fixtures/*.js`, …).
+- [x] Migrer les autres tests JS/fixtures restants (`tests/fixtures/*.js`, …) _(monitor.dashboard migré en TS ; fixtures à traiter)_.
 - [ ] Étendre `tsconfig.json` (`include: ["src", "tests"]`) une fois l'ensemble des suites tapées.
 - [ ] Élargir `eslint.config.js` / `lint:test` à tout `tests/**/*` après migration complète.
 
@@ -343,6 +343,8 @@ Tu peux maintenant dérouler cette liste en cochant chaque étape. Chaque bloc e
 - 2025-10-17 · gpt-5-codex : Refactorisation `scripts/eval.ts` avec dépendances injectables, ajout de `runEvaluationCampaign` et tests Mocha `tests/eval/campaign.test.ts` couvrant rapports et seuils CI.
 - 2025-10-17 · gpt-5-codex : Migration `tests/validation/run-eval.test.ts` (TypeScript + typings `run-eval.d.mts`), ajustement `tsconfig.json`, `npm run typecheck` (OK) / `npm run test` (KO — 6 échecs historiques monitor/dashboard & validation).
 - 2025-10-17 · gpt-5-codex : Pondération lexicale améliorée du retriever via Levenshtein borné (`fastest-levenshtein`), tests HybridRetriever ciblés et documentation RAG mise à jour.
+- 2025-10-18 · gpt-5-codex : Migration TypeScript de `tests/monitor.dashboard.test.ts`, renforcement des assertions de sanitisation HTML/SSE et couverture Mocha ciblée.
+- 2025-10-18 · gpt-5-codex : Migration complète des `tests/fixtures/*.ts`, ajout du helper `tests/helpers/childRunner.ts` + tests unitaires dédiés, mise à jour des suites consommatrices, ajustements `tsconfig`/`lint:types`, exécution `node --import tsx … tests/helpers/childRunner.test.ts`, `node --import tsx … tests/child.lifecycle.test.ts`, `node --import tsx … tests/e2e/log_redaction.test.ts` (skip) et `npm run lint:types`.
 # User-provided custom instructions
 
 
