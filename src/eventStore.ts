@@ -171,7 +171,11 @@ export class EventStore {
           });
         }
       }
-      this.perJob.set(event.jobId, existing);
+      if (existing.length === 0) {
+        this.perJob.delete(event.jobId);
+      } else {
+        this.perJob.set(event.jobId, existing);
+      }
     }
 
     this.logEventEmission(event);
@@ -269,6 +273,12 @@ export class EventStore {
     return this.events.filter((event) => event.kind === kind);
   }
 
+  /**
+   * Trims the global and per-job buffers so they do not exceed the configured
+   * history. Per-job slices intentionally retain their own windows even when the
+   * global buffer has already evicted the same entries to preserve job-centric
+   * pagination semantics.
+   */
   private trim(): void {
     while (this.events.length > this.maxHistory) {
       const evicted = this.events.shift();
@@ -283,7 +293,11 @@ export class EventStore {
           this.logEventEviction("job", evicted, { jobId, remaining: events.length });
         }
       }
-      this.perJob.set(jobId, events);
+      if (events.length === 0) {
+        this.perJob.delete(jobId);
+      } else {
+        this.perJob.set(jobId, events);
+      }
     }
   }
 

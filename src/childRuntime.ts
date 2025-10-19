@@ -12,6 +12,7 @@ import { runtimeTimers, type TimeoutHandle } from "./runtime/timers.js";
 import {
   createChildProcessGateway,
   type ChildProcessGateway,
+  type SpawnedChildProcess,
 } from "./gateways/childProcess.js";
 
 /** Default hardened gateway leveraged when callers do not inject one explicitly. */
@@ -118,6 +119,8 @@ export interface StartChildRuntimeOptions {
   role?: string | null;
   toolsAllow?: string[] | null;
   spawnRetry?: ChildSpawnRetryOptions;
+  /** Optional timeout applied to the underlying spawn attempt. */
+  spawnTimeoutMs?: number;
   /**
    * Optional hardened gateway responsible for spawning the process. Tests can
    * inject a double to observe the wiring without launching a real child.
@@ -919,6 +922,9 @@ export class ChildRuntime extends EventEmitter {
   }
 
   private recordInternal(kind: string, data: string): void {
+    if (this.closed) {
+      return;
+    }
     const entry = {
       ts: Date.now(),
       kind,
@@ -986,8 +992,11 @@ export async function startChildRuntime(options: StartChildRuntimeOptions): Prom
 
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
     let child: ChildProcessWithoutNullStreams;
+    let spawnHandle: SpawnedChildProcess;
     try {
-      const { child: spawnedChild } = processGateway.spawn({
+      // Retain the gateway-managed handle so abort controllers and timeout guards
+      // stay armed until the child either advertises readiness or fails early.
+      spawnHandle = processGateway.spawn({
         command: options.command,
         args,
         cwd: workdir,
@@ -995,12 +1004,50 @@ export async function startChildRuntime(options: StartChildRuntimeOptions): Prom
         inheritEnv: {},
         extraEnv: env,
         stdio: ["pipe", "pipe", "pipe"],
+        timeoutMs: options.spawnTimeoutMs,
       });
-      child = ensurePipedChildProcess(spawnedChild);
     } catch (error) {
-      lastError = error;
+      lastError = normaliseSpawnFailure(error);
       if (attempt >= attempts) {
-        throw new ChildSpawnError(attempts, error);
+        throw new ChildSpawnError(attempts, lastError);
+      }
+
+      if (delay > 0) {
+        await sleep(delay);
+      }
+      delay = computeNextDelay(delay, factor, maxDelay);
+      continue;
+    }
+
+    const spawnSignal = spawnHandle.signal;
+    if (spawnSignal?.aborted) {
+      const failure = normaliseAbortReason(spawnSignal.reason);
+      spawnHandle.dispose();
+      lastError = failure;
+      if (attempt >= attempts) {
+        throw new ChildSpawnError(attempts, failure);
+      }
+
+      if (delay > 0) {
+        await sleep(delay);
+      }
+      delay = computeNextDelay(delay, factor, maxDelay);
+      continue;
+    }
+
+    const abortRace = createSpawnAbortRace(spawnSignal);
+
+    try {
+      child = ensurePipedChildProcess(spawnHandle.child);
+    } catch (error) {
+      abortRace.cleanup();
+      const failure = normaliseSpawnFailure(error);
+      // A failure before the stdio streams are ready should release the handle
+      // immediately so retries do not leak listeners or hanging timers.
+      spawnHandle.dispose();
+      lastError = failure;
+      if (attempt >= attempts) {
+        throw new ChildSpawnError(attempts, failure);
       }
 
       if (delay > 0) {
@@ -1028,19 +1075,26 @@ export async function startChildRuntime(options: StartChildRuntimeOptions): Prom
     });
 
     try {
-      await runtime.waitUntilSpawned();
+      await abortRace.race(runtime.waitUntilSpawned());
+      abortRace.cleanup();
       await runtime.writeManifest(manifestExtras);
       return runtime;
     } catch (error) {
-      lastError = error;
+      const failure = normaliseSpawnFailure(error);
+      abortRace.cleanup();
+      lastError = failure;
       try {
         await runtime.waitForExit(500);
       } catch {
         // Ignore errors while tearing down a failed spawn attempt.
       }
 
+      // Dispose of the gateway handle after failed readiness to release the
+      // timeout and abort guards before the next retry kicks in.
+      spawnHandle.dispose();
+
       if (attempt >= attempts) {
-        throw new ChildSpawnError(attempts, error);
+        throw new ChildSpawnError(attempts, failure);
       }
 
       if (delay > 0) {
@@ -1051,6 +1105,78 @@ export async function startChildRuntime(options: StartChildRuntimeOptions): Prom
   }
 
   throw new ChildSpawnError(attempts, lastError);
+}
+
+function createSpawnAbortRace(signal: AbortSignal | undefined): {
+  race<T>(operation: Promise<T>): Promise<T>;
+  cleanup(): void;
+} {
+  if (!signal) {
+    return {
+      race<T>(operation: Promise<T>): Promise<T> {
+        return operation;
+      },
+      cleanup(): void {
+        // No-op: there is no abort signal to detach from.
+      },
+    };
+  }
+
+  let listener: (() => void) | null = null;
+  const abortPromise = new Promise<never>((_, reject) => {
+    const rejectWithReason = () => {
+      if (listener) {
+        signal.removeEventListener("abort", listener);
+        listener = null;
+      }
+      reject(normaliseAbortReason(signal.reason));
+    };
+
+    if (signal.aborted) {
+      rejectWithReason();
+      return;
+    }
+
+    listener = () => {
+      rejectWithReason();
+    };
+    signal.addEventListener("abort", listener, { once: true });
+  });
+
+  return {
+    race<T>(operation: Promise<T>): Promise<T> {
+      return Promise.race([operation, abortPromise]);
+    },
+    cleanup(): void {
+      if (listener) {
+        signal.removeEventListener("abort", listener);
+        listener = null;
+      }
+    },
+  };
+}
+
+function normaliseSpawnFailure(error: unknown): unknown {
+  if (error instanceof Error && error.name === "AbortError") {
+    const abortCause = (error as Error & { cause?: unknown }).cause;
+    if (abortCause instanceof Error) {
+      return abortCause;
+    }
+    if (abortCause !== undefined && abortCause !== null) {
+      return normaliseAbortReason(abortCause);
+    }
+  }
+  return error;
+}
+
+function normaliseAbortReason(reason: unknown): Error {
+  if (reason instanceof Error) {
+    return reason;
+  }
+  if (typeof reason === "string" && reason.trim().length > 0) {
+    return new Error(reason);
+  }
+  return new Error("Child process aborted");
 }
 
 /**

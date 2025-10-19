@@ -9,6 +9,7 @@ import { StructuredLogger } from "../src/logger.js";
 import { StigmergyField } from "../src/coord/stigmergy.js";
 import { ContractNetWatcherTelemetryRecorder } from "../src/coord/contractNetWatchers.js";
 import { BehaviorTreeStatusRegistry } from "../src/monitor/btStatusRegistry.js";
+import { setTimeout as delay } from "node:timers/promises";
 import type { SupervisorSchedulerSnapshot } from "../src/agents/supervisor.js";
 import {
   DashboardSnapshot,
@@ -42,7 +43,12 @@ class StreamResponse {
   public finished = false;
   public readonly headers: Record<string, string> = {};
   private readonly chunks: Buffer[] = [];
-  private readonly closeListeners: Array<() => void> = [];
+  /**
+   * Minimal event registry so the stub mirrors Node's EventEmitter surface for
+   * the `ServerResponse`. The dashboard router relies on `on`, `off`, and
+   * `removeListener` when wiring SSE lifecycle hooks, hence the dedicated map.
+   */
+  private readonly listeners = new Map<string, Set<(...args: unknown[]) => void>>();
 
   writeHead(status: number, headers?: Record<string, string | number>): ServerResponse {
     this.statusCode = status;
@@ -67,20 +73,45 @@ class StreamResponse {
       this.write(chunk);
     }
     this.finished = true;
-    for (const listener of this.closeListeners) {
-      try {
-        listener();
-      } catch {
-        // Ignore close listener failures in tests to keep assertions focused on SSE output.
-      }
-    }
+    this.emit("close");
   }
 
-  on(event: string, listener: () => void): this {
-    if (event === "close") {
-      this.closeListeners.push(listener);
+  /** Registers an event listener mirroring Node's {@link EventEmitter.on}. */
+  on(event: string, listener: (...args: unknown[]) => void): this {
+    let handlers = this.listeners.get(event);
+    if (!handlers) {
+      handlers = new Set();
+      this.listeners.set(event, handlers);
     }
+    handlers.add(listener);
     return this;
+  }
+
+  /** Removes an event listener, supporting both `off` and `removeListener`. */
+  off(event: string, listener: (...args: unknown[]) => void): this {
+    const handlers = this.listeners.get(event);
+    handlers?.delete(listener);
+    return this;
+  }
+
+  removeListener(event: string, listener: (...args: unknown[]) => void): this {
+    return this.off(event, listener);
+  }
+
+  /** Emits an event to all registered handlers. */
+  emit(event: string, ...args: unknown[]): boolean {
+    const handlers = this.listeners.get(event);
+    if (!handlers || handlers.size === 0) {
+      return false;
+    }
+    for (const handler of Array.from(handlers)) {
+      try {
+        handler(...args);
+      } catch {
+        // Test stubs swallow listener exceptions to keep assertions focused.
+      }
+    }
+    return true;
   }
 
   /** Returns the concatenated SSE body for convenience. */
@@ -88,12 +119,25 @@ class StreamResponse {
     return Buffer.concat(this.chunks).toString("utf8");
   }
 
-  /** Extracts the JSON payloads emitted through `data:` SSE lines. */
+  /**
+   * Extracts the JSON payloads emitted through `data:` SSE lines. Recent
+   * refactors include `id`/`event` headers per frame, hence the explicit scan
+   * of each line rather than assuming the chunk begins with `data:`.
+   */
   get dataEvents(): string[] {
-    return this.body
-      .split("\n\n")
-      .filter((entry) => entry.startsWith("data: "))
-      .map((entry) => entry.slice("data: ".length));
+    const events: string[] = [];
+    const frames = this.body.split("\n\n");
+    for (const frame of frames) {
+      if (!frame.trim()) {
+        continue;
+      }
+      for (const line of frame.split("\n")) {
+        if (line.startsWith("data: ")) {
+          events.push(line.slice("data: ".length));
+        }
+      }
+    }
+    return events;
   }
 }
 
@@ -109,6 +153,26 @@ function createRequest(method: string, path: string, body?: unknown): IncomingMe
     "content-type": "application/json",
   } as Record<string, string>;
   return request;
+}
+
+/**
+ * Awaits until the SSE response has emitted at least {@link minCount} events or the timeout elapses.
+ * The helper mirrors the asynchronous flushing behaviour introduced by the bounded SSE buffer.
+ */
+async function waitForSseEvents(
+  response: StreamResponse,
+  minCount: number,
+  timeoutMs = 1_000,
+): Promise<string[]> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() <= deadline) {
+    const events = response.dataEvents;
+    if (events.length >= minCount) {
+      return events;
+    }
+    await delay(10);
+  }
+  return response.dataEvents;
 }
 
 describe("monitor/dashboard streams", () => {
@@ -160,7 +224,7 @@ describe("monitor/dashboard streams", () => {
       expect(response.statusCode).to.equal(200);
       expect(response.headers["content-type"]).to.equal("text/event-stream");
 
-      const initialEvents = response.dataEvents;
+      const initialEvents = await waitForSseEvents(response, 1);
       expect(initialEvents).to.have.lengthOf.at.least(1);
 
       const firstSnapshot = JSON.parse(initialEvents[0]) as DashboardSnapshot;
@@ -196,7 +260,7 @@ describe("monitor/dashboard streams", () => {
       };
 
       router.broadcast();
-      const afterBroadcast = response.dataEvents;
+      const afterBroadcast = await waitForSseEvents(response, initialEvents.length + 1);
       expect(afterBroadcast.length).to.be.greaterThan(initialEvents.length);
 
       const latestSnapshot = JSON.parse(afterBroadcast[afterBroadcast.length - 1]) as DashboardSnapshot;
@@ -261,7 +325,7 @@ describe("monitor/dashboard streams", () => {
       const response = new StreamResponse();
       await router.handleRequest(createRequest("GET", "/stream"), response as unknown as ServerResponse);
 
-      const events = response.dataEvents;
+      const events = await waitForSseEvents(response, 1);
       expect(events.length).to.be.greaterThan(0);
 
       const payload = events[0];

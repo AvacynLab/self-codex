@@ -42,7 +42,8 @@
     "eval:scenarios": "node --import tsx scripts/eval.ts",
     "coverage": "npm run build --silent && c8 --reporter=text-summary --reporter=lcov --reporter=html --check-coverage --statements 85 --functions 85 --lines 85 --branches 70 --exclude \"dist/**\" node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --file tests/setup.ts \"tests/**/*.test.ts\"",
     "bench:scheduler": "node --import tsx tests/perf/scheduler.bench.ts",
-    "lint": "npm run lint:types && npm run lint:node-builtins && npm run lint:dead-code",
+    "lint": "npm run lint:types && npm run lint:eslint && npm run lint:node-builtins && npm run lint:dead-code",
+    "lint:eslint": "eslint --ext .ts src tests scripts",
     "lint:types": "tsc --noEmit --pretty false && tsc --noEmit --project tsconfig.tests.json && tsc --noEmit --project graph-forge/tsconfig.json",
     "lint:node-builtins": "node --import tsx scripts/checkNodeBuiltins.ts",
     "lint:dead-code": "node --import tsx scripts/findDeadExports.ts",
@@ -63,9 +64,13 @@
     "@types/chai": "^4.3.12",
     "@types/mocha": "^10.0.6",
     "@types/node": "^20.14.12",
+    "@typescript-eslint/eslint-plugin": "^8.14.0",
+    "@typescript-eslint/parser": "^8.14.0",
     "c8": "^9.1.0",
     "chai": "^5.1.1",
     "cross-env": "^7.0.3",
+    "eslint": "^9.14.0",
+    "eslint-config-prettier": "^9.1.0",
     "fast-check": "^4.3.0",
     "mocha": "^10.7.0",
     "sinon": "^17.0.1",
@@ -74,7 +79,7 @@
     "typescript": "^5.6.3"
   },
   "engines": {
-    "node": ">=20.0.0",
+    "node": ">=20 <21",
     "npm": ">=9"
   },
   "license": "MIT"

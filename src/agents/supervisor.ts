@@ -2,7 +2,7 @@ import { StructuredLogger } from "../logger.js";
 import type { ChildRecordSnapshot } from "../state/childrenIndex.js";
 import type { LoopReconciler, LoopTickContext } from "../executor/loop.js";
 import type { LoopAlert } from "../guard/loopDetector.js";
-import { extractCorrelationHints, mergeCorrelationHints, type EventCorrelationHints } from "../events/correlation.js";
+import { extractCorrelationHints, type EventCorrelationHints } from "../events/correlation.js";
 
 /**
  * Minimal subset of the {@link ChildSupervisor} consumed by the supervisor.

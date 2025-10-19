@@ -87,4 +87,32 @@ describe("child_spawn_codex HTTP descriptor", () => {
 
     supervisor.gc(result.child_id);
   });
+
+  it("normalises the HTTP descriptor when overrides contain whitespace", async () => {
+    process.env.MCP_HTTP_STATELESS = "true";
+    process.env.MCP_HTTP_HOST = "   ";
+    process.env.MCP_HTTP_PORT = "not-a-number";
+    process.env.MCP_HTTP_PATH = "child-endpoint";
+    delete process.env.MCP_HTTP_TOKEN;
+
+    const context: ChildToolContext = {
+      supervisor,
+      logger: new StructuredLogger(),
+      idempotency: new IdempotencyRegistry(),
+    };
+
+    const result = await handleChildSpawnCodex(context, {
+      prompt: { system: "Bridge requests." },
+      limits: null,
+    });
+
+    expect(result.endpoint).to.not.equal(null);
+    const endpoint = result.endpoint!;
+    expect(endpoint.url).to.equal("http://127.0.0.1:8765/child-endpoint");
+    expect(endpoint.headers.authorization).to.equal(undefined);
+    expect(endpoint.headers.accept).to.equal("application/json");
+    expect(endpoint.headers["content-type"]).to.equal("application/json");
+
+    supervisor.gc(result.child_id);
+  });
 });

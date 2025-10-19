@@ -22,8 +22,6 @@ import {
   PlanReduceInputSchema,
   PlanCompileBTInputSchema,
   PlanCompileBTInputShape,
-  PlanCompileExecuteInputSchema,
-  PlanCompileExecuteInputShape,
   PlanRunBTInputSchema,
   PlanRunReactiveInputSchema,
   PlanDryRunInputSchema,

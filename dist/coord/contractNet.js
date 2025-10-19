@@ -397,7 +397,7 @@ export class ContractNetCoordinator {
         const bias = call.heuristics.agentBias.get(bid.agentId) ?? 0;
         return bid.cost + busyPenalty - preferenceBoost - bias;
     }
-    breakTie(call, challenger, incumbent) {
+    breakTie(_call, challenger, incumbent) {
         const incumbentBusy = this.activeAssignments.get(incumbent.agentId) ?? 0;
         const challengerBusy = this.activeAssignments.get(challenger.agentId) ?? 0;
         if (challengerBusy < incumbentBusy) {

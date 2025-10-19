@@ -1,5 +1,5 @@
 import { Buffer } from "node:buffer";
-import process from "node:process";
+import { readInt } from "../config/env.js";
 import { setTimeout as delay } from "node:timers/promises";
 import { TextEncoder } from "node:util";
 
@@ -214,39 +214,25 @@ const DEFAULT_MAX_BUFFERED_BYTES = 512 * 1024;
 /** Default timeout granted to downstream writers when flushing SSE frames (in milliseconds). */
 const DEFAULT_EMIT_TIMEOUT_MS = 5_000;
 
-function parsePositiveInteger(value: string | undefined, fallback: number): number {
-  if (!value) {
-    return fallback;
-  }
-  const parsed = Number.parseInt(value, 10);
-  if (!Number.isFinite(parsed) || parsed <= 0) {
-    return fallback;
-  }
-  return parsed;
-}
-
 function resolveMaxChunkBytes(override?: number): number {
   if (override && override > 0) {
     return override;
   }
-  const envValue = process.env.MCP_SSE_MAX_CHUNK_BYTES;
-  return parsePositiveInteger(envValue, DEFAULT_MAX_CHUNK_BYTES);
+  return readInt("MCP_SSE_MAX_CHUNK_BYTES", DEFAULT_MAX_CHUNK_BYTES, { min: 1 });
 }
 
 function resolveMaxBufferedBytes(override?: number): number {
   if (override && override > 0) {
     return override;
   }
-  const envValue = process.env.MCP_SSE_MAX_BUFFER;
-  return parsePositiveInteger(envValue, DEFAULT_MAX_BUFFERED_BYTES);
+  return readInt("MCP_SSE_MAX_BUFFER", DEFAULT_MAX_BUFFERED_BYTES, { min: 1 });
 }
 
 function resolveEmitTimeoutMs(override?: number): number {
   if (override && override > 0) {
     return override;
   }
-  const envValue = process.env.MCP_SSE_EMIT_TIMEOUT_MS;
-  return parsePositiveInteger(envValue, DEFAULT_EMIT_TIMEOUT_MS);
+  return readInt("MCP_SSE_EMIT_TIMEOUT_MS", DEFAULT_EMIT_TIMEOUT_MS, { min: 1 });
 }
 
 const utf8Encoder = new TextEncoder();

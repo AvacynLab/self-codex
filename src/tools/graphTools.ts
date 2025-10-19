@@ -67,15 +67,6 @@ type GraphForgeModule = {
       readonly maxDeviation?: number;
     },
   ) => Array<{ distance: number; path: string[]; visitedOrder: string[] }>;
-  readonly shortestPath: (
-    graph: GraphForgeModelInstance,
-    start: string,
-    goal: string,
-    options?: {
-      readonly weightAttribute?: string;
-      readonly costFunction?: GraphForgeEdgeCostDescriptor | string | ((edge: unknown, graph: unknown) => number);
-    },
-  ) => { distance: number; path: string[]; visitedOrder: string[] };
   readonly betweennessCentrality: (
     graph: GraphForgeModelInstance,
     options?: {
@@ -105,7 +96,6 @@ const {
   GraphModel,
   betweennessCentrality,
   kShortestPaths,
-  shortestPath,
   constrainedShortestPath,
 } = (await loadGraphForge()) as unknown as GraphForgeModule;
 
@@ -2965,7 +2955,7 @@ function buildSimulationContext(
     }
     incoming.get(edge.to)!.push(edge.from);
   }
-  for (const [id, list] of incoming.entries()) {
+  for (const [, list] of incoming.entries()) {
     list.sort();
   }
 
@@ -4281,8 +4271,8 @@ function mapToSortedRecord(
 
 function computeMinimumEdgeCut(
   descriptor: NormalisedGraph,
-  adjacency: Map<string, string[]>,
-  indegree: Map<string, number>,
+  _adjacency: Map<string, string[]>,
+  _indegree: Map<string, number>,
   entrypoints: string[],
   sinks: string[],
 ): { size: number; edges: Array<{ from: string; to: string }> } | null {

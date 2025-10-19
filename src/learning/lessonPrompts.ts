@@ -1,5 +1,6 @@
 import type { LessonRecord, LessonSignal } from "./lessons.js";
 import { LessonsStore } from "./lessons.js";
+import { readOptionalInt } from "../config/env.js";
 
 /** Default number of recalled lessons injected into a prompt. */
 const DEFAULT_LESSON_RECALL_LIMIT = 3;
@@ -14,15 +15,11 @@ const MAX_LESSON_RECALL_LIMIT = 6;
  * and enforces a conservative ceiling so prompts remain concise.
  */
 export function resolveLessonRecallLimit(): number {
-  const raw = process.env.LESSONS_MAX;
-  if (!raw) {
+  const override = readOptionalInt("LESSONS_MAX", { min: 1 });
+  if (override === undefined) {
     return DEFAULT_LESSON_RECALL_LIMIT;
   }
-  const parsed = Number.parseInt(raw, 10);
-  if (!Number.isFinite(parsed) || parsed <= 0) {
-    return DEFAULT_LESSON_RECALL_LIMIT;
-  }
-  return Math.min(MAX_LESSON_RECALL_LIMIT, parsed);
+  return Math.min(MAX_LESSON_RECALL_LIMIT, override);
 }
 /** Confidence floor applied when recalling lessons for a prompt. */
 const LESSON_MIN_CONFIDENCE = 0.45;

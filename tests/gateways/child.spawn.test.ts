@@ -100,7 +100,13 @@ describe("gateways/childProcess.spawn", () => {
     };
 
     const handle = gateway.spawn(options);
+
+    // The gateway attaches a single `close` listener so timeout guards are
+    // released even when Node emits `close` without an `exit` event.
+    expect(handle.child.listenerCount("close")).to.equal(1);
     handle.dispose();
+
+    expect(handle.child.listenerCount("close")).to.equal(0);
 
     expect(invocations).to.have.lengthOf(1);
     const invocation = invocations[0];

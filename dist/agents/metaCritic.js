@@ -360,6 +360,7 @@ export class MetaCritic {
             suggestions: uniqueSuggestions,
             breakdown,
             fingerprint: fingerprintPayload(context.raw),
+            lessons: [],
         };
     }
 }

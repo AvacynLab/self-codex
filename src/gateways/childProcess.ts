@@ -41,7 +41,16 @@ export interface SpawnedChildProcess {
   readonly child: ChildProcess;
   /** Abort signal controlling the lifecycle of the child process. */
   readonly signal: AbortSignal | undefined;
-  /** Clears internal listeners and timeout guards. */
+  /**
+   * Clears internal listeners and timeout guards.
+   *
+   * @remarks The orchestrator only calls {@link dispose} when the spawn attempt
+   * fails (for instance when the child crashes before it advertises readiness).
+   * Custom gateway implementations must therefore ensure any listeners
+   * required to enforce timeouts stay attached until the child exits naturally;
+   * they should not rely on {@link dispose} being invoked after a successful
+   * spawn.
+   */
   dispose(): void;
 }
 
@@ -141,20 +150,33 @@ export function createChildProcessGateway({
 
       abortManagement.arm(child);
 
-      const onSettled = () => {
+      /**
+       * Ensures the timeout guard and external abort listener are disposed at
+       * most once regardless of which lifecycle event fires first. Node can
+       * emit both `error` and `close` for certain failure modes therefore the
+       * helper guards against double cleanup to keep the bookkeeping tight.
+       */
+      let disposed = false;
+      const settle = () => {
+        if (disposed) {
+          return;
+        }
+        disposed = true;
         abortManagement.dispose();
       };
 
-      child.once("exit", onSettled);
-      child.once("error", onSettled);
+      child.once("exit", settle);
+      child.once("error", settle);
+      child.once("close", settle);
 
       return {
         child,
         signal: abortManagement.signal,
         dispose(): void {
-          child.removeListener("exit", onSettled);
-          child.removeListener("error", onSettled);
-          abortManagement.dispose();
+          child.removeListener("exit", settle);
+          child.removeListener("error", settle);
+          child.removeListener("close", settle);
+          settle();
         },
       };
     },

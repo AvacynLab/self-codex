@@ -22,16 +22,6 @@ export interface GraphAttributeIndex {
   };
 }
 
-function pushSorted(map: Map<string, string[]>, key: string, value: string): void {
-  const list = map.get(key);
-  if (list) {
-    list.push(value);
-    list.sort();
-  } else {
-    map.set(key, [value]);
-  }
-}
-
 function addNodeAttribute(
   index: Map<string, Map<GraphAttributeValue, string[]>>,
   nodeId: string,

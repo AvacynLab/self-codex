@@ -5,6 +5,7 @@ import type { ErrnoException } from "./nodePrimitives.js";
 import { getJsonRpcContext } from "./infra/jsonRpcContext.js";
 import { getActiveTraceContext, type TraceContextSnapshot } from "./infra/tracing.js";
 import type { JsonRpcRouteContext } from "./infra/runtime.js";
+import { readOptionalString } from "./config/env.js";
 // NOTE: Node built-in modules are imported with the explicit `node:` prefix to guarantee ESM resolution in Node.js.
 
 /** Default placeholder inserted when a secret token is redacted. */
@@ -190,7 +191,7 @@ export class StructuredLogger {
     this.logFile = options.logFile ?? undefined;
     this.maxFileSizeBytes = options.maxFileSizeBytes ?? DEFAULT_MAX_FILE_SIZE;
     this.maxFileCount = Math.max(1, options.maxFileCount ?? DEFAULT_MAX_FILE_COUNT);
-    const directives = parseRedactionDirectives(process.env.MCP_LOG_REDACT);
+    const directives = parseRedactionDirectives(readOptionalString("MCP_LOG_REDACT", { allowEmpty: true }));
     const combined = new Set<string | RegExp>(directives.tokens);
     if (options.redactSecrets) {
       for (const entry of options.redactSecrets) {

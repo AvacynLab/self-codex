@@ -1,4 +1,8 @@
 import { EventEmitter } from "node:events";
+/** Maximum number of tool router decisions preserved in memory. */
+const TOOL_ROUTER_HISTORY_LIMIT = 200;
+/** Maximum number of latency samples preserved for tool router aggregates. */
+const TOOL_ROUTER_LATENCY_LIMIT = 100;
 /** Base error emitted by the resource registry. */
 export class ResourceRegistryError extends Error {
     code;
@@ -712,6 +716,64 @@ function cloneBlackboardFilterDescriptor(filter) {
     }
     return Object.keys(snapshot).length > 0 ? snapshot : undefined;
 }
+/** Normalises heterogeneous metadata fields into lowercase domain labels. */
+function extractRouterDomains(context) {
+    const domains = new Set();
+    const append = (value) => {
+        if (typeof value !== "string") {
+            return;
+        }
+        const trimmed = value.trim().toLowerCase();
+        if (trimmed.length > 0) {
+            domains.add(trimmed);
+        }
+    };
+    if (context.category) {
+        append(context.category);
+    }
+    if (context.metadata) {
+        const metadata = context.metadata;
+        if (metadata.category !== undefined) {
+            append(metadata.category);
+        }
+        if (Array.isArray(metadata.categories)) {
+            for (const value of metadata.categories) {
+                append(value);
+            }
+        }
+        if (metadata.domain !== undefined) {
+            append(metadata.domain);
+        }
+        if (Array.isArray(metadata.domains)) {
+            for (const value of metadata.domains) {
+                append(value);
+            }
+        }
+    }
+    return Array.from(domains);
+}
+/** Computes the integer median of the provided samples. */
+function computeMedian(values) {
+    if (!values.length) {
+        return null;
+    }
+    const sorted = [...values].sort((a, b) => a - b);
+    const mid = Math.floor(sorted.length / 2);
+    if (sorted.length % 2 === 1) {
+        return sorted[mid];
+    }
+    const lower = sorted[mid - 1];
+    const upper = sorted[mid];
+    return Math.round((lower + upper) / 2);
+}
+/** Computes the rounded arithmetic mean of the provided samples. */
+function computeAverage(values) {
+    if (!values.length) {
+        return null;
+    }
+    const sum = values.reduce((acc, value) => acc + value, 0);
+    return Math.round(sum / values.length);
+}
 /** Maintains deterministic MCP resource metadata and snapshots. */
 export class ResourceRegistry {
     graphHistories = new Map();
@@ -720,6 +782,18 @@ export class ResourceRegistry {
     childHistories = new Map();
     blackboardHistories = new Map();
     validationArtifacts = new Map();
+    toolRouterHistory = {
+        decisions: [],
+        lastSeq: 0,
+        emitter: new EventEmitter(),
+        aggregates: {
+            decisionCount: 0,
+            domains: new Set(),
+            successes: 0,
+            failures: 0,
+            latencies: [],
+        },
+    };
     runHistoryLimit;
     childLogHistoryLimit;
     blackboardHistoryLimit;
@@ -845,6 +919,54 @@ export class ResourceRegistry {
             history.events.splice(0, history.events.length - this.runHistoryLimit);
         }
         history.emitter.emit("event", payload);
+    }
+    /** Records a decision emitted by the contextual tool router. */
+    recordToolRouterDecision(record) {
+        const history = this.toolRouterHistory;
+        const seq = history.lastSeq + 1;
+        const entry = {
+            seq,
+            ts: record.decision.decidedAt ?? Date.now(),
+            tool: record.decision.tool,
+            score: record.decision.score,
+            reason: record.decision.reason,
+            candidates: record.decision.candidates.map((candidate) => clone(candidate)),
+            context: clone(record.context),
+            requestId: record.requestId ?? null,
+            traceId: record.traceId ?? null,
+            runId: record.runId ?? null,
+            jobId: record.jobId ?? null,
+            childId: record.childId ?? null,
+            elapsedMs: record.elapsedMs ?? null,
+        };
+        history.decisions.push(entry);
+        if (history.decisions.length > TOOL_ROUTER_HISTORY_LIMIT) {
+            history.decisions.splice(0, history.decisions.length - TOOL_ROUTER_HISTORY_LIMIT);
+        }
+        history.lastSeq = seq;
+        const aggregates = history.aggregates;
+        aggregates.decisionCount += 1;
+        for (const domain of extractRouterDomains(record.context)) {
+            aggregates.domains.add(domain);
+        }
+        history.emitter.emit("event", entry);
+    }
+    /** Records an outcome emitted by the contextual tool router. */
+    recordToolRouterOutcome(outcome) {
+        const aggregates = this.toolRouterHistory.aggregates;
+        if (outcome.success) {
+            aggregates.successes += 1;
+        }
+        else {
+            aggregates.failures += 1;
+        }
+        if (Number.isFinite(outcome.latencyMs)) {
+            const latency = Math.max(0, Math.round(outcome.latencyMs));
+            aggregates.latencies.push(latency);
+            if (aggregates.latencies.length > TOOL_ROUTER_LATENCY_LIMIT) {
+                aggregates.latencies.splice(0, aggregates.latencies.length - TOOL_ROUTER_LATENCY_LIMIT);
+            }
+        }
     }
     /** Records a log entry produced by a child runtime. */
     recordChildLogEntry(childId, entry) {
@@ -1028,6 +1150,25 @@ export class ResourceRegistry {
             }
             entries.push({ uri, kind: artifact.kind, metadata });
         }
+        if (this.toolRouterHistory.decisions.length > 0) {
+            const aggregates = this.toolRouterHistory.aggregates;
+            const outcomeCount = aggregates.successes + aggregates.failures;
+            const successRate = outcomeCount > 0 ? aggregates.successes / outcomeCount : null;
+            const medianLatency = computeMedian(aggregates.latencies);
+            const averageLatency = computeAverage(aggregates.latencies);
+            entries.push({
+                uri: "sc://tool-router/decisions",
+                kind: "tool_router_decisions",
+                metadata: {
+                    decision_count: this.toolRouterHistory.decisions.length,
+                    latest_seq: this.toolRouterHistory.lastSeq,
+                    domains: aggregates.domains.size > 0 ? Array.from(aggregates.domains).sort() : [],
+                    success_rate: successRate !== null ? Math.round(successRate * 1000) / 1000 : null,
+                    median_latency_ms: medianLatency,
+                    estimated_cost_ms: averageLatency,
+                },
+            });
+        }
         const filtered = prefix ? entries.filter((entry) => entry.uri.startsWith(prefix)) : entries;
         return filtered.sort((a, b) => a.uri.localeCompare(b.uri));
     }
@@ -1151,6 +1292,29 @@ export class ResourceRegistry {
                 };
                 return { uri, kind: parsed.kind, payload };
             }
+            case "tool_router_decisions": {
+                const decisions = this.toolRouterHistory.decisions.map((entry) => clone(entry));
+                const aggregates = this.toolRouterHistory.aggregates;
+                const outcomeCount = aggregates.successes + aggregates.failures;
+                const successRate = outcomeCount > 0 ? aggregates.successes / outcomeCount : null;
+                const medianLatency = computeMedian(aggregates.latencies);
+                const averageLatency = computeAverage(aggregates.latencies);
+                return {
+                    uri,
+                    kind: "tool_router_decisions",
+                    payload: {
+                        decisions,
+                        latestSeq: this.toolRouterHistory.lastSeq,
+                        aggregates: {
+                            decisionCount: aggregates.decisionCount,
+                            successRate: successRate !== null ? Math.round(successRate * 1000) / 1000 : null,
+                            medianLatencyMs: medianLatency,
+                            estimatedCostMs: averageLatency,
+                            domains: aggregates.domains.size > 0 ? Array.from(aggregates.domains).sort() : [],
+                        },
+                    },
+                };
+            }
             default:
                 throw new ResourceNotFoundError(uri);
         }
@@ -1224,6 +1388,10 @@ export class ResourceRegistry {
                 }
                 return result;
             }
+            case "tool_router_decisions": {
+                const page = this.sliceToolRouterHistory(this.toolRouterHistory, fromSeq, limit);
+                return { uri, kind: "tool_router_decisions", events: page.events, nextSeq: page.nextSeq };
+            }
             default:
                 throw new ResourceWatchUnsupportedError(uri);
         }
@@ -1288,6 +1456,18 @@ export class ResourceRegistry {
                         }
                         : undefined,
                     slice: (cursor, pageLimit) => this.sliceBlackboardHistory(history, cursor, pageLimit, filter),
+                });
+            }
+            case "tool_router_decisions": {
+                const history = this.toolRouterHistory;
+                return this.createWatchStream({
+                    uri,
+                    kind: "tool_router_decisions",
+                    emitter: history.emitter,
+                    fromSeq,
+                    limit,
+                    signal: options.signal ?? null,
+                    slice: (cursor, pageLimit) => this.sliceToolRouterHistory(history, cursor, pageLimit),
                 });
             }
             default:
@@ -1359,6 +1539,33 @@ export class ResourceRegistry {
                 if (events.length >= limit) {
                     break;
                 }
+            }
+        }
+        let nextSeq;
+        if (events.length > 0) {
+            nextSeq = Math.max(events[events.length - 1].seq, fromSeq);
+        }
+        else if (processedAny) {
+            nextSeq = Math.max(lastProcessedSeq, fromSeq, history.lastSeq);
+        }
+        else {
+            nextSeq = Math.max(fromSeq, history.lastSeq);
+        }
+        return { events, nextSeq };
+    }
+    sliceToolRouterHistory(history, fromSeq, limit) {
+        const sorted = history.decisions
+            .filter((entry) => entry.seq > fromSeq)
+            .sort((a, b) => a.seq - b.seq);
+        const events = [];
+        let lastProcessedSeq = fromSeq;
+        let processedAny = false;
+        for (const entry of sorted) {
+            processedAny = true;
+            lastProcessedSeq = entry.seq;
+            events.push(clone(entry));
+            if (events.length >= limit) {
+                break;
             }
         }
         let nextSeq;
@@ -1651,6 +1858,9 @@ export class ResourceRegistry {
                 throw new ResourceNotFoundError(uri);
             }
             return { kind: "child_logs", childId };
+        }
+        if (body === "tool-router/decisions") {
+            return { kind: "tool_router_decisions" };
         }
         if (body.startsWith("blackboard/")) {
             const namespace = body.slice("blackboard/".length);

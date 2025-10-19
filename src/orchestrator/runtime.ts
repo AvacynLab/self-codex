@@ -8,6 +8,14 @@ import { readFile, writeFile } from "node:fs/promises";
 import { resolve as resolvePath, basename as pathBasename } from "node:path";
 import process from "node:process";
 import { runtimeTimers, type IntervalHandle } from "../runtime/timers.js";
+import {
+  readBool,
+  readInt,
+  readNumber,
+  readOptionalInt,
+  readOptionalString,
+  readString,
+} from "../config/env.js";
 import { GraphState, type ChildSnapshot, type JobSnapshot } from "../graphState.js";
 import { GraphTransactionManager, GraphTransactionError, GraphVersionConflictError } from "../graph/tx.js";
 import { GraphLockManager } from "../graph/locks.js";
@@ -58,7 +66,7 @@ import {
 } from "../serverOptions.js";
 import { ChildSupervisor, type ChildLogEventSnapshot } from "../childSupervisor.js";
 import { normaliseSandboxProfile } from "../children/sandbox.js";
-import { ChildRecordSnapshot, UnknownChildError } from "../state/childrenIndex.js";
+import { ChildRecordSnapshot } from "../state/childrenIndex.js";
 import { ChildCollectedOutputs, ChildRuntimeStatus } from "../childRuntime.js";
 import { Autoscaler } from "../agents/autoscaler.js";
 import { OrchestratorSupervisor, inferSupervisorIncidentCorrelation } from "../agents/supervisor.js";
@@ -85,11 +93,7 @@ import {
   recallLessons,
   seedLessons as seedLessonsUtility,
 } from "../learning/lessonPrompts.js";
-import {
-  buildLessonsPromptPayload,
-  normalisePromptBlueprint,
-  normalisePromptMessages,
-} from "../learning/lessonPromptDiff.js";
+import { buildLessonsPromptPayload, normalisePromptBlueprint } from "../learning/lessonPromptDiff.js";
 import { selectMemoryContext } from "../memory/attention.js";
 import { LoopDetector } from "../guard/loopDetector.js";
 import { BlackboardStore } from "../coord/blackboard.js";
@@ -117,9 +121,6 @@ import {
 import {
   BudgetTracker,
   BudgetLimits,
-  BudgetConsumption,
-  BudgetCharge,
-  BudgetUsageMetadata,
   BudgetExceededError,
   estimateTokenUsage,
   measureBudgetBytes,
@@ -135,12 +136,7 @@ import {
   toJsonRpc,
 } from "../rpc/middleware.js";
 import { JsonRpcTimeoutError, resolveRpcTimeoutBudget, loadDefaultTimeoutOverride } from "../rpc/timeouts.js";
-import {
-  ToolComposeRegisterInputSchema,
-  ToolComposeRegisterInputShape,
-  ToolsListInputSchema,
-  ToolsListInputShape,
-} from "../rpc/schemas.js";
+import { ToolComposeRegisterInputSchema, ToolComposeRegisterInputShape, ToolsListInputSchema, ToolsListInputShape } from "../rpc/schemas.js";
 import {
   ChildCancelInputShape,
   ChildCancelInputSchema,
@@ -237,7 +233,6 @@ import {
   PlanToolContext,
   handlePlanFanout,
   handlePlanJoin,
-  handlePlanCompileExecute,
   handlePlanCompileBT,
   handlePlanRunBT,
   handlePlanRunReactive,
@@ -569,30 +564,14 @@ const contractNetWatcherTelemetry = new ContractNetWatcherTelemetryRecorder();
 
 /** Parses the optional TTL override for the idempotency cache. */
 function resolveIdempotencyTtlFromEnv(): number | undefined {
-  const raw = process.env.IDEMPOTENCY_TTL_MS;
-  if (!raw) {
-    return undefined;
-  }
-
-  const parsed = Number.parseInt(raw, 10);
-  if (!Number.isFinite(parsed) || parsed <= 0) {
-    return undefined;
-  }
-
-  return parsed;
+  // The override is opt-in because operators typically rely on the built-in TTL.
+  return readOptionalInt("IDEMPOTENCY_TTL_MS", { min: 1 });
 }
 
 /** Resolves the maximum number of vector documents kept in memory. */
 function resolveVectorIndexCapacity(): number {
-  const raw = process.env.MCP_MEMORY_VECTOR_MAX_DOCS;
-  if (!raw) {
-    return 1024;
-  }
-  const parsed = Number.parseInt(raw, 10);
-  if (!Number.isFinite(parsed) || parsed <= 0) {
-    return 1024;
-  }
-  return parsed;
+  // Keep the legacy default (1024 documents) while honouring positive overrides.
+  return readInt("MCP_MEMORY_VECTOR_MAX_DOCS", 1024, { min: 1 });
 }
 
 /** Resolves the default configuration used by the hybrid RAG retriever. */
@@ -603,17 +582,10 @@ function resolveHybridRetrieverOptions(): {
   overfetchFactor: number;
   minVectorScore: number;
 } {
-  let defaultLimit = 6;
-  const rawLimit = process.env.RETRIEVER_K;
-  if (rawLimit) {
-    const parsed = Number.parseInt(rawLimit, 10);
-    if (Number.isFinite(parsed) && parsed > 0) {
-      defaultLimit = Math.min(10, parsed);
-    }
-  }
+  const parsedLimit = readOptionalInt("RETRIEVER_K", { min: 1 });
+  const defaultLimit = parsedLimit === undefined ? 6 : Math.min(10, parsedLimit);
 
-  const bm25Raw = process.env.HYBRID_BM25 ?? "";
-  const bm25Enabled = /^(1|true|yes)$/i.test(bm25Raw.trim());
+  const bm25Enabled = readBool("HYBRID_BM25", false);
   const lexicalWeight = bm25Enabled ? 0.4 : 0.25;
   const vectorWeight = bm25Enabled ? 0.6 : 0.75;
 
@@ -627,25 +599,13 @@ function resolveHybridRetrieverOptions(): {
 }
 
 function resolveThoughtGraphOptions(): { maxBranches: number; maxDepth: number } {
-  const maxBranchesRaw = process.env.THOUGHTGRAPH_MAX_BRANCHES;
-  let maxBranches = 6;
-  if (maxBranchesRaw) {
-    const parsed = Number.parseInt(maxBranchesRaw, 10);
-    if (Number.isFinite(parsed) && parsed > 0) {
-      maxBranches = Math.min(20, parsed);
-    }
-  }
+  const maxBranchesOverride = readOptionalInt("THOUGHTGRAPH_MAX_BRANCHES", { min: 1 });
+  const maxDepthOverride = readOptionalInt("THOUGHTGRAPH_MAX_DEPTH", { min: 1 });
 
-  const maxDepthRaw = process.env.THOUGHTGRAPH_MAX_DEPTH;
-  let maxDepth = 4;
-  if (maxDepthRaw) {
-    const parsed = Number.parseInt(maxDepthRaw, 10);
-    if (Number.isFinite(parsed) && parsed > 0) {
-      maxDepth = Math.min(10, parsed);
-    }
-  }
-
-  return { maxBranches, maxDepth };
+  return {
+    maxBranches: maxBranchesOverride === undefined ? 6 : Math.min(20, maxBranchesOverride),
+    maxDepth: maxDepthOverride === undefined ? 4 : Math.min(10, maxDepthOverride),
+  };
 }
 
 /** Resolves the worker-pool configuration responsible for heavy graph workloads. */
@@ -654,35 +614,26 @@ function resolveGraphWorkerPoolOptions(): {
   changeSetSizeThreshold: number;
   workerTimeoutMs?: number;
 } {
-  const workersRaw = process.env.MCP_GRAPH_WORKERS;
-  let maxWorkers = 0;
-  if (workersRaw) {
-    const parsed = Number.parseInt(workersRaw, 10);
-    if (Number.isFinite(parsed) && parsed > 0) {
-      maxWorkers = parsed;
-    }
-  }
-
-  const thresholdRaw = process.env.MCP_GRAPH_POOL_THRESHOLD;
-  let changeSetSizeThreshold = 6;
-  if (thresholdRaw) {
-    const parsed = Number.parseInt(thresholdRaw, 10);
-    if (Number.isFinite(parsed) && parsed >= 0) {
-      changeSetSizeThreshold = parsed;
-    }
-  }
-
-  const timeoutRaw = process.env.MCP_GRAPH_WORKER_TIMEOUT_MS;
-  let workerTimeoutMs: number | undefined;
-  if (timeoutRaw) {
-    const parsed = Number.parseInt(timeoutRaw, 10);
-    if (Number.isFinite(parsed) && parsed > 0) {
-      workerTimeoutMs = parsed;
-    }
-  }
+  const maxWorkers = readOptionalInt("MCP_GRAPH_WORKERS", { min: 1 }) ?? 0;
+  const changeSetSizeThreshold = readOptionalInt("MCP_GRAPH_POOL_THRESHOLD", { min: 0 }) ?? 6;
+  const workerTimeoutMs = readOptionalInt("MCP_GRAPH_WORKER_TIMEOUT_MS", { min: 1 });
 
   return { maxWorkers, changeSetSizeThreshold, ...(workerTimeoutMs ? { workerTimeoutMs } : {}) };
 }
+
+/** Internal hook exposed exclusively for the unit tests covering env coercion. */
+export const __envRuntimeInternals = {
+  resolveIdempotencyTtlFromEnv,
+  resolveVectorIndexCapacity,
+  resolveHybridRetrieverOptions,
+  resolveThoughtGraphOptions,
+  resolveGraphWorkerPoolOptions,
+  resolveChildrenRootFromEnv,
+  resolveDefaultChildCommand,
+  resolveDefaultChildArgs,
+  resolveSandboxDefaults,
+  resolveRequestBudgetLimits,
+};
 
 const IDEMPOTENCY_TTL_OVERRIDE = resolveIdempotencyTtlFromEnv();
 /** Registry replaying cached results for idempotent operations. */
@@ -698,7 +649,8 @@ const vectorMemoryIndex = VectorMemoryIndex.createSync({
 });
 /** Shared vector memory dedicated to RAG ingestion workflows. */
 const ragRetrieverOptions = resolveHybridRetrieverOptions();
-const ragMemoryBackend = (process.env.MEM_BACKEND ?? "local").toLowerCase();
+// Honour the legacy MEM_BACKEND override while keeping case-insensitive comparisons deterministic.
+const ragMemoryBackend = readString("MEM_BACKEND", "local").toLowerCase();
 const ragMemoryPromise = LocalVectorMemory.create({
   directory: resolvePath(MEMORY_ROOT, "rag"),
   maxDocuments: resolveVectorIndexCapacity(),
@@ -903,40 +855,18 @@ function parseCountEnv(raw: string | undefined): number | undefined {
   return Math.floor(num);
 }
 
-function parseBooleanEnv(raw: string | undefined, defaultValue: boolean): boolean {
-  if (raw === undefined) {
-    return defaultValue;
-  }
-  const normalised = raw.trim().toLowerCase();
-  if (!normalised.length) {
-    return defaultValue;
-  }
-  if (["0", "false", "no", "off"].includes(normalised)) {
-    return false;
-  }
-  if (["1", "true", "yes", "on"].includes(normalised)) {
-    return true;
-  }
-  return defaultValue;
+/** Clamps the quality gate threshold to the documented 0-100 inclusive window. */
+function normaliseQualityThreshold(value: number): number {
+  return Math.min(100, Math.max(0, Math.round(value)));
 }
 
-function parseQualityThresholdEnv(raw: string | undefined, fallback: number): number {
-  if (raw === undefined) {
-    return fallback;
-  }
-  const parsed = Number(raw);
-  if (!Number.isFinite(parsed)) {
-    return fallback;
-  }
-  return Math.min(100, Math.max(0, Math.round(parsed)));
-}
-
-const redactionDirectives = parseRedactionDirectives(process.env.MCP_LOG_REDACT);
+const redactionDirectives = parseRedactionDirectives(readOptionalString("MCP_LOG_REDACT", { allowEmpty: true }));
 
 const baseLoggerOptions: LoggerOptions = {
-  logFile: process.env.MCP_LOG_FILE ?? undefined,
-  maxFileSizeBytes: parseSizeEnv(process.env.MCP_LOG_ROTATE_SIZE),
-  maxFileCount: parseCountEnv(process.env.MCP_LOG_ROTATE_KEEP),
+  // Keep file overrides consistent with the shared env helpers so CLI flags and env literals share the same trimming rules.
+  logFile: readOptionalString("MCP_LOG_FILE"),
+  maxFileSizeBytes: parseSizeEnv(readOptionalString("MCP_LOG_ROTATE_SIZE")),
+  maxFileCount: parseCountEnv(readOptionalString("MCP_LOG_ROTATE_KEEP")),
   redactSecrets: redactionDirectives.tokens,
   redactionEnabled: redactionDirectives.enabled,
 };
@@ -1100,9 +1030,9 @@ let lastInactivityThresholdMs = 120_000;
 const loopDetector = new LoopDetector();
 const REFLECTION_PRIORITY_KINDS: ReadonlySet<ReviewKind> = new Set(["code", "plan", "text"]);
 
-let reflectionEnabled = parseBooleanEnv(process.env.MCP_ENABLE_REFLECTION, true);
-let qualityGateEnabled = parseBooleanEnv(process.env.MCP_QUALITY_GATE, true);
-let qualityGateThreshold = parseQualityThresholdEnv(process.env.MCP_QUALITY_THRESHOLD, 70);
+let reflectionEnabled = readBool("MCP_ENABLE_REFLECTION", true);
+let qualityGateEnabled = readBool("MCP_QUALITY_GATE", true);
+let qualityGateThreshold = normaliseQualityThreshold(readNumber("MCP_QUALITY_THRESHOLD", 70));
 
 /**
  * Updates the reflection toggle using the value negotiated by the composition
@@ -1120,7 +1050,7 @@ export function configureQualityGateEnabled(next: boolean): void {
 
 /** Applies the quality threshold override while clamping it to the 0-100 band. */
 export function configureQualityGateThreshold(next: number): void {
-  qualityGateThreshold = Math.min(100, Math.max(0, Math.round(next)));
+  qualityGateThreshold = normaliseQualityThreshold(next);
 }
 
 /** Seeds the shared lessons store. Primarily used in integration tests. */
@@ -1178,10 +1108,13 @@ function setDefaultChildRuntime(runtime: string) {
   DEFAULT_CHILD_RUNTIME = runtime.trim() || "codex";
 }
 
-const CHILDREN_ROOT = process.env.MCP_CHILDREN_ROOT
-  ? resolvePath(process.cwd(), process.env.MCP_CHILDREN_ROOT)
-  : resolvePath(process.cwd(), "children");
+const CHILDREN_ROOT = resolveChildrenRootFromEnv();
 
+/**
+ * Parses the default argument vector applied to every child spawn. The helper
+ * keeps the legacy JSON format so operators can configure the payload via
+ * `MCP_CHILD_ARGS` while still benefitting from the centralised env parsing.
+ */
 function parseDefaultChildArgs(raw: string | undefined): string[] {
   if (!raw) {
     return [];
@@ -1238,18 +1171,50 @@ function parseSandboxProfileEnv(raw: string | undefined): string | null {
   return normaliseSandboxProfile(raw, "standard");
 }
 
-const REQUEST_BUDGET_LIMITS: BudgetLimits = {
-  timeMs: parseBudgetLimitEnv(process.env.MCP_REQUEST_BUDGET_TIME_MS),
-  tokens: parseBudgetLimitEnv(process.env.MCP_REQUEST_BUDGET_TOKENS),
-  toolCalls: parseBudgetLimitEnv(process.env.MCP_REQUEST_BUDGET_TOOL_CALLS),
-  bytesIn: parseBudgetLimitEnv(process.env.MCP_REQUEST_BUDGET_BYTES_IN),
-  bytesOut: parseBudgetLimitEnv(process.env.MCP_REQUEST_BUDGET_BYTES_OUT),
-};
+/** Resolves the root directory where child runtimes persist their artefacts. */
+function resolveChildrenRootFromEnv(baseDir: string = process.cwd()): string {
+  const override = readOptionalString("MCP_CHILDREN_ROOT");
+  return resolvePath(baseDir, override ?? "children");
+}
 
-const defaultChildCommand = process.env.MCP_CHILD_COMMAND ?? process.execPath;
-const defaultChildArgs = parseDefaultChildArgs(process.env.MCP_CHILD_ARGS);
-const sandboxDefaultProfile = parseSandboxProfileEnv(process.env.MCP_CHILD_SANDBOX_PROFILE ?? undefined);
-const sandboxAllowEnv = parseChildEnvAllowList(process.env.MCP_CHILD_ENV_ALLOW ?? undefined);
+/** Determines the default executable used to spawn child runtimes. */
+function resolveDefaultChildCommand(): string {
+  const override = readOptionalString("MCP_CHILD_COMMAND");
+  return override ?? process.execPath;
+}
+
+/** Parses the JSON-encoded argument vector advertised via MCP_CHILD_ARGS. */
+function resolveDefaultChildArgs(): string[] {
+  return parseDefaultChildArgs(readOptionalString("MCP_CHILD_ARGS"));
+}
+
+/** Collects the sandbox defaults derived from environment overrides. */
+function resolveSandboxDefaults(): { profile: string | null; allowEnv: string[] } {
+  const profile = parseSandboxProfileEnv(readOptionalString("MCP_CHILD_SANDBOX_PROFILE"));
+  const allowEnv = parseChildEnvAllowList(readOptionalString("MCP_CHILD_ENV_ALLOW"));
+  return { profile, allowEnv };
+}
+
+/** Derives the request budget ceilings surfaced to child manifests. */
+function resolveRequestBudgetLimits(): BudgetLimits {
+  return {
+    timeMs: parseBudgetLimitEnv(readOptionalString("MCP_REQUEST_BUDGET_TIME_MS")),
+    tokens: parseBudgetLimitEnv(readOptionalString("MCP_REQUEST_BUDGET_TOKENS")),
+    toolCalls: parseBudgetLimitEnv(readOptionalString("MCP_REQUEST_BUDGET_TOOL_CALLS")),
+    bytesIn: parseBudgetLimitEnv(readOptionalString("MCP_REQUEST_BUDGET_BYTES_IN")),
+    bytesOut: parseBudgetLimitEnv(readOptionalString("MCP_REQUEST_BUDGET_BYTES_OUT")),
+  };
+}
+
+const REQUEST_BUDGET_LIMITS: BudgetLimits = resolveRequestBudgetLimits();
+
+const defaultChildCommand = resolveDefaultChildCommand();
+const defaultChildArgs = resolveDefaultChildArgs();
+const { profile: sandboxDefaultProfile, allowEnv: sandboxAllowEnv } = resolveSandboxDefaults();
+
+if (sandboxDefaultProfile) {
+  logger.info("child_sandbox_profile_configured", { profile: sandboxDefaultProfile });
+}
 
 const childSupervisor = new ChildSupervisor({
   childrenRoot: CHILDREN_ROOT,
@@ -3092,13 +3057,6 @@ function stopHeartbeat(): void {
 // Orchestrateur (jobs/enfants)
 // ---------------------------
 
-
-function createJob(goal?: string): string {
-  const jobId = `job_${randomUUID()}`;
-  graphState.createJob(jobId, { goal, createdAt: now(), state: "running" });
-  return jobId;
-}
-
 function createChild(jobId: string, spec: SpawnChildSpec, ttl_s?: number): string {
   const childId = `child_${randomUUID()}`;
   const createdAt = now();
@@ -3431,7 +3389,6 @@ const GraphForgeAnalysisShape = {
   weight_key: z.string().optional()
 } as const;
 const GraphForgeAnalysisSchema = z.object(GraphForgeAnalysisShape);
-type GraphForgeAnalysisInput = z.infer<typeof GraphForgeAnalysisSchema>;
 
 const GraphForgeShape = {
   source: z.string().optional(),

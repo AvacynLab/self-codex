@@ -3,7 +3,7 @@ import type { ErrnoException } from "../nodePrimitives.js";
 import path from "node:path";
 // NOTE: Node built-in modules are imported with the explicit `node:` prefix to guarantee ESM resolution in Node.js.
 
-import { ensureDirectory, resolveWithin } from "../paths.js";
+import { ensureDirectory } from "../paths.js";
 import { safePath } from "../gateways/fsArtifacts.js";
 import type { GraphDescriptorPayload } from "../tools/graphTools.js";
 import {

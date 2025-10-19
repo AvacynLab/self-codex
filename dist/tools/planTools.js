@@ -5,7 +5,7 @@ import { runtimeTimers } from "../runtime/timers.js";
 import { z } from "zod";
 import { compileHierGraphToBehaviorTree } from "../executor/bt/compiler.js";
 import { BehaviorTreeInterpreter, buildBehaviorTree } from "../executor/bt/interpreter.js";
-import { CompiledBehaviorTreeSchema, } from "../executor/bt/types.js";
+import { CompiledBehaviorTreeSchema } from "../executor/bt/types.js";
 import { ReactiveScheduler, } from "../executor/reactiveScheduler.js";
 import { ExecutionLoop } from "../executor/loop.js";
 import { PlanLifecycleFeatureDisabledError, } from "../executor/planLifecycle.js";
@@ -13,7 +13,11 @@ import { BbSetInputSchema } from "./coordTools.js";
 import { ConsensusConfigSchema, majority as computeConsensusMajority, normaliseConsensusOptions, publishConsensusEvent, quorum as computeConsensusQuorum, weighted as computeConsensusWeighted, } from "../coord/consensus.js";
 import { buildIdempotencyCacheKey } from "../infra/idempotency.js";
 import { ensureDirectory, resolveWithin } from "../paths.js";
+import { parsePlannerPlan, PlannerSchemas } from "../planner/domain.js";
+import { compilePlannerPlan, generatePlanRunId } from "../planner/compileBT.js";
 import { PromptTemplateSchema, PromptVariablesSchema, renderPromptTemplate, } from "../prompts.js";
+import { buildLessonManifestContext, formatLessonsForPromptMessage, recallLessons, } from "../learning/lessonPrompts.js";
+import { buildLessonsPromptPayload, normalisePromptMessages, } from "../learning/lessonPromptDiff.js";
 import { applyAll, createInlineSubgraphRule, createRerouteAvoidRule, createSplitParallelRule } from "../graph/rewrite.js";
 import { resolveOperationId } from "./operationIds.js";
 import { flatten } from "../graph/hierarchy.js";
@@ -200,6 +204,20 @@ function serialiseValueGuardDecision(decision) {
         total: decision.total,
         threshold: decision.threshold,
         violations: decision.violations,
+    };
+}
+/**
+ * Reduces a value guard decision to the subset of fields required by the
+ * ThoughtGraph coordinator. The lightweight payload keeps join telemetry
+ * compact while still conveying how far the branch was from the threshold.
+ */
+function toThoughtGuardSnapshot(decision) {
+    return {
+        allowed: decision.allowed,
+        score: decision.score,
+        total: decision.total,
+        threshold: decision.threshold,
+        violationCount: decision.violations.length,
     };
 }
 /** Error raised when every fan-out branch violates the configured values. */
@@ -437,6 +455,15 @@ export const PlanCompileBTInputSchema = z
 })
     .strict();
 export const PlanCompileBTInputShape = PlanCompileBTInputSchema.shape;
+/** Input payload accepted by the `plan_compile_execute` tool. */
+export const PlanCompileExecuteInputSchema = z
+    .object({
+    plan: z.union([z.string().trim().min(1), PlannerSchemas.plan]),
+    dry_run: z.boolean().optional(),
+})
+    .extend(PlanCorrelationHintsSchema.shape)
+    .strict();
+export const PlanCompileExecuteInputShape = PlanCompileExecuteInputSchema.shape;
 /**
  * Input payload accepted by the `plan_run_bt` tool.
  *
@@ -823,6 +850,7 @@ async function spawnChildWithRetry(context, jobId, plan, template, sharedVariabl
     const createdAt = Date.now();
     const guardDecision = plan.valueDecision ?? null;
     const guardSnapshot = serialiseValueGuardDecision(guardDecision);
+    const eventCorrelation = toEventCorrelationHints(correlation);
     const correlationLogFields = {
         run_id: correlation.runId,
         op_id: correlation.opId,
@@ -848,7 +876,42 @@ async function spawnChildWithRetry(context, jobId, plan, template, sharedVariabl
         child_runtime: plan.runtime,
         child_index: childIndex,
     };
-    const { messages, summary } = renderPromptForChild(template, variables);
+    const lessonStore = context.lessonsStore ?? null;
+    const lessonRecall = lessonStore !== null
+        ? recallLessons(lessonStore, {
+            metadata: plan.metadata,
+            goals: plan.goals ?? [],
+            variables,
+            additionalTags: ["plan", plan.runtime ?? ""],
+        })
+        : { matches: [], tags: [] };
+    const lessonManifest = lessonStore && lessonRecall.matches.length > 0
+        ? buildLessonManifestContext(lessonRecall.matches, Date.now())
+        : null;
+    const lessonMessage = lessonStore && lessonRecall.matches.length > 0
+        ? formatLessonsForPromptMessage(lessonRecall.matches)
+        : null;
+    const rendered = renderPromptForChild(template, variables);
+    const promptBeforeLessons = normalisePromptMessages(rendered.messages);
+    let messages = rendered.messages;
+    let summary = rendered.summary;
+    if (lessonMessage) {
+        messages = [{ role: "system", content: lessonMessage }, ...messages];
+        summary = messages
+            .map((message) => `[${message.role}] ${message.content}`)
+            .join("\n");
+    }
+    const promptAfterLessons = normalisePromptMessages(messages);
+    const lessonsPromptPayload = lessonManifest && lessonRecall.matches.length > 0
+        ? buildLessonsPromptPayload({
+            source: "plan_fanout",
+            before: promptBeforeLessons,
+            after: promptAfterLessons,
+            topics: lessonRecall.matches.map((lesson) => lesson.topic),
+            tags: lessonRecall.tags,
+            totalLessons: lessonRecall.matches.length,
+        })
+        : null;
     let attempt = 0;
     while (attempt < retryPolicy.max_attempts) {
         cancellation.throwIfCancelled();
@@ -860,13 +923,17 @@ async function spawnChildWithRetry(context, jobId, plan, template, sharedVariabl
                 attempt,
                 ...correlationLogFields,
             });
+            const manifestExtras = buildFanoutManifestExtras(plan, correlation);
+            if (lessonManifest) {
+                manifestExtras.lessons_context = lessonManifest;
+            }
             const created = await context.supervisor.createChild({
                 childId,
                 command: plan.command,
                 args: plan.args,
                 env: plan.env,
                 metadata: buildFanoutChildMetadata(plan, variables, guardSnapshot, correlation),
-                manifestExtras: buildFanoutManifestExtras(plan, correlation),
+                manifestExtras,
                 waitForReady: true,
             });
             cancellation.throwIfCancelled();
@@ -874,6 +941,18 @@ async function spawnChildWithRetry(context, jobId, plan, template, sharedVariabl
             context.graphState.syncChildIndexSnapshot(created.index);
             context.graphState.recordChildHeartbeat(childId, runtimeStatus.lastHeartbeatAt ?? Date.now());
             context.graphState.patchChild(childId, { state: "ready" });
+            if (lessonsPromptPayload) {
+                context.emitEvent({
+                    kind: "PROMPT",
+                    jobId,
+                    childId,
+                    payload: {
+                        operation: "plan_fanout",
+                        lessons_prompt: lessonsPromptPayload,
+                    },
+                    correlation: eventCorrelation,
+                });
+            }
             await context.supervisor.send(childId, {
                 type: "prompt",
                 content: summary,
@@ -890,6 +969,20 @@ async function spawnChildWithRetry(context, jobId, plan, template, sharedVariabl
                 waitingFor: "response",
             });
             cancellation.throwIfCancelled();
+            if (lessonManifest) {
+                context.logger.logCognitive({
+                    actor: "lessons",
+                    phase: "prompt",
+                    childId,
+                    content: lessonRecall.matches[0]?.summary ?? "lessons_injected",
+                    metadata: {
+                        topics: lessonRecall.matches.map((lesson) => lesson.topic),
+                        tags: lessonRecall.tags,
+                        count: lessonRecall.matches.length,
+                        source: "plan_fanout",
+                    },
+                });
+            }
             if (guardDecision && context.valueGuard) {
                 context.valueGuard.registry.set(childId, guardDecision);
             }
@@ -1139,6 +1232,22 @@ export async function handlePlanFanout(context, input) {
         const parallelism = input.parallelism ?? Math.min(3, plans.length || 1);
         const spawned = await runWithConcurrency(parallelism, tasks, { cancellation });
         cancellation.throwIfCancelled();
+        if (spawned.length > 0) {
+            context.thoughtManager?.recordFanout({
+                jobId,
+                runId,
+                goal: input.goal ?? null,
+                parentChildId,
+                plannerNodeId: nodeId,
+                branches: spawned.map((child) => ({
+                    childId: child.childId,
+                    name: child.name,
+                    prompt: child.promptSummary,
+                    runtime: child.runtime,
+                })),
+                startedAt: createdAt,
+            });
+        }
         const runDirectory = await ensureDirectory(context.childrenRoot, runId);
         const mappingPath = resolveWithin(runDirectory, "fanout.json");
         const serialisedRejections = rejectedPlans.map((entry) => ({
@@ -1292,6 +1401,9 @@ export async function handlePlanJoin(context, input) {
         ...correlationPayload,
     });
     const observations = await Promise.all(input.children.map((childId) => observeChildForJoin(context, childId, timeoutMs)));
+    const primaryChildSnapshot = context.graphState.getChild(input.children[0]);
+    const jobId = providedCorrelation?.jobId ?? primaryChildSnapshot?.jobId ?? null;
+    const runId = providedCorrelation?.runId ?? (jobId ? `join-${jobId}` : "join-orphan");
     const successes = observations.filter((obs) => obs.status === "success");
     const failures = observations.filter((obs) => obs.status !== "success");
     const sorted = [...observations].sort((a, b) => {
@@ -1372,7 +1484,7 @@ export async function handlePlanJoin(context, input) {
         default:
             satisfied = false;
     }
-    const winningChild = sorted.find((obs) => obs.status === "success")?.childId ?? null;
+    let winningChild = sorted.find((obs) => obs.status === "success")?.childId ?? null;
     const consensusPayload = consensusDecision
         ? {
             mode: consensusDecision.mode,
@@ -1410,6 +1522,31 @@ export async function handlePlanJoin(context, input) {
             runId: correlationHints.runId ?? null,
             opId: correlationHints.opId ?? null,
         });
+    }
+    const guardSummaries = new Map();
+    if (context.valueGuard) {
+        for (const childId of input.children) {
+            const decision = context.valueGuard.registry.get(childId);
+            if (decision) {
+                guardSummaries.set(childId, toThoughtGuardSnapshot(decision));
+            }
+        }
+    }
+    const thoughtOutcome = context.thoughtManager?.recordJoin({
+        jobId,
+        runId,
+        policy: input.join_policy,
+        satisfied,
+        candidateWinner: winningChild,
+        observations: observations.map((obs) => ({
+            childId: obs.childId,
+            status: obs.status,
+            summary: obs.summary,
+            valueGuard: guardSummaries.get(obs.childId) ?? null,
+        })),
+    });
+    if (thoughtOutcome) {
+        winningChild = thoughtOutcome.winner ?? winningChild;
     }
     context.emitEvent({
         kind: "STATUS",
@@ -1740,6 +1877,98 @@ export function handlePlanCompileBT(context, input) {
     context.logger.info("plan_compile_bt", { graph_id: input.graph.id });
     const compiled = compileHierGraphToBehaviorTree(input.graph);
     return CompiledBehaviorTreeSchema.parse(compiled);
+}
+/**
+ * Compile a structured plan specification into an executable Behaviour Tree,
+ * register a lifecycle run, and expose the scheduling metadata required by
+ * monitoring dashboards.
+ */
+export function handlePlanCompileExecute(context, input) {
+    const plan = parsePlannerPlan(input.plan);
+    const dryRun = input.dry_run ?? true;
+    const opId = resolveOperationId(input.op_id, "plan_compile_execute");
+    const providedRunId = typeof input.run_id === "string" ? input.run_id.trim() : "";
+    const runId = providedRunId.length > 0 ? providedRunId : generatePlanRunId(plan.id);
+    const baseCorrelation = extractPlanCorrelationHints(input);
+    const correlationHints = {
+        ...(baseCorrelation ?? {}),
+        runId,
+        opId,
+    };
+    const compilation = compilePlannerPlan(plan);
+    const schedule = compilation.schedule;
+    const scheduleSnapshot = structuredClone(schedule);
+    const stats = {
+        total_tasks: plan.tasks.length,
+        phases: schedule.phases.length,
+        parallel_phases: schedule.phases.filter((phase) => phase.tasks.length > 1).length,
+        critical_path_length: schedule.criticalPath.length,
+        estimated_duration_ms: schedule.totalEstimatedDurationMs,
+        slacky_tasks: Object.values(schedule.tasks).filter((task) => task.slackMs > 0).length,
+    };
+    const estimatedWork = stats.estimated_duration_ms > 0 ? stats.estimated_duration_ms : stats.total_tasks;
+    registerPlanLifecycleRun(context, {
+        runId,
+        opId,
+        mode: "bt",
+        dryRun,
+        correlation: correlationHints,
+        estimatedWork,
+    });
+    recordPlanLifecycleEvent(context, runId, "start", {
+        plan_id: plan.id,
+        plan_version: plan.version ?? null,
+        total_tasks: stats.total_tasks,
+        phases: stats.phases,
+        estimated_duration_ms: stats.estimated_duration_ms,
+        dry_run: dryRun,
+    });
+    recordPlanLifecycleEvent(context, runId, "complete", {
+        plan_id: plan.id,
+        plan_version: plan.version ?? null,
+        compiled_at: Date.now(),
+        critical_path: schedule.criticalPath,
+    });
+    const eventCorrelation = toEventCorrelationHints(correlationHints);
+    context.emitEvent({
+        kind: "PLAN",
+        payload: {
+            event: "plan_compiled",
+            plan_id: plan.id,
+            plan_version: plan.version ?? null,
+            run_id: runId,
+            op_id: opId,
+            total_tasks: stats.total_tasks,
+            phases: stats.phases,
+            critical_path_length: stats.critical_path_length,
+            estimated_duration_ms: stats.estimated_duration_ms,
+        },
+        correlation: eventCorrelation,
+    });
+    context.logger.info("plan_compile_execute", {
+        plan_id: plan.id,
+        plan_version: plan.version ?? null,
+        run_id: runId,
+        op_id: opId,
+        dry_run: dryRun,
+        total_tasks: stats.total_tasks,
+        phases: stats.phases,
+    });
+    return {
+        run_id: runId,
+        op_id: opId,
+        plan_id: plan.id,
+        plan_version: plan.version ?? null,
+        dry_run: dryRun,
+        registered: Boolean(context.planLifecycle),
+        behavior_tree: compilation.behaviorTree,
+        schedule: scheduleSnapshot,
+        variable_bindings: structuredClone(compilation.variableBindings),
+        guard_conditions: structuredClone(compilation.guardConditions),
+        postconditions: structuredClone(compilation.postconditions),
+        plan: structuredClone(plan),
+        stats,
+    };
 }
 /**
  * Execute a Behaviour Tree by delegating leaf nodes to orchestrator tools. The

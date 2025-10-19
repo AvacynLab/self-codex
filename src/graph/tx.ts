@@ -59,7 +59,7 @@ export class GraphVersionConflictError extends GraphTransactionError {
 
 /** Error thrown when a caller references a transaction identifier that expired. */
 export class UnknownTransactionError extends GraphTransactionError {
-  constructor(txId: string) {
+  constructor(_txId: string) {
     super(ERROR_CODES.TX_NOT_FOUND, "transaction not found", "open a new transaction");
     this.name = "UnknownTransactionError";
   }

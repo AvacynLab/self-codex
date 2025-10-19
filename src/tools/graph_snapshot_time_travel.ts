@@ -9,7 +9,7 @@ import { GraphLockManager } from "../graph/locks.js";
 import type { NormalisedGraph } from "../graph/types.js";
 import { GraphTransactionManager, GraphVersionConflictError } from "../graph/tx.js";
 import { validateGraph, type GraphValidationIssue } from "../graph/validate.js";
-import { BudgetExceededError, type BudgetCharge } from "../infra/budget.js";
+import { BudgetExceededError } from "../infra/budget.js";
 import { IdempotencyRegistry, buildIdempotencyCacheKey } from "../infra/idempotency.js";
 import { getJsonRpcContext } from "../infra/jsonRpcContext.js";
 import { getActiveTraceContext } from "../infra/tracing.js";
@@ -366,10 +366,9 @@ export function createGraphSnapshotTimeTravelHandler(
         ? rpcContext.idempotencyKey.trim()
         : randomUUID());
 
-    let charge: BudgetCharge | null = null;
     try {
       if (rpcContext?.budget) {
-        charge = rpcContext.budget.consume(
+        rpcContext.budget.consume(
           { toolCalls: 1 },
           {
             actor: "facade",

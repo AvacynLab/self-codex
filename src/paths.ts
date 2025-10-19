@@ -3,13 +3,15 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import process from 'node:process';
 // NOTE: Node built-in modules are imported with the explicit `node:` prefix to guarantee ESM resolution in Node.js.
+import { readOptionalString } from './config/env.js';
 
 /** Maximum number of characters preserved in a sanitised filename. */
 const MAX_FILENAME_LENGTH = 120;
 
 /** Absolute path (resolved against the current working directory) hosting run artefacts. */
 function getRunsRoot(): string {
-  const override = process.env.MCP_RUNS_ROOT;
+  // Honour the optional MCP_RUNS_ROOT override while ignoring blank literals.
+  const override = readOptionalString('MCP_RUNS_ROOT');
   const resolvedBase = override
     ? path.resolve(process.cwd(), override)
     : path.resolve(process.cwd(), 'runs');
@@ -18,7 +20,8 @@ function getRunsRoot(): string {
 
 /** Absolute path hosting child workspaces (logs, manifests, artefacts). */
 function getChildrenRoot(): string {
-  const override = process.env.MCP_CHILDREN_ROOT;
+  // Honour the optional MCP_CHILDREN_ROOT override while ignoring blank literals.
+  const override = readOptionalString('MCP_CHILDREN_ROOT');
   const resolvedBase = override
     ? path.resolve(process.cwd(), override)
     : path.resolve(process.cwd(), 'children');
@@ -198,6 +201,12 @@ export function safeJoin(base: string, ...parts: string[]): string {
 
   return resolveWithin(base, ...segments);
 }
+
+/** Internal hooks surfaced exclusively for unit tests. */
+export const __pathInternals = {
+  getRunsRoot,
+  getChildrenRoot,
+};
 
 /**
  * Resolves a path located within the current workspace directory while enforcing sandbox rules.

@@ -174,12 +174,11 @@ describe("random cancellation injection", () => {
       await clock.tickAsync(200);
       await clock.tickAsync(500);
 
-      let caught: unknown;
       const outcome = await outcomePromise;
       if (outcome.type === "fulfilled") {
         expect.fail("plan_run_reactive should surface OperationCancelledError");
       }
-      caught = outcome.reason;
+      const caught = outcome.reason;
 
       expect(caught).to.be.instanceOf(OperationCancelledError);
       const cancellationError = caught as OperationCancelledError;

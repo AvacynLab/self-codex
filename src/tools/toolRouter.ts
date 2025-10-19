@@ -1,5 +1,6 @@
 import { EventEmitter } from "node:events";
 
+import { readOptionalInt } from "../config/env.js";
 import type { ToolBudgets, ToolManifest } from "../mcp/registry.js";
 
 /** Default number of router candidates surfaced to callers. */
@@ -15,15 +16,11 @@ const MAX_ROUTER_TOPK = 10;
  * — façade, runtime logger and registry — honours the same operator override.
  */
 export function resolveToolRouterTopKLimit(): number {
-  const raw = process.env.TOOLROUTER_TOPK;
-  if (!raw) {
+  const override = readOptionalInt("TOOLROUTER_TOPK", { min: 1 });
+  if (override === undefined) {
     return DEFAULT_ROUTER_TOPK;
   }
-  const parsed = Number.parseInt(raw, 10);
-  if (!Number.isFinite(parsed) || parsed <= 0) {
-    return DEFAULT_ROUTER_TOPK;
-  }
-  return Math.min(MAX_ROUTER_TOPK, parsed);
+  return Math.min(MAX_ROUTER_TOPK, override);
 }
 
 /**

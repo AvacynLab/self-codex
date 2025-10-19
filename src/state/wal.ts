@@ -2,6 +2,8 @@ import { createHash } from "node:crypto";
 import { appendFile, mkdir } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
+// NOTE: Node built-in modules are imported with the explicit `node:` prefix to guarantee ESM resolution in Node.js.
+import { readOptionalString } from "../config/env.js";
 
 import { sanitizeFilename } from "../paths.js";
 
@@ -80,7 +82,8 @@ export async function appendWalEntry<TPayload>(
 
 /** Resolves the directory dedicated to WAL artefacts. */
 function resolveRunsRoot(override?: string): string {
-  const base = typeof override === "string" && override.length > 0 ? override : process.env.MCP_RUNS_ROOT ?? "runs";
+  const envOverride = readOptionalString("MCP_RUNS_ROOT");
+  const base = typeof override === "string" && override.length > 0 ? override : envOverride ?? "runs";
   return path.resolve(process.cwd(), base);
 }
 

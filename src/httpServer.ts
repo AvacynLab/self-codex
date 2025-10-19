@@ -11,13 +11,18 @@ import { handleJsonRpc, maybeRecordIdempotentWalEntry, type JsonRpcRequest } fro
 import type { JsonRpcRouteContext } from "./infra/runtime.js";
 import { HttpRuntimeOptions, createHttpSessionId } from "./serverOptions.js";
 import { applySecurityHeaders, ensureRequestId } from "./http/headers.js";
-import { rateLimitOk } from "./http/rateLimit.js";
+import {
+  parseRateLimitEnvBoolean,
+  parseRateLimitEnvNumber,
+  rateLimitOk,
+} from "./http/rateLimit.js";
 import { readJsonBody } from "./http/body.js";
 import { checkToken, resolveHttpAuthToken } from "./http/auth.js";
 import type { HttpReadinessReport } from "./http/readiness.js";
 export type { HttpReadinessReport } from "./http/readiness.js";
 import { buildIdempotencyCacheKey } from "./infra/idempotency.js";
 import { IdempotencyConflictError, type IdempotencyStore } from "./infra/idempotencyStore.js";
+import { readBool } from "./config/env.js";
 import {
   runWithRpcTrace,
   annotateTraceContext,
@@ -88,13 +93,7 @@ function coerceFiniteNumber(value: number | undefined, fallback: number): number
 
 /** Reads a rate-limit tuning parameter from `process.env`, tolerating garbage values. */
 function parseEnvRateLimitSetting(name: string): number | undefined {
-  const raw = process.env[name];
-  if (typeof raw !== "string" || raw.trim() === "") {
-    return undefined;
-  }
-
-  const parsed = Number.parseFloat(raw);
-  return Number.isFinite(parsed) ? parsed : undefined;
+  return parseRateLimitEnvNumber(name);
 }
 
 /**
@@ -117,12 +116,12 @@ function configureRateLimiter(overrides: Partial<RateLimiterConfig>): RateLimite
 
 /** Refreshes the limiter configuration from environment variables. */
 function refreshRateLimiterFromEnv(): RateLimiterConfig {
-  const envDisabled = (process.env.MCP_HTTP_RATE_LIMIT_DISABLE ?? "").toLowerCase() === "1";
+  const envDisabledFlag = parseRateLimitEnvBoolean("MCP_HTTP_RATE_LIMIT_DISABLE");
   const envRps = parseEnvRateLimitSetting("MCP_HTTP_RATE_LIMIT_RPS");
   const envBurst = parseEnvRateLimitSetting("MCP_HTTP_RATE_LIMIT_BURST");
 
   return configureRateLimiter({
-    disabled: envDisabled,
+    disabled: envDisabledFlag,
     rps: coerceFiniteNumber(envRps, DEFAULT_RATE_LIMIT_CONFIG.rps),
     burst: coerceFiniteNumber(envBurst, DEFAULT_RATE_LIMIT_CONFIG.burst),
   });
@@ -131,8 +130,6 @@ function refreshRateLimiterFromEnv(): RateLimiterConfig {
 // Initialise the limiter from the current environment as soon as the module loads.
 refreshRateLimiterFromEnv();
 
-/** Flag value that opts the HTTP transport into unauthenticated development mode. */
-const NOAUTH_FLAG_VALUE = "1";
 /** Tracks whether the unauthenticated override warning has already been logged. */
 let noAuthBypassLogged = false;
 
@@ -213,7 +210,16 @@ export async function startHttpServer(
       accessLogged = true;
       const status = typeof statusOverride === "number" ? statusOverride : response.statusCode ?? 0;
       const completedAt = process.hrtime.bigint();
-      publishHttpAccessEvent(accessLogStore, remoteAddress, route, method, status, requestStartedAt, completedAt);
+      publishHttpAccessEvent(
+        logger,
+        accessLogStore,
+        remoteAddress,
+        route,
+        method,
+        status,
+        requestStartedAt,
+        completedAt,
+      );
     };
 
     response.once("finish", () => logAccess());
@@ -435,8 +441,7 @@ async function handleReadyCheck(
  * returned when the header is missing or does not match.
  */
 function shouldAllowUnauthenticatedRequests(): boolean {
-  const flag = process.env.MCP_HTTP_ALLOW_NOAUTH;
-  return typeof flag === "string" && flag.trim() === NOAUTH_FLAG_VALUE;
+  return readBool("MCP_HTTP_ALLOW_NOAUTH", false);
 }
 
 function enforceBearerToken(
@@ -890,7 +895,14 @@ async function sendJson(
   return bytesOut;
 }
 
+/**
+ * Emits a structured HTTP access log to the main logger while optionally
+ * mirroring the same payload into the orchestrator event store. Centralising
+ * the logic guarantees that all transports emit consistent metadata for
+ * operators and automated diagnostics.
+ */
 function publishHttpAccessEvent(
+  logger: StructuredLogger,
   store: EventStore | undefined,
   remoteAddress: string,
   route: string,
@@ -899,22 +911,27 @@ function publishHttpAccessEvent(
   startedAt: bigint,
   completedAt: bigint,
 ): void {
+  const latencyNs = completedAt - startedAt;
+  const latencyMs = Number(latencyNs) / 1_000_000;
+  const payload = {
+    ip: remoteAddress,
+    route,
+    method,
+    status,
+    latency_ms: Number.isFinite(latencyMs) && latencyMs >= 0 ? latencyMs : 0,
+  };
+
+  logger.info("http_access", payload);
+
   if (!store) {
     return;
   }
-  const latencyNs = completedAt - startedAt;
-  const latencyMs = Number(latencyNs) / 1_000_000;
+
   store.emit({
     kind: "HTTP_ACCESS",
     source: "system",
     level: "info",
-    payload: {
-      ip: remoteAddress,
-      route,
-      method,
-      status,
-      latency_ms: Number.isFinite(latencyMs) && latencyMs >= 0 ? latencyMs : 0,
-    },
+    payload,
   });
 }
 

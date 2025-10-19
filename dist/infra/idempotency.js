@@ -6,6 +6,18 @@ const DEFAULT_TTL_MS = 600_000;
 /** Hash algorithm used to fingerprint request parameters. */
 const IDEMPOTENCY_HASH_ALGORITHM = "sha256";
 /**
+ * Normalises TTL hints received from transports. The guard clamps the value to
+ * a sane minimum to guarantee stores never persist entries that instantly
+ * expire while also tolerating `NaN` or `Infinity` inputs.
+ */
+function normalisePersistenceTtl(ttlMs) {
+    if (!Number.isFinite(ttlMs)) {
+        return MIN_TTL_MS;
+    }
+    const truncated = Math.trunc(ttlMs);
+    return truncated >= MIN_TTL_MS ? truncated : MIN_TTL_MS;
+}
+/**
  * In-memory registry storing idempotent outcomes. The implementation favours a
  * predictable behaviour over absolute performance as the orchestrator only
  * keeps a few dozen entries at a time (tools and server enforce timeouts).
@@ -212,5 +224,47 @@ function canonicalise(value, seen) {
     finally {
         seen.delete(value);
     }
+}
+/**
+ * Executes the provided operation once and replays the captured HTTP response on
+ * subsequent retries. Callers typically use the helper inside transport layers
+ * so the logic stays isolated from request/response plumbing.
+ */
+export async function withHttpIdempotency(cacheKey, ttlMs, operation, store) {
+    const trimmedKey = typeof cacheKey === "string" ? cacheKey.trim() : "";
+    if (!trimmedKey) {
+        // Without a cache key there is nothing to replay, so the operation executes eagerly.
+        return operation();
+    }
+    // Enforce semantic guarantees eagerly when the store exposes an assertion hook.
+    await Promise.resolve(store.assertKeySemantics?.(trimmedKey));
+    const adapter = {
+        get: (key) => store.get(key),
+        set: async (key, value, ttl) => {
+            const snapshot = value;
+            await store.set(key, snapshot.status, snapshot.body, ttl);
+        },
+    };
+    return withIdempotency(trimmedKey, ttlMs, operation, adapter);
+}
+/**
+ * Executes the provided factory exactly once for a given idempotency key. When
+ * the store already contains a cached value the helper bypasses the factory and
+ * returns the replayed payload instead. The routine is intentionally tiny so it
+ * can be reused by higher-level transports as well as low-level orchestration
+ * code.
+ */
+export async function withIdempotency(key, ttlMs, factory, store) {
+    const normalisedKey = typeof key === "string" ? key.trim() : "";
+    if (!normalisedKey) {
+        return factory();
+    }
+    const cached = await store.get(normalisedKey);
+    if (cached !== null && cached !== undefined) {
+        return cached;
+    }
+    const fresh = await factory();
+    await store.set(normalisedKey, fresh, normalisePersistenceTtl(ttlMs));
+    return fresh;
 }
 //# sourceMappingURL=idempotency.js.map

@@ -158,6 +158,7 @@ export async function reflect(raw) {
         insights: truncateList(insights, 6),
         nextSteps: truncateList(nextSteps, 6),
         risks: truncateList(risks, 6),
+        lessons: [],
     };
 }
 //# sourceMappingURL=selfReflect.js.map

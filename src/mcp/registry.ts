@@ -13,6 +13,7 @@ import type {
 import { z } from "zod";
 
 import { StructuredLogger } from "../logger.js";
+import { readOptionalString } from "../config/env.js";
 import { ensureParentDirectory, sanitizeFilename } from "../paths.js";
 import {
   evaluateToolDeprecation,
@@ -465,7 +466,8 @@ export function listVisibleFromEnv(all: ToolManifest[], env: NodeJS.ProcessEnv =
 }
 
 function resolveRunsRoot(override?: string): string {
-  const base = typeof override === "string" && override.length > 0 ? override : process.env.MCP_RUNS_ROOT ?? "runs";
+  const envOverride = readOptionalString("MCP_RUNS_ROOT");
+  const base = typeof override === "string" && override.length > 0 ? override : envOverride ?? "runs";
   return path.resolve(process.cwd(), base);
 }
 
@@ -933,4 +935,9 @@ export class ToolDeprecatedError extends Error {
     this.metadata = metadata;
   }
 }
+
+/** Internal hooks surfaced for the environment parsing tests. */
+export const __registryInternals = {
+  resolveRunsRoot,
+};
 

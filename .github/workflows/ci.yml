@@ -29,11 +29,14 @@ jobs:
       - name: Type-check sources and tests
         run: npm run typecheck
 
-      - name: Run unit tests (TAP)
+      - name: Run lint suite
+        run: npm run lint
+
+      - name: Run full test pipeline (TAP)
         run: |
           set -euo pipefail
           mkdir -p artifacts
-          npm run test:unit | tee artifacts/tap.txt
+          npm run test | tee artifacts/tap.txt
 
       - name: Upload TAP report
         if: always()

@@ -9,15 +9,7 @@ import { ChildCollectedOutputs, ChildRuntimeMessage } from "../childRuntime.js";
 import { ChildSupervisor } from "../childSupervisor.js";
 import { compileHierGraphToBehaviorTree } from "../executor/bt/compiler.js";
 import { BehaviorTreeInterpreter, buildBehaviorTree } from "../executor/bt/interpreter.js";
-import {
-  BehaviorNodeDefinitionSchema,
-  type BehaviorNodeDefinition,
-  CompiledBehaviorTreeSchema,
-  type BTStatus,
-  type BehaviorTickResult,
-  type CompiledBehaviorTree,
-  type TickRuntime,
-} from "../executor/bt/types.js";
+import { type BehaviorNodeDefinition, CompiledBehaviorTreeSchema, type BTStatus, type BehaviorTickResult, type CompiledBehaviorTree, type TickRuntime } from "../executor/bt/types.js";
 import {
   ReactiveScheduler,
   type PheromoneBounds,
