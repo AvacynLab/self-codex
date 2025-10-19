@@ -98,8 +98,11 @@ const CAPABILITY_NAMESPACE_DEFINITIONS = [
     { name: "agents.autoscaler", feature: "enableAutoscaler" },
     { name: "agents.supervisor", feature: "enableSupervisor" },
     { name: "memory.knowledge", feature: "enableKnowledge" },
+    { name: "memory.rag", feature: "enableRag" },
     { name: "memory.causal", feature: "enableCausalMemory" },
     { name: "values.guard", feature: "enableValueGuard" },
+    { name: "plan.thought-graph", feature: "enableThoughtGraph" },
+    { name: "tools.router", feature: "enableToolRouter" },
 ];
 const BASE_FEATURE_LABELS = ["core"];
 const FEATURE_LABELS = {
@@ -126,6 +129,9 @@ const FEATURE_LABELS = {
     enablePlanLifecycle: "plan-lifecycle",
     enableChildOpsFine: "child-ops-fine",
     enableValuesExplain: "values-explain",
+    enableRag: "memory-rag",
+    enableToolRouter: "tools-router",
+    enableThoughtGraph: "plan-thought-graph",
     enableAssist: "assist",
 };
 let toolIntrospectionProvider = null;
@@ -145,6 +151,8 @@ const TOOL_FEATURE_RULES = [
     { pattern: /^child_(spawn_codex|attach|set_role|set_limits|status)$/, features: ["enableChildOpsFine"] },
     { pattern: /^kg_suggest_plan$/, features: ["enableAssist", "enableKnowledge"] },
     { pattern: /^kg_/, features: ["enableKnowledge"] },
+    { pattern: /^rag_/, features: ["enableKnowledge", "enableRag"] },
+    { pattern: /^intent_route$/, features: ["enableToolRouter"] },
     { pattern: /^causal_/, features: ["enableCausalMemory"] },
     { pattern: /^values_explain$/, features: ["enableValuesExplain", "enableValueGuard"] },
     { pattern: /^values_/, features: ["enableValueGuard"] },

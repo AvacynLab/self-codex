@@ -1,7 +1,9 @@
 import { z } from "zod";
 import { diffGraphs } from "../graph/diff.js";
 import { applyGraphPatch } from "../graph/patch.js";
-import { evaluateGraphInvariants, GraphInvariantError } from "../graph/invariants.js";
+import { GraphValidationError, validateGraph } from "../graph/validate.js";
+import { recordOperation } from "../graph/oplog.js";
+import { fireAndForgetGraphWal } from "../graph/wal.js";
 import { GraphTransactionError, GraphVersionConflictError, } from "../graph/tx.js";
 import { ERROR_CODES } from "../types.js";
 import { GraphDescriptorSchema, normaliseGraphPayload, serialiseNormalisedGraph, } from "./graphTools.js";
@@ -81,17 +83,15 @@ export function handleGraphPatch(context, input) {
         note: tx.note,
         expiresAt: tx.expiresAt,
     });
-    let invariants = null;
     let committedResult = null;
     try {
         const patched = applyGraphPatch(committed.graph, input.patch);
         const normalised = normaliseGraphPayload(serialiseNormalisedGraph(patched));
-        if (input.enforce_invariants) {
-            invariants = evaluateGraphInvariants(normalised);
-            if (!invariants.ok) {
-                throw new GraphInvariantError(invariants.violations);
-            }
+        const validation = validateGraph(normalised, { enforceInvariants: input.enforce_invariants });
+        if (!validation.ok) {
+            throw new GraphValidationError(validation.violations, validation.invariants);
         }
+        const invariants = validation.invariants;
         const diff = diffGraphs(committed.graph, normalised);
         const changed = diff.changed;
         context.locks.assertCanMutate(input.graph_id, input.owner ?? null);
@@ -109,6 +109,25 @@ export function handleGraphPatch(context, input) {
             version: committedResult.version,
             committedAt: committedResult.committedAt,
             graph: committedResult.graph,
+        });
+        void recordOperation({
+            kind: "graph_patch",
+            graph_id: committedResult.graphId,
+            op_id: opId,
+            operations: input.patch.length,
+            changed,
+            accepted: true,
+        }, committedResult.txId);
+        fireAndForgetGraphWal("graph_patch_applied", {
+            tx_id: committedResult.txId,
+            graph_id: committedResult.graphId,
+            op_id: opId,
+            committed_version: committedResult.version,
+            committed_at: committedResult.committedAt,
+            changed,
+            operations_applied: input.patch.length,
+            owner: tx.owner,
+            note: tx.note,
         });
         return {
             op_id: opId,
@@ -130,6 +149,24 @@ export function handleGraphPatch(context, input) {
             void rollbackError;
         }
         context.resources.markGraphSnapshotRolledBack(tx.graphId, tx.txId);
+        void recordOperation({
+            kind: "graph_patch",
+            graph_id: tx.graphId,
+            op_id: opId,
+            operations: input.patch.length,
+            changed: false,
+            accepted: false,
+            error: error instanceof Error ? error.message : String(error),
+        }, tx.txId);
+        fireAndForgetGraphWal("graph_patch_failed", {
+            tx_id: tx.txId,
+            graph_id: tx.graphId,
+            op_id: opId,
+            operations: input.patch.length,
+            owner: tx.owner,
+            note: tx.note,
+            error: error instanceof Error ? error.message : String(error),
+        });
         throw error;
     }
 }

@@ -9,6 +9,7 @@ import { evaluateHttpReadiness } from "./readiness.js";
 import { IDEMPOTENCY_TTL_OVERRIDE } from "../orchestrator/runtime.js";
 import { FileIdempotencyStore } from "../infra/idempotencyStore.file.js";
 import { loadGraphForge } from "../graph/forgeLoader.js";
+import { readOptionalString } from "../config/env.js";
 
 /**
  * Context required to prepare the HTTP transport before the server starts.
@@ -72,7 +73,8 @@ export async function prepareHttpRuntime(
   deps: PrepareHttpRuntimeDependencies = {},
 ): Promise<PreparedHttpRuntime> {
   const resolveRunsRoot = deps.resolveRunsRoot ?? defaultResolveRunsRoot;
-  const runsRoot = resolveRunsRoot(process.cwd(), process.env.MCP_RUNS_ROOT);
+  const envOverride = readOptionalString("MCP_RUNS_ROOT");
+  const runsRoot = resolveRunsRoot(process.cwd(), envOverride);
 
   const extras: HttpServerExtras = {};
   let idempotencyStore: FileIdempotencyStore | null = null;
@@ -111,3 +113,8 @@ export async function prepareHttpRuntime(
 
   return { extras, idempotencyStore, runsRoot };
 }
+
+/** Internal hooks exposed solely for targeted unit tests. */
+export const __httpBootstrapInternals = {
+  defaultResolveRunsRoot,
+};

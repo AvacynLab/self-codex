@@ -18,7 +18,7 @@ import {
   ARTIFACT_WRITE_TOOL_NAME,
   createArtifactWriteHandler,
 } from "../../src/tools/artifact_write.js";
-import { sanitizeArtifactPath } from "../../src/tools/artifact_paths.js";
+import { sanitizeArtifactPath, resolveMaxArtifactBytes } from "../../src/tools/artifact_paths.js";
 import { ARTIFACT_READ_TOOL_NAME, createArtifactReadHandler } from "../../src/tools/artifact_read.js";
 
 function createRequestExtras(
@@ -53,6 +53,12 @@ describe("artifact façades sanitisation", () => {
       process.env.MCP_MAX_ARTIFACT_BYTES = previousMaxBytes;
     }
     await rm(childrenRoot, { recursive: true, force: true });
+  });
+
+  it("falls back to the default artifact size when the override is invalid", () => {
+    process.env.MCP_MAX_ARTIFACT_BYTES = "garbage";
+
+    expect(resolveMaxArtifactBytes()).to.equal(8 * 1024 * 1024);
   });
 
   it("rejects traversal attempts before touching the filesystem", async () => {

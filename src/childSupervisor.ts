@@ -1,6 +1,5 @@
 import { randomUUID } from "node:crypto";
 import { runtimeTimers, type IntervalHandle } from "./runtime/timers.js";
-import process from "node:process";
 // NOTE: Node built-in modules are imported with the explicit `node:` prefix to guarantee ESM resolution in Node.js.
 
 import type { ProcessEnv, Signal } from "./nodePrimitives.js";

@@ -314,7 +314,7 @@ export function bridgeContractNetEvents(options) {
         if (resolved) {
             mergeCorrelationHints(correlation, resolved);
         }
-        let level = "info";
+        const level = "info";
         let msg = "cnp_event";
         let data = {};
         switch (event.kind) {

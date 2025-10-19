@@ -1,4 +1,4 @@
-import process from "node:process";
+import { readOptionalInt } from "../config/env.js";
 
 /**
  * Describes the timeout budget applied to a JSON-RPC invocation. The dispatcher
@@ -253,13 +253,6 @@ export function getDefaultRpcTimeoutBudget(): RpcTimeoutBudget {
  * This is currently only used to facilitate local experimentation.
  */
 export function loadDefaultTimeoutOverride(): number | null {
-  const raw = process.env.MCP_RPC_DEFAULT_TIMEOUT_MS;
-  if (!raw) {
-    return null;
-  }
-  const parsed = Number.parseInt(raw, 10);
-  if (!Number.isFinite(parsed) || parsed <= 0) {
-    return null;
-  }
-  return parsed;
+  const parsed = readOptionalInt("MCP_RPC_DEFAULT_TIMEOUT_MS", { min: 1 });
+  return parsed ?? null;
 }

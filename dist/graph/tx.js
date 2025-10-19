@@ -1,6 +1,11 @@
 import { randomUUID } from "node:crypto";
+import process from "node:process";
 // NOTE: Node built-in modules are imported with the explicit `node:` prefix to guarantee ESM resolution in Node.js.
+import { snapshotTake } from "../state/snapshot.js";
 import { ERROR_CODES } from "../types.js";
+import { recordOperation } from "./oplog.js";
+import { fireAndForgetGraphWal } from "./wal.js";
+import { assertValidGraph } from "./validate.js";
 /** Metadata key storing the timestamp of the last successful transaction commit. */
 const TX_COMMITTED_AT_METADATA_KEY = "__txCommittedAt";
 /**
@@ -32,10 +37,29 @@ export class GraphVersionConflictError extends GraphTransactionError {
 }
 /** Error thrown when a caller references a transaction identifier that expired. */
 export class UnknownTransactionError extends GraphTransactionError {
-    constructor(txId) {
+    constructor(_txId) {
         super(ERROR_CODES.TX_NOT_FOUND, "transaction not found", "open a new transaction");
         this.name = "UnknownTransactionError";
     }
+}
+const DEFAULT_SNAPSHOT_POLICY = {
+    commitInterval: 10,
+    timeIntervalMs: 5 * 60_000,
+};
+let snapshotPolicyOverride = null;
+/** Allows tests to override the snapshot cadence deterministically. */
+export function configureGraphSnapshotPolicy(policy) {
+    snapshotPolicyOverride = policy;
+}
+/** Resolve the active snapshot policy honouring overrides and environment hints. */
+function resolveSnapshotPolicy() {
+    if (snapshotPolicyOverride) {
+        return snapshotPolicyOverride;
+    }
+    return {
+        commitInterval: parsePositiveInteger(process.env.MCP_GRAPH_SNAPSHOT_EVERY_COMMITS, DEFAULT_SNAPSHOT_POLICY.commitInterval),
+        timeIntervalMs: parsePositiveInteger(process.env.MCP_GRAPH_SNAPSHOT_INTERVAL_MS, DEFAULT_SNAPSHOT_POLICY.timeIntervalMs),
+    };
 }
 /** Error thrown when attempting to interact with an expired transaction. */
 export class GraphTransactionExpiredError extends GraphTransactionError {
@@ -56,6 +80,8 @@ export class GraphTransactionManager {
     states = new Map();
     /** Active transaction records keyed by their identifier. */
     transactions = new Map();
+    /** Track how often disk snapshots were taken per graph. */
+    snapshotTrackers = new Map();
     /**
      * Open a new transaction for the provided graph. The caller receives a fresh
      * working copy which can be mutated freely before invoking {@link commit} or
@@ -100,6 +126,21 @@ export class GraphTransactionManager {
             lastTouchedAt: startedAt,
         };
         this.transactions.set(txId, record);
+        fireAndForgetGraphWal("tx_begin", {
+            tx_id: txId,
+            graph_id: graph.graphId,
+            base_version: graph.graphVersion,
+            owner,
+            note,
+            started_at: startedAt,
+        });
+        void recordOperation({
+            kind: "tx_begin",
+            graph_id: graph.graphId,
+            base_version: graph.graphVersion,
+            owner,
+            note,
+        }, txId);
         return {
             txId,
             graphId: graph.graphId,
@@ -136,8 +177,23 @@ export class GraphTransactionManager {
             throw new GraphVersionConflictError(record.graphId, expectedVersion, providedVersion);
         }
         const mutated = !this.graphsEqual(record.snapshot, updatedGraph);
+        if (mutated) {
+            assertValidGraph(updatedGraph);
+        }
         const committedAt = mutated ? now : state.committedAt;
         const nextVersion = mutated ? expectedVersion + 1 : state.version;
+        const walGraphSnapshot = mutated ? this.cloneGraph(updatedGraph) : this.cloneGraph(state.graph);
+        fireAndForgetGraphWal("tx_commit", {
+            tx_id: txId,
+            graph_id: record.graphId,
+            base_version: expectedVersion,
+            next_version: nextVersion,
+            committed_at: committedAt,
+            changed: mutated,
+            owner: record.owner,
+            note: record.note,
+            graph: walGraphSnapshot,
+        });
         let finalGraph;
         if (mutated) {
             finalGraph = this.cloneGraph(updatedGraph);
@@ -157,6 +213,21 @@ export class GraphTransactionManager {
         // persisted. Keeping the record alive until this point allows callers to
         // recover via {@link rollback} when a conflict occurs during validation.
         this.transactions.delete(txId);
+        void recordOperation({
+            kind: "tx_commit",
+            graph_id: record.graphId,
+            version: nextVersion,
+            changed: mutated,
+            committed_at: committedAt,
+        }, txId);
+        if (mutated) {
+            this.maybePersistSnapshot(record.graphId, {
+                txId,
+                version: nextVersion,
+                committedAt,
+                graph: finalGraph,
+            });
+        }
         return {
             txId,
             graphId: record.graphId,
@@ -174,7 +245,21 @@ export class GraphTransactionManager {
         const now = Date.now();
         const record = this.getActiveTransaction(txId, now);
         this.transactions.delete(txId);
+        fireAndForgetGraphWal("tx_rollback", {
+            tx_id: txId,
+            graph_id: record.graphId,
+            base_version: record.baseVersion,
+            rolled_back_at: now,
+            owner: record.owner,
+            note: record.note,
+        });
         const rolledBackAt = now;
+        void recordOperation({
+            kind: "tx_rollback",
+            graph_id: record.graphId,
+            base_version: record.baseVersion,
+            rolled_back_at: rolledBackAt,
+        }, txId);
         return {
             txId,
             graphId: record.graphId,
@@ -228,6 +313,41 @@ export class GraphTransactionManager {
             graph: this.cloneGraph(state.graph),
         };
     }
+    /** Persist a committed graph snapshot when the configured policy deems it necessary. */
+    maybePersistSnapshot(graphId, payload) {
+        const policy = resolveSnapshotPolicy();
+        const tracker = this.snapshotTrackers.get(graphId) ?? { lastTakenAt: 0, commitsSinceLast: 0 };
+        tracker.commitsSinceLast += 1;
+        const now = Date.now();
+        const dueByCommit = policy.commitInterval !== null && tracker.commitsSinceLast >= Math.max(1, policy.commitInterval);
+        const dueByTime = policy.timeIntervalMs !== null &&
+            (tracker.lastTakenAt === 0 || now - tracker.lastTakenAt >= Math.max(1, policy.timeIntervalMs));
+        const shouldPersist = tracker.lastTakenAt === 0 || dueByCommit || dueByTime;
+        if (!shouldPersist) {
+            this.snapshotTrackers.set(graphId, tracker);
+            return;
+        }
+        tracker.commitsSinceLast = 0;
+        tracker.lastTakenAt = now;
+        this.snapshotTrackers.set(graphId, tracker);
+        const clonedGraph = this.cloneGraph(payload.graph);
+        snapshotTake(`graph/${graphId}`, {
+            graph: clonedGraph,
+            version: payload.version,
+            committed_at: payload.committedAt,
+            tx_id: payload.txId,
+        }, {
+            metadata: {
+                graph_id: graphId,
+                version: payload.version,
+                committed_at: payload.committedAt,
+                tx_id: payload.txId,
+            },
+        }).catch((error) => {
+            const reason = error instanceof Error ? error.message : String(error);
+            process.emitWarning(`failed to persist graph snapshot for ${graphId}: ${reason}`);
+        });
+    }
     getActiveTransaction(txId, now = Date.now(), touch = false) {
         const record = this.transactions.get(txId);
         if (!record) {
@@ -278,5 +398,19 @@ function normaliseExpiry(startedAt, ttlMs) {
         return null;
     }
     return startedAt + Math.floor(ttlMs);
+}
+/** Parse an optional integer from the environment, returning {@link fallback} when invalid. */
+function parsePositiveInteger(value, fallback) {
+    if (value === undefined) {
+        return fallback;
+    }
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed)) {
+        return fallback;
+    }
+    if (parsed <= 0) {
+        return null;
+    }
+    return Math.floor(parsed);
 }
 //# sourceMappingURL=tx.js.map

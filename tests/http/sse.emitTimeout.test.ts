@@ -97,4 +97,63 @@ describe("http sse emit timeout", () => {
     const metrics = renderMetricsSnapshot();
     expect(metrics).to.contain("sse_drops_total 1");
   });
+
+  it("honours the environment emit timeout when options omit overrides", async () => {
+    process.env.MCP_SSE_EMIT_TIMEOUT_MS = "15";
+
+    const buildResult = (seq: number): ResourceWatchResult => ({
+      uri: "sc://runs/http-sse/events",
+      kind: "run_events",
+      nextSeq: seq,
+      events: [
+        {
+          seq,
+          ts: Date.now(),
+          kind: "INFO",
+          level: "info",
+          jobId: null,
+          runId: "http-sse",
+          opId: null,
+          graphId: null,
+          nodeId: null,
+          childId: null,
+          component: "graph",
+          stage: "emit-timeout-env",
+          elapsedMs: null,
+          payload: { seq },
+        },
+      ],
+    });
+
+    const warnings: Array<{ message: string; payload: Record<string, unknown> | undefined }> = [];
+    const buffer = new ResourceWatchSseBuffer({
+      clientId: "http-sse-timeout-env", // Document the client id so log assertions remain clear.
+      logger: {
+        warn: (message: string, payload?: unknown) => {
+          warnings.push({ message, payload: payload as Record<string, unknown> | undefined });
+        },
+      },
+      maxChunkBytes: 64,
+      maxBufferedBytes: Buffer.byteLength(
+        renderResourceWatchSseMessages(serialiseResourceWatchResultForSse(buildResult(1)), { maxChunkBytes: 64 }),
+        "utf8",
+      ) * 2,
+    });
+
+    buffer.enqueue(serialiseResourceWatchResultForSse(buildResult(1)));
+
+    await buffer.drain(async () => {
+      await delay(40);
+    });
+
+    expect(
+      warnings.some(
+        (entry) =>
+          entry.message === "resources_sse_emit_timeout" &&
+          (entry.payload?.client_id as string | undefined) === "http-sse-timeout-env" &&
+          (entry.payload?.timeout_ms as number | undefined) === 15,
+      ),
+    ).to.equal(true);
+    expect(buffer.droppedFrameCount).to.equal(1);
+  });
 });

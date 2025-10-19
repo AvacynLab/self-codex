@@ -25,7 +25,6 @@ import { resolveToolRouterTopKLimit } from "./toolRouter.js";
 import {
   IntentRouteInputSchema,
   IntentRouteOutputSchema,
-  IntentRouteRecommendationSchema,
   type IntentRouteOutput,
   type IntentRouteRecommendation as IntentRouteRecommendationPayload,
 } from "../rpc/schemas.js";
@@ -400,7 +399,6 @@ function buildRoutingContext(
 
   const tags = new Set<string>();
   const preferred = new Set<string>();
-  let category: string | undefined;
 
   // Preserve the caller metadata reference so it can be forwarded verbatim in structured responses.
   const metadataRecord = metadata ?? undefined;
@@ -431,7 +429,9 @@ function buildRoutingContext(
     candidateCategories.push(normaliseCategory(metadataRecord.domain));
   }
 
-  category = candidateCategories.find((value) => typeof value === "string");
+  const category = candidateCategories.find(
+    (value): value is string => typeof value === "string",
+  );
 
   // Normalises a wide range of metadata shapes (`string`, arrays, comma separated lists) and forwards
   // the entries to the provided handler.

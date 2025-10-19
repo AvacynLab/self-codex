@@ -2,14 +2,7 @@ import { ZodError } from "zod";
 
 import type { JsonRpcRouteContext } from "../infra/runtime.js";
 import type { JsonRpcRequest, JsonRpcResponse } from "../server.js";
-import {
-  JsonRpcError,
-  JSON_RPC_ERROR_TAXONOMY,
-  createJsonRpcError,
-  toJsonRpc,
-  type JsonRpcErrorCategory,
-  type JsonRpcErrorOptions,
-} from "./errors.js";
+import { JsonRpcError, createJsonRpcError, toJsonRpc } from "./errors.js";
 import { RPC_METHOD_SCHEMAS, ToolsCallEnvelopeSchema, type RpcMethodSchemaRegistry } from "./schemas.js";
 
 /** Options propagated to the normaliser so it can enrich validation errors. */

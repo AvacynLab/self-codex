@@ -1,11 +1,14 @@
 import { randomUUID } from "node:crypto";
 import { runtimeTimers } from "./runtime/timers.js";
 import { defaultFileSystemGateway } from "./gateways/fs.js";
+import { prepareChildSandbox, } from "./children/sandbox.js";
 import { startChildRuntime, } from "./childRuntime.js";
 import { bridgeChildRuntimeEvents } from "./events/bridges.js";
 import { extractCorrelationHints, mergeCorrelationHints } from "./events/correlation.js";
 import { ChildrenIndex } from "./state/childrenIndex.js";
 import { childWorkspacePath, ensureDirectory } from "./paths.js";
+import { ChildCircuitOpenError, OneForOneSupervisor, } from "./children/supervisor.js";
+import { registerChildRestart, reportOpenChildRuntimes } from "./infra/tracing.js";
 /** Error raised when the caller attempts to exceed the configured child cap. */
 export class ChildLimitExceededError extends Error {
     maxChildren;
@@ -63,10 +66,14 @@ export class ChildSupervisor {
     childLogRecorders = new Map();
     idleTimeoutMs;
     idleCheckIntervalMs;
+    runtimeSupervisor;
+    supervisionKeyByChild = new Map();
+    supervisionMaxRestartsPerMinute;
     maxChildren = null;
     memoryLimitMb = null;
     cpuPercent = null;
     baseLimitsTemplate = null;
+    sandboxDefaults;
     constructor(options) {
         this.childrenRoot = options.childrenRoot;
         this.defaultCommand = options.defaultCommand;
@@ -83,7 +90,61 @@ export class ChildSupervisor {
         const configuredInterval = options.idleCheckIntervalMs;
         const interval = configuredInterval ?? defaultInterval;
         this.idleCheckIntervalMs = interval > 0 ? Math.min(interval, Math.max(250, this.idleTimeoutMs || interval)) : defaultInterval;
+        const supervision = options.supervision ?? {};
+        const breakerOptions = supervision.breaker ?? {};
+        const backoffOptions = supervision.backoff ?? {};
+        const failThreshold = typeof breakerOptions.failThreshold === "number" && Number.isFinite(breakerOptions.failThreshold) && breakerOptions.failThreshold > 0
+            ? Math.trunc(breakerOptions.failThreshold)
+            : 3;
+        const cooldownCandidate = breakerOptions.cooldownMs ?? breakerOptions.cooldown_ms;
+        const cooldownMs = typeof cooldownCandidate === "number" && Number.isFinite(cooldownCandidate) && cooldownCandidate >= 0
+            ? Math.trunc(cooldownCandidate)
+            : 15_000;
+        const halfOpenCandidate = breakerOptions.halfOpenMaxInFlight ?? breakerOptions.half_open_max;
+        const halfOpenMaxInFlight = typeof halfOpenCandidate === "number" && Number.isFinite(halfOpenCandidate) && halfOpenCandidate > 0
+            ? Math.trunc(halfOpenCandidate)
+            : 1;
+        const minBackoffMs = typeof backoffOptions.minMs === "number" && Number.isFinite(backoffOptions.minMs) && backoffOptions.minMs >= 0
+            ? Math.trunc(backoffOptions.minMs)
+            : 250;
+        const maxBackoffProvided = typeof backoffOptions.maxMs === "number" &&
+            Number.isFinite(backoffOptions.maxMs) &&
+            backoffOptions.maxMs >= minBackoffMs
+            ? Math.trunc(backoffOptions.maxMs)
+            : undefined;
+        const maxBackoffMs = Math.max(minBackoffMs, maxBackoffProvided ?? 10_000);
+        const backoffFactor = typeof backoffOptions.factor === "number" && Number.isFinite(backoffOptions.factor) && backoffOptions.factor >= 1
+            ? backoffOptions.factor
+            : 2;
+        const policies = supervision.policies ?? {};
+        const rawMaxRestarts = policies.maxRestartsPerMinute ?? policies["max_restarts_per_min"] ?? undefined;
+        let maxRestartsPerMinute = 6;
+        if (rawMaxRestarts === null) {
+            maxRestartsPerMinute = null;
+        }
+        else if (typeof rawMaxRestarts === "number" && Number.isFinite(rawMaxRestarts)) {
+            maxRestartsPerMinute = rawMaxRestarts > 0 ? Math.trunc(rawMaxRestarts) : null;
+        }
+        this.supervisionMaxRestartsPerMinute = maxRestartsPerMinute;
+        this.runtimeSupervisor = new OneForOneSupervisor({
+            breaker: {
+                failThreshold,
+                cooldownMs,
+                halfOpenMaxInFlight,
+            },
+            minBackoffMs,
+            maxBackoffMs,
+            backoffFactor,
+            maxRestartsPerMinute,
+            onEvent: (event) => {
+                this.handleSupervisionEvent(event);
+            },
+        });
         this.configureSafety(options.safety ?? {});
+        this.sandboxDefaults = {
+            defaultProfile: options.sandbox?.defaultProfile ?? null,
+            allowEnv: options.sandbox?.allowEnv ? [...options.sandbox.allowEnv] : null,
+        };
     }
     /** Returns the safety guardrails currently enforced by the supervisor. */
     getSafetySnapshot() {
@@ -158,6 +219,14 @@ export class ChildSupervisor {
         }
     }
     /**
+     * Computes a stable supervision key derived from the command signature. The
+     * identifier groups failures for similar processes so the circuit breaker can
+     * protect the host even when child identifiers change across attempts.
+     */
+    buildSupervisionKey(command, args) {
+        return JSON.stringify({ command, args: [...args] });
+    }
+    /**
      * Registers a logical HTTP child that routes work back to the orchestrator instead of spawning a
      * dedicated process. A manifest is still persisted to keep observability tooling consistent.
      */
@@ -217,6 +286,7 @@ export class ChildSupervisor {
         };
         await this.writeLogicalManifest(session);
         this.logicalChildren.set(childId, session);
+        this.refreshOpenChildrenGauge();
         return { childId, index: indexSnapshot, manifestPath, logPath, workdir, startedAt };
     }
     /**
@@ -332,6 +402,17 @@ export class ChildSupervisor {
                 forced: event.forced,
                 reason: event.error ? event.error.message : undefined,
             });
+            const supervisionKey = this.supervisionKeyByChild.get(childId);
+            if (supervisionKey) {
+                if (!event.forced &&
+                    ((event.code ?? 0) !== 0 || event.signal !== null)) {
+                    this.runtimeSupervisor.recordCrash(supervisionKey, event.at);
+                }
+                else {
+                    this.runtimeSupervisor.recordSuccess(supervisionKey);
+                }
+                this.supervisionKeyByChild.delete(childId);
+            }
         })
             .catch((error) => {
             // The exit promise should never reject, but we keep a defensive path
@@ -353,6 +434,11 @@ export class ChildSupervisor {
                 forced: true,
                 reason: `exit-promise-error:${error.message}`,
             });
+            const supervisionKey = this.supervisionKeyByChild.get(childId);
+            if (supervisionKey) {
+                this.runtimeSupervisor.recordCrash(supervisionKey);
+                this.supervisionKeyByChild.delete(childId);
+            }
         });
     }
     /**
@@ -371,8 +457,46 @@ export class ChildSupervisor {
         }
         const command = options.command ?? this.defaultCommand;
         const args = options.args ? [...options.args] : [...this.defaultArgs];
-        const env = { ...this.defaultEnv, ...(options.env ?? {}) };
         const resolvedLimits = this.resolveChildLimits(options.limits ?? null);
+        const baseEnv = { ...this.defaultEnv, ...(options.env ?? {}) };
+        const sandbox = await prepareChildSandbox({
+            childId,
+            childrenRoot: this.childrenRoot,
+            baseEnv,
+            request: options.sandbox ?? null,
+            defaults: this.sandboxDefaults,
+            memoryLimitMb: this.resolveSandboxMemoryLimit(resolvedLimits),
+        });
+        const env = sandbox.env;
+        const supervisionKey = options.supervisionKey ?? this.buildSupervisionKey(command, args);
+        let supervisionTicket = null;
+        try {
+            supervisionTicket = await this.runtimeSupervisor.acquire(supervisionKey);
+        }
+        catch (error) {
+            if (error instanceof ChildCircuitOpenError && error.retryAt !== null) {
+                const retryDelay = Math.max(0, error.retryAt - Date.now());
+                if (retryDelay > 0) {
+                    await new Promise((resolve) => {
+                        const handle = runtimeTimers.setTimeout(() => {
+                            resolve();
+                        }, retryDelay);
+                        const maybeHandle = handle;
+                        if (typeof maybeHandle.unref === "function") {
+                            maybeHandle.unref();
+                        }
+                    });
+                }
+                supervisionTicket = await this.runtimeSupervisor.acquire(supervisionKey);
+            }
+            else {
+                throw error;
+            }
+        }
+        if (!supervisionTicket) {
+            throw new Error("Failed to acquire supervision ticket");
+        }
+        let supervisionSettled = false;
         const resolvedRole = options.role ?? (typeof options.metadata?.role === "string" ? String(options.metadata.role) : null);
         const metadata = { ...(options.metadata ?? {}) };
         if (resolvedRole !== null) {
@@ -381,43 +505,104 @@ export class ChildSupervisor {
         if (resolvedLimits) {
             metadata.limits = structuredClone(resolvedLimits);
         }
-        const runtime = await startChildRuntime({
-            childId,
-            childrenRoot: this.childrenRoot,
-            command,
-            args,
-            env,
-            metadata,
-            manifestExtras: options.manifestExtras,
-            limits: resolvedLimits,
-            role: resolvedRole,
-            toolsAllow: options.toolsAllow ?? null,
-            spawnRetry: options.spawnRetry,
-        });
-        const snapshot = this.index.registerChild({
-            childId,
-            pid: runtime.pid,
-            workdir: runtime.workdir,
-            metadata,
-            state: "starting",
-            limits: resolvedLimits,
-            role: resolvedRole,
-            attachedAt: Date.now(),
-        });
-        this.runtimes.set(childId, runtime);
-        this.attachRuntime(childId, runtime);
+        metadata.sandbox = sandbox.metadata;
+        let runtime = null;
         let readyMessage = null;
-        const waitForReady = options.waitForReady ?? true;
-        if (waitForReady) {
-            const readyType = options.readyType ?? "ready";
-            readyMessage = await runtime.waitForMessage((message) => {
-                const parsed = message.parsed;
-                return parsed?.type === readyType;
-            }, options.readyTimeoutMs ?? 2000);
-            this.index.updateHeartbeat(childId, readyMessage.receivedAt);
-            this.index.updateState(childId, "ready");
+        try {
+            runtime = await startChildRuntime({
+                childId,
+                childrenRoot: this.childrenRoot,
+                command,
+                args,
+                env,
+                metadata,
+                manifestExtras: options.manifestExtras,
+                limits: resolvedLimits,
+                role: resolvedRole,
+                toolsAllow: options.toolsAllow ?? null,
+                spawnRetry: options.spawnRetry,
+            });
+            const snapshot = this.index.registerChild({
+                childId,
+                pid: runtime.pid,
+                workdir: runtime.workdir,
+                metadata,
+                state: "starting",
+                limits: resolvedLimits,
+                role: resolvedRole,
+                attachedAt: Date.now(),
+            });
+            this.runtimes.set(childId, runtime);
+            this.supervisionKeyByChild.set(childId, supervisionKey);
+            this.attachRuntime(childId, runtime);
+            this.refreshOpenChildrenGauge();
+            const waitForReady = options.waitForReady ?? true;
+            if (waitForReady) {
+                const readyType = options.readyType ?? "ready";
+                readyMessage = await runtime.waitForMessage((message) => {
+                    const parsed = message.parsed;
+                    return parsed?.type === readyType;
+                }, options.readyTimeoutMs ?? 2000);
+                this.index.updateHeartbeat(childId, readyMessage.receivedAt);
+                this.index.updateState(childId, "ready");
+            }
+            if (!supervisionSettled) {
+                supervisionTicket.succeed();
+                supervisionSettled = true;
+            }
+            return { childId, index: snapshot, runtime, readyMessage };
         }
-        return { childId, index: snapshot, runtime, readyMessage };
+        catch (error) {
+            this.supervisionKeyByChild.delete(childId);
+            if (runtime) {
+                this.runtimes.delete(childId);
+                this.clearIdleWatchdog(childId);
+                this.detachEventBridge(childId);
+                this.detachChildLogRecorder(childId);
+                this.refreshOpenChildrenGauge();
+                try {
+                    this.index.updateState(childId, "stopping");
+                }
+                catch {
+                    // Index updates are best effort during teardown to preserve the original error.
+                }
+                const shutdownErrors = [];
+                const gracefulSignal = "SIGTERM";
+                const gracefulTimeout = Math.min(2000, options.readyTimeoutMs ?? 2000);
+                try {
+                    await runtime.shutdown({ signal: gracefulSignal, timeoutMs: gracefulTimeout });
+                }
+                catch (shutdownError) {
+                    shutdownErrors.push(shutdownError);
+                    try {
+                        await runtime.shutdown({ signal: "SIGKILL", timeoutMs: 500, force: true });
+                    }
+                    catch (forceError) {
+                        shutdownErrors.push(forceError);
+                    }
+                }
+                if (shutdownErrors.length > 0 && error instanceof Error) {
+                    const existing = error.cause;
+                    if (existing === undefined && shutdownErrors.length === 1) {
+                        error.cause = shutdownErrors[0];
+                    }
+                    else {
+                        const aggregated = new AggregateError(shutdownErrors, "child runtime teardown failures");
+                        error.cause = existing ?? aggregated;
+                    }
+                }
+            }
+            if (!supervisionSettled) {
+                try {
+                    supervisionTicket.fail();
+                }
+                catch {
+                    // Avoid masking the original error with supervision bookkeeping issues.
+                }
+                supervisionSettled = true;
+            }
+            throw error;
+        }
     }
     /**
      * Sends a payload to a child and updates the lifecycle state to `running`.
@@ -682,6 +867,7 @@ export class ChildSupervisor {
         this.clearIdleWatchdog(childId);
         this.detachEventBridge(childId);
         this.detachChildLogRecorder(childId);
+        this.refreshOpenChildrenGauge();
     }
     /**
      * Stops all running children. Used as a best-effort cleanup helper in tests.
@@ -717,6 +903,7 @@ export class ChildSupervisor {
             runtimeTimers.clearInterval(timer);
         }
         this.watchdogs.clear();
+        this.refreshOpenChildrenGauge();
     }
     requireRuntime(childId) {
         const runtime = this.runtimes.get(childId);
@@ -800,6 +987,7 @@ export class ChildSupervisor {
         const result = { code: 0, signal: null, forced, durationMs };
         this.exitEvents.set(session.childId, result);
         this.logicalChildren.delete(session.childId);
+        this.refreshOpenChildrenGauge();
         return result;
     }
     /** Counts the number of children that are still running or spawning. */
@@ -813,6 +1001,26 @@ export class ChildSupervisor {
         }
         active += this.logicalChildren.size;
         return active;
+    }
+    /** Updates the observability gauge reflecting the number of active children. */
+    refreshOpenChildrenGauge() {
+        reportOpenChildRuntimes(this.countActiveChildren());
+    }
+    /**
+     * Resolves the effective memory limit (in megabytes) enforced by the sandbox
+     * when computing NODE_OPTIONS. Caller-provided limits take precedence over
+     * the supervisor-wide ceiling so idempotent requests can tighten resources
+     * for specific children without relaxing the global policy.
+     */
+    resolveSandboxMemoryLimit(limits) {
+        const requested = limits?.["memory_mb"];
+        if (typeof requested === "number" && Number.isFinite(requested) && requested > 0) {
+            return Math.trunc(requested);
+        }
+        if (this.memoryLimitMb !== null) {
+            return this.memoryLimitMb;
+        }
+        return null;
     }
     /**
      * Merges configured safety limits with caller-provided overrides while
@@ -892,6 +1100,71 @@ export class ChildSupervisor {
         if (timer) {
             runtimeTimers.clearInterval(timer);
             this.watchdogs.delete(childId);
+        }
+    }
+    /**
+     * Forwards supervision lifecycle events to the optional event bus so
+     * observability backends and downstream tooling can trace breaker state
+     * transitions alongside restart attempts.
+     */
+    handleSupervisionEvent(event) {
+        if (event.type === "child_restart") {
+            registerChildRestart();
+        }
+        if (!this.eventBus) {
+            return;
+        }
+        const relatedChildren = [];
+        for (const [childId, key] of this.supervisionKeyByChild.entries()) {
+            if (key === event.key) {
+                relatedChildren.push(childId);
+            }
+        }
+        const baseData = {
+            event,
+            relatedChildren,
+            maxRestartsPerMinute: this.supervisionMaxRestartsPerMinute,
+        };
+        const base = {
+            cat: "child",
+            component: "child_supervisor",
+            stage: "supervision",
+            childId: relatedChildren.length === 1 ? relatedChildren[0] : null,
+            data: baseData,
+        };
+        switch (event.type) {
+            case "child_restart":
+                this.eventBus.publish({
+                    ...base,
+                    level: "info",
+                    kind: "CHILD_RESTART",
+                    msg: "child.restart.scheduled",
+                });
+                break;
+            case "breaker_open":
+                this.eventBus.publish({
+                    ...base,
+                    level: "warn",
+                    kind: "BREAKER_OPEN",
+                    msg: "child.breaker.open",
+                });
+                break;
+            case "breaker_half_open":
+                this.eventBus.publish({
+                    ...base,
+                    level: "info",
+                    kind: "BREAKER_HALF_OPEN",
+                    msg: "child.breaker.half_open",
+                });
+                break;
+            case "breaker_closed":
+                this.eventBus.publish({
+                    ...base,
+                    level: "info",
+                    kind: "BREAKER_CLOSED",
+                    msg: "child.breaker.closed",
+                });
+                break;
         }
     }
     /** Detaches the event bridge associated with the child, if any. */

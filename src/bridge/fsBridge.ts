@@ -8,11 +8,12 @@ import { pathToFileURL } from "node:url";
 
 import { handleJsonRpc, type JsonRpcRequest, type JsonRpcResponse } from "../server.js";
 import { StructuredLogger } from "../logger.js";
+import { readOptionalString } from "../config/env.js";
 
 /** Home directory used as a fallback when `MCP_FS_IPC_DIR` is not provided. */
-const HOME = process.env.HOME ?? process.cwd();
+const HOME = readOptionalString("HOME", { allowEmpty: false }) ?? process.cwd();
 /** Root directory hosting the file-system based IPC exchange. */
-const IPC_DIR = process.env.MCP_FS_IPC_DIR ?? join(HOME, ".codex", "ipc");
+const IPC_DIR = readOptionalString("MCP_FS_IPC_DIR", { allowEmpty: false }) ?? join(HOME, ".codex", "ipc");
 /** Directory containing pending JSON-RPC requests. */
 const REQ_DIR = join(IPC_DIR, "requests");
 /** Directory receiving successful JSON-RPC responses. */

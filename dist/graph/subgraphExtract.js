@@ -1,7 +1,8 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 // NOTE: Node built-in modules are imported with the explicit `node:` prefix to guarantee ESM resolution in Node.js.
-import { ensureDirectory, resolveWithin } from "../paths.js";
+import { ensureDirectory } from "../paths.js";
+import { safePath } from "../gateways/fsArtifacts.js";
 import { SUBGRAPH_REGISTRY_KEY, collectMissingSubgraphDescriptors, resolveSubgraphDescriptor, } from "./subgraphRegistry.js";
 /**
  * Normalise an identifier so it can safely be used within a file name. The
@@ -73,7 +74,9 @@ export async function extractSubgraphToFile(options) {
     }
     const nextVersion = maxVersion + 1;
     const fileName = `${safeRef}.v${String(nextVersion).padStart(3, "0")}.json`;
-    const absolutePath = resolveWithin(targetDirectory, fileName);
+    // Guard against accidental traversal by forcing the descriptor path through
+    // the shared {@link safePath} sanitiser.
+    const absolutePath = safePath(targetDirectory, fileName);
     const extractedAt = options.now ? options.now() : Date.now();
     const payload = {
         run_id: options.runId,

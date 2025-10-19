@@ -2,6 +2,8 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { randomBytes } from "node:crypto";
 import process from "node:process";
 
+import { readOptionalString } from "../config/env.js";
+
 import type { BudgetUsageMetadata } from "./budget.js";
 
 /** Status codes mirrored from the OpenTelemetry specification. */
@@ -124,11 +126,11 @@ let otlpConfig: OtlpConfig | null = readOtlpConfigFromEnv();
 let otlpQueue: Promise<void> = Promise.resolve();
 
 function readOtlpConfigFromEnv(): OtlpConfig | null {
-  const endpoint = process.env.OTEL_EXPORTER_OTLP_ENDPOINT?.trim();
+  const endpoint = readOptionalString("OTEL_EXPORTER_OTLP_ENDPOINT", { allowEmpty: false });
   if (!endpoint) {
     return null;
   }
-  const headersValue = process.env.OTEL_EXPORTER_OTLP_HEADERS?.trim();
+  const headersValue = readOptionalString("OTEL_EXPORTER_OTLP_HEADERS", { allowEmpty: false });
   if (!headersValue) {
     return { endpoint, headers: { "content-type": "application/json" } };
   }
@@ -631,6 +633,11 @@ export const __tracingInternals = {
   },
   configureOtlp(config: OtlpConfig | null): void {
     otlpConfig = config;
+  },
+  reloadOtlpConfigFromEnv(): OtlpConfig | null {
+    const config = readOtlpConfigFromEnv();
+    otlpConfig = config;
+    return config;
   },
   async flushOtlpQueue(): Promise<void> {
     await otlpQueue;

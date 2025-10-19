@@ -1,9 +1,70 @@
 import { Buffer } from "node:buffer";
 import { appendFile, mkdir, rename, rm, stat } from "node:fs/promises";
 import { dirname } from "node:path";
+import { getJsonRpcContext } from "./infra/jsonRpcContext.js";
+import { getActiveTraceContext } from "./infra/tracing.js";
+import { readOptionalString } from "./config/env.js";
 // NOTE: Node built-in modules are imported with the explicit `node:` prefix to guarantee ESM resolution in Node.js.
 /** Default placeholder inserted when a secret token is redacted. */
 const REDACTION_TOKEN = "[REDACTED]";
+/** Accepted directives enabling custom secret redaction. */
+const REDACTION_ENABLE_TOKENS = new Set(["on", "true", "yes", "1", "enable", "enabled"]);
+/** Directives explicitly disabling secret redaction despite configured tokens. */
+const REDACTION_DISABLE_TOKENS = new Set(["off", "false", "no", "0", "disable", "disabled"]);
+/** Keys whose values are redacted when `MCP_LOG_REDACT=on`. */
+const SENSITIVE_KEYS = new Set([
+    "authorization",
+    "proxy-authorization",
+    "x-api-key",
+    "api-key",
+    "api_key",
+    "token",
+    "access_token",
+    "refresh_token",
+    "cookie",
+    "set-cookie",
+]);
+/**
+ * Parses the `MCP_LOG_REDACT` environment variable so operators can both
+ * toggle redaction and provide a list of sensitive substrings that must be
+ * scrubbed from persisted artefacts. The helper accepts comma-separated
+ * directives such as `"on,sk-"` or `"off"` and defaults to enabling
+ * redaction when custom patterns are provided without an explicit toggle.
+ */
+export function parseRedactionDirectives(raw) {
+    if (!raw) {
+        return { enabled: false, tokens: [] };
+    }
+    const directives = raw
+        .split(",")
+        .map((value) => value.trim())
+        .filter((value) => value.length > 0);
+    if (directives.length === 0) {
+        return { enabled: false, tokens: [] };
+    }
+    let enabled;
+    const tokens = [];
+    for (const directive of directives) {
+        const normalised = directive.toLowerCase();
+        if (REDACTION_DISABLE_TOKENS.has(normalised)) {
+            enabled = false;
+            continue;
+        }
+        if (REDACTION_ENABLE_TOKENS.has(normalised)) {
+            enabled = true;
+            continue;
+        }
+        tokens.push(directive);
+    }
+    if (enabled === undefined) {
+        enabled = tokens.length > 0;
+    }
+    // Deduplicate tokens while preserving insertion order. Operators occasionally
+    // repeat the same pattern (for example when composing shell snippets) and we
+    // do not want to spend time applying the same replacement multiple times.
+    const uniqueTokens = Array.from(new Set(tokens));
+    return { enabled, tokens: uniqueTokens };
+}
 /**
  * Default maximum size (in bytes) of the primary log file before a rotation is
  * triggered. The value intentionally stays modest to keep artefacts light when
@@ -31,12 +92,22 @@ export class StructuredLogger {
     logDirectoryReady = false;
     /** Optional listener invoked with the structured entry. */
     entryListener;
+    /** Whether automatic header redaction is enabled via environment variable. */
+    redactionEnabled;
     constructor(options = {}) {
         this.logFile = options.logFile ?? undefined;
         this.maxFileSizeBytes = options.maxFileSizeBytes ?? DEFAULT_MAX_FILE_SIZE;
         this.maxFileCount = Math.max(1, options.maxFileCount ?? DEFAULT_MAX_FILE_COUNT);
-        this.redactSecrets = options.redactSecrets ? [...options.redactSecrets] : [];
+        const directives = parseRedactionDirectives(readOptionalString("MCP_LOG_REDACT", { allowEmpty: true }));
+        const combined = new Set(directives.tokens);
+        if (options.redactSecrets) {
+            for (const entry of options.redactSecrets) {
+                combined.add(entry);
+            }
+        }
+        this.redactSecrets = [...combined];
         this.entryListener = options.onEntry;
+        this.redactionEnabled = options.redactionEnabled ?? directives.enabled;
     }
     info(message, payload) {
         this.log("info", message, payload);
@@ -91,11 +162,23 @@ export class StructuredLogger {
         }
     }
     log(level, message, payload) {
+        const trace = getActiveTraceContext();
+        const rpcContext = getJsonRpcContext();
+        const correlation = this.collectCorrelationFields(trace, rpcContext);
+        const enrichedPayload = payload !== undefined ? this.enrichPayload(payload, trace, rpcContext) : undefined;
+        const safePayload = enrichedPayload !== undefined ? this.redactStructuredValue(enrichedPayload) : undefined;
         const entry = {
             timestamp: new Date().toISOString(),
             level,
             message,
-            ...(payload !== undefined ? { payload } : {})
+            ...(correlation.request_id !== undefined ? { request_id: correlation.request_id } : {}),
+            ...(correlation.trace_id !== undefined ? { trace_id: correlation.trace_id } : {}),
+            ...(correlation.child_id !== undefined ? { child_id: correlation.child_id } : {}),
+            ...(correlation.method !== undefined ? { method: correlation.method } : {}),
+            ...(correlation.duration_ms !== undefined ? { duration_ms: correlation.duration_ms } : {}),
+            ...(correlation.bytes_in !== undefined ? { bytes_in: correlation.bytes_in } : {}),
+            ...(correlation.bytes_out !== undefined ? { bytes_out: correlation.bytes_out } : {}),
+            ...(safePayload !== undefined ? { payload: safePayload } : {}),
         };
         const line = `${JSON.stringify(entry)}\n`;
         process.stdout.write(line);
@@ -227,6 +310,123 @@ export class StructuredLogger {
                 throw error;
             }
         }
+    }
+    /**
+     * Enriches structured payloads with the correlation details exposed by the
+     * JSON-RPC and tracing contexts. The helper keeps user-provided metadata
+     * intact while filling gaps such as `trace_id`, `request_id` or `bytes_out`.
+     */
+    enrichPayload(payload, trace, rpcContext) {
+        if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+            return payload;
+        }
+        const enriched = { ...payload };
+        if (trace) {
+            if (enriched.trace_id === undefined) {
+                enriched.trace_id = trace.traceId;
+            }
+            if (enriched.span_id === undefined) {
+                enriched.span_id = trace.spanId;
+            }
+            if (enriched.method === undefined && trace.method) {
+                enriched.method = trace.method;
+            }
+            if (enriched.request_id === undefined && trace.requestId !== null) {
+                enriched.request_id = trace.requestId;
+            }
+            if (enriched.child_id === undefined && trace.childId) {
+                enriched.child_id = trace.childId;
+            }
+            const duration = this.normaliseMetric(trace.durationMs);
+            if (enriched.duration_ms === undefined && duration !== null) {
+                enriched.duration_ms = duration;
+            }
+            const bytesIn = this.normaliseMetric(trace.bytesIn);
+            if (enriched.bytes_in === undefined && bytesIn !== null) {
+                enriched.bytes_in = bytesIn;
+            }
+            const bytesOut = this.normaliseMetric(trace.bytesOut);
+            if (enriched.bytes_out === undefined && bytesOut !== null) {
+                enriched.bytes_out = bytesOut;
+            }
+        }
+        if (rpcContext) {
+            if (enriched.request_id === undefined && rpcContext.requestId !== undefined) {
+                enriched.request_id = rpcContext.requestId ?? null;
+            }
+            if (enriched.child_id === undefined && rpcContext.childId !== undefined) {
+                enriched.child_id = rpcContext.childId ?? null;
+            }
+            if (enriched.transport === undefined && rpcContext.transport !== undefined) {
+                enriched.transport = rpcContext.transport ?? null;
+            }
+        }
+        return enriched;
+    }
+    collectCorrelationFields(trace, rpcContext) {
+        const fields = {};
+        if (trace) {
+            fields.trace_id = trace.traceId;
+            fields.request_id = trace.requestId ?? null;
+            fields.child_id = trace.childId ?? null;
+            if (trace.method) {
+                fields.method = trace.method;
+            }
+            const duration = this.normaliseMetric(trace.durationMs);
+            if (duration !== null) {
+                fields.duration_ms = duration;
+            }
+            const bytesIn = this.normaliseMetric(trace.bytesIn);
+            if (bytesIn !== null) {
+                fields.bytes_in = bytesIn;
+            }
+            const bytesOut = this.normaliseMetric(trace.bytesOut);
+            if (bytesOut !== null) {
+                fields.bytes_out = bytesOut;
+            }
+        }
+        if (rpcContext) {
+            if (fields.request_id === undefined && rpcContext.requestId !== undefined) {
+                fields.request_id = rpcContext.requestId ?? null;
+            }
+            if (fields.child_id === undefined && rpcContext.childId !== undefined) {
+                fields.child_id = rpcContext.childId ?? null;
+            }
+            if (fields.transport === undefined && rpcContext.transport !== undefined) {
+                fields.transport = rpcContext.transport ?? null;
+            }
+        }
+        return fields;
+    }
+    normaliseMetric(value) {
+        if (typeof value !== "number" || !Number.isFinite(value)) {
+            return null;
+        }
+        return Math.round(Math.max(0, value));
+    }
+    redactStructuredValue(value) {
+        if (!this.redactionEnabled) {
+            return value;
+        }
+        return this.deepRedact(value);
+    }
+    deepRedact(value) {
+        if (Array.isArray(value)) {
+            return value.map((item) => this.deepRedact(item));
+        }
+        if (value && typeof value === "object") {
+            const result = {};
+            for (const [key, entry] of Object.entries(value)) {
+                if (SENSITIVE_KEYS.has(key.toLowerCase())) {
+                    result[key] = REDACTION_TOKEN;
+                }
+                else {
+                    result[key] = this.deepRedact(entry);
+                }
+            }
+            return result;
+        }
+        return value;
     }
 }
 //# sourceMappingURL=logger.js.map

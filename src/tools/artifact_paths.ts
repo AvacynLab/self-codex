@@ -1,9 +1,9 @@
 import { createHash } from "node:crypto";
 import { relative as relativePath } from "node:path";
-import process from "node:process";
 
 import { safePath } from "../gateways/fsArtifacts.js";
 import { childWorkspacePath } from "../paths.js";
+import { readInt } from "../config/env.js";
 
 /** Default maximum number of bytes accepted by the artifact façades. */
 const DEFAULT_MAX_ARTIFACT_BYTES = 8 * 1024 * 1024;
@@ -53,17 +53,8 @@ export function sanitizeArtifactPath(
  * variable so tests and deployments can tighten the limit.
  */
 export function resolveMaxArtifactBytes(): number {
-  const override = process.env.MCP_MAX_ARTIFACT_BYTES;
-  if (!override) {
-    return DEFAULT_MAX_ARTIFACT_BYTES;
-  }
-
-  const parsed = Number.parseInt(override, 10);
-  if (!Number.isFinite(parsed) || parsed <= 0) {
-    return DEFAULT_MAX_ARTIFACT_BYTES;
-  }
-
-  return parsed;
+  // Honour the optional override while rejecting zero/negative payload limits.
+  return readInt("MCP_MAX_ARTIFACT_BYTES", DEFAULT_MAX_ARTIFACT_BYTES, { min: 1 });
 }
 
 /**

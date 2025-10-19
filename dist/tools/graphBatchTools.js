@@ -1,5 +1,8 @@
 import { z } from "zod";
 import { GraphTransactionError, GraphVersionConflictError, } from "../graph/tx.js";
+import { GraphValidationError, validateGraph } from "../graph/validate.js";
+import { recordOperation } from "../graph/oplog.js";
+import { recordGraphWal } from "../graph/wal.js";
 import { buildIdempotencyCacheKey } from "../infra/idempotency.js";
 import { ERROR_CODES } from "../types.js";
 import { GraphMutateInputSchema, handleGraphMutate, normaliseGraphPayload, serialiseNormalisedGraph, } from "./graphTools.js";
@@ -65,6 +68,10 @@ export async function handleGraphBatchMutate(context, input) {
             };
             const mutation = handleGraphMutate(mutateInput);
             const normalised = normaliseGraphPayload(mutation.graph);
+            const validation = validateGraph(normalised);
+            if (!validation.ok) {
+                throw new GraphValidationError(validation.violations, validation.invariants);
+            }
             context.locks.assertCanMutate(input.graph_id, input.owner ?? null);
             committedResult = context.transactions.commit(tx.txId, normalised);
             context.resources.markGraphSnapshotCommitted({
@@ -81,6 +88,24 @@ export async function handleGraphBatchMutate(context, input) {
                 graph: committedResult.graph,
             });
             const changed = mutation.applied.some((entry) => entry.changed);
+            void recordOperation({
+                kind: "graph_batch_mutate",
+                graph_id: committedResult.graphId,
+                op_id: opId,
+                operations: mutation.applied.length,
+                changed,
+            }, tx.txId);
+            await recordGraphWal("graph_batch_mutate_applied", {
+                tx_id: tx.txId,
+                graph_id: committedResult.graphId,
+                op_id: opId,
+                committed_version: committedResult.version,
+                committed_at: committedResult.committedAt,
+                operations_applied: mutation.applied.length,
+                changed,
+                owner: tx.owner,
+                note: tx.note,
+            });
             return {
                 op_id: opId,
                 graph_id: committedResult.graphId,
@@ -103,6 +128,24 @@ export async function handleGraphBatchMutate(context, input) {
             catch {
                 // Ignored: the initial error is more relevant for callers.
             }
+            void recordOperation({
+                kind: "graph_batch_mutate",
+                graph_id: tx.graphId,
+                op_id: opId,
+                operations: input.operations.length,
+                changed: false,
+                accepted: false,
+                error: error instanceof Error ? error.message : String(error),
+            }, tx.txId);
+            await recordGraphWal("graph_batch_mutate_failed", {
+                tx_id: tx.txId,
+                graph_id: tx.graphId,
+                op_id: opId,
+                operations: input.operations.length,
+                owner: tx.owner,
+                note: tx.note,
+                error: error instanceof Error ? error.message : String(error),
+            });
             throw error;
         }
     };

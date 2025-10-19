@@ -1,3 +1,5 @@
+import { readOptionalBool, readOptionalNumber } from "../config/env.js";
+
 /**
  * Token-bucket rate limiter keyed by caller identity. The buckets are stored in
  * memory because stateless HTTP requests only require a lightweight guard to
@@ -37,4 +39,18 @@ export function rateLimitOk(key: string, rps = 10, burst = 20): boolean {
  */
 export function resetRateLimitBuckets(): void {
   buckets.clear();
+}
+
+/**
+ * Parses a boolean environment variable while tolerating common human-friendly
+ * variants. Returning `undefined` allows callers to fall back to defaults when
+ * the variable is not provided or contains an unexpected value.
+ */
+export function parseRateLimitEnvBoolean(name: string): boolean | undefined {
+  return readOptionalBool(name);
+}
+
+/** Reads a numeric rate limit tuning parameter from the environment. */
+export function parseRateLimitEnvNumber(name: string): number | undefined {
+  return readOptionalNumber(name);
 }

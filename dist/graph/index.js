@@ -1,13 +1,3 @@
-function pushSorted(map, key, value) {
-    const list = map.get(key);
-    if (list) {
-        list.push(value);
-        list.sort();
-    }
-    else {
-        map.set(key, [value]);
-    }
-}
 function addNodeAttribute(index, nodeId, key, value) {
     let valueMap = index.get(key);
     if (!valueMap) {

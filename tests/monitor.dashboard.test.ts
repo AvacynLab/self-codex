@@ -228,7 +228,7 @@ describe("monitor/dashboard", function () {
     const supervisor = new StubSupervisor();
     const stigmergy = new StigmergyField();
     const btStatusRegistry = new BehaviorTreeStatusRegistry();
-    let telemetryNow = 42;
+    const telemetryNow = 42;
     const contractNetWatcherTelemetry = new ContractNetWatcherTelemetryRecorder(() => telemetryNow);
 
     const maliciousLabel = "<script>alert('x')</script>";

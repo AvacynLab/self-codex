@@ -3,7 +3,8 @@ import { Buffer } from 'node:buffer';
 import { createReadStream, promises as fs } from 'node:fs';
 import path from 'node:path';
 // NOTE: Node built-in modules are imported with the explicit `node:` prefix to guarantee ESM resolution in Node.js.
-import { childWorkspacePath, ensureDirectory, ensureParentDirectory, resolveWithin, } from './paths.js';
+import { ensureDirectory, ensureParentDirectory, resolveWithin } from './paths.js';
+import { safePath } from './gateways/fsArtifacts.js';
 const OUTBOX_DIRNAME = 'outbox';
 const MANIFEST_FILENAME = 'manifest.json';
 const MANIFEST_VERSION = 1;
@@ -22,13 +23,6 @@ export async function hashFile(filePath, algorithm = 'sha256') {
         stream.on('end', () => resolve());
     });
     return hash.digest('hex');
-}
-function outboxPath(childrenRoot, childId, relativePath) {
-    const base = childWorkspacePath(childrenRoot, childId, OUTBOX_DIRNAME);
-    if (!relativePath) {
-        return base;
-    }
-    return resolveWithin(base, relativePath);
 }
 async function loadManifest(outboxDir) {
     const manifestPath = resolveWithin(outboxDir, MANIFEST_FILENAME);
@@ -71,7 +65,7 @@ async function persistManifest(outboxDir, entries) {
  */
 export async function writeArtifact(options) {
     const outboxDir = await ensureDirectory(options.childrenRoot, options.childId, OUTBOX_DIRNAME);
-    const absolutePath = resolveWithin(outboxDir, options.relativePath);
+    const absolutePath = safePath(outboxDir, options.relativePath);
     await ensureParentDirectory(absolutePath);
     const buffer = typeof options.data === 'string'
         ? Buffer.from(options.data, options.encoding ?? 'utf8')
@@ -93,7 +87,8 @@ export async function writeArtifact(options) {
  * Reads an artifact back from disk.
  */
 export async function readArtifact(options) {
-    const absolutePath = outboxPath(options.childrenRoot, options.childId, options.relativePath);
+    const outboxDir = await ensureDirectory(options.childrenRoot, options.childId, OUTBOX_DIRNAME);
+    const absolutePath = safePath(outboxDir, options.relativePath);
     if (options.encoding) {
         return fs.readFile(absolutePath, { encoding: options.encoding });
     }

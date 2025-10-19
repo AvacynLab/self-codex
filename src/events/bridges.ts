@@ -415,7 +415,7 @@ export function bridgeChildRuntimeEvents(options: ChildRuntimeBridgeOptions): ()
   const lifecycleListener = (event: ChildRuntimeLifecycleEvent) => {
     const correlation = handleCorrelation({ kind: "lifecycle", runtime, lifecycle: event });
 
-    let level: EventInput["level"] = "info";
+      let level: EventInput["level"] = "info";
     let msg: ChildLifecycleMessage = "child_lifecycle";
     const data: Record<string, unknown> = {
       childId: runtime.childId,
@@ -485,7 +485,7 @@ export function bridgeContractNetEvents(options: ContractNetBridgeOptions): () =
     if (resolved) {
       mergeCorrelationHints(correlation, resolved);
     }
-    let level: EventInput["level"] = "info";
+    const level: EventInput["level"] = "info";
     let msg: ContractNetEventMessage = "cnp_event";
     let data: Record<string, unknown> = {};
 

@@ -1,4 +1,5 @@
 import { EventEmitter } from "node:events";
+import { assertValidEventMessage } from "./types.js";
 const BUS_EVENT = "event";
 const DEFAULT_HISTORY_LIMIT = 1_000;
 const DEFAULT_STREAM_BUFFER = 256;
@@ -22,7 +23,11 @@ function normaliseCategory(cat) {
 }
 function normaliseMessage(msg) {
     const trimmed = msg.trim();
-    return trimmed.length > 0 ? trimmed : "event";
+    if (trimmed.length === 0) {
+        throw new TypeError("event message must be non-empty");
+    }
+    assertValidEventMessage(trimmed);
+    return trimmed;
 }
 /**
  * Normalise the optional semantic kind supplied by bridge publishers.

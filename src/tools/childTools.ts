@@ -1,5 +1,4 @@
 import { Buffer } from "node:buffer";
-import process from "node:process";
 import type { ProcessEnv, Signal } from "../nodePrimitives.js";
 import { z } from "zod";
 // NOTE: Node built-in modules are imported with the explicit `node:` prefix to guarantee ESM resolution in Node.js.
@@ -38,6 +37,7 @@ import {
 } from "../infra/budget.js";
 import { BulkOperationError, buildBulkFailureDetail } from "./bulkError.js";
 import { resolveOperationId } from "./operationIds.js";
+import { readBool, readOptionalInt, readOptionalString, readString } from "../config/env.js";
 
 /**
  * Dependencies required by the child tool handlers. The orchestrator injects
@@ -1069,8 +1069,9 @@ function buildSpawnCodexManifestExtras(
 
 /** Detects whether the stateless HTTP bridge should back child orchestration. */
 function isHttpLoopbackEnabled(): boolean {
-  const raw = process.env.MCP_HTTP_STATELESS;
-  return typeof raw === "string" && raw.trim().toLowerCase() === "yes";
+  // Honour the orchestrator-wide stateless toggle using the shared env helper
+  // so every transport interprets the literals consistently ("yes", "true", "1").
+  return readBool("MCP_HTTP_STATELESS", false);
 }
 
 /** Normalises the MCP HTTP endpoint so logical children can call the server again. */
@@ -1107,11 +1108,9 @@ function buildHttpChildEndpoint(
     return { url: inherited.url, headers };
   }
 
-  const host = (process.env.MCP_HTTP_HOST ?? "127.0.0.1").trim() || "127.0.0.1";
-  const rawPort = process.env.MCP_HTTP_PORT ?? "";
-  const parsedPort = Number.parseInt(rawPort, 10);
-  const port = Number.isFinite(parsedPort) && parsedPort > 0 ? parsedPort : 8765;
-  let path = process.env.MCP_HTTP_PATH ?? "/mcp";
+  const host = readString("MCP_HTTP_HOST", "127.0.0.1");
+  const port = readOptionalInt("MCP_HTTP_PORT", { min: 1, max: 65_535 }) ?? 8765;
+  let path = readString("MCP_HTTP_PATH", "/mcp");
   if (!path.startsWith("/")) {
     path = `/${path}`;
   }
@@ -1123,7 +1122,7 @@ function buildHttpChildEndpoint(
     "x-child-id": childId,
   };
 
-  const token = process.env.MCP_HTTP_TOKEN?.trim();
+  const token = readOptionalString("MCP_HTTP_TOKEN", { allowEmpty: false });
   if (token) {
     headers.authorization = `Bearer ${token}`;
   }

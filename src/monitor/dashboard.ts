@@ -28,7 +28,7 @@ import {
 import { BehaviorTreeStatusRegistry } from "./btStatusRegistry.js";
 import type { BehaviorTreeStatusSnapshot } from "./btStatusRegistry.js";
 import type { BTStatus } from "../executor/bt/types.js";
-import type { OrchestratorSupervisor, SupervisorSchedulerSnapshot } from "../agents/supervisor.js";
+import type { OrchestratorSupervisor } from "../agents/supervisor.js";
 import { buildReplayPage } from "./replay.js";
 import type { ThoughtNodeStatus } from "../reasoning/thoughtGraph.js";
 import { LogJournal, type LogStream, type LogTailFilters } from "./log.js";

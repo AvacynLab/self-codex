@@ -69,7 +69,6 @@ describe("http sse backpressure", () => {
         },
       },
       maxChunkBytes: 128,
-      maxBufferedBytes: singleFrameBytes * 2,
       emitTimeoutMs: 25,
     });
 

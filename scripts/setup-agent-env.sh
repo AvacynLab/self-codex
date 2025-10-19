@@ -7,8 +7,43 @@
 
 set -euo pipefail
 
+# Emplacement standard du fichier PID utilisé par le serveur HTTP optionnel.
+SERVER_PID_FILE="/tmp/mcp_http.pid"
+SERVER_PID=""
+
+# Nettoyage systématique : tue le serveur HTTP éventuel et supprime le fichier PID.
+cleanup() {
+  if [[ -n "${SERVER_PID}" ]]; then
+    if kill -0 "${SERVER_PID}" 2>/dev/null; then
+      kill "${SERVER_PID}" 2>/dev/null || true
+      wait "${SERVER_PID}" 2>/dev/null || true
+    fi
+  elif [[ -f "${SERVER_PID_FILE}" ]]; then
+    local recorded_pid
+    recorded_pid="$(cat "${SERVER_PID_FILE}")"
+    if [[ -n "${recorded_pid}" ]] && kill -0 "${recorded_pid}" 2>/dev/null; then
+      kill "${recorded_pid}" 2>/dev/null || true
+      wait "${recorded_pid}" 2>/dev/null || true
+    fi
+  fi
+
+  rm -f "${SERVER_PID_FILE}"
+}
+trap cleanup EXIT INT TERM
+
 echo "🔎 Vérification Node/npm"
 node -v
+
+# Neutraliser toute configuration NPM susceptible de filtrer les devDeps ou de forcer un proxy.
+unset NPM_CONFIG_PRODUCTION || true
+unset NPM_CONFIG_OMIT || true
+unset NPM_CONFIG_HTTP_PROXY   || true
+unset NPM_CONFIG_HTTPS_PROXY  || true
+unset npm_config_http_proxy   || true   # variantes en minuscule parfois injectées
+unset npm_config_https_proxy  || true
+
+# Vérification npm après nettoyage des variables pour garantir que l'exécutable consulté
+# respecte l'environnement neutralisé (premier appel à `npm`).
 npm -v
 
 # Lockfile requis pour npm ci reproductible
@@ -17,34 +52,40 @@ if [[ ! -f package-lock.json ]]; then
   exit 2
 fi
 
-# Neutraliser toute conf NPM qui omettrait les devDeps
-unset NPM_CONFIG_PRODUCTION || true
-unset NPM_CONFIG_OMIT || true
-export NODE_ENV=development
+# Helper : lance une commande en forçant NODE_ENV=development uniquement sur la portée demandée.
+run_with_dev_env() {
+  local cmd=("$@")
+  NODE_ENV=development "${cmd[@]}"
+}
 
-# ⬇️ Ajouts pour nettoyer les proxies NPM
-unset NPM_CONFIG_HTTP_PROXY   || true
-unset NPM_CONFIG_HTTPS_PROXY  || true
-unset npm_config_http_proxy   || true   # variantes en minuscule parfois injectées
-unset npm_config_https_proxy  || true
+# Guard HTTP : empêche le démarrage d'un endpoint non authentifié sauf autorisation explicite.
+: "${START_HTTP:=0}"
+if [[ "${START_HTTP}" == "1" ]]; then
+  allow_noauth="${MCP_HTTP_ALLOW_NOAUTH:-0}"
+  allow_noauth_lower="${allow_noauth,,}"
+  if [[ -z "${MCP_HTTP_TOKEN:-}" && "${allow_noauth_lower}" != "1" && "${allow_noauth_lower}" != "true" && "${allow_noauth_lower}" != "yes" ]]; then
+    echo "❌ START_HTTP=1 sans MCP_HTTP_TOKEN (et MCP_HTTP_ALLOW_NOAUTH != 1) — arrêt pour sécurité." >&2
+    exit 3
+  fi
+fi
 
 echo "🔧 Installation (npm ci, inclut devDeps)"
-npm ci --include=dev
+run_with_dev_env npm ci --include=dev
 
 # @types/node doit exister (il est en dependencies, mais double-sécurisation)
 echo "🧪 Vérification @types/node"
 if [[ ! -d node_modules/@types/node ]]; then
   echo "⚠️  @types/node absent — installation de secours"
-  npm install @types/node@^20 --no-save --no-package-lock
+  run_with_dev_env npm install @types/node@^20 --no-save --no-package-lock
 fi
 
 echo "🏗️  Build TypeScript (src + graph-forge)"
 if [[ -x node_modules/.bin/tsc ]]; then
-  npm run build
+  run_with_dev_env npm run build
 else
   echo "ℹ️  tsc absent → fallback npx typescript"
-  npx --yes typescript tsc
-  npx --yes typescript tsc -p graph-forge/tsconfig.json
+  run_with_dev_env npx --yes typescript tsc
+  run_with_dev_env npx --yes typescript tsc -p graph-forge/tsconfig.json
 fi
 
 # Config Codex CLI (STDIO par défaut)
@@ -85,10 +126,13 @@ if [[ "${START_HTTP}" == "1" ]]; then
     --http-path "$MCP_HTTP_PATH" \
     --http-json "$MCP_HTTP_JSON" \
     --http-stateless "$MCP_HTTP_STATELESS" \
-    > "$LOG_FILE" 2>&1 & echo $! > /tmp/mcp_http.pid
+    > "$LOG_FILE" 2>&1 &
+
+  SERVER_PID=$!
+  echo "${SERVER_PID}" > "${SERVER_PID_FILE}"
 
   sleep 1
-  echo "✅ MCP HTTP PID: $(cat /tmp/mcp_http.pid 2>/dev/null || echo 'n/a')"
+  echo "✅ MCP HTTP PID: $(cat "${SERVER_PID_FILE}" 2>/dev/null || echo 'n/a')"
   echo "🌐 Endpoint: http://${MCP_HTTP_HOST}:${MCP_HTTP_PORT}${MCP_HTTP_PATH}"
 else
   echo "ℹ️ START_HTTP=0 → serveur HTTP non démarré (STDIO seul)."

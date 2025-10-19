@@ -1,13 +1,14 @@
-import { spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { createWriteStream } from "node:fs";
 import { writeFile } from "node:fs/promises";
-import process from "node:process";
 import { inspect } from "node:util";
 // NOTE: Node built-in modules are imported with the explicit `node:` prefix to guarantee ESM resolution in Node.js.
 import { scanArtifacts } from "./artifacts.js";
 import { childWorkspacePath, ensureDirectory } from "./paths.js";
 import { runtimeTimers } from "./runtime/timers.js";
+import { createChildProcessGateway, } from "./gateways/childProcess.js";
+/** Default hardened gateway leveraged when callers do not inject one explicitly. */
+const defaultChildProcessGateway = createChildProcessGateway();
 /**
  * Error raised when the runtime fails to spawn after exhausting all retry
  * attempts. The original cause is exposed for diagnostic purposes so the
@@ -612,6 +613,9 @@ export class ChildRuntime extends EventEmitter {
         this.emit("message", message);
     }
     recordInternal(kind, data) {
+        if (this.closed) {
+            return;
+        }
         const entry = {
             ts: Date.now(),
             kind,
@@ -633,13 +637,34 @@ export async function startChildRuntime(options) {
     const logPath = childWorkspacePath(options.childrenRoot, options.childId, "logs", "child.log");
     const manifestPath = childWorkspacePath(options.childrenRoot, options.childId, "manifest.json");
     const args = options.args ? [...options.args] : [];
-    const env = { ...process.env, ...(options.env ?? {}) };
+    const env = {};
+    if (options.env) {
+        for (const [key, value] of Object.entries(options.env)) {
+            if (typeof value === "undefined") {
+                continue;
+            }
+            env[key] = String(value);
+        }
+    }
     const envKeys = Object.keys(env).sort();
     const metadata = options.metadata ? { ...options.metadata } : {};
     const manifestExtras = options.manifestExtras ? { ...options.manifestExtras } : {};
     const limits = options.limits ? { ...options.limits } : null;
     const toolsAllow = options.toolsAllow ? Array.from(new Set(options.toolsAllow)) : [];
-    const spawnFactory = options.spawnFactory ?? spawn;
+    const processGateway = (() => {
+        if (options.processGateway) {
+            return options.processGateway;
+        }
+        if (options.spawnFactory) {
+            const spawnImpl = ((command, argsOrOptions, maybeOptions) => {
+                const args = Array.isArray(argsOrOptions) ? argsOrOptions : undefined;
+                const optionsCandidate = Array.isArray(argsOrOptions) ? maybeOptions : argsOrOptions;
+                return options.spawnFactory(command, args, optionsCandidate);
+            });
+            return createChildProcessGateway({ spawnImpl });
+        }
+        return defaultChildProcessGateway;
+    })();
     const retry = options.spawnRetry ?? {};
     const attempts = Math.max(1, Math.trunc(retry.attempts ?? 1));
     const factor = Math.max(1, retry.backoffFactor ?? 2);
@@ -648,17 +673,59 @@ export async function startChildRuntime(options) {
     let lastError = null;
     for (let attempt = 1; attempt <= attempts; attempt += 1) {
         let child;
+        let spawnHandle;
         try {
-            child = spawnFactory(options.command, args, {
+            // Retain the gateway-managed handle so abort controllers and timeout guards
+            // stay armed until the child either advertises readiness or fails early.
+            spawnHandle = processGateway.spawn({
+                command: options.command,
+                args,
                 cwd: workdir,
-                env,
+                allowedEnvKeys: envKeys,
+                inheritEnv: {},
+                extraEnv: env,
                 stdio: ["pipe", "pipe", "pipe"],
+                timeoutMs: options.spawnTimeoutMs,
             });
         }
         catch (error) {
-            lastError = error;
+            lastError = normaliseSpawnFailure(error);
             if (attempt >= attempts) {
-                throw new ChildSpawnError(attempts, error);
+                throw new ChildSpawnError(attempts, lastError);
+            }
+            if (delay > 0) {
+                await sleep(delay);
+            }
+            delay = computeNextDelay(delay, factor, maxDelay);
+            continue;
+        }
+        const spawnSignal = spawnHandle.signal;
+        if (spawnSignal?.aborted) {
+            const failure = normaliseAbortReason(spawnSignal.reason);
+            spawnHandle.dispose();
+            lastError = failure;
+            if (attempt >= attempts) {
+                throw new ChildSpawnError(attempts, failure);
+            }
+            if (delay > 0) {
+                await sleep(delay);
+            }
+            delay = computeNextDelay(delay, factor, maxDelay);
+            continue;
+        }
+        const abortRace = createSpawnAbortRace(spawnSignal);
+        try {
+            child = ensurePipedChildProcess(spawnHandle.child);
+        }
+        catch (error) {
+            abortRace.cleanup();
+            const failure = normaliseSpawnFailure(error);
+            // A failure before the stdio streams are ready should release the handle
+            // immediately so retries do not leak listeners or hanging timers.
+            spawnHandle.dispose();
+            lastError = failure;
+            if (attempt >= attempts) {
+                throw new ChildSpawnError(attempts, failure);
             }
             if (delay > 0) {
                 await sleep(delay);
@@ -683,20 +750,26 @@ export async function startChildRuntime(options) {
             child,
         });
         try {
-            await runtime.waitUntilSpawned();
+            await abortRace.race(runtime.waitUntilSpawned());
+            abortRace.cleanup();
             await runtime.writeManifest(manifestExtras);
             return runtime;
         }
         catch (error) {
-            lastError = error;
+            const failure = normaliseSpawnFailure(error);
+            abortRace.cleanup();
+            lastError = failure;
             try {
                 await runtime.waitForExit(500);
             }
             catch {
                 // Ignore errors while tearing down a failed spawn attempt.
             }
+            // Dispose of the gateway handle after failed readiness to release the
+            // timeout and abort guards before the next retry kicks in.
+            spawnHandle.dispose();
             if (attempt >= attempts) {
-                throw new ChildSpawnError(attempts, error);
+                throw new ChildSpawnError(attempts, failure);
             }
             if (delay > 0) {
                 await sleep(delay);
@@ -706,6 +779,68 @@ export async function startChildRuntime(options) {
     }
     throw new ChildSpawnError(attempts, lastError);
 }
+function createSpawnAbortRace(signal) {
+    if (!signal) {
+        return {
+            race(operation) {
+                return operation;
+            },
+            cleanup() {
+                // No-op: there is no abort signal to detach from.
+            },
+        };
+    }
+    let listener = null;
+    const abortPromise = new Promise((_, reject) => {
+        const rejectWithReason = () => {
+            if (listener) {
+                signal.removeEventListener("abort", listener);
+                listener = null;
+            }
+            reject(normaliseAbortReason(signal.reason));
+        };
+        if (signal.aborted) {
+            rejectWithReason();
+            return;
+        }
+        listener = () => {
+            rejectWithReason();
+        };
+        signal.addEventListener("abort", listener, { once: true });
+    });
+    return {
+        race(operation) {
+            return Promise.race([operation, abortPromise]);
+        },
+        cleanup() {
+            if (listener) {
+                signal.removeEventListener("abort", listener);
+                listener = null;
+            }
+        },
+    };
+}
+function normaliseSpawnFailure(error) {
+    if (error instanceof Error && error.name === "AbortError") {
+        const abortCause = error.cause;
+        if (abortCause instanceof Error) {
+            return abortCause;
+        }
+        if (abortCause !== undefined && abortCause !== null) {
+            return normaliseAbortReason(abortCause);
+        }
+    }
+    return error;
+}
+function normaliseAbortReason(reason) {
+    if (reason instanceof Error) {
+        return reason;
+    }
+    if (typeof reason === "string" && reason.trim().length > 0) {
+        return new Error(reason);
+    }
+    return new Error("Child process aborted");
+}
 /**
  * Pretty printer primarily used by tests for debugging purposes.
  */
@@ -714,6 +849,13 @@ export function formatChildMessages(messages) {
         .map((message) => `${new Date(message.receivedAt).toISOString()} [${message.stream}#${message.sequence}] ${message.raw} ` +
         (message.parsed ? inspect(message.parsed, { depth: 4 }) : "<raw>"))
         .join("\n");
+}
+/** Ensures the spawned child exposes pipe-based stdio streams. */
+function ensurePipedChildProcess(child) {
+    if (!child.stdin || !child.stdout || !child.stderr) {
+        throw new Error("Child process must expose stdin/stdout/stderr pipes");
+    }
+    return child;
 }
 /**
  * Wait helper used by the spawn retry loop. The promise resolves after the

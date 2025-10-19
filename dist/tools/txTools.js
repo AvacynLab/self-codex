@@ -2,7 +2,9 @@ import { z } from "zod";
 import { GraphTransactionError, GraphVersionConflictError, } from "../graph/tx.js";
 import { buildIdempotencyCacheKey } from "../infra/idempotency.js";
 import { normaliseGraphPayload, serialiseNormalisedGraph, GraphDescriptorSchema, GraphMutateInputSchema, handleGraphMutate } from "./graphTools.js";
-import { evaluateGraphInvariants, GraphInvariantError } from "../graph/invariants.js";
+import { GraphValidationError, validateGraph, assertValidGraph } from "../graph/validate.js";
+import { recordOperation } from "../graph/oplog.js";
+import { fireAndForgetGraphWal } from "../graph/wal.js";
 import { diffGraphs } from "../graph/diff.js";
 import { ERROR_CODES } from "../types.js";
 import { resolveOperationId } from "./operationIds.js";
@@ -57,9 +59,9 @@ export function handleTxBegin(context, input) {
     const execute = () => {
         const baseGraph = resolveBaseGraph(context, input);
         // Validate the provided or committed base graph before opening the transaction.
-        const invariants = evaluateGraphInvariants(baseGraph);
-        if (!invariants.ok) {
-            throw new GraphInvariantError(invariants.violations);
+        const validation = validateGraph(baseGraph);
+        if (!validation.ok) {
+            throw new GraphValidationError(validation.violations, validation.invariants);
         }
         if (input.expected_version !== undefined && baseGraph.graphVersion !== input.expected_version) {
             throw new GraphVersionConflictError(input.graph_id, baseGraph.graphVersion, input.expected_version);
@@ -79,6 +81,16 @@ export function handleTxBegin(context, input) {
             owner: opened.owner,
             note: opened.note,
             expiresAt: opened.expiresAt,
+        });
+        fireAndForgetGraphWal("tx_begin_tool", {
+            tx_id: opened.txId,
+            graph_id: opened.graphId,
+            op_id: opId,
+            base_version: opened.baseVersion,
+            owner: opened.owner,
+            note: opened.note,
+            expires_at: opened.expiresAt,
+            idempotency_key: input.idempotency_key ?? null,
         });
         return formatBeginResult(opened, opId);
     };
@@ -106,14 +118,31 @@ export function handleTxApply(context, input) {
     };
     const result = handleGraphMutate(mutateInput);
     const normalisedGraph = normaliseGraphPayload(result.graph);
-    const invariants = evaluateGraphInvariants(normalisedGraph);
-    if (!invariants.ok) {
-        throw new GraphInvariantError(invariants.violations);
+    const validation = validateGraph(normalisedGraph);
+    if (!validation.ok) {
+        throw new GraphValidationError(validation.violations, validation.invariants);
     }
+    const invariants = (validation.invariants ?? { ok: true });
     context.transactions.setWorkingCopy(input.tx_id, normalisedGraph);
     const changed = result.applied.some((entry) => entry.changed);
     const previewVersion = changed ? metadata.baseVersion + 1 : metadata.baseVersion;
     const diff = diffGraphs(workingCopy, normalisedGraph);
+    void recordOperation({
+        kind: "tx_apply",
+        graph_id: metadata.graphId,
+        op_id: opId,
+        operations: input.operations.length,
+        changed,
+    }, input.tx_id);
+    fireAndForgetGraphWal("tx_apply", {
+        tx_id: input.tx_id,
+        graph_id: metadata.graphId,
+        op_id: opId,
+        operations: input.operations.length,
+        changed,
+        owner: metadata.owner,
+        note: metadata.note,
+    });
     return {
         op_id: opId,
         tx_id: input.tx_id,
@@ -137,10 +166,7 @@ export function handleTxCommit(context, input) {
     const metadata = context.transactions.describe(input.tx_id);
     context.locks.assertCanMutate(metadata.graphId, metadata.owner);
     const workingCopy = context.transactions.getWorkingCopy(input.tx_id);
-    const invariants = evaluateGraphInvariants(workingCopy);
-    if (!invariants.ok) {
-        throw new GraphInvariantError(invariants.violations);
-    }
+    assertValidGraph(workingCopy);
     const committed = context.transactions.commit(input.tx_id, workingCopy);
     context.resources.markGraphSnapshotCommitted({
         graphId: committed.graphId,
@@ -154,6 +180,15 @@ export function handleTxCommit(context, input) {
         version: committed.version,
         committedAt: committed.committedAt,
         graph: committed.graph,
+    });
+    fireAndForgetGraphWal("tx_commit_tool", {
+        tx_id: committed.txId,
+        graph_id: committed.graphId,
+        op_id: opId,
+        committed_version: committed.version,
+        committed_at: committed.committedAt,
+        owner: metadata.owner,
+        note: metadata.note,
     });
     return {
         op_id: opId,
@@ -169,6 +204,13 @@ export function handleTxRollback(context, input) {
     const opId = resolveOperationId(input.op_id, "tx_rollback_op");
     const rolled = context.transactions.rollback(input.tx_id);
     context.resources.markGraphSnapshotRolledBack(rolled.graphId, rolled.txId);
+    fireAndForgetGraphWal("tx_rollback_tool", {
+        tx_id: rolled.txId,
+        graph_id: rolled.graphId,
+        op_id: opId,
+        base_version: rolled.version,
+        rolled_back_at: rolled.rolledBackAt,
+    });
     return {
         op_id: opId,
         tx_id: rolled.txId,

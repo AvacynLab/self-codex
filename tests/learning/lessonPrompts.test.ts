@@ -48,4 +48,9 @@ describe("lesson prompt configuration", () => {
     process.env.LESSONS_MAX = "-4";
     expect(resolveLessonRecallLimit()).to.equal(3);
   });
+
+  it("clamps LESSONS_MAX to the documented ceiling", () => {
+    process.env.LESSONS_MAX = "20";
+    expect(resolveLessonRecallLimit()).to.equal(6);
+  });
 });

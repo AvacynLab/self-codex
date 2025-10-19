@@ -309,10 +309,9 @@ export function createArtifactReadHandler(context: ArtifactReadToolContext): Too
     const payloadBuffer = truncated ? buffer.subarray(0, limit) : buffer;
     const bytesReturned = payloadBuffer.length;
 
-    let bytesCharge: BudgetCharge | null = null;
     if (rpcContext?.budget && bytesReturned > 0) {
       try {
-        bytesCharge = rpcContext.budget.consume(
+        rpcContext.budget.consume(
           { bytesOut: bytesReturned },
           { actor: "facade", operation: ARTIFACT_READ_TOOL_NAME, detail: "emit_artifact" },
         );

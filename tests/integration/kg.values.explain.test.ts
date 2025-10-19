@@ -27,7 +27,7 @@ import { StructuredLogger } from "../../src/logger.js";
  */
 describe("knowledge + values tool integration", () => {
   it("validates payloads and returns detailed plan explanations", async () => {
-    let now = 100;
+    const now = 100;
     const knowledgeGraph = new KnowledgeGraph({ now: () => now });
     const valueGraph = new ValueGraph({ now: () => now });
     const logger = new StructuredLogger();

@@ -5,7 +5,7 @@
  */
 import { Buffer } from "node:buffer";
 
-import { describe, it } from "mocha";
+import { afterEach, describe, it } from "mocha";
 import { expect } from "chai";
 
 import type { ResourceWatchResult } from "../../src/resources/registry.js";
@@ -17,6 +17,16 @@ import {
 import { parseSseStream } from "../helpers/sse.js";
 
 describe("resource SSE streaming", () => {
+  const originalChunkEnv = process.env.MCP_SSE_MAX_CHUNK_BYTES;
+  const originalBufferEnv = process.env.MCP_SSE_MAX_BUFFER;
+  const originalEmitEnv = process.env.MCP_SSE_EMIT_TIMEOUT_MS;
+
+  afterEach(() => {
+    process.env.MCP_SSE_MAX_CHUNK_BYTES = originalChunkEnv;
+    process.env.MCP_SSE_MAX_BUFFER = originalBufferEnv;
+    process.env.MCP_SSE_EMIT_TIMEOUT_MS = originalEmitEnv;
+  });
+
   it("chunks large payloads across multiple data lines", () => {
     const payloadSize = 512;
     const runId = "stream-chunk";
@@ -53,6 +63,47 @@ describe("resource SSE streaming", () => {
     expect(dataLines.length).to.be.greaterThan(1);
     for (const line of dataLines) {
       expect(Buffer.byteLength(line, "utf8")).to.be.at.most(64);
+    }
+  });
+
+  it("honours environment chunk overrides when options omit maxChunkBytes", () => {
+    process.env.MCP_SSE_MAX_CHUNK_BYTES = "16";
+    // Setting the override ensures the helper reads the centralised env parser.
+
+    const payloadSize = 64;
+    const result: ResourceWatchResult = {
+      uri: "sc://runs/env-chunk/events",
+      kind: "run_events",
+      nextSeq: 1,
+      events: [
+        {
+          seq: 1,
+          ts: Date.now(),
+          kind: "INFO",
+          level: "info",
+          jobId: null,
+          runId: "env-chunk",
+          opId: null,
+          graphId: null,
+          nodeId: null,
+          childId: null,
+          component: "graph",
+          stage: "env",
+          elapsedMs: null,
+          payload: { body: "x".repeat(payloadSize) },
+        },
+      ],
+    };
+
+    const messages = serialiseResourceWatchResultForSse(result);
+    const stream = renderResourceWatchSseMessages(messages);
+    const parsed = parseSseStream(stream);
+
+    expect(parsed).to.have.length(1);
+    const dataLines = parsed[0]?.data ?? [];
+    expect(dataLines.length).to.be.greaterThan(1);
+    for (const line of dataLines) {
+      expect(Buffer.byteLength(line, "utf8")).to.be.at.most(16);
     }
   });
 

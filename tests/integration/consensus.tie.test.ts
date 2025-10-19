@@ -41,7 +41,7 @@ describe("consensus and contract-net deterministic tie-breaking", () => {
   });
 
   it("falls back to lexical order when contract-net bids remain indistinguishable", () => {
-    let now = 1_000;
+    const now = 1_000;
     const coordinator = new ContractNetCoordinator({ now: () => now });
     coordinator.registerAgent("agent-b");
     coordinator.registerAgent("agent-a");

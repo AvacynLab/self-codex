@@ -28,6 +28,9 @@ export const FEATURE_FLAG_DEFAULTS = Object.freeze({
     enablePlanLifecycle: false,
     enableChildOpsFine: false,
     enableValuesExplain: false,
+    enableRag: false,
+    enableToolRouter: false,
+    enableThoughtGraph: false,
     enableAssist: false,
 });
 /**
@@ -405,6 +408,24 @@ export function parseOrchestratorRuntimeOptions(argv) {
                 break;
             case "--disable-values-explain":
                 state.featureToggles.enableValuesExplain = false;
+                break;
+            case "--enable-rag":
+                state.featureToggles.enableRag = true;
+                break;
+            case "--disable-rag":
+                state.featureToggles.enableRag = false;
+                break;
+            case "--enable-tool-router":
+                state.featureToggles.enableToolRouter = true;
+                break;
+            case "--disable-tool-router":
+                state.featureToggles.enableToolRouter = false;
+                break;
+            case "--enable-thought-graph":
+                state.featureToggles.enableThoughtGraph = true;
+                break;
+            case "--disable-thought-graph":
+                state.featureToggles.enableThoughtGraph = false;
                 break;
             case "--enable-assist":
                 state.featureToggles.enableAssist = true;

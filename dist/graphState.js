@@ -1,3 +1,4 @@
+const THOUGHT_GRAPH_ATTRIBUTE_KEY = "thought_graph_json";
 function toNullableString(value) {
     if (value === undefined)
         return null;
@@ -43,6 +44,190 @@ function parseChildLimits(value) {
     catch {
         return null;
     }
+}
+const VALID_THOUGHT_STATUSES = new Set([
+    "pending",
+    "running",
+    "completed",
+    "errored",
+    "pruned",
+]);
+const VALID_PROVENANCE_TYPES = new Set([
+    "url",
+    "file",
+    "db",
+    "kg",
+    "rag",
+]);
+function serialiseThoughtGraphState(snapshot) {
+    const serialisedNodes = snapshot.nodes.map((node) => ({
+        id: node.id,
+        parents: [...node.parents].sort((a, b) => a.localeCompare(b)),
+        prompt: node.prompt,
+        tool: node.tool ?? null,
+        result: node.result ?? null,
+        score: typeof node.score === "number" && Number.isFinite(node.score)
+            ? Number(node.score.toFixed(6))
+            : null,
+        status: node.status,
+        started_at: node.startedAt,
+        completed_at: node.completedAt ?? null,
+        provenance: serialiseThoughtGraphProvenance(node.provenance),
+        depth: node.depth,
+        run_id: node.runId ?? null,
+    }));
+    serialisedNodes.sort((a, b) => {
+        if (a.started_at !== b.started_at) {
+            return a.started_at - b.started_at;
+        }
+        return a.id.localeCompare(b.id);
+    });
+    return JSON.stringify({ updated_at: snapshot.updatedAt, nodes: serialisedNodes });
+}
+function parseThoughtGraphState(serialised) {
+    try {
+        const raw = JSON.parse(serialised);
+        if (!raw || typeof raw !== "object") {
+            return null;
+        }
+        const updatedAt = typeof raw.updated_at === "number" && Number.isFinite(raw.updated_at)
+            ? raw.updated_at
+            : 0;
+        const nodes = Array.isArray(raw.nodes) ? raw.nodes : [];
+        const mapped = [];
+        for (const entry of nodes) {
+            if (!entry || typeof entry !== "object") {
+                continue;
+            }
+            const record = entry;
+            const idRaw = record.id;
+            if (typeof idRaw !== "string" || idRaw.trim().length === 0) {
+                continue;
+            }
+            const parents = Array.isArray(record.parents)
+                ? record.parents
+                    .map((parent) => (typeof parent === "string" ? parent : String(parent ?? "")))
+                    .filter((parent) => parent.length > 0)
+                : [];
+            const prompt = typeof record.prompt === "string" ? record.prompt : String(record.prompt ?? "");
+            const tool = record.tool === null || typeof record.tool === "string"
+                ? (record.tool ?? null)
+                : String(record.tool ?? "");
+            const result = record.result === null || typeof record.result === "string"
+                ? (record.result ?? null)
+                : JSON.stringify(record.result);
+            const score = typeof record.score === "number" && Number.isFinite(record.score)
+                ? record.score
+                : null;
+            const status = isThoughtNodeStatus(record.status) ? record.status : "pending";
+            const startedAt = typeof record.started_at === "number" && Number.isFinite(record.started_at)
+                ? record.started_at
+                : 0;
+            const completedAt = typeof record.completed_at === "number" && Number.isFinite(record.completed_at)
+                ? record.completed_at
+                : null;
+            const provenance = parseThoughtGraphProvenance(record.provenance);
+            const depth = typeof record.depth === "number" && Number.isFinite(record.depth)
+                ? record.depth
+                : 0;
+            const runId = typeof record.run_id === "string" && record.run_id.trim().length > 0
+                ? record.run_id
+                : null;
+            mapped.push({
+                id: idRaw,
+                parents,
+                prompt,
+                tool,
+                result,
+                score,
+                status,
+                startedAt,
+                completedAt,
+                provenance,
+                depth,
+                runId,
+            });
+        }
+        return { updatedAt, nodes: mapped };
+    }
+    catch {
+        return null;
+    }
+}
+function serialiseThoughtGraphProvenance(entries) {
+    return entries.map((entry) => {
+        const serialised = {
+            source_id: entry.sourceId,
+            type: entry.type,
+        };
+        if (entry.span && Array.isArray(entry.span) && entry.span.length === 2) {
+            serialised.span = [entry.span[0], entry.span[1]];
+        }
+        if (typeof entry.confidence === "number" && Number.isFinite(entry.confidence)) {
+            serialised.confidence = entry.confidence;
+        }
+        return serialised;
+    });
+}
+function parseThoughtGraphProvenance(entries) {
+    if (!Array.isArray(entries)) {
+        return [];
+    }
+    const result = [];
+    for (const entry of entries) {
+        if (!entry || typeof entry !== "object") {
+            continue;
+        }
+        const record = entry;
+        const sourceId = typeof record.source_id === "string"
+            ? record.source_id
+            : typeof record.sourceId === "string"
+                ? record.sourceId
+                : null;
+        const typeCandidate = record.type;
+        const type = typeof typeCandidate === "string" && VALID_PROVENANCE_TYPES.has(typeCandidate)
+            ? typeCandidate
+            : null;
+        if (!sourceId || !type) {
+            continue;
+        }
+        const spanRaw = record.span;
+        let span;
+        if (Array.isArray(spanRaw) && spanRaw.length === 2) {
+            const [start, end] = spanRaw;
+            if (typeof start === "number" && typeof end === "number") {
+                span = [start, end];
+            }
+        }
+        const confidenceRaw = record.confidence;
+        const confidence = typeof confidenceRaw === "number" && Number.isFinite(confidenceRaw)
+            ? confidenceRaw
+            : undefined;
+        result.push({ sourceId, type, span, confidence });
+    }
+    return result;
+}
+function isThoughtNodeStatus(value) {
+    return typeof value === "string" && VALID_THOUGHT_STATUSES.has(value);
+}
+function cloneThoughtGraphState(snapshot) {
+    return {
+        updatedAt: snapshot.updatedAt,
+        nodes: snapshot.nodes.map((node) => ({
+            id: node.id,
+            parents: [...node.parents],
+            prompt: node.prompt,
+            tool: node.tool,
+            result: node.result,
+            score: node.score,
+            status: node.status,
+            startedAt: node.startedAt,
+            completedAt: node.completedAt,
+            provenance: node.provenance.map((entry) => ({ ...entry })),
+            depth: node.depth,
+            runId: node.runId,
+        })),
+    };
 }
 function normalizeString(value) {
     if (value === undefined || value === null) {
@@ -99,6 +284,38 @@ export class GraphState {
             attributes.goal = normalizeString(updates.goal);
         }
         this.nodes.set(node.id, { id: node.id, attributes });
+    }
+    /** Stores the latest ThoughtGraph snapshot associated with a job. */
+    setThoughtGraph(jobId, snapshot) {
+        const nodeId = this.jobNodeId(jobId);
+        const node = this.nodes.get(nodeId);
+        if (!node) {
+            return;
+        }
+        const attributes = { ...node.attributes };
+        if (!snapshot || snapshot.nodes.length === 0) {
+            delete attributes[THOUGHT_GRAPH_ATTRIBUTE_KEY];
+            this.nodes.set(nodeId, { id: nodeId, attributes });
+            return;
+        }
+        attributes[THOUGHT_GRAPH_ATTRIBUTE_KEY] = serialiseThoughtGraphState(snapshot);
+        this.nodes.set(nodeId, { id: nodeId, attributes });
+    }
+    /** Returns the persisted ThoughtGraph snapshot for a job, if available. */
+    getThoughtGraph(jobId) {
+        const node = this.nodes.get(this.jobNodeId(jobId));
+        if (!node) {
+            return null;
+        }
+        const raw = node.attributes[THOUGHT_GRAPH_ATTRIBUTE_KEY];
+        if (typeof raw !== "string" || raw.length === 0) {
+            return null;
+        }
+        const parsed = parseThoughtGraphState(raw);
+        if (!parsed) {
+            return null;
+        }
+        return cloneThoughtGraphState(parsed);
     }
     getJob(jobId) {
         const node = this.nodes.get(this.jobNodeId(jobId));
@@ -663,7 +880,8 @@ export class GraphState {
                 kind: event.kind,
                 level: event.level,
                 job_id: normalizeString(event.jobId ?? null),
-                child_id: normalizeString(event.childId ?? null)
+                child_id: normalizeString(event.childId ?? null),
+                provenance: event.provenance ? JSON.stringify(event.provenance) : "[]",
             }
         });
         if (event.jobId) {

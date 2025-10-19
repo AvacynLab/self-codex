@@ -6,8 +6,6 @@ import type { ThoughtNodeStatus } from "./reasoning/thoughtGraph.js";
 // NOTE: Node built-in modules are imported with the explicit `node:` prefix to guarantee ESM resolution in Node.js.
 type AttributeValue = string | number | boolean;
 
-type NodeType = "job" | "child" | "message" | "pending" | "subscription" | "event";
-
 type AttributeRecord = Record<string, AttributeValue>;
 
 interface NodeRecord {

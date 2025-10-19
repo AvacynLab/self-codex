@@ -8,9 +8,9 @@ import { partitionGraph } from "../graph/partition.js";
 import { projectHyperGraph, } from "../graph/hypergraph.js";
 import { applyAll, createInlineSubgraphRule, createRerouteAvoidRule, createSplitParallelRule, } from "../graph/rewrite.js";
 import { resolveOperationId } from "./operationIds.js";
+import { loadGraphForge } from "../graph/forgeLoader.js";
 const computationCache = new GraphComputationCache(128);
-const graphForgeModuleUrl = new URL("../../graph-forge/dist/index.js", import.meta.url);
-const { GraphModel, betweennessCentrality, kShortestPaths, shortestPath, constrainedShortestPath, } = (await import(graphForgeModuleUrl.href));
+const { GraphModel, betweennessCentrality, kShortestPaths, constrainedShortestPath, } = (await loadGraphForge());
 /** Allowed attribute value stored on nodes/edges. */
 export const GraphAttributeValueSchema = z.union([
     z.string(),
@@ -2131,7 +2131,7 @@ function buildSimulationContext(input) {
         }
         incoming.get(edge.to).push(edge.from);
     }
-    for (const [id, list] of incoming.entries()) {
+    for (const [, list] of incoming.entries()) {
         list.sort();
     }
     const { durations, warnings } = resolveDurations(descriptor, {
@@ -3187,7 +3187,7 @@ function mapToSortedRecord(map) {
     }
     return record;
 }
-function computeMinimumEdgeCut(descriptor, adjacency, indegree, entrypoints, sinks) {
+function computeMinimumEdgeCut(descriptor, _adjacency, _indegree, entrypoints, sinks) {
     if (entrypoints.length === 0 || sinks.length === 0) {
         return null;
     }

@@ -161,7 +161,7 @@ function mergeCommunitiesIntoPartitions(
 
   const assignments = new Map<string, number>();
   const baseGroups = sortedGroups.slice(0, k);
-  baseGroups.forEach(([label, nodes], index) => {
+  baseGroups.forEach(([, nodes], index) => {
     for (const node of nodes) {
       assignments.set(node, index);
     }
