@@ -3,21 +3,23 @@ import { expect } from "chai";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import type { ChildSupervisor } from "../src/childSupervisor.js";
+import type { ChildSupervisor } from "../src/children/supervisor.js";
 import type {
   ChildCollectedOutputs,
   ChildRuntimeMessage,
 } from "../src/childRuntime.js";
-import { GraphState } from "../src/graphState.js";
+import { GraphState } from "../src/graph/state.js";
 import { StructuredLogger } from "../src/logger.js";
 import { StigmergyField } from "../src/coord/stigmergy.js";
 import {
   PlanJoinInputSchema,
   PlanReduceInputSchema,
+  type PlanChildSupervisor,
   type PlanToolContext,
   handlePlanJoin,
   handlePlanReduce,
 } from "../src/tools/planTools.js";
+import { RecordingLogger } from "./helpers/recordingLogger.js";
 
 interface StubMessageOptions {
   type: "response" | "error";
@@ -47,8 +49,23 @@ function createStubOutputs(
 
 describe("plan_join consensus integration", () => {
   it("applies weighted consensus when joining and reducing results", async () => {
-    const supervisorStub = {
-      collect: async (childId: string) => {
+    const supervisorStub: PlanChildSupervisor = {
+      async createChild(
+        ..._args: Parameters<PlanChildSupervisor["createChild"]>
+      ): Promise<Awaited<ReturnType<PlanChildSupervisor["createChild"]>>> {
+        throw new Error("createChild should not be invoked in the vote integration test");
+      },
+      async send(
+        ..._args: Parameters<PlanChildSupervisor["send"]>
+      ): Promise<Awaited<ReturnType<PlanChildSupervisor["send"]>>> {
+        throw new Error("send should not be invoked in the vote integration test");
+      },
+      async waitForMessage(
+        ..._args: Parameters<PlanChildSupervisor["waitForMessage"]>
+      ): Promise<Awaited<ReturnType<PlanChildSupervisor["waitForMessage"]>>> {
+        throw new Error("waitForMessage should not be invoked in the vote integration test");
+      },
+      async collect(childId: string) {
         switch (childId) {
           case "childA":
             return createStubOutputs("childA", {
@@ -72,18 +89,9 @@ describe("plan_join consensus integration", () => {
             throw new Error(`unexpected child ${childId}`);
         }
       },
-      waitForMessage: async () => {
-        throw new Error("waitForMessage should not be called in this stub");
-      },
-    } as unknown as ChildSupervisor;
+    };
 
-    const logger = {
-      info: () => {},
-      debug: () => {},
-      warn: () => {},
-      error: () => {},
-      flush: async () => {},
-    } as unknown as StructuredLogger;
+    const logger: StructuredLogger = new RecordingLogger();
 
     const events: Array<{ kind: string; payload?: unknown }> = [];
     const context: PlanToolContext = {

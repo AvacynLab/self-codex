@@ -7,7 +7,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import {
   server,
   graphState,
-  childSupervisor,
+  childProcessSupervisor,
   configureRuntimeFeatures,
   getRuntimeFeatures,
 } from "../src/server.js";
@@ -25,7 +25,7 @@ describe("events subscribe scheduler telemetry", () => {
     this.timeout(15000);
 
     const baselineGraphSnapshot = graphState.serialize();
-    const baselineChildrenIndex = childSupervisor.childrenIndex.serialize();
+    const baselineChildrenIndex = childProcessSupervisor.childrenIndex.serialize();
     const baselineFeatures = getRuntimeFeatures();
 
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
@@ -44,7 +44,7 @@ describe("events subscribe scheduler telemetry", () => {
         enableBT: true,
       });
       graphState.resetFromSnapshot({ nodes: [], edges: [], directives: { graph: "scheduler-telemetry" } });
-      childSupervisor.childrenIndex.restore({});
+      childProcessSupervisor.childrenIndex.restore({});
 
       const baselineResponse = await client.callTool({ name: "events_subscribe", arguments: { limit: 1 } });
       expect(baselineResponse.isError ?? false).to.equal(false);
@@ -352,9 +352,9 @@ describe("events subscribe scheduler telemetry", () => {
       expect(sseTickTicksInBatch).to.equal(tickTicksInBatch);
     } finally {
       configureRuntimeFeatures(baselineFeatures);
-      childSupervisor.childrenIndex.restore(baselineChildrenIndex);
+      childProcessSupervisor.childrenIndex.restore(baselineChildrenIndex);
       graphState.resetFromSnapshot(baselineGraphSnapshot);
-      await childSupervisor.disposeAll().catch(() => {});
+      await childProcessSupervisor.disposeAll().catch(() => {});
       await client.close();
       await server.close().catch(() => {});
     }

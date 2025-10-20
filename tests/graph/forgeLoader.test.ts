@@ -26,6 +26,7 @@ describe("graph/forgeLoader", () => {
     const module = await loadGraphForge();
     expect(getGraphForgeLoadAttemptCount()).to.equal(1);
     expect(module).to.have.property("GraphModel");
+    expect(module).to.have.property("constrainedShortestPath").that.is.a("function");
   });
 });
 

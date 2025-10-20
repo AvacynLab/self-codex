@@ -29,15 +29,23 @@ describe("runtimeTimers", () => {
   });
 
   it("delegates setTimeout calls to global overrides", () => {
-    const fakeHandle = { tag: "timeout" };
-    const override = sinon.stub().callsFake(
-      (handler: (...args: unknown[]) => void, ms?: number, ...args: unknown[]) => {
-        handler(...args);
-        return fakeHandle as unknown as ReturnType<typeof globalThis.setTimeout>;
-      },
-    );
+    type TimeoutParameters = Parameters<typeof globalThis.setTimeout>;
+    type TimeoutReturn = ReturnType<typeof globalThis.setTimeout>;
 
-    globalThis.setTimeout = override as unknown as typeof globalThis.setTimeout;
+    // Acquire a genuine timeout handle so equality assertions remain type-safe.
+    const fakeHandle = originalSetTimeout(() => undefined, 0);
+    originalClearTimeout(fakeHandle);
+
+    const override = sinon
+      .stub(globalThis, "setTimeout")
+      .callsFake((...args: TimeoutParameters): TimeoutReturn => {
+        const [handler] = args;
+        if (typeof handler === "function") {
+          const extraArgs: unknown[] = args.slice(2);
+          handler(...extraArgs);
+        }
+        return fakeHandle;
+      });
 
     const handler = sinon.stub();
     const handle = runtimeTimers.setTimeout(handler, 25, "payload");
@@ -49,30 +57,36 @@ describe("runtimeTimers", () => {
   });
 
   it("delegates clearTimeout calls to global overrides", () => {
-    const fakeHandle = { tag: "timeout" };
-    const override = sinon.stub();
-    globalThis.clearTimeout = override as unknown as typeof globalThis.clearTimeout;
+    const fakeHandle = originalSetTimeout(() => undefined, 0);
+    originalClearTimeout(fakeHandle);
 
-    runtimeTimers.clearTimeout(fakeHandle as unknown as number);
+    const override = sinon.stub(globalThis, "clearTimeout");
+
+    runtimeTimers.clearTimeout(fakeHandle);
 
     sinon.assert.calledOnceWithExactly(override, fakeHandle);
   });
 
   it("delegates setInterval and clearInterval calls to global overrides", () => {
-    const fakeHandle = { tag: "interval" };
-    const setOverride = sinon
-      .stub()
-      .callsFake((handler: (...args: unknown[]) => void, ms?: number) => {
-        handler();
-        return fakeHandle as unknown as ReturnType<typeof globalThis.setInterval>;
-      });
-    const clearOverride = sinon.stub();
+    type IntervalParameters = Parameters<typeof globalThis.setInterval>;
+    type IntervalReturn = ReturnType<typeof globalThis.setInterval>;
 
-    globalThis.setInterval = setOverride as unknown as typeof globalThis.setInterval;
-    globalThis.clearInterval = clearOverride as unknown as typeof globalThis.clearInterval;
+    const fakeHandle = originalSetInterval(() => undefined, 0);
+    originalClearInterval(fakeHandle);
+
+    const setOverride = sinon
+      .stub(globalThis, "setInterval")
+      .callsFake((...args: IntervalParameters): IntervalReturn => {
+        const [handler] = args;
+        if (typeof handler === "function") {
+          handler();
+        }
+        return fakeHandle;
+      });
+    const clearOverride = sinon.stub(globalThis, "clearInterval");
 
     const handle = runtimeTimers.setInterval(() => undefined, 15);
-    runtimeTimers.clearInterval(handle as unknown as number);
+    runtimeTimers.clearInterval(handle);
 
     sinon.assert.calledOnceWithExactly(setOverride, sinon.match.func, 15);
     sinon.assert.calledOnceWithExactly(clearOverride, fakeHandle);

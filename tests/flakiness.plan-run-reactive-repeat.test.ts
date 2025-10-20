@@ -7,7 +7,7 @@ import {
   PlanRunReactiveInputSchema,
   handlePlanRunReactive,
 } from "../src/tools/planTools.js";
-import { StigmergyField } from "../src/coord/stigmergy.js";
+import { createPlanToolContext, createSpyPlanLogger } from "./helpers/planContext.js";
 
 // This suite focuses on repeatedly executing the reactive plan runner to ensure that
 // fake timers, autoscaler feedback, and supervisor snapshots remain deterministic
@@ -28,38 +28,11 @@ describe("plan_run_reactive flakiness guard", () => {
   });
 
   function buildContext(): PlanToolContext {
-    // The stub logger tracks structured logs without touching the filesystem.
-    const logger = {
-      info: sinon.spy(),
-      warn: sinon.spy(),
-      error: sinon.spy(),
-      debug: sinon.spy(),
-    } as unknown as PlanToolContext["logger"];
-
-    // We provision minimal coordinator components so the handler can surface
-    // autoscaler/supervisor telemetry exactly as the production pipeline does.
-    const autoscaler = {
-      updateBacklog: sinon.spy(),
-      recordTaskResult: sinon.spy(),
-      reconcile: sinon.stub().resolves(),
-    } as unknown as PlanToolContext["autoscaler"];
-
-    const supervisorAgent = {
-      recordSchedulerSnapshot: sinon.spy(),
-      reconcile: sinon.stub().resolves(),
-    } as unknown as PlanToolContext["supervisorAgent"];
-
-    return {
-      supervisor: {} as PlanToolContext["supervisor"],
-      graphState: {} as PlanToolContext["graphState"],
+    const { logger } = createSpyPlanLogger();
+    return createPlanToolContext({
       logger,
-      childrenRoot: "/tmp",
-      defaultChildRuntime: "codex",
       emitEvent: sinon.spy(),
-      stigmergy: new StigmergyField(),
-      autoscaler,
-      supervisorAgent,
-    } satisfies PlanToolContext;
+    });
   }
 
   it("stays stable across ten sequential executions", async () => {

@@ -10,9 +10,13 @@ import { expect } from "chai";
 import { parseRedactionDirectives } from "../../src/logger.js";
 
 describe("logger redaction directives", () => {
-  it("disables redaction when no directives are supplied", () => {
-    expect(parseRedactionDirectives(undefined)).to.deep.equal({ enabled: false, tokens: [] });
+  it("enables redaction when directives are omitted", () => {
+    expect(parseRedactionDirectives(undefined)).to.deep.equal({ enabled: true, tokens: [] });
     expect(parseRedactionDirectives("   ")).to.deep.equal({ enabled: false, tokens: [] });
+  });
+
+  it("treats empty directives as an explicit opt-out", () => {
+    expect(parseRedactionDirectives(", , ")).to.deep.equal({ enabled: false, tokens: [] });
   });
 
   it("enables redaction automatically when only tokens are provided", () => {

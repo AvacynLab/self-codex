@@ -13,11 +13,10 @@ let graphForgeModulePromise: Promise<GraphForgeExports> | null = null;
 let graphForgeLoadAttempts = 0;
 
 /**
- * Shape of the Graph Forge public API. The type mirrors the compiled bundle so
- * tools can rely on strongly typed exports without pulling the implementation
- * directly.
+ * Shape of the Graph Forge public API. The alias mirrors the compiled bundle
+ * so consumers can destructure typed helpers without resorting to `any` casts.
  */
-export type GraphForgeExports = Record<string, unknown>;
+export type GraphForgeExports = typeof import("graph-forge/dist/index.js");
 
 /**
  * Lazily loads the Graph Forge module, caching the promise so subsequent calls

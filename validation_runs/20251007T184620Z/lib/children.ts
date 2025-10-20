@@ -7,7 +7,7 @@ import { ArtifactRecorder } from './artifactRecorder.js';
 import { McpSession, McpToolCallError, type ToolCallRecord } from './mcpSession.js';
 import type { BaseToolCallSummary, ToolResponseSummary } from './baseTools.js';
 
-import { childSupervisor, server } from '../../../src/server.js';
+import { childProcessSupervisor, server } from '../../../src/server.js';
 import type {
   ChildAttachResult,
   ChildCancelResult,
@@ -296,7 +296,7 @@ function configureChildRunner(overrides?: { command: string; args?: readonly str
   if (!overrides) {
     return () => {};
   }
-  const supervisorHandle = childSupervisor as unknown as {
+  const supervisorHandle = childProcessSupervisor as unknown as {
     defaultCommand: string;
     defaultArgs: string[];
   };
@@ -934,7 +934,7 @@ export async function runChildOrchestrationStage(options: ChildStageOptions): Pr
       });
     }
   } finally {
-    await childSupervisor.disposeAll().catch(() => {});
+    await childProcessSupervisor.disposeAll().catch(() => {});
     await session.close().catch(() => {});
     restoreRunner();
     await server.close().catch(() => {});

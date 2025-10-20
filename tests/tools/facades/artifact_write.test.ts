@@ -122,7 +122,12 @@ describe("artifact_write facade", () => {
 
     let captured: unknown;
     try {
-      await handler({ child_id: "child-c", path: 123 } as unknown as Record<string, unknown>, createRequestExtras("req-invalid"));
+      const invalidPayload: Record<string, unknown> = {
+        // The path must be a string; providing a number confirms the façade bubbles up validation issues without casts.
+        child_id: "child-c",
+        path: 123,
+      };
+      await handler(invalidPayload, createRequestExtras("req-invalid"));
     } catch (error) {
       captured = error;
     }

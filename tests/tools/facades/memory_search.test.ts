@@ -118,7 +118,11 @@ describe("memory_search facade", () => {
 
     let captured: unknown;
     try {
-      await handler({ query: "" } as unknown as Record<string, unknown>, createRequestExtras("req-memory-search-invalid"));
+      const invalidPayload: Record<string, unknown> = {
+        // The query must be a non-empty string; this payload verifies validation errors propagate correctly.
+        query: "",
+      };
+      await handler(invalidPayload, createRequestExtras("req-memory-search-invalid"));
     } catch (error) {
       captured = error;
     }

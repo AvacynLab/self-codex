@@ -1,9 +1,23 @@
+# Dépendances locales (jamais versionnées).
 node_modules/
+
+# Artéfacts de build générés par `npm run build`.
 dist/
+graph-forge/dist/
+
+# Dossiers d'exécution persistants.
 runs/
 children/
 !src/children/
 !tests/children/
+
+# Sorties compilées temporaires laissées par les tests `graph-forge`.
+graph-forge/test/**/*.js
+
+# Journaux applicatifs et traces éventuelles.
+*.log
+
+# Fichiers temporaires créés durant les validations locales.
 tmp/
 .mcp_http.pid
 .mcp_http.out

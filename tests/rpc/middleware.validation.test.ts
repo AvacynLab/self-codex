@@ -13,7 +13,7 @@ import {
   JSON_RPC_ERROR_TAXONOMY,
   type NormalisedJsonRpcRequest,
 } from "../../src/rpc/middleware.js";
-import type { JsonRpcRequest } from "../../src/server.js";
+import { coerceToJsonRpcRequest } from "../helpers/jsonRpc.js";
 
 describe("rpc middleware validation", () => {
   it("maps malformed payloads to validation errors without routing", async () => {
@@ -25,7 +25,7 @@ describe("rpc middleware validation", () => {
       },
     });
 
-    const response = await handler(123 as unknown as JsonRpcRequest);
+    const response = await handler(coerceToJsonRpcRequest(123));
 
     expect(routed, "router must not be invoked on malformed payload").to.equal(false);
     expect(response.error, "error payload must exist").to.exist;

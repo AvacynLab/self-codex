@@ -4,7 +4,7 @@ import { expect } from "chai";
 import { startHttpServer, type HttpServerHandle } from "../../src/httpServer.js";
 import { StructuredLogger } from "../../src/logger.js";
 import {
-  childSupervisor,
+  childProcessSupervisor,
   configureRuntimeFeatures,
   getRuntimeFeatures,
   server,
@@ -65,7 +65,7 @@ describe("child_spawn_codex + child_attach (http loopback)", () => {
   });
 
   afterEach(async () => {
-    await childSupervisor.disposeAll();
+    await childProcessSupervisor.disposeAll();
   });
 
   it("creates HTTP descriptors and keeps attachments idempotent", async () => {

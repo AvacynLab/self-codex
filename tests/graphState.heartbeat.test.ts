@@ -1,7 +1,7 @@
 import { describe, it } from "mocha";
 import { expect } from "chai";
 
-import { GraphState, type EventSnapshot } from "../src/graphState.js";
+import { GraphState, type EventSnapshot } from "../src/graph/state.js";
 
 /**
  * Unit tests covering the heartbeat integration inside the graph state. The

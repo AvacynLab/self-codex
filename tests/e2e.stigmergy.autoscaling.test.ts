@@ -9,7 +9,7 @@ import { StigmergyField } from "../src/coord/stigmergy.js";
 import { BlackboardStore } from "../src/coord/blackboard.js";
 import type { AutoscalerSupervisor } from "../src/agents/autoscaler.js";
 import type { ChildRecordSnapshot } from "../src/state/childrenIndex.js";
-import type { CreateChildOptions } from "../src/childSupervisor.js";
+import type { CreateChildOptions } from "../src/children/supervisor.js";
 import { BehaviorTreeInterpreter, buildBehaviorTree } from "../src/executor/bt/interpreter.js";
 import type { BehaviorTickResult } from "../src/executor/bt/types.js";
 import { ReactiveScheduler } from "../src/executor/reactiveScheduler.js";

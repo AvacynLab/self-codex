@@ -23,7 +23,12 @@ interface CancellationEntry {
   createdAt: number;
   cancelledAt: number | null;
   reason: string | null;
-  handle: CancellationHandle;
+  /**
+   * Public-facing handle mirroring the entry. The value is assigned once the
+   * handle is constructed so callers never observe a partially initialised
+   * structure when reading from the registry.
+   */
+  handle: CancellationHandle | null;
 }
 
 /** Event emitted whenever a cancellation is requested. */
@@ -192,7 +197,7 @@ export function registerCancellation(
     createdAt,
     cancelledAt: null,
     reason: null,
-    handle: undefined as unknown as CancellationHandle,
+    handle: null,
   };
 
   const handle: CancellationHandle = {
@@ -258,6 +263,8 @@ export function registerCancellation(
     },
   };
 
+  // The handle is assigned after construction so the registry always exposes a
+  // fully initialised structure when accessed through {@link getCancellation}.
   entry.handle = handle;
   operations.set(opId, entry);
   if (runId) {
@@ -272,7 +279,8 @@ export function registerCancellation(
 
 /** Retrieve a handle previously registered with {@link registerCancellation}. */
 export function getCancellation(opId: string): CancellationHandle | undefined {
-  return operations.get(opId)?.handle;
+  const handle = operations.get(opId)?.handle;
+  return handle ?? undefined;
 }
 
 /** Remove the bookkeeping for an operation once it settles. */

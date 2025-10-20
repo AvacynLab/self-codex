@@ -29,7 +29,8 @@
       "resources/*": ["src/resources/*"],
       "infra/*": ["src/infra/*"],
       "state/*": ["src/state/*"],
-      "viz/*": ["src/viz/*"]
+      "viz/*": ["src/viz/*"],
+      "graph-forge/*": ["graph-forge/*"]
     }
   },
   "include": ["src/**/*.ts"],

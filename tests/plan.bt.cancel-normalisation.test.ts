@@ -7,9 +7,9 @@ import {
   handlePlanRunBT,
   type PlanToolContext,
 } from "../src/tools/planTools.js";
-import { StigmergyField } from "../src/coord/stigmergy.js";
 import { OperationCancelledError } from "../src/executor/cancel.js";
 import type { EventCorrelationHints } from "../src/events/correlation.js";
+import { createPlanToolContext, createSpyPlanLogger } from "./helpers/planContext.js";
 
 interface RecordedEvent {
   readonly kind: string;
@@ -18,21 +18,10 @@ interface RecordedEvent {
 }
 
 function buildContext(): { context: PlanToolContext; events: RecordedEvent[]; info: sinon.SinonSpy } {
-  const info = sinon.spy();
-  const logger = {
-    info,
-    warn: sinon.spy(),
-    error: sinon.spy(),
-    debug: sinon.spy(),
-  } as unknown as PlanToolContext["logger"];
-
+  const { logger, spies } = createSpyPlanLogger();
   const events: RecordedEvent[] = [];
-  const context: PlanToolContext = {
-    supervisor: {} as PlanToolContext["supervisor"],
-    graphState: {} as PlanToolContext["graphState"],
+  const context = createPlanToolContext({
     logger,
-    childrenRoot: "/tmp",
-    defaultChildRuntime: "codex",
     emitEvent: (event) => {
       const payload =
         event.payload && typeof event.payload === "object"
@@ -41,10 +30,9 @@ function buildContext(): { context: PlanToolContext; events: RecordedEvent[]; in
       const correlation = event.correlation ?? null;
       events.push({ kind: event.kind, payload, correlation });
     },
-    stigmergy: new StigmergyField(),
-  } satisfies PlanToolContext;
+  });
 
-  return { context, events, info };
+  return { context, events, info: spies.info };
 }
 
 /**

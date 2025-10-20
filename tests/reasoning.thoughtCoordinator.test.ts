@@ -1,7 +1,7 @@
 import { describe, it } from "mocha";
 import { expect } from "chai";
 
-import { GraphState } from "../src/graphState.js";
+import { GraphState } from "../src/graph/state.js";
 import { ThoughtGraphCoordinator } from "../src/reasoning/thoughtCoordinator.js";
 import { MetaCritic } from "../src/agents/metaCritic.js";
 import { ValueGraph } from "../src/values/valueGraph.js";

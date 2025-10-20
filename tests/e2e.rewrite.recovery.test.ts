@@ -4,8 +4,8 @@ import sinon from "sinon";
 
 import type { ChildRuntimeMessage } from "../src/childRuntime.js";
 import type { ChildRecordSnapshot } from "../src/state/childrenIndex.js";
-import type { ChildMessageStreamResult, SendResult } from "../src/childSupervisor.js";
-import type { ChildSupervisor } from "../src/childSupervisor.js";
+import type { ChildMessageStreamResult, SendResult } from "../src/children/supervisor.js";
+import type { ChildSupervisor } from "../src/children/supervisor.js";
 import { ChildSendInputSchema, handleChildSend } from "../src/tools/childTools.js";
 import type { ChildToolContext } from "../src/tools/childTools.js";
 import { LoopDetector } from "../src/guard/loopDetector.js";
@@ -210,12 +210,12 @@ describe("rewrite recovery end-to-end flow", function () {
   });
 
   it("requests a rewrite after loop warnings and succeeds once the plan is rerouted", async () => {
-    const childSupervisorStub = new LoopingChildSupervisorStub(clock);
+    const childProcessSupervisorStub = new LoopingChildSupervisorStub(clock);
     const loopDetector = new LoopDetector({ loopWindowMs: 10_000, maxAlternations: 4, warnAtAlternations: 2 });
 
     const rewriteIncidents: SupervisorIncident[] = [];
     const supervisorAgent = new OrchestratorSupervisor({
-      childManager: childSupervisorStub,
+      childManager: childProcessSupervisorStub,
       now: () => clock.now,
       actions: {
         emitAlert: async () => {},
@@ -235,14 +235,14 @@ describe("rewrite recovery end-to-end flow", function () {
     };
 
     const childContext: ChildToolContext = {
-      supervisor: childSupervisorStub as unknown as ChildSupervisor,
+      supervisor: childProcessSupervisorStub as unknown as ChildSupervisor,
       logger: logger as unknown as ChildToolContext["logger"],
       loopDetector,
       supervisorAgent,
     };
 
     const sendInput = ChildSendInputSchema.parse({
-      child_id: childSupervisorStub.childId,
+      child_id: childProcessSupervisorStub.childId,
       payload: { type: "task", content: "investigate" },
       expect: "final" as const,
       timeout_ms: 250,

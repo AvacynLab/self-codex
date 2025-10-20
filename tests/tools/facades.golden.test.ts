@@ -11,7 +11,7 @@ import { INTENT_ROUTE_TOOL_NAME, createIntentRouteHandler } from "../../src/tool
 import { createToolsHelpHandler } from "../../src/tools/tools_help.js";
 import { PLAN_COMPILE_EXECUTE_TOOL_NAME, createPlanCompileExecuteHandler } from "../../src/tools/plan_compile_execute.js";
 import { StigmergyField } from "../../src/coord/stigmergy.js";
-import { GraphState } from "../../src/graphState.js";
+import { GraphState } from "../../src/graph/state.js";
 import { PlanLifecycleRegistry } from "../../src/executor/planLifecycle.js";
 import { IdempotencyRegistry } from "../../src/infra/idempotency.js";
 import type { ToolBudgets, ToolManifest } from "../../src/mcp/registry.js";

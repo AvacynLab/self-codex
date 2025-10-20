@@ -57,6 +57,19 @@ export interface ToolBudgets {
 export type ToolKind = "dynamic" | "composite";
 
 /**
+ * Returns the mutable map of tools currently known by the underlying MCP
+ * server. The structure is owned by the SDK which is why the helper only
+ * exposes a readonly view for callers performing defensive checks.
+ */
+export function getRegisteredToolMap(server: McpServer): Readonly<Record<string, RegisteredTool>> | undefined {
+  const registry = Reflect.get(server as object, "_registeredTools");
+  if (!registry || typeof registry !== "object") {
+    return undefined;
+  }
+  return registry as Record<string, RegisteredTool>;
+}
+
+/**
  * Definition describing an individual step inside a composite tool pipeline.
  * Steps are executed sequentially and may forward their structured result to
  * the following stage.
@@ -585,9 +598,7 @@ export class ToolRegistry {
       throw new ToolRegistrationError(`tool \"${trimmedName}\" is already registered in the Tool-OS registry`);
     }
 
-    const serverRegistry = (this.server as unknown as {
-      _registeredTools?: Record<string, RegisteredTool>;
-    })._registeredTools;
+    const serverRegistry = getRegisteredToolMap(this.server);
     if (serverRegistry && serverRegistry[trimmedName]) {
       throw new ToolRegistrationError(`tool \"${trimmedName}\" is already registered on the MCP server`);
     }
@@ -641,37 +652,35 @@ export class ToolRegistry {
       ? options.manifestPath ?? path.join(this.manifestsDir, `${sanitizeFilename(trimmedName)}.json`)
       : options.manifestPath;
 
-    let handler: ToolCallback<z.ZodRawShape | undefined>;
-    if (options.inputSchema) {
-      handler = (async (
-        args: Record<string, unknown>,
-        extra: RequestHandlerExtra<ServerRequest, ServerNotification>,
-      ): Promise<CallToolResult> => implementation(args, extra)) as unknown as ToolCallback<
-        z.ZodRawShape | undefined
-      >;
-    } else {
-      handler = (async (
-        extra: RequestHandlerExtra<ServerRequest, ServerNotification>,
-      ): Promise<CallToolResult> => implementation(undefined, extra)) as unknown as ToolCallback<
-        z.ZodRawShape | undefined
-      >;
-    }
-
-    const registeredTool = this.server.registerTool(
-      trimmedName,
-      {
+    const registeredTool = (() => {
+      const baseConfig = {
         title: manifest.title,
         description: manifest.description,
-        inputSchema: options.inputSchema,
         outputSchema: options.outputSchema,
         annotations: options.annotations,
         _meta: { ...options.meta, tool_kind: manifest.kind },
-      },
-      handler as unknown as (
-        args: Record<string, unknown>,
-        extra: RequestHandlerExtra<ServerRequest, ServerNotification>,
-      ) => Promise<CallToolResult>,
-    );
+      } satisfies {
+        title?: string;
+        description?: string;
+        outputSchema?: z.ZodRawShape;
+        annotations?: ToolAnnotations;
+        _meta?: Record<string, unknown>;
+      };
+
+      const schema = options.inputSchema;
+      if (schema) {
+        const callback: ToolCallback<typeof schema> = async (args, extra) => implementation(args, extra);
+        return this.server.registerTool(trimmedName, { ...baseConfig, inputSchema: schema }, callback);
+      }
+
+      const callback: ToolCallback = async (extra) => implementation(undefined, extra);
+      const register = this.server.registerTool.bind(this.server) as (
+        name: string,
+        config: typeof baseConfig,
+        cb: ToolCallback,
+      ) => RegisteredTool;
+      return register(trimmedName, baseConfig, callback);
+    })();
 
     const storedSchema = options.inputSchema ? z.object(options.inputSchema).strict() : undefined;
     const record: ToolRegistrationRecord = {
@@ -727,8 +736,8 @@ export class ToolRegistry {
         throw new ToolRegistrationError("composite tools cannot invoke themselves recursively");
       }
 
-      const registry = (this.server as unknown as { _registeredTools?: Record<string, RegisteredTool> })._registeredTools;
-      if (!registry || !registry[step.tool]) {
+        const registry = getRegisteredToolMap(this.server);
+        if (!registry || !registry[step.tool]) {
         throw new ToolRegistrationError(`referenced tool \"${step.tool}\" is not registered`);
       }
     }

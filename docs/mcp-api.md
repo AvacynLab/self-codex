@@ -115,22 +115,20 @@ interface ResourceListResult {
 ```ts
 const ResourceReadInput = z.object({ uri: z.string().min(1) }).strict();
 
-type ResourcePayload =
-  | { graphId: string; version: number; committedAt: number | null; graph: NormalisedGraph }
-  | { graphId: string; txId: string; baseVersion: number; startedAt: number; state: string; committedAt: number | null; finalVersion: number | null; baseGraph: NormalisedGraph; finalGraph: NormalisedGraph | null }
-  | { runId: string; events: ResourceRunEvent[]; jsonl: string }
-  | { childId: string; logs: ResourceChildLogEntry[] }
-  | { namespace: string; entries: BlackboardEntrySnapshot[] }
-  | { sessionId: string; runId: string | null; phase: string | null; artifactType: "input" | "output" | "events" | "logs"; name: string; recordedAt: number; mime: string; data: unknown; metadata?: Record<string, unknown> };
-
-interface ResourceReadResult {
-  uri: string;
-  kind: ResourceKind;
-  payload: ResourcePayload;
-}
+type ResourceReadResult =
+  | { uri: string; kind: "graph"; payload: ResourceGraphPayload }
+  | { uri: string; kind: "graph_version"; payload: ResourceGraphPayload }
+  | { uri: string; kind: "snapshot"; payload: ResourceSnapshotPayload }
+  | { uri: string; kind: "run_events"; payload: ResourceRunEventsPayload }
+  | { uri: string; kind: "child_logs"; payload: ResourceChildLogsPayload }
+  | { uri: string; kind: "blackboard_namespace"; payload: ResourceBlackboardNamespacePayload }
+  | { uri: string; kind: "tool_router_decisions"; payload: ResourceToolRouterPayload }
+  | { uri: string; kind: "validation_input" | "validation_output" | "validation_events" | "validation_logs"; payload: ValidationResourcePayload };
 ```
 
-`NormalisedGraph`, `ResourceRunEvent`, `ResourceChildLogEntry` et
+`NormalisedGraph`, `ResourceGraphPayload`, `ResourceRunEventsPayload`,
+`ResourceChildLogsPayload`, `ResourceBlackboardNamespacePayload`,
+`ResourceRunEvent`, `ResourceChildLogEntry` et
 `BlackboardEntrySnapshot` sont définis dans `src/graph/types.ts`,
 `src/resources/registry.ts` et `src/coord/blackboard.ts`.
 

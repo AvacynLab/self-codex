@@ -13,7 +13,6 @@ import {
   McpServer,
   type CallToolResult,
   type RequestHandlerExtra,
-  type RegisteredTool,
   type ServerNotification,
   type ServerRequest,
 } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -23,6 +22,7 @@ import { StructuredLogger } from "../../src/logger.js";
 import {
   ToolRegistry,
   ToolRegistrationError,
+  getRegisteredToolMap,
   type ToolInvocationExtra,
 } from "../../src/mcp/registry.js";
 
@@ -45,7 +45,7 @@ async function invokeDirectTool(
   args: unknown,
   extra: ToolInvocationExtra,
 ): Promise<CallToolResult> {
-  const registry = (server as unknown as { _registeredTools?: Record<string, RegisteredTool> })._registeredTools;
+  const registry = getRegisteredToolMap(server);
   if (!registry || !registry[tool]) {
     throw new Error(`tool ${tool} not registered`);
   }
@@ -55,9 +55,9 @@ async function invokeDirectTool(
   }
   if (entry.inputSchema) {
     const parsed = await entry.inputSchema.parseAsync(args ?? {});
-    return (await entry.callback(parsed, extra)) as CallToolResult;
+    return await entry.callback(parsed, extra);
   }
-  return (await entry.callback(extra)) as CallToolResult;
+  return await entry.callback(extra);
 }
 
 describe("mcp/tool registry", () => {

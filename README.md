@@ -39,6 +39,41 @@ configuration éventuelle de `~/.codex/config.toml`.
   `tsx`, ainsi que les fichiers `tsconfig.json` et `package-lock.json`. Pratique
   pour confirmer qu'un conteneur CI respecte les prérequis Node ≥ 20.
 
+## Structure du dépôt
+
+| Chemin | Rôle principal |
+| --- | --- |
+| `src/` | Sources TypeScript de l'orchestrateur MCP (serveur, runtime, outils). |
+| `tests/` | Suite Mocha/Chai écrite en TypeScript, organisée par domaines fonctionnels (HTTP, runtime, outils, hygiène…). |
+| `graph-forge/` | Générateurs d'artefacts graphes et helpers associés, compilés séparément via `tsconfig` dédié. |
+| `scripts/` | Utilitaires Node ESM (`.mjs`) pour l'automatisation (setup, validation, enregistrements). |
+| `docs/` | Notes techniques ciblées (architecture, protocoles). |
+| `config/` | Presets et fichiers JSON/TOML chargés par les scripts ou le runtime. |
+| `scenarios/` | Scénarios YAML pour `npm run eval:scenarios`. |
+| `runs/`, `children/` | Racines générées à l'exécution pour stocker artefacts et espaces de travail (ignorées par Git, cf. `.gitignore`). |
+
+Chaque sous-arbre explicité ci-dessus possède ses propres gardes (tests unitaires, lint, hygienes) : veillez à conserver l'organisation afin que les scripts de validation référencés dans `AGENTS.md` restent valides.
+
+## Variables d'environnement essentielles
+
+Les principaux paramètres décrits dans `.env.example` sont regroupés par blocs fonctionnels. La table suivante résume les familles à ajuster avant déploiement :
+
+| Famille | Variables clés | Effet résumé |
+| --- | --- | --- |
+| Transport HTTP | `MCP_HTTP_HOST`, `MCP_HTTP_PORT`, `MCP_HTTP_PATH`, `MCP_HTTP_TOKEN`, `MCP_HTTP_ALLOW_NOAUTH` | Active ou sécurise l'API JSON-RPC/SSE. Token obligatoire par défaut, `ALLOW_NOAUTH` réservé au développement. |
+| Limiteur HTTP | `MCP_HTTP_RATE_LIMIT_RPS`, `MCP_HTTP_RATE_LIMIT_BURST`, `MCP_HTTP_RATE_LIMIT_DISABLE` | Configure le seau à jetons exposé dans `src/http/rateLimit.ts`. |
+| Répertoires persistés | `MCP_RUNS_ROOT`, `MCP_CHILDREN_ROOT`, `MCP_FS_IPC_DIR` | Redirigent logs, snapshots et espaces enfants vers des volumes dédiés. |
+| Flux SSE | `MCP_SSE_MAX_CHUNK_BYTES`, `MCP_SSE_MAX_BUFFER`, `MCP_SSE_EMIT_TIMEOUT_MS` | Bornent la taille et la latence des événements streamés. |
+| Pool graphe & mémoire | `MCP_GRAPH_WORKERS`, `MCP_GRAPH_POOL_THRESHOLD`, `MCP_GRAPH_WORKER_TIMEOUT_MS`, `MCP_GRAPH_SNAPSHOT_*`, `MCP_MEMORY_VECTOR_MAX_DOCS`, `MEM_BACKEND`, `MEM_URL` | Ajustent la parallélisation des traitements graphe et les backends mémoire/RAG. |
+| Outils & budgets | `MCP_TOOLS_MODE`, `MCP_TOOL_PACK`, `TOOLROUTER_TOPK`, `IDEMPOTENCY_TTL_MS`, `MCP_TOOLS_BUDGET_*` | Gouvernent les façades MCP exposées et leurs plafonds (temps, appels, octets). |
+| Observabilité | `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_EXPORTER_OTLP_HEADERS` | Connectent l'orchestrateur à un collecteur OpenTelemetry. |
+| Journalisation | `MCP_LOG_REDACT`, `MCP_LOG_FILE`, `MCP_LOG_ROTATE_SIZE`, `MCP_LOG_ROTATE_KEEP` | Contrôlent le log structuré et sa rotation par défaut. |
+| Qualité & réflexion | `MCP_ENABLE_REFLECTION`, `MCP_QUALITY_GATE`, `MCP_QUALITY_THRESHOLD`, `LESSONS_MAX` | Active les garde-fous qualité et la quantité de leçons injectées dans les prompts. |
+| Enfants MCP | `MCP_CHILD_COMMAND`, `MCP_CHILD_ARGS`, `MCP_CHILD_SANDBOX_PROFILE`, `MCP_CHILD_ENV_ALLOW` | Spécifient comment les sous-processus Codex sont lancés et confinés. |
+| Budgets entrants | `MCP_REQUEST_BUDGET_*` | Appliquent des limites globales (temps, tokens, octets) aux requêtes entrantes. |
+
+Les valeurs par défaut renseignées dans `.env.example` correspondent à un usage local sécurisé. Ajustez chaque section de manière atomique et versionnez les explications dans `docs/` lorsque vous introduisez de nouvelles variables.
+
 ## Développement local
 
 - `npm run dev` démarre l'orchestrateur via `tsx --tsconfig tsconfig.json src/server.ts`. Le loader Typescript natif garantit que les résolutions `NodeNext` restent respectées tout en profitant du rechargement rapide proposé par `tsx`.
@@ -51,6 +86,10 @@ configuration éventuelle de `~/.codex/config.toml`.
   CI et pour les revues locales rapides.
 - `npm run test:watch` bascule Mocha en mode watch avec `tsx` pour recharger
   automatiquement les tests lors des modifications sous `src/` et `tests/`.
+- `npm run test:graph-forge` lance le runner `node:test` directement dans le
+  répertoire vendored `graph-forge/` afin de valider ses primitives sans
+  dépendre du harnais Mocha de l'orchestrateur. Cette vérification protège la
+  configuration TypeScript isolée et garantit que le module reste autonome.
 - `npm run test:e2e:http` active automatiquement `MCP_TEST_ALLOW_LOOPBACK=yes`
   puis relance Mocha avec les scénarios HTTP de bout en bout. Utilisez cette
   commande lorsque vous souhaitez valider les chemins réseau : elle laisse la
@@ -131,9 +170,9 @@ configuration éventuelle de `~/.codex/config.toml`.
     serveur pour éviter les replays accidentels (5 minutes par défaut).
   - `MCP_LOG_*` : positionne le chemin du log structuré (`MCP_LOG_FILE`), la
     politique de rotation (`MCP_LOG_ROTATE_SIZE`, `MCP_LOG_ROTATE_KEEP`) et la
-    rédaction (`MCP_LOG_REDACT`, activée par défaut avec la valeur `true`). Les
-    suffixes `k`/`m`/`g` restent acceptés pour exprimer la taille maximale (ex.
-    `10MB`).
+    rédaction (`MCP_LOG_REDACT`, activée par défaut ; définissez `off` ou une
+    chaîne vide pour la désactiver ponctuellement). Les suffixes `k`/`m`/`g`
+    restent acceptés pour exprimer la taille maximale (ex. `10MB`).
   - `MCP_*_ROOT` : `MCP_RUNS_ROOT` et `MCP_CHILDREN_ROOT` redirigent les
     répertoires d'exécution vers des volumes persistants.
   - `MEM_BACKEND` / `MEM_URL` : sélectionnent l'implémentation mémoire pour la

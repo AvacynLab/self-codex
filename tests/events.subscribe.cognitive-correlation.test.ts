@@ -23,13 +23,13 @@ describe("events subscribe cognitive correlation", () => {
     const {
       server,
       graphState,
-      childSupervisor,
+      childProcessSupervisor,
       configureRuntimeFeatures,
       getRuntimeFeatures,
     } = await import("../src/server.js");
 
     const baselineGraphSnapshot = graphState.serialize();
-    const baselineChildrenIndex = childSupervisor.childrenIndex.serialize();
+    const baselineChildrenIndex = childProcessSupervisor.childrenIndex.serialize();
     const baselineFeatures = getRuntimeFeatures();
 
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
@@ -39,12 +39,12 @@ describe("events subscribe cognitive correlation", () => {
     await server.connect(serverTransport);
     await client.connect(clientTransport);
 
-    const collectStub = sinon.stub(childSupervisor, "collect");
+    const collectStub = sinon.stub(childProcessSupervisor, "collect");
 
     try {
       configureRuntimeFeatures({ ...baselineFeatures, enableEventsBus: true });
       graphState.resetFromSnapshot({ nodes: [], edges: [], directives: { graph: "cognitive-events" } });
-      childSupervisor.childrenIndex.restore({});
+      childProcessSupervisor.childrenIndex.restore({});
 
       const now = Date.now();
       const jobId = "job_cognitive_events";
@@ -56,7 +56,7 @@ describe("events subscribe cognitive correlation", () => {
 
       graphState.createJob(jobId, { goal: "Validate cognitive event correlations", createdAt: now, state: "running" });
       graphState.createChild(jobId, childId, { name: "Analyst", runtime: "codex" }, { createdAt: now, ttlAt: null });
-      childSupervisor.childrenIndex.registerChild({
+      childProcessSupervisor.childrenIndex.registerChild({
         childId,
         pid: 4242,
         workdir: "/tmp/child-cognitive",
@@ -155,9 +155,9 @@ describe("events subscribe cognitive correlation", () => {
     } finally {
       collectStub.restore();
       configureRuntimeFeatures(baselineFeatures);
-      childSupervisor.childrenIndex.restore(baselineChildrenIndex);
+      childProcessSupervisor.childrenIndex.restore(baselineChildrenIndex);
       graphState.resetFromSnapshot(baselineGraphSnapshot);
-      await childSupervisor.disposeAll().catch(() => {});
+      await childProcessSupervisor.disposeAll().catch(() => {});
       await client.close();
       await server.close().catch(() => {});
     }

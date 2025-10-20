@@ -72,7 +72,7 @@ describe("codex child lifecycle (process-backed)", function () {
   after(async () => {
     if (serverModule) {
       serverModule.configureRuntimeFeatures(featuresSnapshot);
-      await serverModule.childSupervisor.disposeAll();
+      await serverModule.childProcessSupervisor.disposeAll();
     }
 
     if (originalEnv.MCP_CHILDREN_ROOT === undefined) {
@@ -105,7 +105,7 @@ describe("codex child lifecycle (process-backed)", function () {
   });
 
   it("spawns, attaches, sends, limits and kills a Codex child", async function () {
-    const { routeJsonRpcRequest, childSupervisor, getEventBusInstance } = serverModule;
+    const { routeJsonRpcRequest, childProcessSupervisor, getEventBusInstance } = serverModule;
     const bus = getEventBusInstance();
     const baselineSeq = (() => {
       const history = bus.list();
@@ -175,7 +175,7 @@ describe("codex child lifecycle (process-backed)", function () {
     expect(sendResult.message.messageId).to.match(/^child-\d{13}-[a-f0-9]{6}:\d+$/);
     expect(sendResult.awaited_message?.parsed).to.be.an("object");
     expect(sendResult.awaited_message?.parsed?.type).to.equal("response");
-    const indexAfterSend = childSupervisor.childrenIndex.getChild(spawnResult.child_id);
+    const indexAfterSend = childProcessSupervisor.childrenIndex.getChild(spawnResult.child_id);
     expect(indexAfterSend?.state).to.equal("idle");
 
     const limitsResult = (await routeJsonRpcRequest("child_set_limits", {
@@ -200,8 +200,8 @@ describe("codex child lifecycle (process-backed)", function () {
     expect(killResult.child_id).to.equal(spawnResult.child_id);
     expect(killResult.shutdown.forced).to.equal(true);
 
-    await childSupervisor.waitForExit(spawnResult.child_id, 1_000);
-    const indexAfterKill = childSupervisor.childrenIndex.getChild(spawnResult.child_id);
+    await childProcessSupervisor.waitForExit(spawnResult.child_id, 1_000);
+    const indexAfterKill = childProcessSupervisor.childrenIndex.getChild(spawnResult.child_id);
     expect(indexAfterKill?.state).to.equal("killed");
 
     const eventsAfterKill = bus
@@ -214,6 +214,6 @@ describe("codex child lifecycle (process-backed)", function () {
       removed: boolean;
     };
     expect(gcResult.removed).to.equal(true);
-    expect(childSupervisor.childrenIndex.getChild(spawnResult.child_id)).to.equal(undefined);
+    expect(childProcessSupervisor.childrenIndex.getChild(spawnResult.child_id)).to.equal(undefined);
   });
 });

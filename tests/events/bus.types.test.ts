@@ -9,6 +9,16 @@ import {
 } from "../../src/events/types.js";
 
 /**
+ * Converts arbitrary strings into {@link EventMessage} instances so the tests
+ * can emulate dynamic JavaScript callers. The returned value intentionally
+ * bypasses the compile-time catalogue to ensure the runtime guard is exercised
+ * without resorting to double casts.
+ */
+function coerceToEventMessage(token: string): EventMessage {
+  return token as EventMessage;
+}
+
+/**
  * Regression tests covering the typed event bus contract. The suite exercises the
  * runtime guards that prevent publishers from emitting ad-hoc message tokens so
  * downstream dashboards only observe the curated catalogue declared in
@@ -39,8 +49,8 @@ describe("events/bus type safety", () => {
     expect(() =>
       bus.publish({
         cat: "child",
-        // Cast to emulate untyped JavaScript callers. The runtime guard must still throw.
-        msg: "totally_unknown_message" as unknown as EventMessage,
+        // Use the helper to mimic unchecked JavaScript callers. The runtime guard must still throw.
+        msg: coerceToEventMessage("totally_unknown_message"),
       }),
     ).to.throw(TypeError, /unknown event message/);
   });
@@ -50,7 +60,7 @@ describe("events/bus type safety", () => {
 
     const envelope = bus.publish({
       cat: "child",
-      msg: "  child_stdout  " as unknown as EventMessage,
+      msg: coerceToEventMessage("  child_stdout  "),
     });
 
     expect(envelope.msg).to.equal("child_stdout");

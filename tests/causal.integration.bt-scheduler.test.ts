@@ -5,8 +5,8 @@ import { handlePlanRunBT, type PlanToolContext } from "../src/tools/planTools.js
 import { CausalMemory } from "../src/knowledge/causalMemory.js";
 import { StructuredLogger } from "../src/logger.js";
 import { StigmergyField } from "../src/coord/stigmergy.js";
-import type { ChildSupervisor } from "../src/childSupervisor.js";
-import type { GraphState } from "../src/graphState.js";
+import type { ChildSupervisor } from "../src/children/supervisor.js";
+import type { GraphState } from "../src/graph/state.js";
 
 /** Manual clock controlling timestamps for deterministic assertions. */
 class ManualClock {

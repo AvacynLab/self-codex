@@ -12,7 +12,7 @@ import type {
   ServerRequest,
 } from "@modelcontextprotocol/sdk/shared/protocol.js";
 
-import { ChildSupervisor } from "../../../src/childSupervisor.js";
+import { ChildSupervisor } from "../../../src/children/supervisor.js";
 import { StructuredLogger } from "../../../src/logger.js";
 import { BudgetTracker } from "../../../src/infra/budget.js";
 import { IdempotencyRegistry } from "../../../src/infra/idempotency.js";
@@ -162,7 +162,11 @@ describe("child_orchestrate facade", () => {
     const handler = createChildOrchestrateHandler({ supervisor, logger });
     let captured: unknown;
     try {
-      await handler({ command: "" } as unknown as Record<string, unknown>, createRequestExtras("req-child-orchestrate-invalid"));
+      const invalidPayload: Record<string, unknown> = {
+        // Intentionally omit the required structured payload so the schema guard rejects the request.
+        command: "",
+      };
+      await handler(invalidPayload, createRequestExtras("req-child-orchestrate-invalid"));
     } catch (error) {
       captured = error;
     }

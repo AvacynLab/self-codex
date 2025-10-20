@@ -7,7 +7,7 @@ import path from "node:path";
 import {
   ChildSupervisor,
   ChildLimitExceededError,
-} from "../src/childSupervisor.js";
+} from "../src/children/supervisor.js";
 import { handleChildCreate } from "../src/tools/childTools.js";
 import type { ChildToolContext } from "../src/tools/childTools.js";
 import { StructuredLogger } from "../src/logger.js";

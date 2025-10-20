@@ -22,7 +22,7 @@ import {
 import { StigmergyField, StigmergyInvalidTypeError } from "../src/coord/stigmergy.js";
 import { ContractNetCoordinator, ContractNetNoBidsError } from "../src/coord/contractNet.js";
 import { handlePlanReduce, handlePlanRunBT, PlanFanoutInputSchema, PlanReduceInputSchema } from "../src/tools/planTools.js";
-import { GraphState } from "../src/graphState.js";
+import { GraphState } from "../src/graph/state.js";
 import { ConsensusNoQuorumError, BehaviorTreeRunTimeoutError } from "../src/tools/planTools.js";
 import type { PlanToolContext } from "../src/tools/planTools.js";
 import type { ChildCollectedOutputs } from "../src/childRuntime.js";

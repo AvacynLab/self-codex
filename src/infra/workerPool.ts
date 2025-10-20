@@ -12,6 +12,20 @@ import { computeGraphChangeSet, type GraphChangeSetComputation } from "./graphCh
  * change-sets so the orchestrator can offload diff/validate workloads to background workers
  * without polluting the façade implementation with worker-specific code.
  */
+/**
+ * Minimal worker contract leveraged by {@link GraphWorkerPool}. The runtime worker implementation
+ * from `node:worker_threads` satisfies the interface while tests can inject lightweight fakes
+ * without resorting to unsafe casts.
+ */
+export interface GraphWorkerLike {
+  /** Registers a listener that runs a single time for the provided event. */
+  readonly once: Worker["once"];
+  /** Removes every listener for the specified event to avoid leaks between executions. */
+  readonly removeAllListeners: Worker["removeAllListeners"];
+  /** Stops the worker execution and resolves once the termination completes. */
+  terminate(): ReturnType<Worker["terminate"]>;
+}
+
 export interface GraphWorkerPoolOptions {
   /** Maximum number of background workers available. A value of `0` disables offloading. */
   readonly maxWorkers: number;
@@ -27,7 +41,12 @@ export interface GraphWorkerPoolOptions {
    * Optional factory used to instantiate worker threads. Primarily intended for unit tests so they can
    * inject lightweight fakes without relying on the compiled worker bundle.
    */
-  readonly workerFactory?: (script: URL, options: WorkerOptions) => Worker;
+  readonly workerFactory?: (script: URL, options: WorkerOptions) => GraphWorkerLike;
+  /**
+   * Optional explicit worker script location. Test suites inject a stable URL so they can execute
+   * without compiling the worker bundle to `dist/` first.
+   */
+  readonly workerScriptUrl?: URL;
 }
 
 /** Snapshot describing the worker pool percentile statistics exposed to observability pipelines. */
@@ -113,7 +132,7 @@ export class GraphWorkerPool {
   private readonly durations: number[] = [];
   private workerScriptUrl: URL | null;
   private readonly workerTimeoutMs: number | null;
-  private readonly workerFactory: ((script: URL, options: WorkerOptions) => Worker) | null;
+  private readonly workerFactory: ((script: URL, options: WorkerOptions) => GraphWorkerLike) | null;
   /** Guards against repeatedly spawning workers once the runtime reports the script as unavailable. */
   private workerUnavailable = false;
   private activeWorkers = 0;
@@ -131,7 +150,7 @@ export class GraphWorkerPool {
     this.maxWorkers = maxWorkers;
     this.changeSetSizeThreshold = changeSetThreshold;
     this.maxSampleSize = sampleCap;
-    this.workerScriptUrl = resolveWorkerScriptUrl();
+    this.workerScriptUrl = options.workerScriptUrl instanceof URL ? options.workerScriptUrl : resolveWorkerScriptUrl();
     this.workerFactory = typeof options.workerFactory === "function" ? options.workerFactory : null;
 
     if (options.nodeCountThreshold !== undefined && Number.isFinite(options.nodeCountThreshold)) {
@@ -212,7 +231,7 @@ export class GraphWorkerPool {
       throw new Error("graph worker script unavailable");
     }
 
-    let worker: Worker;
+    let worker: GraphWorkerLike;
     const workerOptions: WorkerOptions = {
         workerData: {
           baseGraph: task.baseGraph,
@@ -224,7 +243,9 @@ export class GraphWorkerPool {
     };
 
     try {
-      worker = this.workerFactory ? this.workerFactory(this.workerScriptUrl, workerOptions) : new Worker(this.workerScriptUrl, workerOptions);
+      worker = this.workerFactory
+        ? this.workerFactory(this.workerScriptUrl, workerOptions)
+        : new Worker(this.workerScriptUrl, workerOptions);
     } catch (error) {
       this.workerUnavailable = true;
       throw error;

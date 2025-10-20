@@ -1,5 +1,5 @@
 import { StructuredLogger } from "../logger.js";
-import type { GraphState } from "../graphState.js";
+import type { GraphState } from "../graph/state.js";
 import { MetaCritic } from "../agents/metaCritic.js";
 import type { ValueGraph } from "../values/valueGraph.js";
 import {

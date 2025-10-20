@@ -7,7 +7,7 @@ import { join } from "node:path";
 import type { IncomingMessage, ServerResponse } from "node:http";
 
 import { EventStore } from "../src/eventStore.js";
-import { GraphState } from "../src/graphState.js";
+import { GraphState } from "../src/graph/state.js";
 import { StructuredLogger, type LogEntry } from "../src/logger.js";
 import { StigmergyField } from "../src/coord/stigmergy.js";
 import { ContractNetWatcherTelemetryRecorder } from "../src/coord/contractNetWatchers.js";
@@ -25,7 +25,7 @@ import {
 } from "../src/learning/lessonPromptDiff.js";
 import { LogJournal } from "../src/monitor/log.js";
 import type { ChildShutdownResult } from "../src/childRuntime.js";
-import type { ChildSupervisor } from "../src/childSupervisor.js";
+import type { ChildSupervisor } from "../src/children/supervisor.js";
 
 /**
  * Minimal supervisor stub satisfying the dashboard router contract. The class

@@ -4,7 +4,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { GraphState } from "../src/graphState.js";
+import { GraphState } from "../src/graph/state.js";
 import { StructuredLogger } from "../src/logger.js";
 import { MetaCritic } from "../src/agents/metaCritic.js";
 import { ThoughtGraphCoordinator } from "../src/reasoning/thoughtCoordinator.js";

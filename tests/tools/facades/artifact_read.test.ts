@@ -142,7 +142,12 @@ describe("artifact_read facade", () => {
 
     let captured: unknown;
     try {
-      await handler({ child_id: "child-x", format: "invalid" } as unknown as Record<string, unknown>, createRequestExtras("req-invalid"));
+      const invalidPayload: Record<string, unknown> = {
+        // The format field must match the enumerated values; this string ensures the schema guard rejects the request.
+        child_id: "child-x",
+        format: "invalid",
+      };
+      await handler(invalidPayload, createRequestExtras("req-invalid"));
     } catch (error) {
       captured = error;
     }

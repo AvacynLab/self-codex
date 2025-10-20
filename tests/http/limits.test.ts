@@ -131,9 +131,9 @@ describe("http limits", () => {
   it("ignores non-finite overrides while preserving the previous configuration", () => {
     const baseline = __httpServerInternals.configureRateLimiter({ disabled: false, rps: 15, burst: 25 });
     const mutated = __httpServerInternals.configureRateLimiter({
-      // The cast keeps TypeScript happy while the runtime helper sanitises the value.
-      rps: Number.NaN as unknown as number,
-      burst: Number.POSITIVE_INFINITY as unknown as number,
+      // Deliberately provide non-finite values so the helper exercises its sanitisation path.
+      rps: Number.NaN,
+      burst: Number.POSITIVE_INFINITY,
     });
 
     expect(mutated.rps).to.equal(baseline.rps);

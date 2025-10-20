@@ -7,7 +7,7 @@ import path from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 
-import type { CreateChildOptions } from "../src/childSupervisor.js";
+import type { CreateChildOptions } from "../src/children/supervisor.js";
 import type {
   ChildCollectedOutputs,
   ChildRuntimeMessage,
@@ -17,7 +17,7 @@ import type {
 import {
   server,
   graphState,
-  childSupervisor,
+  childProcessSupervisor,
   configureRuntimeFeatures,
   getRuntimeFeatures,
   logJournal,
@@ -86,7 +86,7 @@ describe("contract-net consensus MCP end-to-end", function () {
 
     const clock = sinon.useFakeTimers();
     const baselineGraph = graphState.serialize();
-    const baselineChildren = childSupervisor.childrenIndex.serialize();
+    const baselineChildren = childProcessSupervisor.childrenIndex.serialize();
     const baselineFeatures = getRuntimeFeatures();
     const baselineAgents = new Map(
       contractNet.listAgents().map((agent) => [agent.agentId, agent] as const),
@@ -101,12 +101,12 @@ describe("contract-net consensus MCP end-to-end", function () {
       durationMs: 0,
     };
 
-    const originalCreateChild = childSupervisor.createChild.bind(childSupervisor);
-    const originalCollect = childSupervisor.collect.bind(childSupervisor);
-    const originalWaitForMessage = childSupervisor.waitForMessage.bind(childSupervisor);
+    const originalCreateChild = childProcessSupervisor.createChild.bind(childProcessSupervisor);
+    const originalCollect = childProcessSupervisor.collect.bind(childProcessSupervisor);
+    const originalWaitForMessage = childProcessSupervisor.waitForMessage.bind(childProcessSupervisor);
 
-    childSupervisor.createChild = (async function stubCreateChild(
-      this: typeof childSupervisor,
+    childProcessSupervisor.createChild = (async function stubCreateChild(
+      this: typeof childProcessSupervisor,
       options: CreateChildOptions = {},
     ) {
       const index = stubbedChildren.size + 1;
@@ -185,10 +185,10 @@ describe("contract-net consensus MCP end-to-end", function () {
         runtime,
         readyMessage,
       } as unknown as Awaited<ReturnType<typeof originalCreateChild>>;
-    }).bind(childSupervisor);
+    }).bind(childProcessSupervisor);
 
-    childSupervisor.collect = (async function stubCollect(
-      this: typeof childSupervisor,
+    childProcessSupervisor.collect = (async function stubCollect(
+      this: typeof childProcessSupervisor,
       childId: string,
     ) {
       const outputs = stubbedOutputs.get(childId);
@@ -196,10 +196,10 @@ describe("contract-net consensus MCP end-to-end", function () {
         return cloneOutputs(outputs);
       }
       return originalCollect(childId);
-    }).bind(childSupervisor);
+    }).bind(childProcessSupervisor);
 
-    childSupervisor.waitForMessage = (async function stubWaitForMessage(
-      this: typeof childSupervisor,
+    childProcessSupervisor.waitForMessage = (async function stubWaitForMessage(
+      this: typeof childProcessSupervisor,
       childId: string,
       predicate: (message: ChildRuntimeMessage) => boolean,
     ) {
@@ -211,7 +211,7 @@ describe("contract-net consensus MCP end-to-end", function () {
         }
       }
       return originalWaitForMessage(childId, predicate);
-    }).bind(childSupervisor);
+    }).bind(childProcessSupervisor);
 
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     const client = new Client({ name: "cnp-consensus-e2e", version: "1.0.0-test" });
@@ -242,7 +242,7 @@ describe("contract-net consensus MCP end-to-end", function () {
 
       logJournal.reset();
       graphState.resetFromSnapshot({ nodes: [], edges: [], directives: { graph: graphId } });
-      childSupervisor.childrenIndex.restore({});
+      childProcessSupervisor.childrenIndex.restore({});
 
       const childConfigs = [
         { id: "cnp-child-alpha", reliability: 0.9, wallclock: 6_000 },
@@ -414,10 +414,10 @@ describe("contract-net consensus MCP end-to-end", function () {
         }
       }
       configureRuntimeFeatures(baselineFeatures);
-      childSupervisor.createChild = originalCreateChild;
-      childSupervisor.collect = originalCollect;
-      childSupervisor.waitForMessage = originalWaitForMessage;
-      childSupervisor.childrenIndex.restore(baselineChildren);
+      childProcessSupervisor.createChild = originalCreateChild;
+      childProcessSupervisor.collect = originalCollect;
+      childProcessSupervisor.waitForMessage = originalWaitForMessage;
+      childProcessSupervisor.childrenIndex.restore(baselineChildren);
       graphState.resetFromSnapshot(baselineGraph);
       logJournal.reset();
       await client.close().catch(() => {});

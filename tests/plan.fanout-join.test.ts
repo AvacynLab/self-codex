@@ -4,9 +4,9 @@ import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { ChildSupervisor } from "../src/childSupervisor.js";
+import { ChildSupervisor } from "../src/children/supervisor.js";
 import type { ChildCollectedOutputs, ChildRuntimeMessage } from "../src/childRuntime.js";
-import { GraphState } from "../src/graphState.js";
+import { GraphState } from "../src/graph/state.js";
 import { StructuredLogger } from "../src/logger.js";
 import { childWorkspacePath } from "../src/paths.js";
 import {

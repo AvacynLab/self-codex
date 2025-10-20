@@ -4,7 +4,7 @@ import sinon from "sinon";
 
 import { IdempotencyRegistry } from "../src/infra/idempotency.js";
 import { ChildCreateInputSchema, handleChildCreate, type ChildToolContext } from "../src/tools/childTools.js";
-import type { ChildSupervisor } from "../src/childSupervisor.js";
+import type { ChildSupervisor } from "../src/children/supervisor.js";
 import type { ChildRuntimeStatus } from "../src/childRuntime.js";
 import type { ChildRecordSnapshot } from "../src/state/childrenIndex.js";
 import {

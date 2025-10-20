@@ -7,7 +7,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import {
   server,
   graphState,
-  childSupervisor,
+  childProcessSupervisor,
   configureRuntimeFeatures,
   getRuntimeFeatures,
 } from "../src/server.js";
@@ -20,7 +20,7 @@ import {
 describe("events subscribe child correlation", () => {
   it("streams correlated child lifecycle events", async () => {
     const baselineGraphSnapshot = graphState.serialize();
-    const baselineChildrenIndex = childSupervisor.childrenIndex.serialize();
+    const baselineChildrenIndex = childProcessSupervisor.childrenIndex.serialize();
     const baselineFeatures = getRuntimeFeatures();
 
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
@@ -33,7 +33,7 @@ describe("events subscribe child correlation", () => {
     try {
       configureRuntimeFeatures({ ...baselineFeatures, enableEventsBus: true });
       graphState.resetFromSnapshot({ nodes: [], edges: [], directives: { graph: "test-child-events" } });
-      childSupervisor.childrenIndex.restore({});
+      childProcessSupervisor.childrenIndex.restore({});
 
       const now = Date.now();
       const jobId = "job_child_events";
@@ -46,7 +46,7 @@ describe("events subscribe child correlation", () => {
       graphState.createJob(jobId, { goal: "Validate child event correlations", createdAt: now, state: "running" });
       graphState.createChild(jobId, childId, { name: "Responder", runtime: "codex" }, { createdAt: now, ttlAt: null });
 
-      childSupervisor.childrenIndex.registerChild({
+      childProcessSupervisor.childrenIndex.registerChild({
         childId,
         pid: 4242,
         workdir: "/tmp/test-child",
@@ -155,7 +155,7 @@ describe("events subscribe child correlation", () => {
       expect(structured.events.length).to.be.at.least(4);
     } finally {
       configureRuntimeFeatures(baselineFeatures);
-      childSupervisor.childrenIndex.restore(baselineChildrenIndex);
+      childProcessSupervisor.childrenIndex.restore(baselineChildrenIndex);
       graphState.resetFromSnapshot(baselineGraphSnapshot);
       await client.close();
       await server.close().catch(() => {});

@@ -9,8 +9,83 @@ import { GraphDescriptorPayload } from "../src/tools/graphTools.js";
 import { renderMermaidFromGraph } from "../src/viz/mermaid.js";
 import { renderDotFromGraph } from "../src/viz/dot.js";
 import { renderGraphmlFromGraph } from "../src/viz/graphml.js";
-import { snapshotToGraphDescriptor, GraphStateSnapshot } from "../src/viz/snapshot.js";
+import { snapshotToGraphDescriptor, type GraphStateSnapshot } from "../src/viz/snapshot.js";
 import { server, graphState } from "../src/server.js";
+
+/**
+ * Structured payload returned by the `graph_export` tool when the export runs in
+ * offline mode. The type mirrors the JSON payload persisted on disk so the test
+ * suite can validate the file contents without resorting to casts.
+ */
+interface GraphExportStructuredContent {
+  readonly format: string;
+  readonly bytes: number;
+  readonly truncated: boolean;
+  readonly path: string | null;
+  readonly preview?: string;
+}
+
+/** Narrowing helper ensuring an arbitrary value is a record. */
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Runtime assertion guaranteeing the tool response contains the structured
+ * export payload. The helper documents the expected shape and keeps the test
+ * resilient to future schema tightenings.
+ */
+function assertIsGraphExportStructuredContent(
+  value: unknown,
+): asserts value is GraphExportStructuredContent {
+  if (!isRecord(value)) {
+    throw new Error("graph export structured content must be an object");
+  }
+  if (typeof value.format !== "string" || value.format.length === 0) {
+    throw new Error("graph export structured content must expose a non-empty format");
+  }
+  if (typeof value.bytes !== "number" || !Number.isFinite(value.bytes)) {
+    throw new Error("graph export structured content must expose a finite byte count");
+  }
+  if (typeof value.truncated !== "boolean") {
+    throw new Error("graph export structured content must expose a truncated flag");
+  }
+  if (value.path !== null && typeof value.path !== "string") {
+    throw new Error("graph export structured content must expose a nullable path");
+  }
+  if (value.preview !== undefined && typeof value.preview !== "string") {
+    throw new Error("graph export structured content must expose a string preview when present");
+  }
+}
+
+/**
+ * Runtime assertion verifying the parsed snapshot mirrors the orchestrator
+ * serialisation contract. The guard ensures the regression compares objects
+ * with the expected structure while staying type-safe.
+ */
+function assertIsGraphStateSnapshot(value: unknown): asserts value is GraphStateSnapshot {
+  if (!isRecord(value)) {
+    throw new Error("graph snapshot must be an object");
+  }
+  if (!Array.isArray(value.nodes) || !value.nodes.every((node) => isRecord(node) && typeof node.id === "string" && isRecord(node.attributes))) {
+    throw new Error("graph snapshot nodes must contain identifiers and attribute records");
+  }
+  if (
+    !Array.isArray(value.edges) ||
+    !value.edges.every(
+      (edge) =>
+        isRecord(edge) &&
+        typeof edge.from === "string" &&
+        typeof edge.to === "string" &&
+        isRecord(edge.attributes),
+    )
+  ) {
+    throw new Error("graph snapshot edges must contain endpoints and attribute records");
+  }
+  if (value.directives !== undefined && !isRecord(value.directives)) {
+    throw new Error("graph snapshot directives must be an object when present");
+  }
+}
 
 describe("graph export helpers", () => {
   // Preserve the orchestrator snapshot captured when the test suite boots so we
@@ -147,13 +222,8 @@ describe("graph export helpers", () => {
       expect(response.isError ?? false).to.equal(false, "graph_export must succeed when inline is disabled");
       expect(response.structuredContent).to.not.be.undefined;
 
-      const structured = response.structuredContent as {
-        format: string;
-        bytes: number;
-        truncated: boolean;
-        path: string | null;
-        preview?: string;
-      };
+      assertIsGraphExportStructuredContent(response.structuredContent);
+      const structured = response.structuredContent;
 
       expect(structured.format).to.equal("json");
       expect(structured.path).to.equal(absolutePath);
@@ -165,11 +235,15 @@ describe("graph export helpers", () => {
       // mode was disabled. Validate the file contents and ensure the preview
       // mirrors the first characters of the document.
       const written = await readFile(absolutePath, "utf8");
-      const parsed = JSON.parse(written) as { snapshot: GraphStateSnapshot; descriptor: unknown };
+      const parsed = JSON.parse(written);
+      if (!isRecord(parsed)) {
+        throw new Error("exported JSON payload must be an object");
+      }
+      assertIsGraphStateSnapshot(parsed.snapshot);
 
       expect(parsed.snapshot.nodes).to.have.length(2);
       expect(parsed.snapshot.nodes[0].id).to.equal("job:export-job");
-      expect(parsed.snapshot).to.deep.equal(expectedSnapshot as unknown as GraphStateSnapshot);
+      expect(parsed.snapshot).to.deep.equal(expectedSnapshot);
       expect(Buffer.byteLength(written, "utf8")).to.equal(structured.bytes);
       expect(written.startsWith(structured.preview ?? "")).to.equal(true);
     } finally {

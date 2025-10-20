@@ -7,7 +7,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import {
   server,
   graphState,
-  childSupervisor,
+  childProcessSupervisor,
   getRuntimeFeatures,
   configureRuntimeFeatures,
 } from "../src/server.js";
@@ -29,7 +29,7 @@ import { parseSseStream } from "./helpers/sse.js";
 describe("events subscribe SSE escaping", () => {
   it("keeps SSE data lines single-line while preserving cancellation payloads", async () => {
     const baselineGraph = graphState.serialize();
-    const baselineChildren = childSupervisor.childrenIndex.serialize();
+    const baselineChildren = childProcessSupervisor.childrenIndex.serialize();
     const baselineFeatures = getRuntimeFeatures();
 
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
@@ -42,7 +42,7 @@ describe("events subscribe SSE escaping", () => {
     try {
       configureRuntimeFeatures({ ...baselineFeatures, enableEventsBus: true, enableCancellation: true });
       graphState.resetFromSnapshot({ nodes: [], edges: [], directives: { graph: "events-subscribe-sse" } });
-      childSupervisor.childrenIndex.restore({});
+      childProcessSupervisor.childrenIndex.restore({});
       resetCancellationRegistry();
 
       const baselineResponse = await client.callTool({ name: "events_subscribe", arguments: { limit: 1 } });
@@ -109,9 +109,9 @@ describe("events subscribe SSE escaping", () => {
     } finally {
       resetCancellationRegistry();
       configureRuntimeFeatures(baselineFeatures);
-      childSupervisor.childrenIndex.restore(baselineChildren);
+      childProcessSupervisor.childrenIndex.restore(baselineChildren);
       graphState.resetFromSnapshot(baselineGraph);
-      await childSupervisor.disposeAll().catch(() => {});
+      await childProcessSupervisor.disposeAll().catch(() => {});
       await client.close();
       await server.close().catch(() => {});
     }

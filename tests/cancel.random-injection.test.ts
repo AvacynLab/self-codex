@@ -3,7 +3,6 @@ import { expect } from "chai";
 import sinon from "sinon";
 
 import { PlanRunReactiveInputSchema, handlePlanRunReactive, type PlanToolContext } from "../src/tools/planTools.js";
-import { StigmergyField } from "../src/coord/stigmergy.js";
 import {
   OperationCancelledError,
   getCancellation,
@@ -11,6 +10,7 @@ import {
   resetCancellationRegistry,
 } from "../src/executor/cancel.js";
 import type { BehaviorNodeDefinition } from "../src/executor/bt/types.js";
+import { createPlanToolContext } from "./helpers/planContext.js";
 
 interface RecordedEvent {
   readonly kind: string;
@@ -33,13 +33,6 @@ function buildReactivePlanContext(): {
   events: RecordedEvent[];
   waitForStart: () => Promise<StartEventInfo>;
 } {
-  const logger = {
-    info: sinon.spy(),
-    warn: sinon.spy(),
-    error: sinon.spy(),
-    debug: sinon.spy(),
-  } as unknown as PlanToolContext["logger"];
-
   const events: RecordedEvent[] = [];
   let startInfo: StartEventInfo | null = null;
   let resolveStart: ((info: StartEventInfo) => void) | null = null;
@@ -54,12 +47,7 @@ function buildReactivePlanContext(): {
     return startPromise;
   };
 
-  const context: PlanToolContext = {
-    supervisor: {} as PlanToolContext["supervisor"],
-    graphState: {} as PlanToolContext["graphState"],
-    logger,
-    childrenRoot: "/tmp",
-    defaultChildRuntime: "codex",
+  const context = createPlanToolContext({
     emitEvent: (event) => {
       const payload =
         event.payload && typeof event.payload === "object"
@@ -77,8 +65,7 @@ function buildReactivePlanContext(): {
         }
       }
     },
-    stigmergy: new StigmergyField(),
-  } satisfies PlanToolContext;
+  });
 
   return { context, events, waitForStart };
 }

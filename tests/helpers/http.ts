@@ -1,5 +1,6 @@
-import type { IncomingMessage } from "node:http";
-import { Readable } from "node:stream";
+import { IncomingMessage } from "node:http";
+import type { IncomingHttpHeaders } from "node:http";
+import { Socket } from "node:net";
 
 /**
  * Minimal HTTP response stub capturing headers and body in memory.
@@ -48,13 +49,7 @@ export function createJsonRpcRequest(
   headers: Record<string, string>,
 ): IncomingMessage {
   const payload = typeof body === "string" ? body : JSON.stringify(body);
-  const stream = Readable.from([payload]) as unknown as IncomingMessage;
-  stream.method = "POST";
-  stream.headers = Object.fromEntries(
-    Object.entries(headers).map(([key, value]) => [key.toLowerCase(), value]),
-  );
-  stream.url = "/mcp";
-  return stream;
+  return createIncomingMessageStream([payload], "POST", "/mcp", headers);
 }
 
 /**
@@ -67,11 +62,47 @@ export function createHttpRequest(
   path: string,
   headers: Record<string, string> = {},
 ): IncomingMessage {
-  const stream = Readable.from([]) as unknown as IncomingMessage;
-  stream.method = method.toUpperCase();
-  stream.headers = Object.fromEntries(
-    Object.entries(headers).map(([key, value]) => [key.toLowerCase(), value]),
-  );
-  stream.url = path;
-  return stream;
+  return createIncomingMessageStream([], method.toUpperCase(), path, headers);
+}
+
+/**
+ * Internal helper that instantiates a genuine {@link IncomingMessage} and
+ * injects the provided payload chunks.
+ */
+function createIncomingMessageStream(
+  chunks: Array<string | Uint8Array>,
+  method: string,
+  path: string,
+  headers: Record<string, string>,
+): IncomingMessage {
+  const socket = new Socket();
+  const message = new IncomingMessage(socket);
+
+  message.method = method;
+  message.url = path;
+  message.headers = normaliseHeaders(headers);
+
+  for (const chunk of chunks) {
+    if (typeof chunk === "string") {
+      message.push(chunk, "utf8");
+    } else {
+      message.push(chunk);
+    }
+  }
+
+  message.push(null);
+  socket.destroy();
+  return message;
+}
+
+/**
+ * Normalises header names to the lowercase representation expected by the Node
+ * HTTP stack so tests can assert against a deterministic shape.
+ */
+function normaliseHeaders(headers: Record<string, string>): IncomingHttpHeaders {
+  const normalised: IncomingHttpHeaders = {};
+  for (const [key, value] of Object.entries(headers)) {
+    normalised[key.toLowerCase()] = value;
+  }
+  return normalised;
 }

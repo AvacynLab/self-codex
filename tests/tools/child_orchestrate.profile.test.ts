@@ -11,7 +11,7 @@ import type {
   ServerRequest,
 } from "@modelcontextprotocol/sdk/shared/protocol.js";
 
-import { ChildSupervisor } from "../../src/childSupervisor.js";
+import { ChildSupervisor } from "../../src/children/supervisor.js";
 import { StructuredLogger } from "../../src/logger.js";
 import { BudgetTracker } from "../../src/infra/budget.js";
 import { runWithJsonRpcContext } from "../../src/infra/jsonRpcContext.js";

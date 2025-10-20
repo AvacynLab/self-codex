@@ -116,7 +116,12 @@ describe("artifact_search facade", () => {
 
     let captured: unknown;
     try {
-      await handler({ child_id: "child", mime_types: "invalid" } as unknown as Record<string, unknown>, createRequestExtras("req-invalid"));
+      const invalidPayload: Record<string, unknown> = {
+        // The MIME types filter must be an array; passing a string ensures schema validation paths are exercised.
+        child_id: "child",
+        mime_types: "invalid",
+      };
+      await handler(invalidPayload, createRequestExtras("req-invalid"));
     } catch (error) {
       captured = error;
     }
