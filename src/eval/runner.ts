@@ -78,7 +78,7 @@ export async function runScenario(
       });
       traceId = callResult.traceId ?? null;
     } catch (error) {
-      traceId = typeof (error as any)?.traceId === "string" ? (error as any).traceId : null;
+      traceId = extractTraceId(error);
       errorMessage = error instanceof Error ? error.message : String(error);
     }
 
@@ -215,8 +215,8 @@ function collectText(response: EvaluationClientCallResult["response"] | null): s
 
 /** Retrieves the number of items returned in a structured payload. */
 function extractItemsLength(structured: unknown): number {
-  if (structured && typeof structured === "object" && "items" in structured) {
-    const items = (structured as { items?: unknown }).items;
+  if (hasItemsCollection(structured)) {
+    const { items } = structured;
     if (Array.isArray(items)) {
       return items.length;
     }
@@ -226,13 +226,22 @@ function extractItemsLength(structured: unknown): number {
 
 /** Attempts to extract the total token usage from the response metadata. */
 function extractTokenUsage(response: EvaluationClientCallResult["response"] | null): number | null {
-  const cost = (response as any)?.metadata?.cost;
-  if (cost && typeof cost === "object") {
-    const total = (cost as any).totalTokens ?? (cost as any).tokensTotal ?? (cost as any).total;
-    if (typeof total === "number" && Number.isFinite(total)) {
-      return total;
+  if (!response || !isRecord(response.metadata)) {
+    return null;
+  }
+
+  const { cost } = response.metadata;
+  if (!isCostMetadata(cost)) {
+    return null;
+  }
+
+  const candidates: ReadonlyArray<unknown> = [cost.totalTokens, cost.tokensTotal, cost.total];
+  for (const candidate of candidates) {
+    if (typeof candidate === "number" && Number.isFinite(candidate)) {
+      return candidate;
     }
   }
+
   return null;
 }
 
@@ -284,5 +293,44 @@ async function evaluateOracles(params: {
     }
   }
   return results;
+}
+
+/**
+ * Safely retrieves a trace identifier from arbitrary thrown values. Some
+ * transport adapters attach the identifier to non-Error objects, hence the
+ * defensive type guards.
+ */
+function extractTraceId(candidate: unknown): string | null {
+  if (!hasTraceIdentifier(candidate)) {
+    return null;
+  }
+  return typeof candidate.traceId === "string" ? candidate.traceId : null;
+}
+
+/** Narrows values exposing an `items` collection to compute array sizes. */
+function hasItemsCollection(value: unknown): value is { readonly items?: unknown } {
+  return typeof value === "object" && value !== null && "items" in value;
+}
+
+/** Guards `Record<string, unknown>` structures coming from user-controlled metadata. */
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+/**
+ * Ensures the token cost metadata exposes recognised numeric fields before the
+ * runner attempts to interpret them.
+ */
+function isCostMetadata(value: unknown): value is {
+  readonly totalTokens?: unknown;
+  readonly tokensTotal?: unknown;
+  readonly total?: unknown;
+} {
+  return typeof value === "object" && value !== null;
+}
+
+/** Type predicate guarding thrown values exposing a `traceId` field. */
+function hasTraceIdentifier(value: unknown): value is { readonly traceId?: unknown } {
+  return typeof value === "object" && value !== null && "traceId" in value;
 }
 

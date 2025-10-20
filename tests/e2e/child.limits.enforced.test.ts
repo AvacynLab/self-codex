@@ -4,7 +4,7 @@ import { expect } from "chai";
 import { startHttpServer, type HttpServerHandle } from "../../src/httpServer.js";
 import { StructuredLogger } from "../../src/logger.js";
 import {
-  childSupervisor,
+  childProcessSupervisor,
   configureRuntimeFeatures,
   getEventBusInstance,
   getRuntimeFeatures,
@@ -64,7 +64,7 @@ describe("child_set_limits (http loopback)", () => {
   });
 
   afterEach(async () => {
-    await childSupervisor.disposeAll();
+    await childProcessSupervisor.disposeAll();
   });
 
   it("stores the new limits and emits an observability event", async () => {

@@ -21,7 +21,8 @@ export interface GraphOperation {
     | "tx_commit"
     | "tx_rollback"
     | "graph_batch_mutate"
-    | "tx_apply";
+    | "tx_apply"
+    | "graph_apply_change_set";
   /** Identifier of the graph impacted by the mutation. */
   graph_id: string;
   /** Additional metadata associated with the operation. */

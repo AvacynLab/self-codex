@@ -124,18 +124,23 @@ describe("coordination contract-net pheromone bounds", () => {
     coordinator.registerAgent("alpha", { baseCost: 10, reliability: 1 });
     coordinator.registerAgent("beta", { baseCost: 10, reliability: 0.95 });
 
-    // Pretend the beta agent is already working on another assignment so the
-    // busy penalty applies during the auction. Casting keeps the tests aligned
-    // with the coordinator internals while documenting the expected shape.
-    const internals = coordinator as unknown as { activeAssignments: Map<string, number> };
-    internals.activeAssignments.set("beta", 1);
-
     const heuristics = {
       preferAgents: ["beta"],
       agentBias: {},
       busyPenalty: 4,
       preferenceBonus: 3,
     };
+
+    // Seed a baseline assignment for beta through the public API so the busy
+    // penalty logic observes the agent as already working on another task.
+    const seeded = coordinator.announce({
+      taskId: "seed-load",
+      autoBid: false,
+      heuristics,
+      pheromoneBounds: { min_intensity: 0, max_intensity: 10, normalisation_ceiling: 1 },
+    });
+    coordinator.bid(seeded.callId, "beta", 9);
+    coordinator.award(seeded.callId, "beta");
 
     const lowLoad = coordinator.announce({
       taskId: "low-load",
@@ -158,13 +163,13 @@ describe("coordination contract-net pheromone bounds", () => {
     });
     const lowPressure = computePheromonePressure(lowSnapshot?.pheromoneBounds ?? null);
     expect(lowPressure).to.be.closeTo(1.1, 1e-6);
-    const lowBusyAfterAward = internals.activeAssignments.get("beta") ?? 0;
+    const lowBusyAfterAward = coordinator.getAgent("beta")?.activeAssignments ?? 0;
     expect(lowBusyAfterAward).to.be.greaterThan(0);
     expect(lowDecision.effectiveCost).to.be.closeTo(10 + 4 * lowBusyAfterAward * lowPressure - 3, 1e-6);
 
-    // Reset the busy counter for beta so the next auction starts with a single
-    // ongoing assignment once again.
-    internals.activeAssignments.set("beta", 1);
+    // Release the awarded call but keep the seeded assignment active so beta
+    // still appears busy before the next auction.
+    coordinator.complete(lowLoad.callId);
 
     const highLoad = coordinator.announce({
       taskId: "high-load",
@@ -176,8 +181,8 @@ describe("coordination contract-net pheromone bounds", () => {
     coordinator.bid(highLoad.callId, "alpha", 11.5);
     coordinator.bid(highLoad.callId, "beta", 10);
 
-    const betaBusyBeforeHigh = internals.activeAssignments.get("beta") ?? 0;
-    const alphaBusyBeforeHigh = internals.activeAssignments.get("alpha") ?? 0;
+    const betaBusyBeforeHigh = coordinator.getAgent("beta")?.activeAssignments ?? 0;
+    const alphaBusyBeforeHigh = coordinator.getAgent("alpha")?.activeAssignments ?? 0;
     const highDecision = coordinator.award(highLoad.callId);
     expect(highDecision.agentId).to.equal("alpha");
 

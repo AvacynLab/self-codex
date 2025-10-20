@@ -120,6 +120,32 @@ export interface ResourceChildLogEntry {
   parsed: unknown;
 }
 
+/** Materialised payload returned for run event resources. */
+export interface ResourceRunEventsPayload {
+  /** Identifier correlating the events to a specific orchestration run. */
+  runId: string;
+  /** Sequence-preserving snapshot of the recorded events. */
+  events: ResourceRunEvent[];
+  /** JSONL representation mirroring the events array for convenient export. */
+  jsonl: string;
+}
+
+/** Materialised payload returned for child log resources. */
+export interface ResourceChildLogsPayload {
+  /** Identifier of the child runtime associated with the log entries. */
+  childId: string;
+  /** Sequence-preserving snapshot of the recorded log entries. */
+  logs: ResourceChildLogEntry[];
+}
+
+/** Materialised payload returned for blackboard namespace resources. */
+export interface ResourceBlackboardNamespacePayload {
+  /** Namespace being inspected (mirrors the MCP URI suffix). */
+  namespace: string;
+  /** Snapshot of the entries currently associated with the namespace. */
+  entries: BlackboardEntrySnapshot[];
+}
+
 /** Snapshot describing a blackboard mutation event. */
 export interface ResourceBlackboardEvent {
   /** Monotonic sequence number derived from the blackboard version. */
@@ -143,18 +169,15 @@ export interface ResourceBlackboardEvent {
 }
 
 /** Result returned when reading a resource. */
-export interface ResourceReadResult extends Record<string, unknown> {
-  uri: string;
-  kind: ResourceKind;
-  payload:
-    | ResourceGraphPayload
-    | ResourceSnapshotPayload
-    | { runId: string; events: ResourceRunEvent[]; jsonl: string }
-    | { childId: string; logs: ResourceChildLogEntry[] }
-    | { namespace: string; entries: BlackboardEntrySnapshot[] }
-    | ValidationResourcePayload
-    | ResourceToolRouterPayload;
-}
+export type ResourceReadResult =
+  | { uri: string; kind: "graph"; payload: ResourceGraphPayload }
+  | { uri: string; kind: "graph_version"; payload: ResourceGraphPayload }
+  | { uri: string; kind: "snapshot"; payload: ResourceSnapshotPayload }
+  | { uri: string; kind: "run_events"; payload: ResourceRunEventsPayload }
+  | { uri: string; kind: "child_logs"; payload: ResourceChildLogsPayload }
+  | { uri: string; kind: "blackboard_namespace"; payload: ResourceBlackboardNamespacePayload }
+  | { uri: string; kind: "tool_router_decisions"; payload: ResourceToolRouterPayload }
+  | { uri: string; kind: ValidationResourceKind; payload: ValidationResourcePayload };
 
 /** Internal representation tracked for validation artefacts. */
 type ValidationResourceKind = "validation_input" | "validation_output" | "validation_events" | "validation_logs";

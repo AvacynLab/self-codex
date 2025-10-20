@@ -28,7 +28,7 @@ import {
   handleGraphGenerate,
   normaliseGraphPayload,
 } from "../src/tools/graphTools.js";
-import { ChildSupervisor } from "../src/childSupervisor.js";
+import { ChildSupervisor } from "../src/children/supervisor.js";
 import {
   ChildBatchCreateInputSchema,
   ChildToolContext,
@@ -38,7 +38,7 @@ import { GraphMutationLockedError } from "../src/graph/locks.js";
 import { GraphVersionConflictError } from "../src/graph/tx.js";
 import { ERROR_CODES } from "../src/types.js";
 import { resolveFixture, runnerArgs } from "./helpers/childRunner.js";
-import { ChildLimitExceededError } from "../src/childSupervisor.js";
+import { ChildLimitExceededError } from "../src/children/supervisor.js";
 import { BulkOperationError } from "../src/tools/bulkError.js";
 
 /**

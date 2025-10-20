@@ -8,7 +8,7 @@ import {
 } from "../src/agents/autoscaler.js";
 import { ChildrenIndex } from "../src/state/childrenIndex.js";
 import type { LoopTickContext } from "../src/executor/loop.js";
-import type { CreateChildOptions } from "../src/childSupervisor.js";
+import type { CreateChildOptions } from "../src/children/supervisor.js";
 
 /** Deterministic clock mirroring the `Date.now` contract. */
 class ManualClock {

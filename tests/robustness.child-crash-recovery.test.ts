@@ -4,7 +4,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { ChildSupervisor } from "../src/childSupervisor.js";
+import { ChildSupervisor } from "../src/children/supervisor.js";
 import { resolveFixture, runnerArgs } from "./helpers/childRunner.js";
 
 const crashyRunnerPath = resolveFixture(import.meta.url, "./fixtures/crashy-runner.ts");

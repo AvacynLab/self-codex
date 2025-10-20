@@ -6,7 +6,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import {
   server,
   graphState,
-  childSupervisor,
+  childProcessSupervisor,
   configureRuntimeFeatures,
   getRuntimeFeatures,
   logJournal,
@@ -27,7 +27,7 @@ describe("plan dry-run with knowledge assisted rewrite", function () {
 
   it("recovers from a rejected plan by applying the suggested rewrite", async () => {
     const baselineGraphSnapshot = graphState.serialize();
-    const baselineChildrenIndex = childSupervisor.childrenIndex.serialize();
+    const baselineChildrenIndex = childProcessSupervisor.childrenIndex.serialize();
     const baselineFeatures = getRuntimeFeatures();
     const baselineKnowledge = snapshotKnowledgeGraph();
     const baselineValueConfig = snapshotValueGraphConfiguration();
@@ -57,7 +57,7 @@ describe("plan dry-run with knowledge assisted rewrite", function () {
         enableAssist: true,
       });
       graphState.resetFromSnapshot({ nodes: [], edges: [], directives: { graph: "plan-dry-run-knowledge-e2e" } });
-      childSupervisor.childrenIndex.restore({});
+      childProcessSupervisor.childrenIndex.restore({});
       restoreKnowledgeGraph([]);
       restoreValueGraphConfiguration(null);
 
@@ -248,11 +248,11 @@ describe("plan dry-run with knowledge assisted rewrite", function () {
     } finally {
       await logJournal.flush().catch(() => {});
       configureRuntimeFeatures(baselineFeatures);
-      childSupervisor.childrenIndex.restore(baselineChildrenIndex);
+      childProcessSupervisor.childrenIndex.restore(baselineChildrenIndex);
       graphState.resetFromSnapshot(baselineGraphSnapshot);
       restoreKnowledgeGraph(baselineKnowledge);
       restoreValueGraphConfiguration(baselineValueConfig);
-      await childSupervisor.disposeAll().catch(() => {});
+      await childProcessSupervisor.disposeAll().catch(() => {});
       await client.close().catch(() => {});
       await server.close().catch(() => {});
     }

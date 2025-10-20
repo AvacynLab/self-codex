@@ -143,8 +143,13 @@ describe("tsconfig consistency", () => {
     );
     assert.deepEqual(
       graphForgeConfig.include,
-      ["src"],
-      "graph-forge must compile only its own source subtree",
+      ["src/**/*.ts"],
+      "graph-forge must compile only TypeScript sources from its vendored subtree",
+    );
+    assert.deepEqual(
+      [...(graphForgeConfig.exclude ?? [])].sort(),
+      ["dist", "examples", "test"],
+      "graph-forge must ignore build outputs, examples, and vendored tests during compilation",
     );
   });
 
@@ -172,10 +177,11 @@ describe("tsconfig consistency", () => {
       ".",
       "tsconfig.tests.json must set rootDir to the repo root for path resolution",
     );
+    const expectedIncludeGlobs = ["tests/**/*.ts", "tests/**/*.d.ts", "src/**/*.ts"];
     assert.deepEqual(
       testsConfig.include,
-      ["tests/**/*.ts", "src/**/*.ts"],
-      "tsconfig.tests.json must type-check both test suites and source files",
+      expectedIncludeGlobs,
+      "tsconfig.tests.json must type-check test sources, ambient declarations, and production sources",
     );
   });
 

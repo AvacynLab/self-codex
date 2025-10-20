@@ -6,9 +6,9 @@ import { z } from "zod";
 // NOTE: Node built-in modules are imported with the explicit `node:` prefix to guarantee ESM resolution in Node.js.
 
 import { EventStore, OrchestratorEvent, type EventKind, type EventLevel, type EventSource } from "../eventStore.js";
-import { GraphState, GraphStateMetrics } from "../graphState.js";
+import { GraphState, GraphStateMetrics } from "../graph/state.js";
 import type { ChildRuntimeLimits } from "../childRuntime.js";
-import { ChildSupervisor } from "../childSupervisor.js";
+import { ChildSupervisor } from "../children/supervisor.js";
 import { StructuredLogger } from "../logger.js";
 import { serialiseForSse } from "../events/sse.js";
 import { reportOpenSseStreams } from "../infra/tracing.js";

@@ -313,7 +313,7 @@ function cloneRecord(metadata?: Record<string, unknown>): Record<string, unknown
   if (!metadata || typeof metadata !== "object") {
     return undefined;
   }
-  const clone = cloneValue(metadata) as Record<string, unknown>;
+  const clone = cloneValue(metadata);
   return freezeDeep(clone);
 }
 
@@ -327,7 +327,8 @@ function normaliseError(error: unknown): { name: string; message: string } {
 
 // -- Internal helpers -----------------------------------------------------
 
-function cloneValue<T>(value: T): T {
+function cloneValue<T>(value: T): T;
+function cloneValue(value: unknown): unknown {
   const structuredCloneFn: (<K>(value: K) => K) | undefined =
     typeof globalThis.structuredClone === "function"
       ? (globalThis.structuredClone as <K>(val: K) => K)
@@ -347,22 +348,22 @@ function cloneValue<T>(value: T): T {
   }
 
   if (Array.isArray(value)) {
-    return value.map((entry) => cloneValue(entry)) as unknown as T;
+    return value.map((entry) => cloneValue(entry));
   }
 
   if (value instanceof Map) {
-    return new Map(Array.from(value.entries(), ([key, entry]) => [key, cloneValue(entry)])) as unknown as T;
+    return new Map(Array.from(value.entries(), ([key, entry]) => [key, cloneValue(entry)] as const));
   }
 
   if (value instanceof Set) {
-    return new Set(Array.from(value.values(), (entry) => cloneValue(entry))) as unknown as T;
+    return new Set(Array.from(value.values(), (entry) => cloneValue(entry)));
   }
 
   const clone: Record<string | symbol, unknown> = {};
   for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
     clone[key] = cloneValue(entry);
   }
-  return clone as T;
+  return clone;
 }
 
 function freezeDeep<T>(value: T): T {

@@ -1,23 +1,10 @@
 /// <reference path="./graph-forge.d.ts" />
 import { describe, it } from "mocha";
 import { expect } from "chai";
-import { loadGraphForge } from "../src/graph/forgeLoader.js";
+import { getGraphForge } from "./helpers/graphForge.js";
 
-const { GraphModel, kShortestPaths } = (await loadGraphForge()) as unknown as {
-  GraphModel: new (
-    name: string,
-    nodes: Array<{ id: string; attributes: Record<string, string | number | boolean> }>,
-    edges: Array<{ from: string; to: string; attributes: Record<string, string | number | boolean> }>,
-    directives: Map<string, string | number | boolean>,
-  ) => any;
-  kShortestPaths: (
-    graph: any,
-    start: string,
-    goal: string,
-    k: number,
-    options?: Record<string, unknown>,
-  ) => Array<{ path: string[]; distance: number }>;
-};
+// Destructure the typed exports so Yen's algorithm assertions can stay concise.
+const { GraphModel, kShortestPaths } = await getGraphForge();
 
 type RuntimeGraphModel = InstanceType<typeof GraphModel>;
 

@@ -5,12 +5,12 @@ import sinon from "sinon";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 
-import type { CreateChildOptions } from "../src/childSupervisor.js";
+import type { CreateChildOptions } from "../src/children/supervisor.js";
 import type { ChildShutdownResult } from "../src/childRuntime.js";
 import {
   server,
   graphState,
-  childSupervisor,
+  childProcessSupervisor,
   configureRuntimeFeatures,
   getRuntimeFeatures,
   logJournal,
@@ -28,12 +28,12 @@ describe("autoscaler and supervisor end-to-end", () => {
 
     const clock = sinon.useFakeTimers();
     const baselineGraphSnapshot = graphState.serialize();
-    const baselineChildrenIndex = childSupervisor.childrenIndex.serialize();
+    const baselineChildrenIndex = childProcessSupervisor.childrenIndex.serialize();
     const baselineFeatures = getRuntimeFeatures();
 
-    const originalCreateChild = childSupervisor.createChild.bind(childSupervisor);
-    const originalCancel = childSupervisor.cancel.bind(childSupervisor);
-    const originalKill = childSupervisor.kill?.bind(childSupervisor) ?? null;
+    const originalCreateChild = childProcessSupervisor.createChild.bind(childProcessSupervisor);
+    const originalCancel = childProcessSupervisor.cancel.bind(childProcessSupervisor);
+    const originalKill = childProcessSupervisor.kill?.bind(childProcessSupervisor) ?? null;
 
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     const client = new Client({ name: "autoscaler-supervisor-e2e", version: "1.0.0-test" });
@@ -51,8 +51,8 @@ describe("autoscaler and supervisor end-to-end", () => {
 
     // Replace the supervisor spawning helpers with lightweight stubs so the autoscaler can
     // manipulate lifecycle state deterministically while keeping the index in sync.
-    childSupervisor.createChild = (async function stubCreateChild(
-      this: typeof childSupervisor,
+    childProcessSupervisor.createChild = (async function stubCreateChild(
+      this: typeof childProcessSupervisor,
       options: CreateChildOptions = {},
     ) {
       const childId = options.childId ?? `stub-child-${createdChildren.length + 1}`;
@@ -81,10 +81,10 @@ describe("autoscaler and supervisor end-to-end", () => {
           getStatus: () => ({ startedAt }),
         },
       } as unknown as Awaited<ReturnType<typeof originalCreateChild>>;
-    }).bind(childSupervisor);
+    }).bind(childProcessSupervisor);
 
-    childSupervisor.cancel = (async function stubCancel(
-      this: typeof childSupervisor,
+    childProcessSupervisor.cancel = (async function stubCancel(
+      this: typeof childProcessSupervisor,
       childId: string,
     ) {
       if (!stubbedChildren.has(childId)) {
@@ -97,12 +97,12 @@ describe("autoscaler and supervisor end-to-end", () => {
       stubbedChildren.delete(childId);
       retiredChildren.push(childId);
       return stubbedShutdown;
-    }).bind(childSupervisor);
+    }).bind(childProcessSupervisor);
 
     if (originalKill) {
-      childSupervisor.kill = (async function stubKill(this: typeof childSupervisor, childId: string) {
+      childProcessSupervisor.kill = (async function stubKill(this: typeof childProcessSupervisor, childId: string) {
         return this.cancel(childId);
-      }).bind(childSupervisor);
+      }).bind(childProcessSupervisor);
     }
 
     const runId = "autoscaler-e2e-run";
@@ -129,7 +129,7 @@ describe("autoscaler and supervisor end-to-end", () => {
       });
       logJournal.reset();
       graphState.resetFromSnapshot({ nodes: [], edges: [], directives: { graph: "autoscaler-supervisor-e2e" } });
-      childSupervisor.childrenIndex.restore({});
+      childProcessSupervisor.childrenIndex.restore({});
 
       const baselineEvents = await client.callTool({ name: "events_subscribe", arguments: { limit: 1 } });
       expect(baselineEvents.isError ?? false).to.equal(false);
@@ -219,7 +219,7 @@ describe("autoscaler and supervisor end-to-end", () => {
       expect(spawnedChildId, "scale_up event should expose a child identifier").to.be.a("string");
 
       if (spawnedChildId) {
-        childSupervisor.childrenIndex.updateState(spawnedChildId, "idle");
+        childProcessSupervisor.childrenIndex.updateState(spawnedChildId, "idle");
       }
 
       const firstRunOutcome = await runPromise;
@@ -257,7 +257,7 @@ describe("autoscaler and supervisor end-to-end", () => {
         await clock.tickAsync(50);
         if (spawnedChildId) {
           try {
-            childSupervisor.childrenIndex.updateState(spawnedChildId, "idle");
+            childProcessSupervisor.childrenIndex.updateState(spawnedChildId, "idle");
           } catch (error) {
             void error;
           }
@@ -319,18 +319,18 @@ describe("autoscaler and supervisor end-to-end", () => {
       const snapshotContent = statusSnapshot.structuredContent as { state: string; failure: { status: string | null } | null };
       expect(snapshotContent.state).to.equal("done");
       expect(snapshotContent.failure?.status ?? null).to.equal(null);
-      expect(childSupervisor.childrenIndex.list()).to.deep.equal([]);
+      expect(childProcessSupervisor.childrenIndex.list()).to.deep.equal([]);
     } finally {
-      childSupervisor.createChild = originalCreateChild;
-      childSupervisor.cancel = originalCancel;
+      childProcessSupervisor.createChild = originalCreateChild;
+      childProcessSupervisor.cancel = originalCancel;
       if (originalKill) {
-        childSupervisor.kill = originalKill;
+        childProcessSupervisor.kill = originalKill;
       }
       await logJournal.flush().catch(() => {});
       configureRuntimeFeatures(baselineFeatures);
-      childSupervisor.childrenIndex.restore(baselineChildrenIndex);
+      childProcessSupervisor.childrenIndex.restore(baselineChildrenIndex);
       graphState.resetFromSnapshot(baselineGraphSnapshot);
-      await childSupervisor.disposeAll().catch(() => {});
+      await childProcessSupervisor.disposeAll().catch(() => {});
       await client.close().catch(() => {});
       await server.close().catch(() => {});
       clock.restore();

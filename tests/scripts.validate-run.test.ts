@@ -6,6 +6,26 @@ import { join, resolve } from "node:path";
 import { resources } from "../src/server.js";
 
 /**
+ * Type guard ensuring that the registry payload exposes an events collection.
+ * Validation artefacts marshal their data through loosely-typed records, so we
+ * probe the structure explicitly instead of falling back to `any`.
+ */
+function isEventLogPayload(value: unknown): value is { data?: { events?: unknown[] } } {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+  const candidate = value as { data?: unknown };
+  if (candidate.data === undefined || candidate.data === null) {
+    return false;
+  }
+  if (typeof candidate.data !== "object") {
+    return false;
+  }
+  const data = candidate.data as { events?: unknown };
+  return data.events === undefined || Array.isArray(data.events);
+}
+
+/**
  * The validation run script is still under construction.  These regression tests
  * verify the safety guarantees that already exist:
  *   • dry-run mode should not touch the filesystem and must expose the planned
@@ -27,7 +47,7 @@ describe("validate run script", () => {
     originalAllowNoAuth = process.env.MCP_HTTP_ALLOW_NOAUTH;
     process.env.MCP_HTTP_ALLOW_NOAUTH = "1";
     process.env.CODEX_NODE_VERSION_OVERRIDE = "20.10.0";
-    delete (globalThis as any).CODEX_VALIDATE_PLAN;
+    delete globalThis.CODEX_VALIDATE_PLAN;
     resources.clearValidationArtifacts();
   });
 
@@ -45,7 +65,7 @@ describe("validate run script", () => {
       process.env.MCP_HTTP_ALLOW_NOAUTH = originalAllowNoAuth;
     }
     delete process.env.CODEX_NODE_VERSION_OVERRIDE;
-    delete (globalThis as any).CODEX_VALIDATE_PLAN;
+    delete globalThis.CODEX_VALIDATE_PLAN;
     resources.clearValidationArtifacts();
   });
 
@@ -63,8 +83,11 @@ describe("validate run script", () => {
     expect(result.executed).to.equal(false);
     expect(result.dryRun).to.equal(true);
 
-    const plan = (globalThis as any).CODEX_VALIDATE_PLAN as Array<Record<string, unknown>>;
+    const plan = globalThis.CODEX_VALIDATE_PLAN;
     expect(plan, "plan should be recorded during dry-run").to.be.an("array").that.is.not.empty;
+    if (!plan) {
+      throw new Error("validation dry-run did not expose the plan");
+    }
     const ensureSession = plan.find((item) => item.type === "session");
     expect(ensureSession).to.include({ sessionName: "SESSION-A", dryRun: true });
     const ensures = plan.filter((item) => item.type === "ensure-dir");
@@ -265,7 +288,11 @@ describe("validate run script", () => {
       expect(eventResource).to.not.equal(undefined);
       const readEvents = resources.read(eventResource.uri);
       expect(readEvents.payload).to.have.property("artifactType", "events");
-      expect((readEvents.payload as any).data?.events?.length ?? 0).to.be.greaterThan(0);
+      expect(isEventLogPayload(readEvents.payload)).to.equal(true);
+      if (!isEventLogPayload(readEvents.payload)) {
+        throw new Error("validation events payload is missing the event collection");
+      }
+      expect(readEvents.payload.data?.events?.length ?? 0).to.be.greaterThan(0);
     } finally {
       await rm(tempRoot, { recursive: true, force: true });
     }
@@ -288,7 +315,11 @@ describe("validate run script", () => {
 
       expect(outcome.executed).to.equal(true);
 
-      const plan = (globalThis as any).CODEX_VALIDATE_PLAN as Array<Record<string, unknown>>;
+      const plan = globalThis.CODEX_VALIDATE_PLAN;
+      expect(plan, "server plan should be captured when background start is enabled").to.be.an("array").that.is.not.empty;
+      if (!plan) {
+        throw new Error("missing validation plan for background server scenario");
+      }
       const serverPlans = plan.filter((entry) => entry.type === "server-plan");
       expect(serverPlans.length).to.be.greaterThan(0);
 

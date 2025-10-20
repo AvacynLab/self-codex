@@ -87,24 +87,86 @@ describe("scenario runner", () => {
       "tokens 5 > budget 1",
     ]);
   });
+
+  it("captures trace identifiers when the client throws", async () => {
+    const scenario: EvaluationScenario = {
+      id: "trace-id",
+      objective: "propagate trace",
+      tags: [],
+      constraints: {},
+      steps: [{ id: "alpha", tool: "alpha", expect: { success: false } }],
+      oracles: [],
+    };
+    const client = new StubClient([
+      {
+        toolName: "alpha",
+        duration: 5,
+        error: { message: "transport failure", traceId: "trace-from-error" },
+      },
+    ]);
+
+    const summary = await runScenario(scenario, client, { workspaceRoot: resolve(".") });
+    expect(summary.steps[0]?.traceId).to.equal("trace-from-error");
+    expect(summary.steps[0]?.message).to.equal("transport failure");
+  });
+
+  it("reads token usage from alternate metadata fields", async () => {
+    const scenario: EvaluationScenario = {
+      id: "tokens",
+      objective: "aggregate tokens",
+      tags: [],
+      constraints: {},
+      steps: [{ id: "alpha", tool: "alpha", expect: { success: true } }],
+      oracles: [],
+    };
+    const client = new StubClient([
+      {
+        toolName: "alpha",
+        text: "done",
+        duration: 7,
+        tokens: 11,
+        tokenField: "tokensTotal",
+      },
+    ]);
+
+    const summary = await runScenario(scenario, client, { workspaceRoot: resolve(".") });
+    expect(summary.metrics.totalTokens).to.equal(11);
+    expect(summary.steps[0]?.tokensConsumed).to.equal(11);
+  });
 });
 
 class StubClient implements EvaluationClient {
   private index = 0;
 
-  constructor(private readonly results: Array<{
-    toolName: string;
-    text: string;
-    duration: number;
-    tokens?: number;
-    isError?: boolean;
-  }>) {}
+  constructor(
+    private readonly results: Array<{
+      toolName: string;
+      text?: string;
+      duration: number;
+      tokens?: number;
+      tokenField?: TokenField;
+      isError?: boolean;
+      error?: { message: string; traceId?: string };
+    }>,
+  ) {}
 
-  async callTool(toolName: string, _args: Record<string, unknown>, _options?: { phaseId?: string }): Promise<EvaluationClientCallResult> {
+  async callTool(
+    toolName: string,
+    _args: Record<string, unknown>,
+    _options?: { phaseId?: string },
+  ): Promise<EvaluationClientCallResult> {
     const result = this.results[this.index];
     this.index += 1;
     if (!result) {
       throw new Error(`Unexpected call: ${toolName}`);
+    }
+    if (result.error) {
+      throw new StubTraceError(result.error.message, result.error.traceId);
+    }
+    let metadata: Record<string, unknown> | undefined;
+    if (result.tokens !== undefined) {
+      const field: TokenField = result.tokenField ?? "totalTokens";
+      metadata = { cost: { [field]: result.tokens } };
     }
     return {
       toolName,
@@ -112,9 +174,22 @@ class StubClient implements EvaluationClient {
       durationMs: result.duration,
       response: {
         isError: result.isError ?? false,
-        content: [{ type: "text", text: result.text }],
-        metadata: result.tokens !== undefined ? { cost: { totalTokens: result.tokens } } : undefined,
+        content: [{ type: "text", text: result.text ?? "" }],
+        metadata,
       },
     };
   }
 }
+
+/**
+ * Lightweight error carrying a trace identifier so the tests can assert the
+ * runner preserves the diagnostic context exposed by transport layers.
+ */
+class StubTraceError extends Error {
+  constructor(message: string, readonly traceId?: string) {
+    super(message);
+    this.name = "StubTraceError";
+  }
+}
+
+type TokenField = "totalTokens" | "tokensTotal" | "total";

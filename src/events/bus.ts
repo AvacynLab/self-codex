@@ -189,10 +189,22 @@ function normaliseElapsed(value: number | null | undefined): number | null {
   return Math.round(value);
 }
 
-class EventStream implements AsyncIterable<EventEnvelope>, AsyncIterator<EventEnvelope> {
+class EventStream
+  implements AsyncIterable<EventEnvelope>, AsyncIterator<EventEnvelope, void, void>
+{
   private readonly buffer: EventEnvelope[] = [];
-  private resolve?: (result: IteratorResult<EventEnvelope>) => void;
+  private resolve?: (result: IteratorResult<EventEnvelope, void>) => void;
   private closed = false;
+
+  /**
+   * Precomputed iterator result returned whenever the stream completes. The
+   * object is immutable to guarantee that awaiting consumers observe a stable
+   * reference that cannot be mutated by publishers.
+   */
+  private static readonly DONE: IteratorReturnResult<void> = Object.freeze({
+    value: undefined,
+    done: true as const,
+  });
 
   constructor(
     private readonly emitter: EventEmitter,
@@ -206,25 +218,25 @@ class EventStream implements AsyncIterable<EventEnvelope>, AsyncIterator<EventEn
     this.emitter.on(BUS_EVENT, this.handleEvent);
   }
 
-  [Symbol.asyncIterator](): AsyncIterator<EventEnvelope> {
+  [Symbol.asyncIterator](): AsyncIterator<EventEnvelope, void> {
     return this;
   }
 
-  async next(): Promise<IteratorResult<EventEnvelope>> {
+  async next(): Promise<IteratorResult<EventEnvelope, void>> {
     if (this.buffer.length > 0) {
       return { value: this.buffer.shift()!, done: false };
     }
     if (this.closed) {
-      return { value: undefined as unknown as EventEnvelope, done: true };
+      return EventStream.DONE;
     }
     return new Promise((resolve) => {
       this.resolve = resolve;
     });
   }
 
-  async return(): Promise<IteratorResult<EventEnvelope>> {
+  async return(): Promise<IteratorResult<EventEnvelope, void>> {
     this.close();
-    return { value: undefined as unknown as EventEnvelope, done: true };
+    return EventStream.DONE;
   }
 
   close(): void {
@@ -234,7 +246,7 @@ class EventStream implements AsyncIterable<EventEnvelope>, AsyncIterator<EventEn
     this.closed = true;
     this.emitter.removeListener(BUS_EVENT, this.handleEvent);
     if (this.resolve) {
-      this.resolve({ value: undefined as unknown as EventEnvelope, done: true });
+      this.resolve(EventStream.DONE);
       this.resolve = undefined;
     }
     this.buffer.length = 0;

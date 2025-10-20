@@ -9,16 +9,17 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 import { evaluateToolDeprecation } from "../../src/mcp/deprecations.js";
 import { ToolRegistry, ToolDeprecatedError } from "../../src/mcp/registry.js";
-import type { StructuredLogger } from "../../src/logger.js";
+import { RecordingLogger } from "../helpers/recordingLogger.js";
 
+/**
+ * Creates a {@link RecordingLogger} instance instrumented with a spy on `warn`
+ * so the suite can assert the emitted structured messages without resorting to
+ * double casts. The helper returns both the logger and the spy to keep the
+ * assertions succinct across different enforcement windows.
+ */
 function createLoggerStub() {
-  const warnSpy = sinon.spy<(event: string, payload: unknown) => void>();
-  const logger = {
-    debug: () => undefined,
-    info: () => undefined,
-    warn: warnSpy,
-    error: () => undefined,
-  } as unknown as StructuredLogger;
+  const logger = new RecordingLogger();
+  const warnSpy = sinon.spy(logger, "warn");
   return { logger, warnSpy };
 }
 

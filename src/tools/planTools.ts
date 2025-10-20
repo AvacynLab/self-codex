@@ -6,7 +6,7 @@ import { z } from "zod";
 // NOTE: Node built-in modules are imported with the explicit `node:` prefix to guarantee ESM resolution in Node.js.
 
 import { ChildCollectedOutputs, ChildRuntimeMessage } from "../childRuntime.js";
-import { ChildSupervisor } from "../childSupervisor.js";
+import type { ChildSupervisor } from "../children/supervisor.js";
 import { compileHierGraphToBehaviorTree } from "../executor/bt/compiler.js";
 import { BehaviorTreeInterpreter, buildBehaviorTree } from "../executor/bt/interpreter.js";
 import { type BehaviorNodeDefinition, CompiledBehaviorTreeSchema, type BTStatus, type BehaviorTickResult, type CompiledBehaviorTree, type TickRuntime } from "../executor/bt/types.js";
@@ -48,7 +48,7 @@ import type {
   ValueViolation,
 } from "../values/valueGraph.js";
 import { IdempotencyRegistry, buildIdempotencyCacheKey } from "../infra/idempotency.js";
-import { GraphState } from "../graphState.js";
+import { GraphState } from "../graph/state.js";
 import { StructuredLogger } from "../logger.js";
 import { OrchestratorSupervisor } from "../agents/supervisor.js";
 import { Autoscaler } from "../agents/autoscaler.js";
@@ -88,7 +88,7 @@ import {
   OperationCancelledError,
 } from "../executor/cancel.js";
 import { BehaviorTreeCancellationError } from "../executor/bt/nodes.js";
-import { GraphDescriptorSchema, normaliseGraphDescriptor } from "./graphTools.js";
+import { GraphDescriptorSchema, normaliseDescriptor } from "./graphTools.js";
 import { ThoughtGraphCoordinator, type ThoughtBranchGuardSnapshot } from "../reasoning/thoughtCoordinator.js";
 
 /**
@@ -187,9 +187,19 @@ function deriveBlackboardImportance(event: BlackboardEvent): number {
  * supervisor to control child runtimes, the mutable {@link GraphState} and the
  * logger so that each action is auditable.
  */
+/**
+ * Minimal supervisor surface area required by plan tooling. The concrete
+ * {@link ChildSupervisor} exposes a much larger API, however tests only need
+ * these lifecycle operations which keeps fixtures lightweight.
+ */
+export type PlanChildSupervisor = Pick<
+  ChildSupervisor,
+  "createChild" | "send" | "collect" | "waitForMessage"
+>;
+
 export interface PlanToolContext {
   /** Supervisor coordinating the lifecycle of child Codex instances. */
-  supervisor: ChildSupervisor;
+  supervisor: PlanChildSupervisor;
   /** Central graph state used to expose jobs/children to other tools. */
   graphState: GraphState;
   /** Structured logger leveraged for traceability. */
@@ -3680,7 +3690,7 @@ function normalisePlanDryRunGraph(
   if (!parsed.success) {
     throw new Error("invalid graph payload supplied to plan dry-run");
   }
-  return normaliseGraphDescriptor(parsed.data);
+  return normaliseDescriptor(parsed.data);
 }
 
 /**

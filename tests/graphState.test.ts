@@ -1,7 +1,7 @@
 import { describe, it } from "mocha";
 import { expect } from "chai";
 
-import { GraphState } from "../src/graphState.js";
+import { GraphState } from "../src/graph/state.js";
 import { ChildRecordSnapshot } from "../src/state/childrenIndex.js";
 
 describe("GraphState", () => {

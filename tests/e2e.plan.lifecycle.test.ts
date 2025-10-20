@@ -8,7 +8,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import {
   server,
   graphState,
-  childSupervisor,
+  childProcessSupervisor,
   configureRuntimeFeatures,
   getRuntimeFeatures,
   logJournal,
@@ -26,7 +26,7 @@ describe("plan lifecycle end-to-end", () => {
 
     const clock = sinon.useFakeTimers();
     const baselineGraphSnapshot = graphState.serialize();
-    const baselineChildrenIndex = childSupervisor.childrenIndex.serialize();
+    const baselineChildrenIndex = childProcessSupervisor.childrenIndex.serialize();
     const baselineFeatures = getRuntimeFeatures();
 
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
@@ -71,7 +71,7 @@ describe("plan lifecycle end-to-end", () => {
         enableCancellation: true,
       });
       graphState.resetFromSnapshot({ nodes: [], edges: [], directives: { graph: "plan-lifecycle-e2e" } });
-      childSupervisor.childrenIndex.restore({});
+      childProcessSupervisor.childrenIndex.restore({});
 
       const baselineEvents = await client.callTool({ name: "events_subscribe", arguments: { limit: 1 } });
       expect(baselineEvents.isError ?? false).to.equal(false);
@@ -177,9 +177,9 @@ describe("plan lifecycle end-to-end", () => {
     } finally {
       await logJournal.flush().catch(() => {});
       configureRuntimeFeatures(baselineFeatures);
-      childSupervisor.childrenIndex.restore(baselineChildrenIndex);
+      childProcessSupervisor.childrenIndex.restore(baselineChildrenIndex);
       graphState.resetFromSnapshot(baselineGraphSnapshot);
-      await childSupervisor.disposeAll().catch(() => {});
+      await childProcessSupervisor.disposeAll().catch(() => {});
       await client.close().catch(() => {});
       await server.close().catch(() => {});
       clock.restore();

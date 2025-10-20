@@ -9,7 +9,7 @@ import {
   handlePlanRunReactive,
   type PlanToolContext,
 } from "../src/tools/planTools.js";
-import { StigmergyField } from "../src/coord/stigmergy.js";
+import { createPlanToolContext } from "./helpers/planContext.js";
 import type { EventCorrelationHints } from "../src/events/correlation.js";
 
 interface RecordedEvent {
@@ -32,19 +32,8 @@ describe("plan behaviour tree events", () => {
   });
 
   function buildContext(): { context: PlanToolContext; events: RecordedEvent[] } {
-    const logger = {
-      info: sinon.spy(),
-      warn: sinon.spy(),
-      error: sinon.spy(),
-      debug: sinon.spy(),
-    } as unknown as PlanToolContext["logger"];
     const events: RecordedEvent[] = [];
-    const context: PlanToolContext = {
-      supervisor: {} as PlanToolContext["supervisor"],
-      graphState: {} as PlanToolContext["graphState"],
-      logger,
-      childrenRoot: "/tmp",
-      defaultChildRuntime: "codex",
+    const context = createPlanToolContext({
       emitEvent: (event) => {
         events.push({
           kind: event.kind,
@@ -54,8 +43,7 @@ describe("plan behaviour tree events", () => {
           correlation: event.correlation ?? null,
         });
       },
-      stigmergy: new StigmergyField(),
-    };
+    });
     return { context, events };
   }
 

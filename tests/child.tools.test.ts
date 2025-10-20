@@ -4,7 +4,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { ChildSupervisor } from "../src/childSupervisor.js";
+import { ChildSupervisor } from "../src/children/supervisor.js";
 import {
   ChildCancelInputSchema,
   ChildCollectInputSchema,

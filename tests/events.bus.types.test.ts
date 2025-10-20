@@ -5,6 +5,15 @@ import { EventBus } from "../src/events/bus.js";
 import { EVENT_MESSAGES, type EventMessage } from "../src/events/types.js";
 
 /**
+ * Coerces a raw string into an {@link EventMessage}. The helper is only used
+ * inside tests to emulate untyped JavaScript callers that bypass the catalogued
+ * union at compile time while still exercising the runtime guard.
+ */
+function coerceToEventMessage(value: string): EventMessage {
+  return value as EventMessage;
+}
+
+/**
  * Verifies that the event bus enforces the curated {@link EventMessage} catalog both at compile time
  * and at runtime. The suite exercises the happy path with every known token and ensures that
  * unrecognised identifiers are rejected defensively so dashboards do not observe fragmented feeds.
@@ -22,7 +31,7 @@ describe("event bus message typing", () => {
     expect(() =>
       bus.publish({
         cat: "graph",
-        msg: "unknown_event" as unknown as EventMessage,
+        msg: coerceToEventMessage("unknown_event"),
       }),
     ).to.throw(TypeError, /unknown event message/i);
   });

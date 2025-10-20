@@ -23,6 +23,7 @@ import {
   setMcpRuntimeSnapshot,
   updateMcpRuntimeSnapshot,
 } from "../src/mcp/info.js";
+import { getRegisteredToolMap } from "../src/mcp/registry.js";
 import type {
   ChildSafetyOptions,
   FeatureToggles,
@@ -31,13 +32,11 @@ import type {
 
 type McpToolResponse = { content?: Array<{ text: string }>; isError?: boolean };
 
-type RegisteredToolMap = Record<string, { callback: (args: unknown) => Promise<McpToolResponse> | McpToolResponse }>;
-
 /**
  * Retrieves the internal tool callback so the test suite can trigger handlers without wiring a client transport.
  */
 function getRegisteredToolCallback(name: string) {
-  const registry = (server as unknown as { _registeredTools?: RegisteredToolMap })._registeredTools;
+  const registry = getRegisteredToolMap(server);
   expect(registry, "registered tools map").to.be.an("object");
   const tool = registry?.[name];
   expect(tool, `tool ${name} should be registered`).to.exist;

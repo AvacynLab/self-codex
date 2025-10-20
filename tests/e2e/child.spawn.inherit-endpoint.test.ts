@@ -4,7 +4,7 @@ import { expect } from "chai";
 import { startHttpServer, type HttpServerHandle } from "../../src/httpServer.js";
 import { StructuredLogger } from "../../src/logger.js";
 import {
-  childSupervisor,
+  childProcessSupervisor,
   configureRuntimeFeatures,
   getRuntimeFeatures,
   routeJsonRpcRequest,
@@ -66,7 +66,7 @@ describe("child_spawn_codex (nested http loopback)", () => {
   });
 
   afterEach(async () => {
-    await childSupervisor.disposeAll();
+    await childProcessSupervisor.disposeAll();
   });
 
   it("reuses the parent endpoint and token when spawning nested children", async () => {

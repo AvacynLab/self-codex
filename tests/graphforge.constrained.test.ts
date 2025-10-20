@@ -1,31 +1,11 @@
 /// <reference path="./graph-forge.d.ts" />
 import { describe, it } from "mocha";
 import { expect } from "chai";
-import { loadGraphForge } from "../src/graph/forgeLoader.js";
+import { getGraphForge } from "./helpers/graphForge.js";
 
-const { GraphModel, constrainedShortestPath } = (await loadGraphForge()) as unknown as {
-  GraphModel: new (
-    name: string,
-    nodes: Array<{ id: string; attributes: Record<string, string | number | boolean> }>,
-    edges: Array<{ from: string; to: string; attributes: Record<string, string | number | boolean> }>,
-    directives: Map<string, string | number | boolean>,
-  ) => any;
-  constrainedShortestPath: (
-    graph: any,
-    start: string,
-    goal: string,
-    options?: Record<string, unknown>,
-  ) => {
-    status: string;
-    distance: number;
-    path: string[];
-    visitedOrder: string[];
-    filteredNodes: string[];
-    filteredEdges: Array<{ from: string; to: string }>;
-    violations: string[];
-    notes: string[];
-  };
-};
+// The helper delivers the strongly typed runtime so constrained path tests stay
+// focused on behaviour rather than wiring up manual type assertions.
+const { GraphModel, constrainedShortestPath } = await getGraphForge();
 
 type RuntimeGraphModel = InstanceType<typeof GraphModel>;
 

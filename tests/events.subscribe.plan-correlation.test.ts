@@ -10,7 +10,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import {
   server,
   graphState,
-  childSupervisor,
+  childProcessSupervisor,
   configureRuntimeFeatures,
   getRuntimeFeatures,
 } from "../src/server.js";
@@ -34,7 +34,7 @@ describe("events subscribe plan correlation", () => {
     this.timeout(10000);
 
     const baselineGraphSnapshot = graphState.serialize();
-    const baselineChildrenIndex = childSupervisor.childrenIndex.serialize();
+    const baselineChildrenIndex = childProcessSupervisor.childrenIndex.serialize();
     const baselineFeatures = getRuntimeFeatures();
 
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
@@ -47,7 +47,7 @@ describe("events subscribe plan correlation", () => {
     try {
       configureRuntimeFeatures({ ...baselineFeatures, enableEventsBus: true });
       graphState.resetFromSnapshot({ nodes: [], edges: [], directives: { graph: "plan-events" } });
-      childSupervisor.childrenIndex.restore({});
+      childProcessSupervisor.childrenIndex.restore({});
 
       const baselineResponse = await client.callTool({ name: "events_subscribe", arguments: { limit: 1 } });
       expect(baselineResponse.isError ?? false).to.equal(false);
@@ -152,9 +152,9 @@ describe("events subscribe plan correlation", () => {
       expect(reactiveStart?.node_id).to.equal(reactiveResult.node_id);
     } finally {
       configureRuntimeFeatures(baselineFeatures);
-      childSupervisor.childrenIndex.restore(baselineChildrenIndex);
+      childProcessSupervisor.childrenIndex.restore(baselineChildrenIndex);
       graphState.resetFromSnapshot(baselineGraphSnapshot);
-      await childSupervisor.disposeAll().catch(() => {});
+      await childProcessSupervisor.disposeAll().catch(() => {});
       await client.close();
       await server.close().catch(() => {});
     }
@@ -164,7 +164,7 @@ describe("events subscribe plan correlation", () => {
     this.timeout(15000);
 
     const baselineGraphSnapshot = graphState.serialize();
-    const baselineChildrenIndex = childSupervisor.childrenIndex.serialize();
+    const baselineChildrenIndex = childProcessSupervisor.childrenIndex.serialize();
     const baselineFeatures = getRuntimeFeatures();
 
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
@@ -187,7 +187,7 @@ describe("events subscribe plan correlation", () => {
         enableSupervisor: true,
       });
       graphState.resetFromSnapshot({ nodes: [], edges: [], directives: { graph: "plan-loop-telemetry" } });
-      childSupervisor.childrenIndex.restore({});
+      childProcessSupervisor.childrenIndex.restore({});
 
       const baselineResponse = await client.callTool({ name: "events_subscribe", arguments: { limit: 1 } });
       expect(baselineResponse.isError ?? false).to.equal(false);
@@ -289,9 +289,9 @@ describe("events subscribe plan correlation", () => {
       expect(Array.isArray(ssePayload.reconcilers), "SSE payload should expose reconcilers").to.equal(true);
     } finally {
       configureRuntimeFeatures(baselineFeatures);
-      childSupervisor.childrenIndex.restore(baselineChildrenIndex);
+      childProcessSupervisor.childrenIndex.restore(baselineChildrenIndex);
       graphState.resetFromSnapshot(baselineGraphSnapshot);
-      await childSupervisor.disposeAll().catch(() => {});
+      await childProcessSupervisor.disposeAll().catch(() => {});
       await client.close();
       await server.close().catch(() => {});
     }
@@ -302,7 +302,7 @@ describe("events subscribe plan correlation", () => {
 
     const clock = sinon.useFakeTimers();
     const baselineGraphSnapshot = graphState.serialize();
-    const baselineChildrenIndex = childSupervisor.childrenIndex.serialize();
+    const baselineChildrenIndex = childProcessSupervisor.childrenIndex.serialize();
     const baselineFeatures = getRuntimeFeatures();
 
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
@@ -324,7 +324,7 @@ describe("events subscribe plan correlation", () => {
         enableStigmergy: true,
       });
       graphState.resetFromSnapshot({ nodes: [], edges: [], directives: { graph: "plan-resume" } });
-      childSupervisor.childrenIndex.restore({});
+      childProcessSupervisor.childrenIndex.restore({});
 
       const baselineResponse = await client.callTool({ name: "events_subscribe", arguments: { limit: 1 } });
       expect(baselineResponse.isError ?? false).to.equal(false);
@@ -443,9 +443,9 @@ describe("events subscribe plan correlation", () => {
         await runPromise.catch(() => {});
       }
       configureRuntimeFeatures(baselineFeatures);
-      childSupervisor.childrenIndex.restore(baselineChildrenIndex);
+      childProcessSupervisor.childrenIndex.restore(baselineChildrenIndex);
       graphState.resetFromSnapshot(baselineGraphSnapshot);
-      await childSupervisor.disposeAll().catch(() => {});
+      await childProcessSupervisor.disposeAll().catch(() => {});
       await client.close();
       await server.close().catch(() => {});
       clock.restore();
@@ -456,7 +456,7 @@ describe("events subscribe plan correlation", () => {
     this.timeout(20000);
 
     const baselineGraphSnapshot = graphState.serialize();
-    const baselineChildrenIndex = childSupervisor.childrenIndex.serialize();
+    const baselineChildrenIndex = childProcessSupervisor.childrenIndex.serialize();
     const baselineFeatures = getRuntimeFeatures();
 
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
@@ -471,7 +471,7 @@ describe("events subscribe plan correlation", () => {
     try {
       configureRuntimeFeatures({ ...baselineFeatures, enableEventsBus: true });
       graphState.resetFromSnapshot({ nodes: [], edges: [], directives: { graph: "plan-fanout" } });
-      childSupervisor.childrenIndex.restore({});
+      childProcessSupervisor.childrenIndex.restore({});
 
       const baselineResponse = await client.callTool({ name: "events_subscribe", arguments: { limit: 1 } });
       expect(baselineResponse.isError ?? false).to.equal(false);
@@ -570,9 +570,9 @@ describe("events subscribe plan correlation", () => {
       await rm(resolveWithin(childrenRoot, "plan-fanout-run"), { recursive: true, force: true }).catch(() => {});
 
       configureRuntimeFeatures(baselineFeatures);
-      childSupervisor.childrenIndex.restore(baselineChildrenIndex);
+      childProcessSupervisor.childrenIndex.restore(baselineChildrenIndex);
       graphState.resetFromSnapshot(baselineGraphSnapshot);
-      await childSupervisor.disposeAll().catch(() => {});
+      await childProcessSupervisor.disposeAll().catch(() => {});
       await client.close();
       await server.close().catch(() => {});
     }

@@ -4,7 +4,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { ChildSupervisor, type ChildLogEventSnapshot } from "../src/childSupervisor.js";
+import { ChildSupervisor, type ChildLogEventSnapshot } from "../src/children/supervisor.js";
 import { EventBus } from "../src/events/bus.js";
 import { writeArtifact } from "../src/artifacts.js";
 import type { FileSystemGateway } from "../src/gateways/fs.js";

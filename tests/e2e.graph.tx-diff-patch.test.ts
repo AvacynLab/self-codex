@@ -6,7 +6,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import {
   server,
   graphState,
-  childSupervisor,
+  childProcessSupervisor,
   configureRuntimeFeatures,
   getRuntimeFeatures,
   logJournal,
@@ -24,7 +24,7 @@ describe("graph transactions with diff/patch integration", function () {
 
   it("commits staged operations and exposes the version via resources", async () => {
     const baselineGraphSnapshot = graphState.serialize();
-    const baselineChildrenIndex = childSupervisor.childrenIndex.serialize();
+    const baselineChildrenIndex = childProcessSupervisor.childrenIndex.serialize();
     const baselineFeatures = getRuntimeFeatures();
 
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
@@ -58,7 +58,7 @@ describe("graph transactions with diff/patch integration", function () {
         enableLocks: true,
       });
       graphState.resetFromSnapshot({ nodes: [], edges: [], directives: { graph: graphId } });
-      childSupervisor.childrenIndex.restore({});
+      childProcessSupervisor.childrenIndex.restore({});
 
       const beginResponse = await client.callTool({
         name: "tx_begin",
@@ -212,9 +212,9 @@ describe("graph transactions with diff/patch integration", function () {
     } finally {
       await logJournal.flush().catch(() => {});
       configureRuntimeFeatures(baselineFeatures);
-      childSupervisor.childrenIndex.restore(baselineChildrenIndex);
+      childProcessSupervisor.childrenIndex.restore(baselineChildrenIndex);
       graphState.resetFromSnapshot(baselineGraphSnapshot);
-      await childSupervisor.disposeAll().catch(() => {});
+      await childProcessSupervisor.disposeAll().catch(() => {});
       await client.close().catch(() => {});
       await server.close().catch(() => {});
     }

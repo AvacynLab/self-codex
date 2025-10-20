@@ -53,11 +53,19 @@ export function parseRedactionDirectives(raw: string | undefined): {
   enabled: boolean;
   tokens: Array<string>;
 } {
-  if (!raw) {
+  // Redaction is enabled by default so deployments redact secrets out of the
+  // box. Operators can still opt out explicitly (for instance during local
+  // debugging sessions) by providing a disabling directive or an empty value.
+  if (raw === undefined) {
+    return { enabled: true, tokens: [] };
+  }
+
+  const trimmed = raw.trim();
+  if (trimmed.length === 0) {
     return { enabled: false, tokens: [] };
   }
 
-  const directives = raw
+  const directives = trimmed
     .split(",")
     .map((value) => value.trim())
     .filter((value) => value.length > 0);
@@ -83,7 +91,7 @@ export function parseRedactionDirectives(raw: string | undefined): {
   }
 
   if (enabled === undefined) {
-    enabled = tokens.length > 0;
+    enabled = true;
   }
 
   // Deduplicate tokens while preserving insertion order. Operators occasionally

@@ -1,5 +1,5 @@
 import { StructuredLogger } from "../logger.js";
-import type { CreateChildOptions } from "../childSupervisor.js";
+import type { CreateChildOptions } from "../children/supervisor.js";
 import type { ChildRecordSnapshot } from "../state/childrenIndex.js";
 import type { LoopReconciler, LoopTickContext } from "../executor/loop.js";
 import {

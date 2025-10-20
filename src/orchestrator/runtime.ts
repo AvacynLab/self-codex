@@ -16,7 +16,7 @@ import {
   readOptionalString,
   readString,
 } from "../config/env.js";
-import { GraphState, type ChildSnapshot, type JobSnapshot } from "../graphState.js";
+import { GraphState, type ChildSnapshot, type JobSnapshot } from "../graph/state.js";
 import { GraphTransactionManager, GraphTransactionError, GraphVersionConflictError } from "../graph/tx.js";
 import { GraphLockManager } from "../graph/locks.js";
 import { loadGraphForge } from "../graph/forgeLoader.js";
@@ -31,9 +31,7 @@ import { aggregateCitationsFromEvents } from "../provenance/citations.js";
 import type { Provenance } from "../types/provenance.js";
 import {
 // NOTE: Node built-in modules are imported with the explicit `node:` prefix to guarantee ESM resolution in Node.js.
-  EventBus,
-  EVENT_CATEGORIES,
-  type EventCategory,
+  type EventBus,
   type EventFilter,
   type EventLevel as BusEventLevel,
 } from "../events/bus.js";
@@ -45,17 +43,7 @@ import {
   type EventCorrelationHints,
 } from "../events/correlation.js";
 import { buildChildCognitiveEvents, type QualityAssessmentSnapshot } from "../events/cognitive.js";
-import {
-  bridgeBlackboardEvents,
-  bridgeCancellationEvents,
-  bridgeConsensusEvents,
-  bridgeContractNetEvents,
-  bridgeValueEvents,
-  bridgeStigmergyEvents,
-  createContractNetWatcherTelemetryListener,
-} from "../events/bridges.js";
 import { serialiseForSse } from "../events/sse.js";
-import { assertValidEventMessage, type EventMessage } from "../events/types.js";
 import { LogJournal, type LogStream } from "../monitor/log.js";
 import { BehaviorTreeStatusRegistry } from "../monitor/btStatusRegistry.js";
 import { MessageRecord, Role } from "../types.js";
@@ -64,7 +52,7 @@ import {
   RuntimeTimingOptions,
   ChildSafetyOptions,
 } from "../serverOptions.js";
-import { ChildSupervisor, type ChildLogEventSnapshot } from "../childSupervisor.js";
+import { ChildSupervisor, type ChildLogEventSnapshot } from "../children/supervisor.js";
 import { normaliseSandboxProfile } from "../children/sandbox.js";
 import { ChildRecordSnapshot } from "../state/childrenIndex.js";
 import { ChildCollectedOutputs, ChildRuntimeStatus } from "../childRuntime.js";
@@ -98,7 +86,7 @@ import { selectMemoryContext } from "../memory/attention.js";
 import { LoopDetector } from "../guard/loopDetector.js";
 import { BlackboardStore } from "../coord/blackboard.js";
 import { ContractNetCoordinator } from "../coord/contractNet.js";
-import { ContractNetWatcherTelemetryRecorder, watchContractNetPheromoneBounds } from "../coord/contractNetWatchers.js";
+import { ContractNetWatcherTelemetryRecorder } from "../coord/contractNetWatchers.js";
 import { StigmergyField } from "../coord/stigmergy.js";
 import type { KnowledgeTripleSnapshot } from "../knowledge/knowledgeGraph.js";
 import { CausalMemory } from "../knowledge/causalMemory.js";
@@ -118,6 +106,27 @@ import {
   registerRpcSuccess,
   deriveMetricMethodLabel,
 } from "../infra/tracing.js";
+import {
+  deriveEventCategory,
+  deriveEventMessage,
+  extractChildId,
+  extractComponentTag,
+  extractElapsedMilliseconds,
+  extractGraphId,
+  extractJobId,
+  extractNodeId,
+  extractOpId,
+  extractRunId,
+  extractStageTag,
+  extractStringProperty,
+  normaliseTag,
+  parseEventCategories,
+  resolveChildLogLevel,
+  resolveEventComponent,
+  resolveEventElapsedMs,
+  resolveEventStage,
+} from "./logging.js";
+import { createOrchestratorEventBus } from "./eventBus.js";
 import {
   BudgetTracker,
   BudgetLimits,
@@ -154,8 +163,6 @@ import {
   ChildStreamInputSchema,
   ChildStatusInputShape,
   ChildStatusInputSchema,
-  ChildBudgetManager,
-  ChildToolContext,
   ChildSpawnCodexInputShape,
   ChildSpawnCodexInputSchema,
   ChildBatchCreateInputShape,
@@ -166,20 +173,25 @@ import {
   ChildSetRoleInputSchema,
   ChildSetLimitsInputShape,
   ChildSetLimitsInputSchema,
+} from "../tools/childTools.js";
+import {
+  ChildBudgetManager,
+  ChildToolContext,
+  type ChildSendRequest,
+  handleChildAttach,
+  handleChildBatchCreate,
   handleChildCancel,
   handleChildCollect,
   handleChildCreate,
-  handleChildSpawnCodex,
-  handleChildBatchCreate,
-  handleChildAttach,
-  handleChildSetRole,
-  handleChildSetLimits,
   handleChildGc,
   handleChildKill,
   handleChildSend,
-  handleChildStream,
+  handleChildSetLimits,
+  handleChildSetRole,
+  handleChildSpawnCodex,
   handleChildStatus,
-} from "../tools/childTools.js";
+  handleChildStream,
+} from "../children/api.js";
 import { registerIntentRouteTool } from "../tools/intent_route.js";
 import { registerArtifactWriteTool } from "../tools/artifact_write.js";
 import { registerArtifactReadTool } from "../tools/artifact_read.js";
@@ -793,7 +805,7 @@ export function getChildSafetyLimits(): ChildSafetyOptions {
 /** Applies new safety guardrails and updates the child supervisor accordingly. */
 export function configureChildSafetyLimits(next: ChildSafetyOptions): void {
   runtimeChildSafety = { ...next };
-  childSupervisor.configureSafety({
+  childProcessSupervisor.configureSafety({
     maxChildren: runtimeChildSafety.maxChildren,
     memoryLimitMb: runtimeChildSafety.memoryLimitMb,
     cpuPercent: runtimeChildSafety.cpuPercent,
@@ -974,36 +986,20 @@ function collectFinalReplyCitations(jobId: string | null | undefined): Provenanc
   const recentEvents = eventStore.list({ jobId, reverse: true, limit: FINAL_REPLY_EVENT_WINDOW });
   return aggregateCitationsFromEvents(recentEvents, { limit: FINAL_REPLY_CITATION_LIMIT });
 }
-const eventBus = new EventBus({ historyLimit: 5000 });
-
-const contractNetWatcherTelemetryListener = createContractNetWatcherTelemetryListener({
-  bus: eventBus,
-  recorder: contractNetWatcherTelemetry,
-});
-
-const detachContractNetBoundsWatcher = watchContractNetPheromoneBounds({
-  field: stigmergy,
-  contractNet,
+const { bus: eventBus, dispose: disposeEventBus } = createOrchestratorEventBus({
   logger,
-  onTelemetry: contractNetWatcherTelemetryListener,
+  blackboard,
+  stigmergy,
+  contractNet,
+  valueGraph,
+  contractNetWatcherTelemetry,
 });
-process.once("exit", () => detachContractNetBoundsWatcher());
+process.once("exit", () => disposeEventBus());
 process.once("exit", () => {
   if (graphWorkerPool) {
     void graphWorkerPool.destroy();
   }
 });
-
-// Bridge coordination primitives to the unified event bus so downstream MCP
-// clients can observe blackboard and stigmergic activity without bespoke
-// wiring. The returned disposers are intentionally ignored because the server
-// keeps these observers for its entire lifetime.
-void bridgeBlackboardEvents({ blackboard, bus: eventBus });
-void bridgeStigmergyEvents({ field: stigmergy, bus: eventBus });
-void bridgeCancellationEvents({ bus: eventBus });
-void bridgeContractNetEvents({ coordinator: contractNet, bus: eventBus });
-void bridgeConsensusEvents({ bus: eventBus });
-void bridgeValueEvents({ graph: valueGraph, bus: eventBus });
 
 if (activeLoggerOptions.logFile) {
   logger.info("logger_configured", {
@@ -1216,7 +1212,13 @@ if (sandboxDefaultProfile) {
   logger.info("child_sandbox_profile_configured", { profile: sandboxDefaultProfile });
 }
 
-const childSupervisor = new ChildSupervisor({
+/**
+ * Singleton supervisor responsible for coordinating every child process managed
+ * by the orchestrator. The identifier deliberately mirrors the process scope to
+ * avoid confusion with the {@link ChildSupervisor} class exported from the
+ * children module.
+ */
+const childProcessSupervisor = new ChildSupervisor({
   childrenRoot: CHILDREN_ROOT,
   defaultCommand: defaultChildCommand,
   defaultArgs: defaultChildArgs,
@@ -1277,7 +1279,7 @@ const childSupervisor = new ChildSupervisor({
 });
 
 const autoscaler = new Autoscaler({
-  supervisor: childSupervisor,
+  supervisor: childProcessSupervisor,
   logger,
   emitEvent: (event) => {
     pushEvent({
@@ -1291,7 +1293,7 @@ const autoscaler = new Autoscaler({
 });
 
 const orchestratorSupervisor = new OrchestratorSupervisor({
-  childManager: childSupervisor,
+  childManager: childProcessSupervisor,
   logger,
   actions: {
     emitAlert: async (incident) => {
@@ -1793,7 +1795,7 @@ function computeQualityAssessment(
 
 function getChildToolContext(): ChildToolContext {
   return {
-    supervisor: childSupervisor,
+    supervisor: childProcessSupervisor,
     logger,
     loopDetector,
     contractNet,
@@ -1805,7 +1807,7 @@ function getChildToolContext(): ChildToolContext {
 
 function getPlanToolContext(): PlanToolContext {
   return {
-    supervisor: childSupervisor,
+    supervisor: childProcessSupervisor,
     graphState,
     logger,
     childrenRoot: CHILDREN_ROOT,
@@ -2315,212 +2317,6 @@ function formatWorkspacePathError(error: PathResolutionError) {
       },
     ],
   };
-}
-
-function extractStringProperty(payload: unknown, key: string): string | null {
-  if (!payload || typeof payload !== "object") {
-    return null;
-  }
-  const candidate = payload as Record<string, unknown>;
-  const raw = candidate[key];
-  if (typeof raw !== "string") {
-    return null;
-  }
-  const trimmed = raw.trim();
-  return trimmed.length > 0 ? trimmed : null;
-}
-
-function extractRunId(payload: unknown): string | null {
-  return extractStringProperty(payload, "run_id");
-}
-
-function extractOpId(payload: unknown): string | null {
-  return extractStringProperty(payload, "op_id") ?? extractStringProperty(payload, "operation_id");
-}
-
-function extractGraphId(payload: unknown): string | null {
-  return extractStringProperty(payload, "graph_id") ?? null;
-}
-
-function extractNodeId(payload: unknown): string | null {
-  return extractStringProperty(payload, "node_id") ?? null;
-}
-
-function extractChildId(payload: unknown): string | null {
-  return extractStringProperty(payload, "child_id") ?? null;
-}
-
-function extractJobId(payload: unknown): string | null {
-  return extractStringProperty(payload, "job_id") ?? null;
-}
-
-function extractStringCandidate(payload: unknown, keys: readonly string[]): string | null {
-  if (!payload || typeof payload !== "object") {
-    return null;
-  }
-  const record = payload as Record<string, unknown>;
-  for (const key of keys) {
-    if (!Object.prototype.hasOwnProperty.call(record, key)) {
-      continue;
-    }
-    const value = record[key];
-    if (value === null) {
-      return null;
-    }
-    if (typeof value === "string") {
-      const trimmed = value.trim();
-      if (trimmed.length > 0) {
-        return trimmed;
-      }
-      return null;
-    }
-  }
-  return null;
-}
-
-function extractComponentTag(payload: unknown): string | null {
-  return (
-    extractStringCandidate(payload, ["component", "component_id", "componentId", "origin", "source_component"]) ?? null
-  );
-}
-
-function extractStageTag(payload: unknown): string | null {
-  return extractStringCandidate(payload, ["stage", "phase", "status", "state"]);
-}
-
-function extractElapsedMilliseconds(payload: unknown): number | null {
-  if (!payload || typeof payload !== "object") {
-    return null;
-  }
-  const record = payload as Record<string, unknown>;
-  const keys = ["elapsed_ms", "elapsedMs", "duration_ms", "durationMs", "latency_ms", "latencyMs"];
-  for (const key of keys) {
-    if (!Object.prototype.hasOwnProperty.call(record, key)) {
-      continue;
-    }
-    const value = record[key];
-    if (value === null) {
-      return null;
-    }
-    if (typeof value === "number" && Number.isFinite(value)) {
-      return Math.max(0, Math.round(value));
-    }
-    if (typeof value === "string") {
-      const parsed = Number(value);
-      if (Number.isFinite(parsed)) {
-        return Math.max(0, Math.round(parsed));
-      }
-    }
-  }
-  return null;
-}
-
-function normaliseTag(value: string | null | undefined): string | null {
-  if (typeof value !== "string") {
-    return null;
-  }
-  const trimmed = value.trim();
-  return trimmed.length > 0 ? trimmed : null;
-}
-
-function resolveEventComponent(category: EventCategory, ...candidates: Array<string | null | undefined>): string {
-  for (const candidate of candidates) {
-    const normalised = normaliseTag(candidate ?? null);
-    if (normalised) {
-      return normalised;
-    }
-  }
-  return category;
-}
-
-function resolveEventStage(kind: string, message: string, ...candidates: Array<string | null | undefined>): string {
-  for (const candidate of candidates) {
-    const normalised = normaliseTag(candidate ?? null);
-    if (normalised) {
-      return normalised;
-    }
-  }
-  const fallback = normaliseTag(kind.toLowerCase()) ?? normaliseTag(message) ?? "event";
-  return fallback;
-}
-
-function resolveEventElapsedMs(...candidates: Array<number | null | undefined>): number | null {
-  for (const candidate of candidates) {
-    if (candidate === null) {
-      return null;
-    }
-    if (typeof candidate === "number" && Number.isFinite(candidate)) {
-      return Math.max(0, Math.round(candidate));
-    }
-  }
-  return null;
-}
-
-function deriveEventMessage(kind: EventKind, payload: unknown): EventMessage {
-  const msg = extractStringProperty(payload, "msg");
-  if (msg) {
-    assertValidEventMessage(msg);
-    return msg;
-  }
-  const fallback = kind.toLowerCase() as Lowercase<EventKind>;
-  assertValidEventMessage(fallback);
-  return fallback;
-}
-
-const EVENT_KIND_TO_CATEGORY: Record<EventKind, EventCategory> = {
-  PLAN: "graph",
-  START: "graph",
-  PROMPT: "child",
-  PENDING: "child",
-  REPLY_PART: "child",
-  REPLY: "child",
-  STATUS: "graph",
-  AGGREGATE: "graph",
-  KILL: "scheduler",
-  HEARTBEAT: "scheduler",
-  INFO: "graph",
-  WARN: "graph",
-  ERROR: "graph",
-  BT_RUN: "bt",
-  SCHEDULER: "scheduler",
-  AUTOSCALER: "scheduler",
-  COGNITIVE: "child",
-  HTTP_ACCESS: "graph",
-};
-
-function deriveEventCategory(kind: EventKind): EventCategory {
-  return EVENT_KIND_TO_CATEGORY[kind] ?? "graph";
-}
-
-const EVENT_CATEGORY_SET = new Set<EventCategory>(EVENT_CATEGORIES);
-
-function parseEventCategories(values: readonly string[] | undefined): EventCategory[] | undefined {
-  if (!values || values.length === 0) {
-    return undefined;
-  }
-  const collected: EventCategory[] = [];
-  for (const value of values) {
-    const trimmed = value.trim().toLowerCase();
-    if (!trimmed || !EVENT_CATEGORY_SET.has(trimmed as EventCategory)) {
-      continue;
-    }
-    const category = trimmed as EventCategory;
-    if (!collected.includes(category)) {
-      collected.push(category);
-    }
-  }
-  return collected.length > 0 ? collected : undefined;
-}
-
-function resolveChildLogLevel(stream: "stdout" | "stderr" | "meta"): string {
-  switch (stream) {
-    case "stderr":
-      return "error";
-    case "meta":
-      return "debug";
-    default:
-      return "info";
-  }
 }
 
 const OpCancelInputSchema = z
@@ -3081,7 +2877,7 @@ function resolveChildEventCorrelation(
 ): EventCorrelationHints {
   const childSnapshot = options.child ?? graphState.getChild(childId) ?? null;
   const jobCandidate = childSnapshot?.jobId ?? findJobIdByChild(childId) ?? null;
-  const metadata = childSupervisor.childrenIndex.getChild(childId)?.metadata;
+  const metadata = childProcessSupervisor.childrenIndex.getChild(childId)?.metadata;
   const sources: Array<unknown | null | undefined> = [];
   if (metadata) {
     sources.push(metadata);
@@ -3121,7 +2917,7 @@ function resolveJobEventCorrelation(
       if (child) {
         sources.push(child);
       }
-      const indexSnapshot = childSupervisor.childrenIndex.getChild(childId);
+      const indexSnapshot = childProcessSupervisor.childrenIndex.getChild(childId);
       if (indexSnapshot) {
         sources.push(indexSnapshot.metadata);
       }
@@ -3171,12 +2967,46 @@ function pruneExpired() {
 // Aggregation
 // ---------------------------
 
-function aggregateConcat(jobId: string, opts?: { includeSystem?: boolean; includeGoals?: boolean }) {
+type AggregatedTranscriptMessage = {
+  /** Sequential index assigned to the message within the transcript. */
+  idx: number;
+  /** Role advertised by the orchestrator when the message was recorded. */
+  role: Role;
+  /** Raw textual content forwarded to or produced by the child. */
+  content: string;
+  /** Millisecond timestamp associated with the message event. */
+  ts: number;
+  /** Optional actor identifier for observability purposes. */
+  actor: string | null;
+};
+
+type AggregatedTranscript = {
+  /** Identifier of the child that produced the transcript entries. */
+  child_id: string;
+  /** Friendly name assigned to the child, falling back to the identifier. */
+  name: string;
+  /** Ordered transcript entries included in the aggregation. */
+  transcript: AggregatedTranscriptMessage[];
+};
+
+type AggregateResult = {
+  /** Human-readable summary of the aggregation outcome. */
+  summary: string;
+  /** Transcript snapshots grouped by child. */
+  transcripts: AggregatedTranscript[];
+  /** Optional artefacts (e.g. JSONL dumps) generated by the aggregation. */
+  artifacts: string[];
+};
+
+function aggregateConcat(
+  jobId: string,
+  opts?: { includeSystem?: boolean; includeGoals?: boolean },
+): AggregateResult {
   const job = graphState.getJob(jobId);
   if (!job) {
     throw new Error(`Unknown job '${jobId}'`);
   }
-  const transcripts = job.childIds.map((cid) => {
+  const transcripts: AggregatedTranscript[] = job.childIds.map((cid) => {
     const child = graphState.getChild(cid);
     const slice = graphState.getTranscript(cid, { limit: 1000 });
     const items = slice.items.filter((m) => {
@@ -3187,7 +3017,7 @@ function aggregateConcat(jobId: string, opts?: { includeSystem?: boolean; includ
     return {
       child_id: cid,
       name: child?.name ?? cid,
-      transcript: items.map((m) => ({
+      transcript: items.map((m): AggregatedTranscriptMessage => ({
         idx: m.idx,
         role: m.role as Role,
         content: m.content,
@@ -3202,10 +3032,10 @@ function aggregateConcat(jobId: string, opts?: { includeSystem?: boolean; includ
 
 
 
-  return { summary, transcripts, artifacts: [] as any[] };
+  return { summary, transcripts, artifacts: [] };
 }
 
-function aggregateCompact(jobId: string, opts?: { includeSystem?: boolean; includeGoals?: boolean }) {
+function aggregateCompact(jobId: string, opts?: { includeSystem?: boolean; includeGoals?: boolean }): AggregateResult {
   const base = aggregateConcat(jobId, opts);
   const compactLines: string[] = [];
   for (const t of base.transcripts) {
@@ -3227,10 +3057,10 @@ function aggregateCompact(jobId: string, opts?: { includeSystem?: boolean; inclu
     compactLines.push("");
   }
   const summary = compactLines.join("\n").trim();
-  return { summary, transcripts: base.transcripts, artifacts: [] as any[] };
+  return { summary, transcripts: base.transcripts, artifacts: [] };
 }
 
-function aggregateJsonl(jobId: string) {
+function aggregateJsonl(jobId: string): AggregateResult {
   const job = graphState.getJob(jobId);
   if (!job) throw new Error(`Unknown job '${jobId}'`);
   const lines: string[] = [];
@@ -3245,7 +3075,11 @@ function aggregateJsonl(jobId: string) {
   return { summary, transcripts: [], artifacts: lines };
 }
 
-function aggregate(jobId: string, strategy?: "concat" | "json_merge" | "vote" | "markdown_compact" | "jsonl", opts?: { includeSystem?: boolean; includeGoals?: boolean }) {
+function aggregate(
+  jobId: string,
+  strategy?: "concat" | "json_merge" | "vote" | "markdown_compact" | "jsonl",
+  opts?: { includeSystem?: boolean; includeGoals?: boolean },
+): AggregateResult {
   switch (strategy) {
     case "markdown_compact":
       return aggregateCompact(jobId, opts);
@@ -3609,6 +3443,38 @@ async function invokeToolForRegistry(
 
 const server = new McpServer({ name: SERVER_NAME, version: SERVER_VERSION });
 
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function getMutableRequestHandlerRegistry(): Map<string, unknown> {
+  const registryHost: unknown = server.server;
+  if (!isPlainRecord(registryHost)) {
+    throw new Error("JSON-RPC request handler registry unavailable");
+  }
+  const candidate = Reflect.get(registryHost, "_requestHandlers");
+  if (!(candidate instanceof Map)) {
+    throw new Error("JSON-RPC request handler registry unavailable");
+  }
+  return candidate;
+}
+
+/**
+ * @internal Exposes the JSON-RPC handler registry for tests so synthetic
+ * handlers can be registered without relying on private casts.
+ */
+export const __rpcServerInternals = {
+  getRequestHandler(method: string): unknown {
+    return getMutableRequestHandlerRegistry().get(method);
+  },
+  setRequestHandler(method: string, handler: unknown): void {
+    getMutableRequestHandlerRegistry().set(method, handler);
+  },
+  deleteRequestHandler(method: string): void {
+    getMutableRequestHandlerRegistry().delete(method);
+  },
+};
+
 const toolRegistry = await ToolRegistry.create({
   server,
   logger,
@@ -3678,7 +3544,7 @@ const planCompileManifest = await registerPlanCompileExecuteTool(toolRegistry, {
 });
 toolRouter.register(planCompileManifest);
 const childOrchestrateManifest = await registerChildOrchestrateTool(toolRegistry, {
-  supervisor: childSupervisor,
+  supervisor: childProcessSupervisor,
   logger,
   idempotency: runtimeFeatures.enableIdempotency ? idempotencyRegistry : undefined,
 });
@@ -7780,7 +7646,7 @@ server.registerTool(
   },
   async (input) => {
     try {
-      const parsed = ChildSendInputSchema.parse(input);
+      const parsed = ChildSendInputSchema.parse(input) as ChildSendRequest;
       const result = await handleChildSend(getChildToolContext(), parsed);
       return {
         content: [{ type: "text" as const, text: j({ tool: "child_send", result }) }],
@@ -7924,7 +7790,7 @@ server.registerTool(
           },
         });
       }
-      const childSnapshot = childSupervisor.childrenIndex.getChild(parsed.child_id);
+      const childSnapshot = childProcessSupervisor.childrenIndex.getChild(parsed.child_id);
       const jobId = findJobIdByChild(parsed.child_id) ?? null;
       const metadataTags = extractMetadataTags(childSnapshot?.metadata);
       const tags = new Set<string>([...summary.tags, ...metadataTags, parsed.child_id]);
@@ -10061,7 +9927,7 @@ export {
   server,
   toolRegistry,
   graphState,
-  childSupervisor,
+  childProcessSupervisor,
   resources,
   toolRouter,
   logJournal,

@@ -1,3 +1,7 @@
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { mkdtemp } from "node:fs/promises";
+
 import { expect } from "chai";
 
 import { StructuredLogger, type LogEntry } from "../../src/logger.js";
@@ -5,6 +9,8 @@ import { prepareHttpRuntime } from "../../src/http/bootstrap.js";
 import type { HttpRuntimeOptions } from "../../src/serverOptions.js";
 import type { EventStore } from "../../src/eventStore.js";
 import type { FileIdempotencyStore } from "../../src/infra/idempotencyStore.file.js";
+import { EventStore as InMemoryEventStore } from "../../src/eventStore.js";
+import { FileIdempotencyStore as PersistentIdempotencyStore } from "../../src/infra/idempotencyStore.file.js";
 
 function createHttpOptions(overrides: Partial<HttpRuntimeOptions> = {}): HttpRuntimeOptions {
   return {
@@ -19,16 +25,19 @@ function createHttpOptions(overrides: Partial<HttpRuntimeOptions> = {}): HttpRun
 }
 
 function createEventStoreStub(): EventStore {
-  return {
-    getEventCount: () => 4,
-    getMaxHistory: () => 16,
-    setMaxHistory: () => {
-      /* no-op */
-    },
-    append: () => {
-      throw new Error("append should not be called during bootstrap tests");
-    },
-  } as unknown as EventStore;
+  // The in-memory store mirrors the production implementation so readiness checks
+  // can exercise the real API surface without double casts in the tests.
+  return new InMemoryEventStore({
+    maxHistory: 16,
+    logger: new StructuredLogger(),
+  });
+}
+
+async function createPersistentIdempotencyStore(): Promise<FileIdempotencyStore> {
+  // Persist the store in a unique temporary directory to avoid touching the
+  // repository tree while keeping the concrete FileIdempotencyStore type.
+  const directory = await mkdtemp(join(tmpdir(), "mcp-idempotency-"));
+  return PersistentIdempotencyStore.create({ directory });
 }
 
 describe("http/bootstrap", () => {
@@ -37,7 +46,7 @@ describe("http/bootstrap", () => {
     const logger = new StructuredLogger({ onEntry: (entry) => entries.push(entry) });
     const options = createHttpOptions({ stateless: true });
     const createStoreCalls: string[] = [];
-    const fakeStore = { checkHealth: async () => undefined } as unknown as FileIdempotencyStore;
+    const fakeStore = await createPersistentIdempotencyStore();
 
     const prepared = await prepareHttpRuntime(
       { options, logger, eventStore: createEventStoreStub() },

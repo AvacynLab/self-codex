@@ -141,7 +141,11 @@ describe("memory_upsert facade", () => {
 
     let captured: unknown;
     try {
-      await handler({ text: "   " } as unknown as Record<string, unknown>, createRequestExtras("req-memory-upsert-invalid"));
+      const invalidPayload: Record<string, unknown> = {
+        // Leading whitespace-only text violates the schema; ensure zod surfaces the failure without casts.
+        text: "   ",
+      };
+      await handler(invalidPayload, createRequestExtras("req-memory-upsert-invalid"));
     } catch (error) {
       captured = error;
     }

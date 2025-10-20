@@ -1,9 +1,14 @@
-import { MessageRecord } from "./types.js";
-import type { ChildRuntimeLimits } from "./childRuntime.js";
-import { ChildRecordSnapshot } from "./state/childrenIndex.js";
-import type { Provenance } from "./types/provenance.js";
-import type { ThoughtNodeStatus } from "./reasoning/thoughtGraph.js";
+import { MessageRecord } from "../types.js";
+import type { ChildRuntimeLimits } from "../childRuntime.js";
+import { ChildRecordSnapshot } from "../state/childrenIndex.js";
+import type { Provenance } from "../types/provenance.js";
+import type { ThoughtNodeStatus } from "../reasoning/thoughtGraph.js";
 // NOTE: Node built-in modules are imported with the explicit `node:` prefix to guarantee ESM resolution in Node.js.
+/**
+ * Maintains the normalised view of the orchestrator graph so observability and
+ * reasoning components can interact with a deterministic snapshot that avoids
+ * leaking implementation details from other modules.
+ */
 type AttributeValue = string | number | boolean;
 
 type AttributeRecord = Record<string, AttributeValue>;

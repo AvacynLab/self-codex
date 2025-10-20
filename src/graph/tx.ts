@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import process from "node:process";
 // NOTE: Node built-in modules are imported with the explicit `node:` prefix to guarantee ESM resolution in Node.js.
 
+import { readOptionalInt } from "../config/env.js";
 import { snapshotTake } from "../state/snapshot.js";
 import { ERROR_CODES } from "../types.js";
 import { recordOperation } from "./oplog.js";
@@ -105,8 +106,14 @@ function resolveSnapshotPolicy(): GraphSnapshotPolicy {
   }
 
   return {
-    commitInterval: parsePositiveInteger(process.env.MCP_GRAPH_SNAPSHOT_EVERY_COMMITS, DEFAULT_SNAPSHOT_POLICY.commitInterval),
-    timeIntervalMs: parsePositiveInteger(process.env.MCP_GRAPH_SNAPSHOT_INTERVAL_MS, DEFAULT_SNAPSHOT_POLICY.timeIntervalMs),
+    commitInterval: resolveSnapshotOverride(
+      readOptionalInt("MCP_GRAPH_SNAPSHOT_EVERY_COMMITS"),
+      DEFAULT_SNAPSHOT_POLICY.commitInterval,
+    ),
+    timeIntervalMs: resolveSnapshotOverride(
+      readOptionalInt("MCP_GRAPH_SNAPSHOT_INTERVAL_MS"),
+      DEFAULT_SNAPSHOT_POLICY.timeIntervalMs,
+    ),
   } satisfies GraphSnapshotPolicy;
 }
 
@@ -606,17 +613,34 @@ function normaliseExpiry(startedAt: number, ttlMs: number | null | undefined): n
   return startedAt + Math.floor(ttlMs);
 }
 
-/** Parse an optional integer from the environment, returning {@link fallback} when invalid. */
-function parsePositiveInteger(value: string | undefined, fallback: number | null): number | null {
-  if (value === undefined) {
+/**
+ * Normalises a snapshot interval override sourced from {@link process.env}.
+ *
+ * The helper relies on the shared {@link readOptionalInt} parser to coerce the
+ * textual value and mirrors the historical behaviour:
+ *
+ * - when the override is absent or malformed the {@link fallback} is used;
+ * - values less than or equal to zero disable the interval by returning `null`;
+ * - positive integers are accepted verbatim.
+ */
+function resolveSnapshotOverride(override: number | undefined, fallback: number | null): number | null {
+  if (override === undefined) {
     return fallback;
   }
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed)) {
+  if (!Number.isFinite(override)) {
     return fallback;
   }
-  if (parsed <= 0) {
+  if (override <= 0) {
     return null;
   }
-  return Math.floor(parsed);
+  return override;
 }
+
+/** Internal hooks surfaced to the test suite for deterministic assertions. */
+export const __graphTxInternals = {
+  resolveSnapshotPolicy,
+  resetSnapshotOverrides(): void {
+    snapshotPolicyOverride = null;
+  },
+};
+

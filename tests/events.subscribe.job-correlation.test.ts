@@ -7,7 +7,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import {
   server,
   graphState,
-  childSupervisor,
+  childProcessSupervisor,
   emitHeartbeatTick,
   stopHeartbeat,
   getRuntimeFeatures,
@@ -24,7 +24,7 @@ import type { MessageRecord } from "../src/types.js";
 describe("events subscribe job correlation", () => {
   it("streams correlated heartbeat, status and aggregate events", async () => {
     const baselineGraphSnapshot = graphState.serialize();
-    const baselineChildrenIndex = childSupervisor.childrenIndex.serialize();
+    const baselineChildrenIndex = childProcessSupervisor.childrenIndex.serialize();
     const baselineFeatures = getRuntimeFeatures();
 
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
@@ -37,7 +37,7 @@ describe("events subscribe job correlation", () => {
     try {
       configureRuntimeFeatures({ ...baselineFeatures, enableEventsBus: true });
       graphState.resetFromSnapshot({ nodes: [], edges: [], directives: { graph: "test-events" } });
-      childSupervisor.childrenIndex.restore({});
+      childProcessSupervisor.childrenIndex.restore({});
 
       const now = Date.now();
       const jobId = "job_test_events";
@@ -57,7 +57,7 @@ describe("events subscribe job correlation", () => {
       };
       graphState.appendMessage(childId, message);
 
-      childSupervisor.childrenIndex.registerChild({
+      childProcessSupervisor.childrenIndex.registerChild({
         childId,
         pid: 12345,
         workdir: "/tmp/test",
@@ -179,7 +179,7 @@ describe("events subscribe job correlation", () => {
     } finally {
       configureRuntimeFeatures(baselineFeatures);
       stopHeartbeat();
-      childSupervisor.childrenIndex.restore(baselineChildrenIndex);
+      childProcessSupervisor.childrenIndex.restore(baselineChildrenIndex);
       graphState.resetFromSnapshot(baselineGraphSnapshot);
       await client.close();
       await server.close().catch(() => {});

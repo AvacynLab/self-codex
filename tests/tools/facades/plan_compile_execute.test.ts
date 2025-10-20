@@ -4,11 +4,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
-import {
-  McpServer,
-  type CallToolResult,
-  type RegisteredTool,
-} from "@modelcontextprotocol/sdk/server/mcp.js";
+import { McpServer, type CallToolResult } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 import type {
   RequestHandlerExtra,
@@ -23,7 +19,7 @@ import { StructuredLogger, type LogEntry } from "../../../src/logger.js";
 import { IdempotencyRegistry } from "../../../src/infra/idempotency.js";
 import { PlanLifecycleRegistry } from "../../../src/executor/planLifecycle.js";
 import { StigmergyField } from "../../../src/coord/stigmergy.js";
-import { GraphState } from "../../../src/graphState.js";
+import { GraphState } from "../../../src/graph/state.js";
 import {
   PLAN_COMPILE_EXECUTE_TOOL_NAME,
   createPlanCompileExecuteHandler,
@@ -33,6 +29,7 @@ import type { PlanToolContext } from "../../../src/tools/planTools.js";
 import {
   ToolRegistry,
   ToolRegistrationError,
+  getRegisteredToolMap,
 } from "../../../src/mcp/registry.js";
 
 function createRequestExtras(
@@ -88,7 +85,7 @@ async function invokeRegisteredTool(
   args: unknown,
   extra: RequestHandlerExtra<ServerRequest, ServerNotification>,
 ): Promise<CallToolResult> {
-  const registry = (server as unknown as { _registeredTools?: Record<string, RegisteredTool> })._registeredTools;
+  const registry = getRegisteredToolMap(server);
   if (!registry) {
     throw new Error("no tools registered on MCP server");
   }
@@ -98,9 +95,9 @@ async function invokeRegisteredTool(
   }
   if (entry.inputSchema) {
     const parsed = await entry.inputSchema.parseAsync(args ?? {});
-    return (await entry.callback(parsed, extra)) as CallToolResult;
+    return await entry.callback(parsed, extra);
   }
-  return (await entry.callback(extra)) as CallToolResult;
+  return await entry.callback(extra);
 }
 
 /**
@@ -311,7 +308,7 @@ describe("plan_compile_execute registration", () => {
       const manifests = harness.registry.list().filter((entry) => entry.name === PLAN_COMPILE_EXECUTE_TOOL_NAME);
       expect(manifests).to.have.lengthOf(1);
 
-      const registeredTools = (harness.server as unknown as { _registeredTools?: Record<string, RegisteredTool> })._registeredTools ?? {};
+      const registeredTools = getRegisteredToolMap(harness.server) ?? {};
       const registeredNames = Object.keys(registeredTools).filter((name) => name === PLAN_COMPILE_EXECUTE_TOOL_NAME);
       expect(registeredNames, "only one MCP server registration").to.have.lengthOf(1);
     } finally {

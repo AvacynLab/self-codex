@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 
 import type { RequestHandlerExtra } from "@modelcontextprotocol/sdk/shared/protocol.js";
 import type { CallToolResult, ServerNotification, ServerRequest } from "@modelcontextprotocol/sdk/types.js";
-import { z, type ZodTypeAny, ZodFirstPartyTypeKind } from "zod";
+import { z, type EnumLike, type ZodDiscriminatedUnionOption, type ZodTypeAny, ZodFirstPartyTypeKind } from "zod";
 
 import { BudgetExceededError, type BudgetCharge } from "../infra/budget.js";
 import { getJsonRpcContext } from "../infra/jsonRpcContext.js";
@@ -122,6 +122,27 @@ const EXAMPLE_MAX_DEPTH = 6;
 const COMMON_ERROR_LIMIT = 8;
 
 /**
+ * Retrieves the enum backing object attached to a native enum schema while
+ * preserving the original key/value pairs. Zod stores the runtime mapping in
+ * the definition so we forward it to helper routines without double casting.
+ */
+function getNativeEnumValues<T extends EnumLike>(schema: z.ZodNativeEnum<T>): T {
+  return schema._def.values;
+}
+
+/**
+ * Returns the first option declared on a discriminated union. The helper keeps
+ * the access to the private `_def` structure centralised and documented,
+ * making the intent explicit where we only need a representative example.
+ */
+function getFirstDiscriminatedUnionOption<Discriminator extends string>(
+  schema: z.ZodDiscriminatedUnion<Discriminator, readonly ZodDiscriminatedUnionOption<Discriminator>[]>,
+): ZodDiscriminatedUnionOption<Discriminator> | undefined {
+  const [first] = schema._def.options;
+  return first;
+}
+
+/**
  * Formats a dot-separated JSON pointer starting from the payload root. The
  * helper keeps generated diagnostics human readable while remaining compact
  * enough for the textual channel.
@@ -177,7 +198,7 @@ function buildNumberExample(schema: z.ZodNumber): number {
 }
 
 /** Selects the first serialisable value from a native enum definition. */
-function pickNativeEnumValue(values: Record<string, unknown>): string | number {
+function pickNativeEnumValue(values: EnumLike): string | number {
   for (const candidate of Object.values(values)) {
     if (typeof candidate === "string") {
       return candidate;
@@ -208,10 +229,8 @@ function buildExampleValue(schema: ZodTypeAny, depth = 0): unknown {
       return true;
     case ZodFirstPartyTypeKind.ZodEnum:
       return (schema as z.ZodEnum<[string, ...string[]]>).options[0];
-    case ZodFirstPartyTypeKind.ZodNativeEnum: {
-      const values = (schema as z.ZodNativeEnum<any>)._def.values as unknown as Record<string, unknown>;
-      return pickNativeEnumValue(values);
-    }
+    case ZodFirstPartyTypeKind.ZodNativeEnum:
+      return pickNativeEnumValue(getNativeEnumValues(schema as z.ZodNativeEnum<EnumLike>));
     case ZodFirstPartyTypeKind.ZodLiteral:
       return (schema as z.ZodLiteral<unknown>)._def.value;
     case ZodFirstPartyTypeKind.ZodArray: {
@@ -252,8 +271,9 @@ function buildExampleValue(schema: ZodTypeAny, depth = 0): unknown {
       return buildExampleValue(unionDef._def.options[0], depth + 1);
     }
     case ZodFirstPartyTypeKind.ZodDiscriminatedUnion: {
-      const optionList = (schema as unknown as { options?: ReadonlyArray<ZodTypeAny> }).options ?? [];
-      const first = optionList[0];
+      const first = getFirstDiscriminatedUnionOption(
+        schema as z.ZodDiscriminatedUnion<string, readonly ZodDiscriminatedUnionOption<string>[]>,
+      );
       return first ? buildExampleValue(first, depth + 1) : null;
     }
     case ZodFirstPartyTypeKind.ZodIntersection: {
@@ -395,8 +415,8 @@ function collectCommonErrors(schema: ZodTypeAny | undefined): string[] {
       }
       case ZodFirstPartyTypeKind.ZodNativeEnum: {
         const rawValues = Object.values(
-          (current as z.ZodNativeEnum<any>)._def.values as unknown as Record<string, unknown>,
-        ).filter((value) => typeof value === "string");
+          getNativeEnumValues(current as z.ZodNativeEnum<EnumLike>),
+        ).filter((value): value is string => typeof value === "string");
         if (rawValues.length > 0) {
           hints.add(`${formatPath(path)} doit correspondre à l'une des valeurs : ${rawValues.join(", ")}`);
         }
@@ -417,7 +437,7 @@ function collectCommonErrors(schema: ZodTypeAny | undefined): string[] {
       }
       case ZodFirstPartyTypeKind.ZodSet: {
         const setDef = current as z.ZodSet<ZodTypeAny>;
-        visit(setDef._def.valueType as unknown as ZodTypeAny, [...path, "[*]"], depth + 1);
+        visit(setDef._def.valueType, [...path, "[*]"], depth + 1);
         return;
       }
       case ZodFirstPartyTypeKind.ZodUnion: {
@@ -427,11 +447,13 @@ function collectCommonErrors(schema: ZodTypeAny | undefined): string[] {
         return;
       }
       case ZodFirstPartyTypeKind.ZodDiscriminatedUnion: {
-        const discr = current as z.ZodDiscriminatedUnion<string, any>;
+        const discr = current as z.ZodDiscriminatedUnion<
+          string,
+          readonly ZodDiscriminatedUnionOption<string>[]
+        >;
         const discriminator = discr._def.discriminator;
         hints.add(`${formatPath([...path, discriminator])} doit correspondre à une variante supportée`);
-        const optionList = (discr as unknown as { options?: ReadonlyArray<ZodTypeAny> }).options ?? [];
-        const first = optionList[0];
+        const first = getFirstDiscriminatedUnionOption(discr);
         if (first) {
           visit(first, path, depth + 1);
         }
@@ -439,7 +461,7 @@ function collectCommonErrors(schema: ZodTypeAny | undefined): string[] {
       }
       case ZodFirstPartyTypeKind.ZodRecord: {
         const recordDef = current as z.ZodRecord<ZodTypeAny, ZodTypeAny>;
-        visit(recordDef._def.valueType as unknown as ZodTypeAny, [...path, "clé"], depth + 1);
+        visit(recordDef._def.valueType, [...path, "clé"], depth + 1);
         return;
       }
       case ZodFirstPartyTypeKind.ZodIntersection: {

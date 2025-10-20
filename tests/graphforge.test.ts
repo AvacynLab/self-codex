@@ -1,8 +1,10 @@
 /// <reference path="./graph-forge.d.ts" />
 import { describe, it } from "mocha";
 import { expect } from "chai";
-import { loadGraphForge } from "../src/graph/forgeLoader.js";
+import { getGraphForge } from "./helpers/graphForge.js";
 
+// Using the shared helper keeps the destructured Graph Forge exports typed
+// without resorting to `as unknown as` in every test module.
 const {
   GraphModel,
   topologicalSort,
@@ -12,26 +14,7 @@ const {
   closenessCentrality,
   kShortestPaths,
   shortestPath,
-} = (await loadGraphForge()) as unknown as {
-  GraphModel: new (
-    name: string,
-    nodes: Array<{ id: string; attributes: Record<string, string | number | boolean> }>,
-    edges: Array<{ from: string; to: string; attributes: Record<string, string | number | boolean> }>,
-    directives: Map<string, string | number | boolean>,
-  ) => any;
-  topologicalSort: (graph: any) => string[];
-  CycleDetectedError: new (...args: any[]) => Error;
-  detectCycles: (graph: any, limit: number) => { hasCycle: boolean; cycles: string[][] };
-  degreeCentrality: (graph: any) => Array<{ node: string; outDegree: number }>;
-  closenessCentrality: (graph: any) => Array<{ node: string; reachable: number; score: number }>;
-  kShortestPaths: (graph: any, start: string, goal: string, k: number) => Array<{ path: string[] }>;
-  shortestPath: (
-    graph: any,
-    start: string,
-    goal: string,
-    options?: Record<string, unknown>,
-  ) => { distance: number; path: string[] };
-};
+} = await getGraphForge();
 
 type RuntimeGraphModel = InstanceType<typeof GraphModel>;
 

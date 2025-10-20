@@ -1,10 +1,11 @@
 import { EventEmitter } from "node:events";
 import { describe, it } from "mocha";
 import { expect } from "chai";
-import type { Worker as NodeWorker, WorkerOptions } from "node:worker_threads";
+import type { WorkerOptions } from "node:worker_threads";
 
 import { computeGraphChangeSet } from "../../src/infra/graphChangeSet.js";
 import { GraphWorkerPool } from "../../src/infra/workerPool.js";
+import type { GraphWorkerLike } from "../../src/infra/workerPool.js";
 import type { NormalisedGraph } from "../../src/graph/types.js";
 import type { JsonPatchOperation } from "../../src/graph/diff.js";
 import { normaliseGraphPayload } from "../../src/tools/graphTools.js";
@@ -14,7 +15,7 @@ import { normaliseGraphPayload } from "../../src/tools/graphTools.js";
  * implementation. The behaviour callback lets tests schedule messages, failures or
  * hanging scenarios deterministically.
  */
-class FakeWorker extends EventEmitter {
+class FakeWorker extends EventEmitter implements GraphWorkerLike {
   public readonly options: WorkerOptions;
   public terminated = false;
   private readonly behaviour: (self: FakeWorker) => void;
@@ -91,11 +92,11 @@ describe("graph worker pool resilience", () => {
           setTimeout(() => {
             worker.emit("message", { ok: true, result: expected });
           }, 5);
-        }) as unknown as NodeWorker;
+        });
       },
+      // Inject a deterministic location so the pool skips the runtime resolution branch in tests.
+      workerScriptUrl: new URL("file:///graph-worker.js"),
     });
-
-    (pool as unknown as { workerScriptUrl: URL | null }).workerScriptUrl = new URL("file:///graph-worker.js");
 
     const execution = await pool.execute({
       changeSetSize: operations.length,
@@ -124,11 +125,11 @@ describe("graph worker pool resilience", () => {
         spawnCount += 1;
         return new FakeWorker(options, () => {
           // Intentionally keep the worker silent to trigger the timeout handler.
-        }) as unknown as NodeWorker;
+        });
       },
+      // The override avoids relying on the compiled worker bundle during timeout simulations.
+      workerScriptUrl: new URL("file:///graph-worker.js"),
     });
-
-    (pool as unknown as { workerScriptUrl: URL | null }).workerScriptUrl = new URL("file:///graph-worker.js");
 
     const first = await pool.execute({
       changeSetSize: operations.length,

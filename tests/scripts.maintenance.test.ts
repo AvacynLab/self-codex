@@ -29,10 +29,10 @@ describe("maintenance script", () => {
     const projectRoot = process.cwd();
     writeFileSync(join(projectRoot, ".mcp_http.pid"), "1234\n", "utf8");
     writeFileSync(join(projectRoot, ".mcp_fsbridge.pid"), "5678\n", "utf8");
-    delete (globalThis as any).CODEX_MAINTENANCE_COMMANDS;
-    delete (globalThis as any).CODEX_MAINTENANCE_ENV;
-    delete (globalThis as any).CODEX_MAINTENANCE_ACTIONS;
-    delete (globalThis as any).CODEX_MAINTENANCE_STATUS;
+    delete globalThis.CODEX_MAINTENANCE_COMMANDS;
+    delete globalThis.CODEX_MAINTENANCE_ENV;
+    delete globalThis.CODEX_MAINTENANCE_ACTIONS;
+    delete globalThis.CODEX_MAINTENANCE_STATUS;
   });
 
   afterEach(() => {
@@ -59,23 +59,27 @@ describe("maintenance script", () => {
     if (existsSync(join(projectRoot, ".mcp_fsbridge.pid"))) {
       unlinkSync(join(projectRoot, ".mcp_fsbridge.pid"));
     }
-    delete (globalThis as any).CODEX_MAINTENANCE_COMMANDS;
-    delete (globalThis as any).CODEX_MAINTENANCE_ENV;
-    delete (globalThis as any).CODEX_MAINTENANCE_ACTIONS;
-    delete (globalThis as any).CODEX_MAINTENANCE_STATUS;
+    delete globalThis.CODEX_MAINTENANCE_COMMANDS;
+    delete globalThis.CODEX_MAINTENANCE_ENV;
+    delete globalThis.CODEX_MAINTENANCE_ACTIONS;
+    delete globalThis.CODEX_MAINTENANCE_STATUS;
   });
 
   it("rebuilds and restarts transports in dry-run mode", async () => {
     const module = await import("../scripts/maintenance.mjs");
     await module.runMaintenance();
 
-    const commands = (globalThis as any).CODEX_MAINTENANCE_COMMANDS as Array<{ command: string; args: string[] }>;
+    const commands = globalThis.CODEX_MAINTENANCE_COMMANDS;
+    expect(commands, "maintenance script should record executed commands").to.not.equal(undefined);
+    if (!commands) {
+      throw new Error("maintenance script failed to record commands in dry-run mode");
+    }
     const npmCommands = commands.filter((entry) => entry.command === "npm");
     expect(npmCommands.some((entry) => entry.args?.[0] === "ci" || entry.args?.[0] === "install")).to.equal(true);
     expect(npmCommands.some((entry) => entry.args?.[0] === "install" && entry.args?.[1] === "@types/node@latest")).to.equal(true);
     expect(npmCommands.some((entry) => entry.args?.[0] === "run" && entry.args?.[1] === "build")).to.equal(true);
 
-    const actions = ((globalThis as any).CODEX_MAINTENANCE_ACTIONS ?? []) as Array<Record<string, unknown>>;
+    const actions = globalThis.CODEX_MAINTENANCE_ACTIONS ?? [];
     expect(actions.some((item) => item.action === "kill" && item.label === "http")).to.equal(true);
     expect(actions.some((item) => item.action === "spawn-attempt" && item.label === "http")).to.equal(true);
     expect(actions.some((item) => item.action === "spawn-attempt" && item.label === "fsbridge")).to.equal(true);
@@ -85,7 +89,7 @@ describe("maintenance script", () => {
         .every((item) => typeof item.nodeOptions === "string" && item.nodeOptions.includes("--enable-source-maps")),
     ).to.equal(true);
 
-    const status = (globalThis as any).CODEX_MAINTENANCE_STATUS;
+    const status = globalThis.CODEX_MAINTENANCE_STATUS;
     expect(status).to.equal("HTTP OK");
 
     expect(

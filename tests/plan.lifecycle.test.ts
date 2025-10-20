@@ -8,7 +8,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import {
   server,
   graphState,
-  childSupervisor,
+  childProcessSupervisor,
   configureRuntimeFeatures,
   getRuntimeFeatures,
 } from "../src/server.js";
@@ -76,7 +76,7 @@ describe("plan lifecycle", () => {
     this.timeout(10000);
 
     const baselineGraphSnapshot = graphState.serialize();
-    const baselineChildrenIndex = childSupervisor.childrenIndex.serialize();
+    const baselineChildrenIndex = childProcessSupervisor.childrenIndex.serialize();
     const baselineFeatures = getRuntimeFeatures();
 
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
@@ -96,7 +96,7 @@ describe("plan lifecycle", () => {
         enablePlanLifecycle: true,
       });
       graphState.resetFromSnapshot({ nodes: [], edges: [], directives: { graph: "plan-lifecycle" } });
-      childSupervisor.childrenIndex.restore({});
+      childProcessSupervisor.childrenIndex.restore({});
 
       const planArguments = {
         tree: {
@@ -170,7 +170,7 @@ describe("plan lifecycle", () => {
     } finally {
       configureRuntimeFeatures(baselineFeatures);
       graphState.resetFromSnapshot(baselineGraphSnapshot);
-      childSupervisor.childrenIndex.restore(baselineChildrenIndex);
+      childProcessSupervisor.childrenIndex.restore(baselineChildrenIndex);
       await client.close().catch(() => {});
       await server.close().catch(() => {});
     }
@@ -181,7 +181,7 @@ describe("plan lifecycle", () => {
 
     // Capture the current orchestrator state so the scenario can restore it after execution.
     const baselineGraphSnapshot = graphState.serialize();
-    const baselineChildrenIndex = childSupervisor.childrenIndex.serialize();
+    const baselineChildrenIndex = childProcessSupervisor.childrenIndex.serialize();
     const baselineFeatures = getRuntimeFeatures();
 
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
@@ -204,7 +204,7 @@ describe("plan lifecycle", () => {
         enablePlanLifecycle: true,
       });
       graphState.resetFromSnapshot({ nodes: [], edges: [], directives: { graph: "plan-lifecycle" } });
-      childSupervisor.childrenIndex.restore({});
+      childProcessSupervisor.childrenIndex.restore({});
 
       const planArguments = {
         tree: {
@@ -297,7 +297,7 @@ describe("plan lifecycle", () => {
     } finally {
       configureRuntimeFeatures(baselineFeatures);
       graphState.resetFromSnapshot(baselineGraphSnapshot);
-      childSupervisor.childrenIndex.restore(baselineChildrenIndex);
+      childProcessSupervisor.childrenIndex.restore(baselineChildrenIndex);
       await client.close().catch(() => {});
       await server.close().catch(() => {});
       if (runPromise) {
@@ -310,7 +310,7 @@ describe("plan lifecycle", () => {
     this.timeout(10000);
 
     const baselineGraphSnapshot = graphState.serialize();
-    const baselineChildrenIndex = childSupervisor.childrenIndex.serialize();
+    const baselineChildrenIndex = childProcessSupervisor.childrenIndex.serialize();
     const baselineFeatures = getRuntimeFeatures();
 
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
@@ -361,7 +361,7 @@ describe("plan lifecycle", () => {
         enablePlanLifecycle: true,
       });
       graphState.resetFromSnapshot({ nodes: [], edges: [], directives: { graph: "plan-cancel" } });
-      childSupervisor.childrenIndex.restore({});
+      childProcessSupervisor.childrenIndex.restore({});
 
       runPromise = client.callTool({ name: "plan_run_reactive", arguments: planArguments });
 
@@ -418,7 +418,7 @@ describe("plan lifecycle", () => {
     } finally {
       configureRuntimeFeatures(baselineFeatures);
       graphState.resetFromSnapshot(baselineGraphSnapshot);
-      childSupervisor.childrenIndex.restore(baselineChildrenIndex);
+      childProcessSupervisor.childrenIndex.restore(baselineChildrenIndex);
       await client.close().catch(() => {});
       await server.close().catch(() => {});
       if (runPromise) {
@@ -431,7 +431,7 @@ describe("plan lifecycle", () => {
     this.timeout(10000);
 
     const baselineGraphSnapshot = graphState.serialize();
-    const baselineChildrenIndex = childSupervisor.childrenIndex.serialize();
+    const baselineChildrenIndex = childProcessSupervisor.childrenIndex.serialize();
     const baselineFeatures = getRuntimeFeatures();
 
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
@@ -483,7 +483,7 @@ describe("plan lifecycle", () => {
         enablePlanLifecycle: false,
       });
       graphState.resetFromSnapshot({ nodes: [], edges: [], directives: { graph: "plan-cancel-no-lifecycle" } });
-      childSupervisor.childrenIndex.restore({});
+      childProcessSupervisor.childrenIndex.restore({});
 
       runPromise = client.callTool({ name: "plan_run_reactive", arguments: planArguments });
 
@@ -517,7 +517,7 @@ describe("plan lifecycle", () => {
     } finally {
       configureRuntimeFeatures(baselineFeatures);
       graphState.resetFromSnapshot(baselineGraphSnapshot);
-      childSupervisor.childrenIndex.restore(baselineChildrenIndex);
+      childProcessSupervisor.childrenIndex.restore(baselineChildrenIndex);
       await client.close().catch(() => {});
       await server.close().catch(() => {});
       if (runPromise) {
@@ -530,7 +530,7 @@ describe("plan lifecycle", () => {
     this.timeout(10000);
 
     const baselineGraphSnapshot = graphState.serialize();
-    const baselineChildrenIndex = childSupervisor.childrenIndex.serialize();
+    const baselineChildrenIndex = childProcessSupervisor.childrenIndex.serialize();
     const baselineFeatures = getRuntimeFeatures();
 
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
@@ -582,7 +582,7 @@ describe("plan lifecycle", () => {
         enablePlanLifecycle: true,
       });
       graphState.resetFromSnapshot({ nodes: [], edges: [], directives: { graph: "op-cancel" } });
-      childSupervisor.childrenIndex.restore({});
+      childProcessSupervisor.childrenIndex.restore({});
 
       runPromise = client.callTool({ name: "plan_run_reactive", arguments: planArguments });
 
@@ -620,7 +620,7 @@ describe("plan lifecycle", () => {
     } finally {
       configureRuntimeFeatures(baselineFeatures);
       graphState.resetFromSnapshot(baselineGraphSnapshot);
-      childSupervisor.childrenIndex.restore(baselineChildrenIndex);
+      childProcessSupervisor.childrenIndex.restore(baselineChildrenIndex);
       await client.close().catch(() => {});
       await server.close().catch(() => {});
       if (runPromise) {
@@ -633,7 +633,7 @@ describe("plan lifecycle", () => {
     this.timeout(5000);
 
     const baselineGraphSnapshot = graphState.serialize();
-    const baselineChildrenIndex = childSupervisor.childrenIndex.serialize();
+    const baselineChildrenIndex = childProcessSupervisor.childrenIndex.serialize();
     const baselineFeatures = getRuntimeFeatures();
 
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
@@ -649,7 +649,7 @@ describe("plan lifecycle", () => {
         enableCancellation: true,
       });
       graphState.resetFromSnapshot({ nodes: [], edges: [], directives: { graph: "op-cancel-notfound" } });
-      childSupervisor.childrenIndex.restore({});
+      childProcessSupervisor.childrenIndex.restore({});
 
       const response = await client.callTool({
         name: "op_cancel",
@@ -667,7 +667,7 @@ describe("plan lifecycle", () => {
     } finally {
       configureRuntimeFeatures(baselineFeatures);
       graphState.resetFromSnapshot(baselineGraphSnapshot);
-      childSupervisor.childrenIndex.restore(baselineChildrenIndex);
+      childProcessSupervisor.childrenIndex.restore(baselineChildrenIndex);
       await client.close().catch(() => {});
       await server.close().catch(() => {});
     }
@@ -677,7 +677,7 @@ describe("plan lifecycle", () => {
     this.timeout(10000);
 
     const baselineGraphSnapshot = graphState.serialize();
-    const baselineChildrenIndex = childSupervisor.childrenIndex.serialize();
+    const baselineChildrenIndex = childProcessSupervisor.childrenIndex.serialize();
     const baselineFeatures = getRuntimeFeatures();
 
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
@@ -696,7 +696,7 @@ describe("plan lifecycle", () => {
         enablePlanLifecycle: false,
       });
       graphState.resetFromSnapshot({ nodes: [], edges: [], directives: { graph: "plan-lifecycle-reactivation" } });
-      childSupervisor.childrenIndex.restore({});
+      childProcessSupervisor.childrenIndex.restore({});
 
       const planArguments = {
         tree: {
@@ -775,7 +775,7 @@ describe("plan lifecycle", () => {
     } finally {
       configureRuntimeFeatures(baselineFeatures);
       graphState.resetFromSnapshot(baselineGraphSnapshot);
-      childSupervisor.childrenIndex.restore(baselineChildrenIndex);
+      childProcessSupervisor.childrenIndex.restore(baselineChildrenIndex);
       await client.close().catch(() => {});
       await server.close().catch(() => {});
     }

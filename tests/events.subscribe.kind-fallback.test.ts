@@ -7,7 +7,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import {
   server,
   graphState,
-  childSupervisor,
+  childProcessSupervisor,
   configureRuntimeFeatures,
   getRuntimeFeatures,
 } from "../src/server.js";
@@ -20,7 +20,7 @@ import {
 describe("events subscribe kind fallback", () => {
   it("derives uppercase kinds when bridge events omit explicit metadata", async () => {
     const baselineGraphSnapshot = graphState.serialize();
-    const baselineChildrenIndex = childSupervisor.childrenIndex.serialize();
+    const baselineChildrenIndex = childProcessSupervisor.childrenIndex.serialize();
     const baselineFeatures = getRuntimeFeatures();
 
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
@@ -37,7 +37,7 @@ describe("events subscribe kind fallback", () => {
         enableStigmergy: true,
       });
       graphState.resetFromSnapshot({ nodes: [], edges: [], directives: { graph: "kind-fallback" } });
-      childSupervisor.childrenIndex.restore({});
+      childProcessSupervisor.childrenIndex.restore({});
 
       const baselineResponse = await client.callTool({ name: "events_subscribe", arguments: { limit: 1 } });
       expect(baselineResponse.isError ?? false).to.equal(false);
@@ -74,7 +74,7 @@ describe("events subscribe kind fallback", () => {
       expect(decayResponse.isError ?? false).to.equal(false);
     } finally {
       configureRuntimeFeatures(baselineFeatures);
-      childSupervisor.childrenIndex.restore(baselineChildrenIndex);
+      childProcessSupervisor.childrenIndex.restore(baselineChildrenIndex);
       graphState.resetFromSnapshot(baselineGraphSnapshot);
       await client.close();
       await server.close().catch(() => {});

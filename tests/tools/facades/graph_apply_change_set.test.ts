@@ -308,7 +308,12 @@ describe("graph_apply_change_set facade", () => {
 
     let captured: unknown;
     try {
-      await handler({ graph_id: graphId, changes: [] } as unknown as GraphApplyChangeSetInput, extras);
+      const invalidInput: GraphApplyChangeSetInput = {
+        // The schema enforces at least one change; using an empty list ensures validation fails predictably.
+        graph_id: graphId,
+        changes: [],
+      };
+      await handler(invalidInput, extras);
     } catch (error) {
       captured = error;
     }

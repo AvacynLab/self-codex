@@ -9,6 +9,7 @@ import { expect } from "chai";
 import { createJsonRpcError, normaliseJsonRpcRequest, toJsonRpc } from "../../src/rpc/middleware.js";
 
 import type { JsonRpcRequest } from "../../src/server.js";
+import { coerceToJsonRpcRequest } from "../helpers/jsonRpc.js";
 
 describe("rpc middleware validation", () => {
   it("applies registered schemas to known methods", () => {
@@ -21,7 +22,7 @@ describe("rpc middleware validation", () => {
 
   it("throws a structured error for invalid envelopes", () => {
     try {
-      normaliseJsonRpcRequest(null as unknown as JsonRpcRequest, { requestId: "req-invalid" });
+      normaliseJsonRpcRequest(coerceToJsonRpcRequest(null), { requestId: "req-invalid" });
       expect.fail("normaliseJsonRpcRequest should throw for invalid bodies");
     } catch (error) {
       const rpcError = error as { code?: number; data?: Record<string, unknown> };

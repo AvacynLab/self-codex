@@ -127,4 +127,65 @@ describe("tools_help facade", () => {
     expect(tool).to.not.have.property("example");
     expect(tool).to.not.have.property("common_errors");
   });
+
+  it("supports native enums and discriminated unions when deriving examples", async () => {
+    const nowIso = new Date("2025-01-01T00:00:00Z").toISOString();
+    const manifest: ToolManifest = {
+      name: "orchestrator_config",
+      title: "Configuration orchestrateur",
+      description: "Expose les options avancées de l'orchestrateur",
+      kind: "dynamic",
+      version: 1,
+      createdAt: nowIso,
+      updatedAt: nowIso,
+      category: "admin",
+      tags: ["facade"],
+      hidden: false,
+      budgets: { time_ms: 1_000, tool_calls: 1, bytes_out: 12_288 },
+    };
+    const StatusEnum = {
+      ACTIVE: "active",
+      DISABLED: "disabled",
+    } as const;
+    const schema = z
+      .object({
+        status: z.nativeEnum(StatusEnum),
+        config: z.discriminatedUnion("kind", [
+          z
+            .object({
+              kind: z.literal("simple"),
+              flags: z.set(z.enum(["primary", "secondary"])),
+              notes: z.record(z.string(), z.number()).optional(),
+            })
+            .strict(),
+          z
+            .object({
+              kind: z.literal("advanced"),
+              threshold: z.number().min(2),
+            })
+            .strict(),
+        ]),
+      })
+      .strict();
+    const registry = createRegistryView([manifest], { [manifest.name]: schema });
+    const logger = new StructuredLogger();
+    const handler = createToolsHelpHandler({ registry, logger });
+
+    const result = await handler({}, createExtras("req-tools-help-enum"));
+    const structured = result.structuredContent as Record<string, any>;
+    const [tool] = structured.details.tools as Array<Record<string, any>>;
+
+    expect(tool.example.status).to.equal("active");
+    expect(tool.example.config).to.deep.include({ kind: "simple" });
+    expect(tool.example.config.flags).to.deep.equal(["primary"]);
+    expect(tool.example.config).to.not.have.property("notes");
+    expect(tool).to.not.have.property("metadata");
+
+    expect(tool.common_errors).to.satisfy((errors: string[]) =>
+      errors.some((entry) => entry.includes("payload.status") && entry.includes("active")),
+    );
+    expect(tool.common_errors).to.satisfy((errors: string[]) =>
+      errors.some((entry) => entry.includes("payload.config.kind") && entry.includes("variante supportée")),
+    );
+  });
 });

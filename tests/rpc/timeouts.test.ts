@@ -1,26 +1,24 @@
 import { expect } from "chai";
 
-import { handleJsonRpc, server } from "../../src/server.js";
+import { handleJsonRpc } from "../../src/server.js";
 import {
   resolveRpcTimeoutBudget,
   normaliseTimeoutBudget,
   setRpcTimeoutOverride,
   resetRpcTimeoutOverrides,
 } from "../../src/rpc/timeouts.js";
+import { __rpcServerInternals } from "../../src/orchestrator/runtime.js";
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** Synthetic RPC method registered for timeout enforcement tests. */
 const TIMEOUT_PROBE_METHOD = `unit_timeout/${Date.now()}`;
 
-let handlerRegistry: Map<string, unknown> | undefined;
+let originalHandler: unknown;
 
 before(() => {
-  handlerRegistry = (server.server as unknown as { _requestHandlers?: Map<string, unknown> })._requestHandlers;
-  if (!handlerRegistry) {
-    throw new Error("JSON-RPC handler registry unavailable");
-  }
-  handlerRegistry.set(TIMEOUT_PROBE_METHOD, async (request: { params?: unknown }) => {
+  originalHandler = __rpcServerInternals.getRequestHandler(TIMEOUT_PROBE_METHOD);
+  __rpcServerInternals.setRequestHandler(TIMEOUT_PROBE_METHOD, async (request: { params?: unknown }) => {
     const params = request.params;
     const delay =
       params && typeof params === "object" && !Array.isArray(params)
@@ -34,7 +32,11 @@ before(() => {
 });
 
 after(() => {
-  handlerRegistry?.delete(TIMEOUT_PROBE_METHOD);
+  if (originalHandler) {
+    __rpcServerInternals.setRequestHandler(TIMEOUT_PROBE_METHOD, originalHandler);
+    return;
+  }
+  __rpcServerInternals.deleteRequestHandler(TIMEOUT_PROBE_METHOD);
 });
 
 afterEach(() => {

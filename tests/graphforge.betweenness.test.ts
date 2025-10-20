@@ -1,20 +1,11 @@
 /// <reference path="./graph-forge.d.ts" />
 import { describe, it } from "mocha";
 import { expect } from "chai";
-import { loadGraphForge } from "../src/graph/forgeLoader.js";
+import { getGraphForge } from "./helpers/graphForge.js";
 
-const { GraphModel, betweennessCentrality } = (await loadGraphForge()) as unknown as {
-  GraphModel: new (
-    name: string,
-    nodes: Array<{ id: string; attributes: Record<string, string | number | boolean> }>,
-    edges: Array<{ from: string; to: string; attributes: Record<string, string | number | boolean> }>,
-    directives: Map<string, string | number | boolean>,
-  ) => any;
-  betweennessCentrality: (
-    graph: any,
-    options?: Record<string, unknown>,
-  ) => Array<{ node: string; score: number }>;
-};
+// Fetch the typed Graph Forge exports once so each suite can focus on the
+// algorithmic assertions instead of juggling casts.
+const { GraphModel, betweennessCentrality } = await getGraphForge();
 
 type RuntimeGraphModel = InstanceType<typeof GraphModel>;
 

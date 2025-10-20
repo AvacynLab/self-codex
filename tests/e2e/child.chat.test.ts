@@ -3,7 +3,7 @@ import { expect } from "chai";
 
 import { __httpServerInternals } from "../../src/httpServer.js";
 import {
-  childSupervisor,
+  childProcessSupervisor,
   configureRuntimeFeatures,
   getRuntimeFeatures,
   handleJsonRpc,
@@ -38,11 +38,11 @@ describe("child conversational tools", () => {
   after(async () => {
     configureRuntimeFeatures(originalFeatures);
     process.env.MCP_HTTP_STATELESS = originalEnv.MCP_HTTP_STATELESS;
-    await childSupervisor.disposeAll();
+    await childProcessSupervisor.disposeAll();
   });
 
   afterEach(async () => {
-    await childSupervisor.disposeAll();
+    await childProcessSupervisor.disposeAll();
   });
 
   it("returns structured pending payloads for child_chat", async () => {

@@ -26,6 +26,7 @@
     "test:int": "node scripts/run-int-tests.mjs",
     "test:e2e": "node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --file tests/setup.ts \"tests/e2e/**/*.test.ts\"",
     "test:e2e:http": "node scripts/run-http-e2e.mjs",
+    "test:graph-forge": "node --import tsx --test graph-forge/test/graph-model.test.ts",
     "validate:run": "node scripts/validate-run.mjs",
     "validation:capture-log": "node --import tsx scripts/captureHttpLog.ts",
     "validation:introspect": "node --import tsx scripts/runIntrospectionPhase.ts",

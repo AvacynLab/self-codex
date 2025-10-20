@@ -2,35 +2,12 @@ import { describe, it } from "mocha";
 import { expect } from "chai";
 
 import { EventStore, OrchestratorEvent } from "../src/eventStore.js";
-import { StructuredLogger } from "../src/logger.js";
-
-// Minimal logger used to observe debug messages without writing to stdout.
-class StubLogger {
-  public readonly entries: { level: string; message: string; payload?: unknown }[] = [];
-
-  debug(message: string, payload?: unknown) {
-    this.entries.push({ level: "debug", message, payload });
-  }
-
-  info(message: string, payload?: unknown) {
-    this.entries.push({ level: "info", message, payload });
-  }
-
-  warn(message: string, payload?: unknown) {
-    this.entries.push({ level: "warn", message, payload });
-  }
-
-  error(message: string, payload?: unknown) {
-    this.entries.push({ level: "error", message, payload });
-  }
-}
-
-const asStructuredLogger = (logger: StubLogger): StructuredLogger => logger as unknown as StructuredLogger;
+import { RecordingLogger } from "./helpers/recordingLogger.js";
 
 describe("EventStore", () => {
   it("retains only the configured number of events globally and per job", () => {
     // Initialise with a low retention so the trimming logic is exercised.
-    const store = new EventStore({ maxHistory: 2, logger: asStructuredLogger(new StubLogger()) });
+    const store = new EventStore({ maxHistory: 2, logger: new RecordingLogger() });
 
     const first = store.emit({ kind: "INFO", jobId: "job_a" });
     const second = store.emit({ kind: "INFO", jobId: "job_a" });
@@ -50,7 +27,7 @@ describe("EventStore", () => {
   it("evicts the oldest entries in FIFO order when events interleave across jobs", () => {
     // The regression guard below ensures that trimming honours insertion order even
     // when multiple jobs contribute to the same EventStore window.
-    const store = new EventStore({ maxHistory: 2, logger: asStructuredLogger(new StubLogger()) });
+    const store = new EventStore({ maxHistory: 2, logger: new RecordingLogger() });
 
     const jobAFirst = store.emit({ kind: "INFO", jobId: "job_a" });
     const jobBOnly = store.emit({ kind: "INFO", jobId: "job_b" });
@@ -70,7 +47,7 @@ describe("EventStore", () => {
 
   it("filters events by job, child and minimum sequence", () => {
     // Populate with three events touching two jobs and different children.
-    const store = new EventStore({ maxHistory: 10, logger: asStructuredLogger(new StubLogger()) });
+    const store = new EventStore({ maxHistory: 10, logger: new RecordingLogger() });
 
     const first = store.emit({ kind: "INFO", jobId: "job_a" });
     const second = store.emit({ kind: "INFO", jobId: "job_b", childId: "child_b" });
@@ -91,9 +68,9 @@ describe("EventStore", () => {
   });
 
   it("updates the retention limit and logs the change", () => {
-    // The stub logger captures the debug entry emitted by setMaxHistory.
-    const logger = new StubLogger();
-    const store = new EventStore({ maxHistory: 4, logger: asStructuredLogger(logger) });
+    // The recording logger captures the debug entry emitted by setMaxHistory.
+    const logger = new RecordingLogger();
+    const store = new EventStore({ maxHistory: 4, logger });
 
     store.emit({ kind: "INFO", jobId: "job_a" });
     store.emit({ kind: "INFO", jobId: "job_a" });
@@ -112,7 +89,7 @@ describe("EventStore", () => {
   });
 
   it("normalises provenance metadata when emitting events", () => {
-    const store = new EventStore({ maxHistory: 4, logger: asStructuredLogger(new StubLogger()) });
+    const store = new EventStore({ maxHistory: 4, logger: new RecordingLogger() });
 
     const emitted = store.emit({
       kind: "INFO",
@@ -130,7 +107,7 @@ describe("EventStore", () => {
   });
 
   it("filters events by kind with pagination helpers", () => {
-    const store = new EventStore({ maxHistory: 10, logger: asStructuredLogger(new StubLogger()) });
+    const store = new EventStore({ maxHistory: 10, logger: new RecordingLogger() });
 
     const firstInfo = store.emit({ kind: "INFO", jobId: "job_a", childId: "child_shared" });
     const firstWarn = store.emit({ kind: "WARN", jobId: "job_a", childId: "child_warn" });
@@ -177,8 +154,8 @@ describe("EventStore", () => {
   });
 
   it("émet un journal structuré pour chaque événement enregistré", () => {
-    const logger = new StubLogger();
-    const store = new EventStore({ maxHistory: 5, logger: asStructuredLogger(logger) });
+    const logger = new RecordingLogger();
+    const store = new EventStore({ maxHistory: 5, logger });
 
     const infoEvent = store.emit({
       kind: "INFO",
@@ -219,8 +196,8 @@ describe("EventStore", () => {
   });
 
   it("résume les charges utiles impossibles à sérialiser", () => {
-    const logger = new StubLogger();
-    const store = new EventStore({ maxHistory: 3, logger: asStructuredLogger(logger) });
+    const logger = new RecordingLogger();
+    const store = new EventStore({ maxHistory: 3, logger });
 
     const circular: { self?: unknown } = {};
     circular.self = circular;
@@ -238,14 +215,14 @@ describe("EventStore", () => {
   });
 
   it("journalise les évictions avec le scope concerné", () => {
-    const logger = new StubLogger();
-    const store = new EventStore({ maxHistory: 1, logger: asStructuredLogger(logger) });
+    const logger = new RecordingLogger();
+    const store = new EventStore({ maxHistory: 1, logger });
 
     const first = store.emit({ kind: "INFO", jobId: "job_a" });
     store.emit({ kind: "INFO", jobId: "job_a" });
 
     const evictionEntries = logger.entries.filter((entry) => entry.message === "event_evicted");
-    expect(evictionEntries).to.have.length(2);
+    expect(evictionEntries).to.have.length(3);
 
     const globalEviction = evictionEntries.find((entry) => (entry.payload as { scope: string }).scope === "global");
     expect(globalEviction?.payload).to.deep.include({
@@ -262,5 +239,37 @@ describe("EventStore", () => {
       job_id: "job_a",
       reason: "history_limit",
     });
+
+    const kindEviction = evictionEntries.find((entry) => (entry.payload as { scope: string }).scope === "kind");
+    expect(kindEviction?.payload).to.deep.include({
+      scope: "kind",
+      seq: first.seq,
+      kind: "INFO",
+      reason: "history_limit",
+    });
+  });
+
+  it("stabilise l'ordre des clés lors de la journalisation des charges utiles", () => {
+    const logger = new RecordingLogger();
+    const store = new EventStore({ maxHistory: 5, logger });
+
+    // La payload possède un ordre arbitraire afin de vérifier que le log est trié.
+    store.emit({
+      kind: "INFO",
+      payload: { zebra: 1, alpha: 2, middle: { beta: 2, alpha: 1 } },
+    });
+
+    const logged = logger.entries.find((entry) => entry.message === "event_recorded");
+    expect(logged).to.not.be.undefined;
+
+    const payload = (logged?.payload as { payload: Record<string, unknown> | undefined })?.payload;
+    expect(payload).to.not.be.undefined;
+
+    const keys = Object.keys(payload ?? {});
+    expect(keys).to.deep.equal(["alpha", "middle", "zebra"]);
+
+    const middle = (payload as Record<string, unknown>).middle as Record<string, unknown> | undefined;
+    expect(middle).to.not.be.undefined;
+    expect(Object.keys(middle ?? {})).to.deep.equal(["alpha", "beta"]);
   });
 });

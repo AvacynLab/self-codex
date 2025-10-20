@@ -4,8 +4,8 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { ChildSupervisor } from "../src/childSupervisor.js";
-import { GraphState } from "../src/graphState.js";
+import { ChildSupervisor } from "../src/children/supervisor.js";
+import { GraphState } from "../src/graph/state.js";
 import { StructuredLogger } from "../src/logger.js";
 import { PlanFanoutInputSchema, handlePlanFanout, type PlanToolContext } from "../src/tools/planTools.js";
 import { StigmergyField } from "../src/coord/stigmergy.js";

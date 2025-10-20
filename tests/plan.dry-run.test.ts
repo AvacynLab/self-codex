@@ -1,35 +1,17 @@
 import { describe, it } from "mocha";
 import { expect } from "chai";
-import sinon from "sinon";
 
 import { handlePlanDryRun, type PlanToolContext } from "../src/tools/planTools.js";
-import { StigmergyField } from "../src/coord/stigmergy.js";
 import { ValueGraph } from "../src/values/valueGraph.js";
+import { createPlanToolContext, type PlanToolContextOverrides } from "./helpers/planContext.js";
 
 /**
  * Unit coverage for the plan dry-run helper to ensure rewrite previews are produced alongside
  * value guard projections when hierarchical graphs are supplied.
  */
 describe("plan dry-run", () => {
-  function buildContext(overrides: Partial<PlanToolContext> = {}): PlanToolContext {
-    const logger =
-      overrides.logger ??
-      ({
-        info: sinon.spy(),
-        warn: sinon.spy(),
-        error: sinon.spy(),
-      } as unknown as PlanToolContext["logger"]);
-
-    return {
-      supervisor: overrides.supervisor ?? ({} as PlanToolContext["supervisor"]),
-      graphState: overrides.graphState ?? ({} as PlanToolContext["graphState"]),
-      logger,
-      childrenRoot: overrides.childrenRoot ?? "/tmp",
-      defaultChildRuntime: overrides.defaultChildRuntime ?? "codex",
-      emitEvent: overrides.emitEvent ?? sinon.spy(),
-      stigmergy: overrides.stigmergy ?? new StigmergyField(),
-      ...overrides,
-    } as PlanToolContext;
+  function buildContext(overrides: PlanToolContextOverrides = {}): PlanToolContext {
+    return createPlanToolContext(overrides);
   }
 
   it("returns a rewrite preview when a parallel edge is present", () => {
@@ -202,12 +184,6 @@ describe("plan dry-run", () => {
   // Ensure aggregated impacts trigger the value guard so dry-run payloads include
   // a structured explanation with actionable hints tied to the originating node.
   it("explains value guard violations with actionable hints", () => {
-    const logger = {
-      info: sinon.spy(),
-      warn: sinon.spy(),
-      error: sinon.spy(),
-    } as unknown as PlanToolContext["logger"];
-
     const valueGraph = new ValueGraph({ now: () => 123_456 });
     valueGraph.set({
       values: [
@@ -220,10 +196,7 @@ describe("plan dry-run", () => {
       ],
     });
 
-    const context = buildContext({
-      logger,
-      valueGuard: { graph: valueGraph, registry: new Map() },
-    });
+    const context = buildContext({ valueGuard: { graph: valueGraph, registry: new Map() } });
 
     const result = handlePlanDryRun(context, {
       plan_id: "plan-guard",

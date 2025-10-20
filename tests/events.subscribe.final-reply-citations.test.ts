@@ -7,7 +7,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import {
   server,
   graphState,
-  childSupervisor,
+  childProcessSupervisor,
   eventStore,
   configureRuntimeFeatures,
   getRuntimeFeatures,
@@ -23,7 +23,7 @@ import {
 describe("events subscribe final reply citations", () => {
   it("propagates aggregated provenance citations with final replies", async () => {
     const baselineGraphSnapshot = graphState.serialize();
-    const baselineChildrenIndex = childSupervisor.childrenIndex.serialize();
+    const baselineChildrenIndex = childProcessSupervisor.childrenIndex.serialize();
     const baselineFeatures = getRuntimeFeatures();
 
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
@@ -36,7 +36,7 @@ describe("events subscribe final reply citations", () => {
     try {
       configureRuntimeFeatures({ ...baselineFeatures, enableEventsBus: true });
       graphState.resetFromSnapshot({ nodes: [], edges: [], directives: { graph: "test-final-reply-citations" } });
-      childSupervisor.childrenIndex.restore({});
+      childProcessSupervisor.childrenIndex.restore({});
 
       const now = Date.now();
       const jobId = "job_final_reply_citations";
@@ -49,7 +49,7 @@ describe("events subscribe final reply citations", () => {
       graphState.createJob(jobId, { goal: "Verify final reply citations", createdAt: now, state: "running" });
       graphState.createChild(jobId, childId, { name: "Responder", runtime: "codex" }, { createdAt: now, ttlAt: null });
 
-      childSupervisor.childrenIndex.registerChild({
+      childProcessSupervisor.childrenIndex.registerChild({
         childId,
         pid: 5252,
         workdir: "/tmp/test-final-reply",
@@ -131,7 +131,7 @@ describe("events subscribe final reply citations", () => {
       expect(replyEvents[0]?.provenance).to.deep.equal(expectedCitations);
     } finally {
       configureRuntimeFeatures(baselineFeatures);
-      childSupervisor.childrenIndex.restore(baselineChildrenIndex);
+      childProcessSupervisor.childrenIndex.restore(baselineChildrenIndex);
       graphState.resetFromSnapshot(baselineGraphSnapshot);
       await client.close();
       await server.close().catch(() => {});

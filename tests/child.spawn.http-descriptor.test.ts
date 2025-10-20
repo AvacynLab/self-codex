@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "mocha";
 import { expect } from "chai";
 
-import { ChildSupervisor } from "../src/childSupervisor.js";
+import { ChildSupervisor } from "../src/children/supervisor.js";
 import { StructuredLogger } from "../src/logger.js";
 import { handleChildSpawnCodex } from "../src/tools/childTools.js";
 import type { ChildToolContext } from "../src/tools/childTools.js";

@@ -8,7 +8,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import {
   server,
   graphState,
-  childSupervisor,
+  childProcessSupervisor,
   configureRuntimeFeatures,
   getRuntimeFeatures,
 } from "../../src/server.js";
@@ -22,13 +22,13 @@ import {
 describe("plan pause & resume integration", () => {
   let clock: sinon.SinonFakeTimers;
   let baselineGraphSnapshot: ReturnType<typeof graphState.serialize>;
-  let baselineChildrenSnapshot: ReturnType<typeof childSupervisor.childrenIndex.serialize>;
+  let baselineChildrenSnapshot: ReturnType<typeof childProcessSupervisor.childrenIndex.serialize>;
   let baselineFeatures: ReturnType<typeof getRuntimeFeatures>;
 
   beforeEach(() => {
     clock = sinon.useFakeTimers();
     baselineGraphSnapshot = graphState.serialize();
-    baselineChildrenSnapshot = childSupervisor.childrenIndex.serialize();
+    baselineChildrenSnapshot = childProcessSupervisor.childrenIndex.serialize();
     baselineFeatures = getRuntimeFeatures();
   });
 
@@ -36,7 +36,7 @@ describe("plan pause & resume integration", () => {
     clock.restore();
     configureRuntimeFeatures(baselineFeatures);
     graphState.resetFromSnapshot(baselineGraphSnapshot);
-    childSupervisor.childrenIndex.restore(baselineChildrenSnapshot);
+    childProcessSupervisor.childrenIndex.restore(baselineChildrenSnapshot);
     await server.close().catch(() => {});
   });
 
@@ -58,7 +58,7 @@ describe("plan pause & resume integration", () => {
       enablePlanLifecycle: true,
     });
     graphState.resetFromSnapshot({ nodes: [], edges: [], directives: { graph: "plan-pause" } });
-    childSupervisor.childrenIndex.restore({});
+    childProcessSupervisor.childrenIndex.restore({});
 
     const planArguments = {
       tree: {

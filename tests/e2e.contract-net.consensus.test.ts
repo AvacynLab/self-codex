@@ -7,9 +7,9 @@ import { BlackboardStore } from "../src/coord/blackboard.js";
 import { ContractNetCoordinator } from "../src/coord/contractNet.js";
 import { StigmergyField } from "../src/coord/stigmergy.js";
 import { StructuredLogger } from "../src/logger.js";
-import { GraphState } from "../src/graphState.js";
+import { GraphState } from "../src/graph/state.js";
 import type { ChildCollectedOutputs, ChildRuntimeMessage } from "../src/childRuntime.js";
-import type { ChildSupervisor } from "../src/childSupervisor.js";
+import type { ChildSupervisor } from "../src/children/supervisor.js";
 import type { CoordinationToolContext } from "../src/tools/coordTools.js";
 import {
   CnpAnnounceInputSchema,

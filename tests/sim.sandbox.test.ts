@@ -68,8 +68,21 @@ describe("sandbox registry", () => {
 
   it("isole les payloads/metadata et capture les erreurs levées", async () => {
     const registry = new SandboxRegistry({ defaultTimeoutMs: 100 });
-    const payload = { nested: { value: 1 } };
-    const metadata = { nested: { label: "demo" } };
+    // The payload intentionally mixes plain objects with Arrays, Maps and Sets
+    // to ensure the sandbox performs a genuine deep clone instead of relying
+    // on mutation errors to protect against shared references.
+    const payload = {
+      nested: { value: 1 },
+      list: [1, 2, 3],
+      map: new Map<string, number>([["a", 1]]),
+      set: new Set(["alpha"]),
+    };
+    // Metadata carries its own Set so that the test asserts cloning across all
+    // supported container types (records, arrays, sets and maps).
+    const metadata = {
+      nested: { label: "demo" },
+      tags: new Set(["unit", "test"]),
+    };
     let payloadMutationBlocked = false;
     let metadataMutationBlocked = false;
 
@@ -80,7 +93,27 @@ describe("sandbox registry", () => {
         payloadMutationBlocked = true;
       }
       try {
+        (request.payload as typeof payload).list.push(99);
+      } catch {
+        payloadMutationBlocked = true;
+      }
+      try {
+        (request.payload as typeof payload).map.set("b", 2);
+      } catch {
+        payloadMutationBlocked = true;
+      }
+      try {
+        (request.payload as typeof payload).set.add("beta");
+      } catch {
+        payloadMutationBlocked = true;
+      }
+      try {
         (request.metadata as { nested: { label: string } }).nested.label = "patched";
+      } catch {
+        metadataMutationBlocked = true;
+      }
+      try {
+        (request.metadata as typeof metadata).tags.add("patched");
       } catch {
         metadataMutationBlocked = true;
       }
@@ -93,7 +126,11 @@ describe("sandbox registry", () => {
     expect(payloadMutationBlocked).to.equal(true);
     expect(metadataMutationBlocked).to.equal(true);
     expect(payload.nested.value).to.equal(1);
+    expect(payload.list).to.deep.equal([1, 2, 3]);
+    expect(Array.from(payload.map.entries())).to.deep.equal([["a", 1]]);
+    expect(Array.from(payload.set.values())).to.deep.equal(["alpha"]);
     expect(metadata.nested.label).to.equal("demo");
+    expect(Array.from(metadata.tags.values())).to.deep.equal(["unit", "test"]);
   });
 
   it("signale correctement les timeouts et propage l'abort aux handlers", async () => {

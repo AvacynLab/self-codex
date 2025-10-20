@@ -7,7 +7,6 @@ import {
   handlePlanRunBT,
   type PlanToolContext,
 } from "../src/tools/planTools.js";
-import { StigmergyField } from "../src/coord/stigmergy.js";
 import {
   OperationCancelledError,
   requestCancellation,
@@ -15,6 +14,7 @@ import {
 } from "../src/executor/cancel.js";
 import type { BehaviorNodeDefinition, ParallelPolicy } from "../src/executor/bt/types.js";
 import type { EventCorrelationHints } from "../src/events/correlation.js";
+import { createPlanToolContext } from "./helpers/planContext.js";
 
 /**
  * Policies exercised by the parallel cancellation integration tests. Each entry
@@ -84,13 +84,6 @@ function buildPlanContext(): {
   events: RecordedEvent[];
   waitForStart: () => Promise<StartEventInfo>;
 } {
-  const logger = {
-    info: sinon.spy(),
-    warn: sinon.spy(),
-    error: sinon.spy(),
-    debug: sinon.spy(),
-  } as unknown as PlanToolContext["logger"];
-
   const events: RecordedEvent[] = [];
   let startInfo: StartEventInfo | null = null;
   let resolveStart: ((info: StartEventInfo) => void) | null = null;
@@ -105,12 +98,7 @@ function buildPlanContext(): {
     return startPromise;
   };
 
-  const context: PlanToolContext = {
-    supervisor: {} as PlanToolContext["supervisor"],
-    graphState: {} as PlanToolContext["graphState"],
-    logger,
-    childrenRoot: "/tmp",
-    defaultChildRuntime: "codex",
+  const context = createPlanToolContext({
     emitEvent: (event) => {
       const payload =
         event.payload && typeof event.payload === "object"
@@ -128,8 +116,7 @@ function buildPlanContext(): {
         }
       }
     },
-    stigmergy: new StigmergyField(),
-  } satisfies PlanToolContext;
+  });
 
   return { context, events, waitForStart };
 }

@@ -4,7 +4,7 @@ import sinon from "sinon";
 
 import type { ChildRuntime, ChildRuntimeStatus } from "../src/childRuntime.js";
 import type { ChildRecordSnapshot } from "../src/state/childrenIndex.js";
-import type { ChildSupervisor, CreateChildOptions } from "../src/childSupervisor.js";
+import type { ChildSupervisor, CreateChildOptions } from "../src/children/supervisor.js";
 import { StructuredLogger } from "../src/logger.js";
 import { handleChildSpawnCodex, type ChildToolContext } from "../src/tools/childTools.js";
 

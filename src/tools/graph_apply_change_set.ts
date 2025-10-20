@@ -277,7 +277,7 @@ async function executeChangeSet(
       context.resources.markGraphSnapshotRolledBack(tx.graphId, tx.txId);
       void recordOperation(
         {
-          kind: GRAPH_APPLY_CHANGE_SET_TOOL_NAME as any,
+          kind: GRAPH_APPLY_CHANGE_SET_TOOL_NAME,
           graph_id: parsed.graph_id,
           op_id: opId,
           operations: parsed.changes.length,
@@ -341,7 +341,7 @@ async function executeChangeSet(
       });
       void recordOperation(
         {
-          kind: GRAPH_APPLY_CHANGE_SET_TOOL_NAME as any,
+          kind: GRAPH_APPLY_CHANGE_SET_TOOL_NAME,
           graph_id: committedResult.graphId,
           op_id: opId,
           operations: parsed.changes.length,
@@ -366,7 +366,7 @@ async function executeChangeSet(
       context.resources.markGraphSnapshotRolledBack(tx.graphId, tx.txId);
       void recordOperation(
         {
-          kind: GRAPH_APPLY_CHANGE_SET_TOOL_NAME as any,
+          kind: GRAPH_APPLY_CHANGE_SET_TOOL_NAME,
           graph_id: parsed.graph_id,
           op_id: opId,
           operations: parsed.changes.length,

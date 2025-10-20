@@ -8,7 +8,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import {
   server,
   graphState,
-  childSupervisor,
+  childProcessSupervisor,
   configureRuntimeFeatures,
   getRuntimeFeatures,
 } from "../src/server.js";
@@ -51,7 +51,7 @@ describe("events subscribe plan status and aggregate", () => {
     this.timeout(15000);
 
     const baselineGraphSnapshot = graphState.serialize();
-    const baselineChildrenIndex = childSupervisor.childrenIndex.serialize();
+    const baselineChildrenIndex = childProcessSupervisor.childrenIndex.serialize();
     const baselineFeatures = getRuntimeFeatures();
 
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
@@ -61,13 +61,13 @@ describe("events subscribe plan status and aggregate", () => {
     await server.connect(serverTransport);
     await client.connect(clientTransport);
 
-    const collectStub = sinon.stub(childSupervisor, "collect");
-    const waitStub = sinon.stub(childSupervisor, "waitForMessage");
+    const collectStub = sinon.stub(childProcessSupervisor, "collect");
+    const waitStub = sinon.stub(childProcessSupervisor, "waitForMessage");
 
     try {
       configureRuntimeFeatures({ ...baselineFeatures, enableEventsBus: true });
       graphState.resetFromSnapshot({ nodes: [], edges: [], directives: { graph: "plan-events" } });
-      childSupervisor.childrenIndex.restore({});
+      childProcessSupervisor.childrenIndex.restore({});
 
       const now = Date.now();
       const jobId = "job_plan_events";
@@ -250,9 +250,9 @@ describe("events subscribe plan status and aggregate", () => {
       collectStub.restore();
       waitStub.restore();
       configureRuntimeFeatures(baselineFeatures);
-      childSupervisor.childrenIndex.restore(baselineChildrenIndex);
+      childProcessSupervisor.childrenIndex.restore(baselineChildrenIndex);
       graphState.resetFromSnapshot(baselineGraphSnapshot);
-      await childSupervisor.disposeAll().catch(() => {});
+      await childProcessSupervisor.disposeAll().catch(() => {});
       await client.close();
       await server.close().catch(() => {});
     }

@@ -8,7 +8,7 @@ import type {
 import { StructuredLogger } from "../../src/logger.js";
 import { createPlanCompileExecuteHandler } from "../../src/tools/plan_compile_execute.js";
 import type { PlanToolContext } from "../../src/tools/planTools.js";
-import { GraphState } from "../../src/graphState.js";
+import { GraphState } from "../../src/graph/state.js";
 import { StigmergyField } from "../../src/coord/stigmergy.js";
 import { PlanLifecycleRegistry } from "../../src/executor/planLifecycle.js";
 
