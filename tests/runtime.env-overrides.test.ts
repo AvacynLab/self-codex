@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, it } from "mocha";
 import { expect } from "chai";
 
 import { __envRuntimeInternals } from "../src/orchestrator/runtime.js";
+import { VECTOR_MEMORY_MAX_CAPACITY } from "../src/memory/vector.js";
 
 const watchedEnvKeys = [
   "IDEMPOTENCY_TTL_MS",
@@ -62,7 +63,7 @@ describe("orchestrator runtime env overrides", () => {
     expect(resolveIdempotencyTtlFromEnv(), "non numeric").to.equal(undefined);
   });
 
-  it("clamps the vector index capacity to positive integers", () => {
+  it("clamps the vector index capacity to the supported bounds", () => {
     const { resolveVectorIndexCapacity } = __envRuntimeInternals;
 
     expect(resolveVectorIndexCapacity(), "default capacity").to.equal(1024);
@@ -72,6 +73,9 @@ describe("orchestrator runtime env overrides", () => {
 
     process.env.MCP_MEMORY_VECTOR_MAX_DOCS = "0";
     expect(resolveVectorIndexCapacity(), "zero fallback").to.equal(1024);
+
+    process.env.MCP_MEMORY_VECTOR_MAX_DOCS = String(VECTOR_MEMORY_MAX_CAPACITY * 5);
+    expect(resolveVectorIndexCapacity(), "global ceiling").to.equal(VECTOR_MEMORY_MAX_CAPACITY);
   });
 
   it("derives hybrid retriever options from the environment", () => {

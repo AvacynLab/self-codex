@@ -1,5 +1,6 @@
 import { Buffer } from "node:buffer";
 import { createServer, IncomingMessage, ServerResponse } from "node:http";
+import type { OutgoingHttpHeaders } from "node:http";
 import { runtimeTimers, type IntervalHandle } from "../runtime/timers.js";
 import { URL } from "node:url";
 import { z } from "zod";
@@ -28,7 +29,7 @@ import {
 import { BehaviorTreeStatusRegistry } from "./btStatusRegistry.js";
 import type { BehaviorTreeStatusSnapshot } from "./btStatusRegistry.js";
 import type { BTStatus } from "../executor/bt/types.js";
-import type { OrchestratorSupervisor } from "../agents/supervisor.js";
+import type { OrchestratorSupervisorContract } from "../agents/supervisor.js";
 import { buildReplayPage } from "./replay.js";
 import type { ThoughtNodeStatus } from "../reasoning/thoughtGraph.js";
 import { LogJournal, type LogStream, type LogTailFilters } from "./log.js";
@@ -338,7 +339,7 @@ export interface DashboardServerOptions {
   /** Registry collecting Behaviour Tree node statuses. */
   btStatusRegistry: BehaviorTreeStatusRegistry;
   /** Optional supervisor agent exposing scheduler backlog snapshots. */
-  supervisorAgent?: OrchestratorSupervisor;
+  supervisorAgent?: OrchestratorSupervisorContract;
   /** Structured logger used for operational diagnostics. */
   logger?: StructuredLogger;
   /** Optional Contract-Net watcher telemetry recorder surfaced in snapshots. */
@@ -382,15 +383,31 @@ export interface DashboardRouterOptions {
   autoBroadcast?: boolean;
   stigmergy: StigmergyField;
   btStatusRegistry: BehaviorTreeStatusRegistry;
-  supervisorAgent?: OrchestratorSupervisor;
+  supervisorAgent?: OrchestratorSupervisorContract;
   contractNetWatcherTelemetry?: ContractNetWatcherTelemetryRecorder;
   logJournal?: LogJournal;
 }
 
 /** Router returned by {@link createDashboardRouter}. */
+export interface DashboardHttpResponse {
+  /** Indicates whether the HTTP headers were already flushed to the client. */
+  headersSent: boolean;
+  /** Mirrors {@link ServerResponse.writeHead} while returning the implementing instance. */
+  writeHead(statusCode: number, headers?: OutgoingHttpHeaders): this;
+  writeHead(statusCode: number, statusMessage: string, headers?: OutgoingHttpHeaders): this;
+  /** Records an HTTP header on the response. */
+  setHeader(name: string, value: string | number | readonly string[]): void;
+  /** Writes a chunk to the underlying stream (used by the SSE bridge). */
+  write(chunk: string | Uint8Array): boolean;
+  /** Finalises the response, optionally flushing a trailing chunk. */
+  end(chunk?: string | Uint8Array): void;
+  /** Registers a listener mirroring the Node.js EventEmitter API. */
+  on(event: string, listener: (...args: unknown[]) => void): this;
+}
+
 export interface DashboardRouter {
   readonly streamIntervalMs: number;
-  handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void>;
+  handleRequest(req: IncomingMessage, res: DashboardHttpResponse): Promise<void>;
   broadcast(): void;
   close(): Promise<void>;
 }
@@ -411,7 +428,7 @@ export function createDashboardRouter(options: DashboardRouterOptions): Dashboar
   const supervisorAgent = options.supervisorAgent;
   const contractNetWatcherTelemetry = options.contractNetWatcherTelemetry;
   const streamIntervalMs = Math.max(250, options.streamIntervalMs ?? 2_000);
-  const clients = new Set<ServerResponse>();
+  const clients = new Set<DashboardHttpResponse>();
   const autoBroadcast = options.autoBroadcast ?? true;
   const logJournal = options.logJournal ?? null;
   let interval: IntervalHandle | null = null;
@@ -434,7 +451,7 @@ export function createDashboardRouter(options: DashboardRouterOptions): Dashboar
     }, streamIntervalMs);
   }
 
-  const handler = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
+  const handler = async (req: IncomingMessage, res: DashboardHttpResponse): Promise<void> => {
     if (!req.url) {
       writeJson(res, 400, { error: "BAD_REQUEST", message: "missing URL" });
       return;
@@ -684,7 +701,7 @@ export async function startDashboardServer(options: DashboardServerOptions): Pro
 }
 
 /** Serialises a response as JSON with the appropriate headers. */
-function writeJson(res: ServerResponse, status: number, payload: unknown): void {
+function writeJson(res: DashboardHttpResponse, status: number, payload: unknown): void {
   const json = JSON.stringify(payload);
   res.writeHead(status, {
     "Content-Type": "application/json",
@@ -695,7 +712,7 @@ function writeJson(res: ServerResponse, status: number, payload: unknown): void 
 }
 
 /** Serialises a response as HTML with UTF-8 encoding. */
-function writeHtml(res: ServerResponse, status: number, payload: string): void {
+function writeHtml(res: DashboardHttpResponse, status: number, payload: string): void {
   res.writeHead(status, {
     "Content-Type": "text/html; charset=utf-8",
     "Content-Length": Buffer.byteLength(payload),
@@ -723,7 +740,7 @@ async function parseJsonBody(req: IncomingMessage): Promise<unknown> {
 /** Handles `POST /logs` emitted by the dashboard client when telemetry issues occur. */
 async function handleClientLogRequest(
   req: IncomingMessage,
-  res: ServerResponse,
+  res: DashboardHttpResponse,
   logger: StructuredLogger,
 ): Promise<void> {
   const payload = await parseJsonBody(req);
@@ -763,7 +780,7 @@ async function handleClientLogRequest(
  * operators can quickly investigate anomalies surfaced by the dashboard.
  */
 function handleLogsRequest(
-  res: ServerResponse,
+  res: DashboardHttpResponse,
   params: URLSearchParams,
   logJournal: LogJournal,
   logger: StructuredLogger,
@@ -826,7 +843,7 @@ function handleLogsRequest(
 /** Handles `POST /controls/pause`. */
 async function handlePauseRequest(
   req: IncomingMessage,
-  res: ServerResponse,
+  res: DashboardHttpResponse,
   graphState: GraphState,
   logger: StructuredLogger,
 ): Promise<void> {
@@ -852,7 +869,7 @@ async function handlePauseRequest(
 /** Handles `POST /controls/cancel`. */
 async function handleCancelRequest(
   req: IncomingMessage,
-  res: ServerResponse,
+  res: DashboardHttpResponse,
   graphState: GraphState,
   supervisor: Pick<ChildSupervisor, "cancel">,
   logger: StructuredLogger,
@@ -877,7 +894,7 @@ async function handleCancelRequest(
 /** Handles `POST /controls/prioritise`. */
 async function handlePrioritiseRequest(
   req: IncomingMessage,
-  res: ServerResponse,
+  res: DashboardHttpResponse,
   graphState: GraphState,
   logger: StructuredLogger,
 ): Promise<void> {
@@ -902,13 +919,13 @@ async function handlePrioritiseRequest(
 
 /** Configures the HTTP response to behave as an SSE stream and pushes a snapshot. */
 function handleStreamRequest(
-  res: ServerResponse,
-  clients: Set<ServerResponse>,
+  res: DashboardHttpResponse,
+  clients: Set<DashboardHttpResponse>,
   graphState: GraphState,
   eventStore: EventStore,
   stigmergy: StigmergyField,
   btStatusRegistry: BehaviorTreeStatusRegistry,
-  supervisorAgent: OrchestratorSupervisor | undefined,
+  supervisorAgent: OrchestratorSupervisorContract | undefined,
   contractNetWatcherTelemetry: ContractNetWatcherTelemetryRecorder | undefined,
   logger: StructuredLogger,
   streamIntervalMs: number,
@@ -947,12 +964,12 @@ function handleStreamRequest(
 
 /** Pushes a fresh snapshot to every connected SSE client. */
 function broadcast(
-  clients: Set<ServerResponse>,
+  clients: Set<DashboardHttpResponse>,
   graphState: GraphState,
   eventStore: EventStore,
   stigmergy: StigmergyField,
   btStatusRegistry: BehaviorTreeStatusRegistry,
-  supervisorAgent: OrchestratorSupervisor | undefined,
+  supervisorAgent: OrchestratorSupervisorContract | undefined,
   contractNetWatcherTelemetry: ContractNetWatcherTelemetryRecorder | undefined,
   logger: StructuredLogger,
 ): void {
@@ -980,7 +997,7 @@ function buildSnapshot(
   eventStore: EventStore,
   stigmergy: StigmergyField,
   btStatusRegistry: BehaviorTreeStatusRegistry,
-  supervisorAgent: OrchestratorSupervisor | undefined,
+  supervisorAgent: OrchestratorSupervisorContract | undefined,
   contractNetWatcherTelemetry: ContractNetWatcherTelemetryRecorder | undefined,
 ): DashboardSnapshot {
   const metrics = graphState.collectMetrics();
@@ -1670,7 +1687,7 @@ export function summariseRuntimeCosts(
 
 /** Builds a scheduler snapshot suitable for dashboard consumption. */
 function buildSchedulerSnapshot(
-  supervisorAgent: OrchestratorSupervisor | undefined,
+  supervisorAgent: OrchestratorSupervisorContract | undefined,
 ): DashboardSchedulerSnapshot {
   if (!supervisorAgent) {
     return { tick: 0, backlog: 0, completed: 0, failed: 0, updatedAt: null };

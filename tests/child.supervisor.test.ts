@@ -9,6 +9,12 @@ import { EventBus } from "../src/events/bus.js";
 import { writeArtifact } from "../src/artifacts.js";
 import type { FileSystemGateway } from "../src/gateways/fs.js";
 import { resolveFixture, runnerArgs } from "./helpers/childRunner.js";
+import { isPlainObject, hasEventPayload } from "./helpers/assertions.js";
+import {
+  expectChildRuntimeMessageType,
+  hasChildRuntimeMessageType,
+  hasChildRuntimePayloadType,
+} from "./helpers/childRuntime.js";
 
 const mockRunnerPath = resolveFixture(import.meta.url, "./fixtures/mock-runner.ts");
 const stubbornRunnerPath = resolveFixture(import.meta.url, "./fixtures/stubborn-runner.ts");
@@ -53,11 +59,16 @@ describe("child supervisor", function () {
 
       const response = await supervisor.waitForMessage(
         created.childId,
-        (message) => Boolean(message.parsed && (message.parsed as any).type === "response"),
+        (message) => message.stream === "stdout" && hasChildRuntimeMessageType(message, "response"),
         1000,
       );
 
-      expect((response.parsed as any).content).to.equal("ping supervisor");
+      const responseMessage = expectChildRuntimeMessageType(response, "response");
+      const responseContent = responseMessage.parsed.content;
+      if (typeof responseContent !== "string") {
+        throw new Error("supervisor response did not expose textual content");
+      }
+      expect(responseContent).to.equal("ping supervisor");
 
       await writeArtifact({
         childrenRoot,
@@ -210,15 +221,17 @@ describe("child supervisor", function () {
 
       const echoed = await supervisor.waitForMessage(
         created.childId,
-        (message) => Boolean(message.parsed && (message.parsed as any).type === "echo"),
+        (message) => message.stream === "stdout" && hasChildRuntimeMessageType(message, "echo"),
         500,
       );
-      expect(echoed.parsed).to.be.an("object");
+      expectChildRuntimeMessageType(echoed, "echo");
 
       // Allow the async recorder to process the event loop tick.
       await new Promise((resolve) => setTimeout(resolve, 20));
 
-      const echoLog = recorded.find((entry) => entry.childId === created.childId && (entry.snapshot.parsed as any)?.type === "echo");
+      const echoLog = recorded.find(
+        (entry) => entry.childId === created.childId && hasChildRuntimePayloadType(entry.snapshot.parsed, "echo"),
+      );
       expect(echoLog).to.not.equal(undefined);
       expect(echoLog?.snapshot.runId).to.equal("run-logs");
       expect(echoLog?.snapshot.opId).to.equal("op-echo");
@@ -254,16 +267,27 @@ describe("child supervisor", function () {
 
       await supervisor.waitForMessage(
         created.childId,
-        (message) => Boolean(message.parsed && (message.parsed as any).type === "echo"),
+        (message) => message.stream === "stdout" && hasChildRuntimeMessageType(message, "echo"),
         500,
       );
 
       // Allow the async recorder to flush the captured snapshot before assertions.
       await new Promise((resolve) => setTimeout(resolve, 20));
 
-      const echoed = recorded.find(
-        (entry) => entry.childId === created.childId && (entry.snapshot.parsed as any)?.payload?.note === "correlation",
-      );
+      const echoed = recorded.find((entry) => {
+        if (entry.childId !== created.childId) {
+          return false;
+        }
+        const parsed = entry.snapshot.parsed;
+        if (!hasChildRuntimePayloadType(parsed, "echo")) {
+          return false;
+        }
+        const payload = parsed.payload;
+        if (!isPlainObject(payload)) {
+          return false;
+        }
+        return payload.note === "correlation";
+      });
       expect(echoed).to.not.equal(undefined);
       expect(echoed?.snapshot.childId).to.equal(created.childId);
       expect(echoed?.snapshot.runId).to.equal(null);
@@ -300,17 +324,19 @@ describe("child supervisor", function () {
       await supervisor.send(created.childId, { type: "prompt", content: "derive" });
       await supervisor.waitForMessage(
         created.childId,
-        (message) => Boolean(message.parsed && (message.parsed as any).type === "response"),
+        (message) => message.stream === "stdout" && hasChildRuntimeMessageType(message, "response"),
         1_000,
       );
 
       const events = bus.list({ cats: ["child"] });
       const responseEvent = events.find((event) => {
-        if (event.msg !== "child_stdout" || !event.data || typeof event.data !== "object") {
+        if (!hasEventPayload(event, "child_stdout")) {
           return false;
         }
-        const payload = event.data as { stream?: string; parsed?: { type?: string } | null };
-        return payload.stream === "stdout" && payload.parsed?.type === "response";
+        if (event.data.stream !== "stdout") {
+          return false;
+        }
+        return hasChildRuntimePayloadType(event.data.parsed, "response");
       });
 
       expect(responseEvent).to.not.equal(undefined);

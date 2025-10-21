@@ -1,7 +1,12 @@
 import { describe, it } from "mocha";
 import { expect } from "chai";
 
-import { buildChildCognitiveEvents, type QualityAssessmentSnapshot } from "../src/events/cognitive.js";
+import {
+  buildChildCognitiveEvents,
+  type ChildMetaReviewEventPayload,
+  type ChildReflectionEventPayload,
+  type QualityAssessmentSnapshot,
+} from "../src/events/cognitive.js";
 import type { ReviewResult } from "../src/agents/metaCritic.js";
 import type { ReflectionResult } from "../src/agents/selfReflect.js";
 
@@ -61,31 +66,20 @@ describe("events cognitive", () => {
       nodeId: "node-34",
     });
 
-    const reviewPayload = events.review.payload as {
-      msg?: string;
-      summary?: { kind?: string; text?: string; tags?: string[] };
-      review?: ReviewResult;
-      metrics?: { artifacts?: number; messages?: number };
-      quality_assessment?: QualityAssessmentSnapshot | null;
-      run_id?: string | null;
-      op_id?: string | null;
-    };
+    const reviewPayload: ChildMetaReviewEventPayload = events.review.payload;
     expect(reviewPayload.msg).to.equal("child_meta_review");
-    expect(reviewPayload.summary?.kind).to.equal("plan");
-    expect(reviewPayload.summary?.tags).to.include("child-123");
-    expect(reviewPayload.review?.verdict).to.equal("pass");
+    expect(reviewPayload.summary.kind).to.equal("plan");
+    expect(reviewPayload.summary.tags).to.include("child-123");
+    expect(reviewPayload.review.verdict).to.equal("pass");
     expect(reviewPayload.metrics).to.deep.equal({ artifacts: 2, messages: 5 });
     expect(reviewPayload.quality_assessment).to.deep.equal(quality);
     expect(reviewPayload.run_id).to.equal("run-abc");
     expect(reviewPayload.op_id).to.equal("op-xyz");
 
     expect(events.reflection).to.not.equal(null);
-    const reflectionPayload = events.reflection?.payload as {
-      msg?: string;
-      reflection?: { insights?: string[]; next_steps?: string[]; risks?: string[] };
-    };
+    const reflectionPayload: ChildReflectionEventPayload | undefined = events.reflection?.payload;
     expect(reflectionPayload?.msg).to.equal("child_reflection");
-    expect(reflectionPayload?.reflection?.insights).to.deep.equal(reflection.insights);
+    expect(reflectionPayload?.reflection.insights).to.deep.equal(reflection.insights);
     expect(events.reflection?.correlation).to.deep.equal(events.review.correlation);
   });
 

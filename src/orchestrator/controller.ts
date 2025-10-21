@@ -7,11 +7,22 @@ import type { ToolRegistry } from "../mcp/registry.js";
 import type { StructuredLogger } from "../logger.js";
 import type { LogJournal } from "../monitor/log.js";
 import type { EventBus } from "../events/bus.js";
+import type {
+  JsonRpcEventMessage,
+  JsonRpcEventPayload,
+  JsonRpcEventPayloadByMessage,
+  JsonRpcEventSharedFields,
+  JsonRpcEventStatus,
+} from "../events/types.js";
 import { appendWalEntry } from "../state/wal.js";
 import { buildIdempotencyCacheKey } from "../infra/idempotency.js";
 import { runWithJsonRpcContext } from "../infra/jsonRpcContext.js";
 import { assembleJsonRpcRuntime } from "../infra/runtime.js";
 import { runtimeTimers, type IntervalHandle } from "../runtime/timers.js";
+import {
+  getMutableJsonRpcRequestHandlerRegistry,
+  type InternalJsonRpcHandler,
+} from "../mcp/jsonRpcInternals.js";
 import {
   runWithRpcTrace,
   annotateTraceContext,
@@ -94,20 +105,6 @@ export interface OrchestratorController {
   /** Validates and executes a JSON-RPC request, returning the serialised response. */
   handleJsonRpc(request: JsonRpcRequest, context?: JsonRpcRouteContext): Promise<JsonRpcResponse>;
 }
-
-/** Signature of the internal request handler registered by the MCP SDK. */
-type InternalJsonRpcHandler = (
-  request: { jsonrpc: "2.0"; id: string | number | null; method: string; params?: unknown },
-  extra: {
-    signal: AbortSignal;
-    sessionId?: string;
-    sendNotification: (notification: unknown) => Promise<void>;
-    sendRequest: (req: unknown, schema?: unknown, options?: unknown) => Promise<unknown>;
-    authInfo?: unknown;
-    requestId: string | number | null;
-    requestInfo?: { headers?: Record<string, string> };
-  },
-) => Promise<unknown> | unknown;
 
 function normaliseJsonRpcInvocation(method: string, params: unknown): { method: string; params?: unknown } {
   const trimmed = method.trim();
@@ -501,35 +498,89 @@ export function createOrchestratorController(
     const metricMethod = deriveMetricMethodLabel(input.method, input.toolName ?? null);
 
     annotateTraceContext({ method: metricMethod });
-    const payload = {
-      msg: `jsonrpc_${input.stage}`,
+    const jsonRpcMessage = `jsonrpc_${input.stage}` as JsonRpcEventMessage;
+
+    // Clamp optional numeric telemetry (elapsed, duration, bytes, timeout) to non-negative integers while
+    // preserving `null` for absent measurements so downstream serialisation reste déterministe.
+    const normaliseOptionalMetric = (value: number | null | undefined): number | null => {
+      if (typeof value !== "number" || !Number.isFinite(value)) {
+        return null;
+      }
+      if (value < 0) {
+        return 0;
+      }
+      return Math.round(value);
+    };
+
+    // Ensure the emitted payload status matches the JSON-RPC stage; unexpected values are coerced to the
+    // documented lifecycle token so dashboards keep a stable contract.
+    const resolveStatus = <M extends JsonRpcEventMessage>(
+      message: M,
+      status: JsonRpcObservabilityInput["status"],
+    ): JsonRpcEventPayloadByMessage<M>["status"] => {
+      const fallback: JsonRpcEventStatus =
+        message === "jsonrpc_request" ? "pending" : message === "jsonrpc_response" ? "ok" : "error";
+      const candidate = status ?? fallback;
+      return (candidate === fallback ? candidate : fallback) as JsonRpcEventPayloadByMessage<M>["status"];
+    };
+
+    const sharedFields: JsonRpcEventSharedFields = {
       method: input.method,
       metric_method: metricMethod,
       tool: input.toolName ?? null,
       request_id: input.requestId ?? null,
       transport: input.transport ?? null,
-      status: input.status ?? null,
-      elapsed_ms:
-        typeof input.elapsedMs === "number" && Number.isFinite(input.elapsedMs)
-          ? Math.max(0, Math.round(input.elapsedMs))
-          : null,
+      elapsed_ms: normaliseOptionalMetric(input.elapsedMs ?? null),
       trace_id: trace?.traceId ?? null,
       span_id: trace?.spanId ?? null,
-      duration_ms: duration !== null ? Math.round(duration) : null,
-      bytes_in: bytesIn !== null ? Math.round(bytesIn) : null,
-      bytes_out: bytesOut !== null ? Math.round(bytesOut) : null,
+      duration_ms: normaliseOptionalMetric(duration),
+      bytes_in: normaliseOptionalMetric(bytesIn),
+      bytes_out: normaliseOptionalMetric(bytesOut),
       run_id: input.correlation.runId ?? null,
       op_id: input.correlation.opId ?? null,
       child_id: input.correlation.childId ?? null,
       job_id: input.correlation.jobId ?? null,
       idempotency_key: input.idempotencyKey ?? null,
-      error_message: input.errorMessage ?? null,
-      error_code: input.errorCode ?? null,
-      timeout_ms:
-        typeof input.timeoutMs === "number" && Number.isFinite(input.timeoutMs)
-          ? Math.max(0, Math.round(input.timeoutMs))
-          : null,
-    } as const;
+      timeout_ms: normaliseOptionalMetric(input.timeoutMs ?? null),
+    } satisfies JsonRpcEventSharedFields;
+
+    let payload: JsonRpcEventPayload;
+    switch (jsonRpcMessage) {
+      case "jsonrpc_request": {
+        const requestPayload = {
+          msg: "jsonrpc_request",
+          status: resolveStatus("jsonrpc_request", input.status),
+          error_message: null,
+          error_code: null,
+          ...sharedFields,
+        } satisfies JsonRpcEventPayloadByMessage<"jsonrpc_request">;
+        payload = requestPayload;
+        break;
+      }
+      case "jsonrpc_response": {
+        const responsePayload = {
+          msg: "jsonrpc_response",
+          status: resolveStatus("jsonrpc_response", input.status),
+          error_message: null,
+          error_code: null,
+          ...sharedFields,
+        } satisfies JsonRpcEventPayloadByMessage<"jsonrpc_response">;
+        payload = responsePayload;
+        break;
+      }
+      case "jsonrpc_error":
+      default: {
+        const errorPayload = {
+          msg: "jsonrpc_error",
+          status: resolveStatus("jsonrpc_error", input.status),
+          error_message: input.errorMessage ?? null,
+          error_code: input.errorCode ?? null,
+          ...sharedFields,
+        } satisfies JsonRpcEventPayloadByMessage<"jsonrpc_error">;
+        payload = errorPayload;
+        break;
+      }
+    }
 
     if (input.stage === "error") {
       registerRpcError(input.errorCode ?? null);
@@ -537,9 +588,8 @@ export function createOrchestratorController(
       registerRpcSuccess();
     }
 
-    let envelope: ReturnType<EventBus["publish"]> | undefined;
     try {
-      envelope = eventBus.publish({
+      eventBus.publish<typeof payload.msg>({
         cat: "scheduler",
         level: input.stage === "error" ? "error" : "info",
         runId: input.correlation.runId ?? null,
@@ -547,7 +597,7 @@ export function createOrchestratorController(
         childId: input.correlation.childId ?? null,
         jobId: input.correlation.jobId ?? null,
         component: "jsonrpc",
-        stage: payload.msg,
+        stage: jsonRpcMessage,
         elapsedMs: payload.elapsed_ms ?? undefined,
         kind: `JSONRPC_${input.stage.toUpperCase()}`,
         msg: payload.msg,
@@ -565,8 +615,9 @@ export function createOrchestratorController(
       );
     }
 
-    const seq = envelope?.seq;
-    const ts = envelope?.ts;
+    const latestEnvelope = eventBus.list({ limit: 1 }).at(-1);
+    const seq = latestEnvelope?.seq;
+    const ts = latestEnvelope?.ts;
     try {
       const level = input.stage === "error" ? "error" : "info";
       const baseEntry = {
@@ -671,13 +722,13 @@ export function createOrchestratorController(
     context: JsonRpcRouteContext = {},
   ): Promise<unknown> => {
     const originalMethod = method.trim();
-    const internalServer = server.server as unknown as {
-      _requestHandlers?: Map<string, InternalJsonRpcHandler>;
-    };
-
-    const handlers = internalServer._requestHandlers;
-    if (!handlers) {
-      throw new Error("JSON-RPC handlers not initialised");
+    let handlers: Map<string, InternalJsonRpcHandler>;
+    try {
+      handlers = getMutableJsonRpcRequestHandlerRegistry(server);
+    } catch (error) {
+      throw new Error("JSON-RPC handlers not initialised", {
+        cause: error instanceof Error ? error : undefined,
+      });
     }
 
     let invocation = normaliseJsonRpcInvocation(method, params);

@@ -82,7 +82,7 @@ describe("child conversational tools", () => {
 
     const handled = await __httpServerInternals.tryHandleJsonRpc(
       httpRequest,
-      httpResponse as any,
+      httpResponse,
       logger,
       async (payload, context) => handleJsonRpc(payload, context),
     );
@@ -146,7 +146,7 @@ describe("child conversational tools", () => {
 
     const handled = await __httpServerInternals.tryHandleJsonRpc(
       httpRequest,
-      httpResponse as any,
+      httpResponse,
       logger,
       async (payload, context) => handleJsonRpc(payload, context),
     );

@@ -53,4 +53,50 @@ describe("coordination contract-net basic", () => {
     expect(completed.status).to.equal("completed");
     expect(coordinator.getAgent("beta")?.activeAssignments).to.equal(0);
   });
+
+  it("normalises optional contract-net inputs when undefined is provided", () => {
+    const clock = new ManualClock();
+    const coordinator = new ContractNetCoordinator({ now: () => clock.now() });
+
+    // Registering with explicit undefined inputs should yield the same defaults
+    // as omitting the properties entirely.
+    const agent = coordinator.registerAgent("gamma", {
+      baseCost: 5,
+      reliability: undefined,
+      tags: undefined,
+      metadata: undefined,
+    });
+
+    expect(agent.tags).to.deep.equal([]);
+    expect(agent.metadata).to.deep.equal({});
+
+    const announcement = coordinator.announce({
+      taskId: "optional-task",
+      tags: undefined,
+      metadata: undefined,
+      deadlineMs: undefined,
+      heuristics: {
+        preferAgents: undefined,
+        agentBias: undefined,
+        busyPenalty: undefined,
+        preferenceBonus: undefined,
+      },
+      autoBid: undefined,
+      correlation: { runId: undefined },
+      pheromoneBounds: undefined,
+    });
+
+    expect(announcement.tags).to.deep.equal([]);
+    expect(announcement.heuristics.preferAgents).to.deep.equal([]);
+    expect(announcement.correlation).to.equal(null);
+
+    // Updating bounds with undefined refresh flags must keep defaults intact.
+    const refreshed = coordinator.updateCallPheromoneBounds(announcement.callId, null, {
+      refreshAutoBids: undefined,
+      includeNewAgents: undefined,
+    });
+
+    expect(refreshed.pheromoneBounds).to.equal(null);
+    expect(refreshed.refreshedAgents).to.deep.equal(["gamma"]);
+  });
 });

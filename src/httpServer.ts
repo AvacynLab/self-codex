@@ -38,8 +38,23 @@ import {
   type JsonRpcErrorOptions,
 } from "./rpc/errors.js";
 
-type HttpTransportRequest = Parameters<StreamableHTTPServerTransport["handleRequest"]>[0];
-type HttpTransportResponse = Parameters<StreamableHTTPServerTransport["handleRequest"]>[1];
+export type HttpTransportRequest = Parameters<StreamableHTTPServerTransport["handleRequest"]>[0];
+export type HttpTransportResponse = Parameters<StreamableHTTPServerTransport["handleRequest"]>[1];
+
+type LightweightHttpResponse = HttpTransportResponse | HttpResponseLike;
+
+/**
+ * Minimal contract implemented by the in-memory HTTP doubles used across the
+ * test-suite. The interface mirrors the subset of the Node.js response surface
+ * exercised by the JSON-RPC fast-path so suites can rely on structural typing
+ * without resorting to double casts.
+ */
+export interface HttpResponseLike {
+  statusCode: number;
+  headersSent: boolean;
+  setHeader(name: string, value: number | string | readonly string[]): unknown;
+  end(...args: Parameters<HttpTransportResponse["end"]>): unknown;
+}
 
 /** Maximum payload size accepted by the lightweight JSON handler (1 MiB). */
 const MAX_JSON_RPC_BYTES = 1 * 1024 * 1024;
@@ -364,7 +379,7 @@ export async function startHttpServer(
  */
 async function handleHealthCheck(
   req: HttpTransportRequest,
-  res: HttpTransportResponse,
+  res: LightweightHttpResponse,
   logger: StructuredLogger,
   requestId: string,
 ): Promise<void> {
@@ -399,7 +414,7 @@ async function handleHealthCheck(
 /** Handles `/readyz` by delegating to the orchestrator-provided readiness hook. */
 async function handleReadyCheck(
   req: HttpTransportRequest,
-  res: HttpTransportResponse,
+  res: LightweightHttpResponse,
   logger: StructuredLogger,
   requestId: string,
   readiness: HttpReadinessExtras | undefined,
@@ -453,7 +468,7 @@ function shouldAllowUnauthenticatedRequests(): boolean {
 
 function enforceBearerToken(
   req: HttpTransportRequest,
-  res: HttpTransportResponse,
+  res: LightweightHttpResponse,
   logger: StructuredLogger,
   requestId: string,
   meta: HttpErrorMeta = {},
@@ -494,7 +509,7 @@ function enforceBearerToken(
  */
 function enforceRateLimit(
   key: string,
-  res: HttpTransportResponse,
+  res: LightweightHttpResponse,
   logger: StructuredLogger,
   requestId: string,
   meta: HttpErrorMeta = {},
@@ -518,7 +533,7 @@ function enforceRateLimit(
  */
 async function tryHandleJsonRpc(
   req: HttpTransportRequest,
-  res: HttpTransportResponse,
+  res: LightweightHttpResponse,
   logger: StructuredLogger,
   requestIdOrDelegate?: string | ((request: JsonRpcRequest, context?: JsonRpcRouteContext) => Promise<unknown>),
   delegateParam?: (request: JsonRpcRequest, context?: JsonRpcRouteContext) => Promise<unknown>,
@@ -818,7 +833,7 @@ interface JsonRpcOutcomeDetails extends HttpErrorMeta {
  * idempotency layer is active, keeping HTTP error handling consistent across the server.
  */
 async function respondWithJsonRpcError(
-  res: HttpTransportResponse,
+  res: LightweightHttpResponse,
   status: number,
   category: JsonRpcErrorCategory,
   message: string,
@@ -885,7 +900,7 @@ function computeDurationMs(startedAt?: bigint): number {
 }
 
 async function sendJson(
-  res: HttpTransportResponse,
+  res: LightweightHttpResponse,
   status: number,
   payload: unknown,
   shouldPersist: boolean,

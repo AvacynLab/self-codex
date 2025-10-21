@@ -12,27 +12,19 @@ import {
 import type { HierGraph } from "../src/graph/hierarchy.js";
 import { BlackboardStore } from "../src/coord/blackboard.js";
 import { StigmergyField } from "../src/coord/stigmergy.js";
+import { createPlanToolContext, createSpyPlanLogger } from "./helpers/planContext.js";
 
 /** Build a minimal plan tool context with blackboard support for integration tests. */
 function buildPlanContext(clock: sinon.SinonFakeTimers) {
-  const logger = {
-    info: sinon.spy(),
-    warn: sinon.spy(),
-    error: sinon.spy(),
-    debug: sinon.spy(),
-  };
+  const { logger, spies: loggerSpies } = createSpyPlanLogger();
   const blackboard = new BlackboardStore({ now: () => clock.now });
-  const context: PlanToolContext = {
-    supervisor: {} as PlanToolContext["supervisor"],
-    graphState: {} as PlanToolContext["graphState"],
-    logger: logger as unknown as PlanToolContext["logger"],
-    childrenRoot: "/tmp",
-    defaultChildRuntime: "codex",
-    emitEvent: () => {},
+  const context = createPlanToolContext({
+    logger,
     stigmergy: new StigmergyField({ now: () => clock.now }),
     blackboard,
-  };
-  return { context, logger, blackboard };
+    emitEvent: () => {},
+  });
+  return { context, loggerSpies, blackboard };
 }
 
 describe("hierarchical plan → BT compile → reactive run", () => {
@@ -47,7 +39,7 @@ describe("hierarchical plan → BT compile → reactive run", () => {
   });
 
   it("reorders scheduler ticks after a bb_set task updates the blackboard", async () => {
-    const { context, logger, blackboard } = buildPlanContext(clock);
+    const { context, loggerSpies, blackboard } = buildPlanContext(clock);
 
     const hierGraph: HierGraph = {
       id: "hier-e2e",
@@ -93,7 +85,7 @@ describe("hierarchical plan → BT compile → reactive run", () => {
     expect(blackboard.get("priority-task")).to.not.equal(undefined);
     expect(result.scheduler_ticks).to.be.greaterThan(0);
     expect(
-      (logger.info as sinon.SinonSpy).calledWithMatch(
+      loggerSpies.info.calledWithMatch(
         "plan_run_reactive_blackboard_event",
         sinon.match({ key: "priority-task" }),
       ),

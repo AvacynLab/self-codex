@@ -2,10 +2,19 @@ import { describe, it, beforeEach, afterEach } from "mocha";
 import { expect } from "chai";
 import sinon from "sinon";
 
-import type { ChildRuntimeMessage } from "../src/childRuntime.js";
+import type {
+  ChildCollectedOutputs,
+  ChildMessageStreamOptions,
+  ChildRuntimeMessage,
+} from "../src/childRuntime.js";
 import type { ChildRecordSnapshot } from "../src/state/childrenIndex.js";
-import type { ChildMessageStreamResult, SendResult } from "../src/children/supervisor.js";
-import type { ChildSupervisor } from "../src/children/supervisor.js";
+import type {
+  ChildMessageStreamResult,
+  ChildShutdownResult,
+  ChildStatusSnapshot,
+  ChildSupervisorContract,
+  SendResult,
+} from "../src/children/supervisor.js";
 import { ChildSendInputSchema, handleChildSend } from "../src/tools/childTools.js";
 import type { ChildToolContext } from "../src/tools/childTools.js";
 import { LoopDetector } from "../src/guard/loopDetector.js";
@@ -21,13 +30,16 @@ import type { BehaviorTickResult } from "../src/executor/bt/types.js";
 import type { GraphDescriptorPayload } from "../src/tools/graphTools.js";
 import { GraphRewriteApplyInputSchema, handleGraphRewriteApply } from "../src/tools/graphTools.js";
 import type { GraphAttributeValue } from "../src/graph/types.js";
+import { createSpyPlanLogger } from "./helpers/planContext.js";
 
 /**
  * Lightweight supervisor double that keeps enough state for the rewrite
  * scenario. The stub records every message exchange so the loop detector can
  * raise warnings and drive rewrite requests through the orchestrator supervisor.
  */
-class LoopingChildSupervisorStub implements SupervisorChildManager {
+class LoopingChildSupervisorStub
+  implements SupervisorChildManager, ChildSupervisorContract
+{
   public readonly childId = "child-loop";
   private readonly baseSnapshot: ChildRecordSnapshot;
   private readonly messages: ChildRuntimeMessage[] = [];
@@ -68,7 +80,46 @@ class LoopingChildSupervisorStub implements SupervisorChildManager {
       childId === this.childId ? this.snapshot() : undefined,
   };
 
-  stream(childId: string, options?: { limit?: number }): ChildMessageStreamResult {
+  createChildId(): string {
+    return this.childId;
+  }
+
+  async createChild(): Promise<never> {
+    throw new Error("LoopingChildSupervisorStub.createChild not implemented");
+  }
+
+  async registerHttpChild(): Promise<never> {
+    throw new Error("LoopingChildSupervisorStub.registerHttpChild not implemented");
+  }
+
+  getHttpEndpoint(): { url: string; headers: Record<string, string> } | null {
+    return null;
+  }
+
+  status(childId: string): ChildStatusSnapshot {
+    if (childId !== this.childId) {
+      throw new Error(`unexpected child ${childId}`);
+    }
+    const index = this.snapshot();
+    return {
+      runtime: {
+        childId: index.childId,
+        pid: index.pid,
+        command: "stub",
+        args: [],
+        workdir: index.workdir,
+        startedAt: index.startedAt,
+        lastHeartbeatAt: index.lastHeartbeatAt,
+        lifecycle: "running",
+        closed: false,
+        exit: null,
+        resourceUsage: null,
+      },
+      index,
+    } satisfies ChildStatusSnapshot;
+  }
+
+  stream(childId: string, options?: ChildMessageStreamOptions): ChildMessageStreamResult {
     if (childId !== this.childId) {
       throw new Error(`unexpected child ${childId}`);
     }
@@ -85,7 +136,10 @@ class LoopingChildSupervisorStub implements SupervisorChildManager {
     };
   }
 
-  getAllowedTools(): readonly string[] {
+  getAllowedTools(childId: string): readonly string[] {
+    if (childId !== this.childId) {
+      throw new Error(`unexpected child ${childId}`);
+    }
     return [];
   }
 
@@ -119,12 +173,47 @@ class LoopingChildSupervisorStub implements SupervisorChildManager {
     return message;
   }
 
-  async cancel(): Promise<void> {
-    // No-op: the scenario never escalates to cancellation.
+  async collect(childId: string): Promise<ChildCollectedOutputs> {
+    if (childId !== this.childId) {
+      throw new Error(`unexpected child ${childId}`);
+    }
+    return {
+      childId,
+      manifestPath: `/tmp/${childId}/manifest.json`,
+      logPath: `/tmp/${childId}/log.ndjson`,
+      messages: this.messages.map((message) => ({ ...message })),
+      artifacts: [],
+    } satisfies ChildCollectedOutputs;
   }
 
-  async kill(): Promise<void> {
-    // No-op: kill paths are out of scope for this regression.
+  async attachChild(): Promise<ChildStatusSnapshot> {
+    throw new Error("LoopingChildSupervisorStub.attachChild not implemented");
+  }
+
+  async setChildRole(): Promise<ChildStatusSnapshot> {
+    throw new Error("LoopingChildSupervisorStub.setChildRole not implemented");
+  }
+
+  async setChildLimits(): Promise<ChildStatusSnapshot & { limits: null }> {
+    throw new Error("LoopingChildSupervisorStub.setChildLimits not implemented");
+  }
+
+  async cancel(): Promise<ChildShutdownResult> {
+    // The scenario never escalates to cancellation; surface a deterministic snapshot for completeness.
+    return { code: null, signal: null, forced: false, durationMs: 0 };
+  }
+
+  async kill(): Promise<ChildShutdownResult> {
+    // Kill paths are out of scope for this regression but the contract expects a shutdown summary.
+    return { code: null, signal: "SIGKILL", forced: true, durationMs: 0 };
+  }
+
+  async waitForExit(): Promise<ChildShutdownResult> {
+    throw new Error("LoopingChildSupervisorStub.waitForExit not implemented");
+  }
+
+  gc(): void {
+    // No-op: the stub never registers additional children.
   }
 }
 
@@ -226,17 +315,11 @@ describe("rewrite recovery end-to-end flow", function () {
       },
     });
 
-    const logger = {
-      info: sinon.spy(),
-      warn: sinon.spy(),
-      error: sinon.spy(),
-      debug: sinon.spy(),
-      logCognitive: sinon.spy(),
-    };
+    const { logger } = createSpyPlanLogger();
 
     const childContext: ChildToolContext = {
-      supervisor: childProcessSupervisorStub as unknown as ChildSupervisor,
-      logger: logger as unknown as ChildToolContext["logger"],
+      supervisor: childProcessSupervisorStub,
+      logger,
       loopDetector,
       supervisorAgent,
     };

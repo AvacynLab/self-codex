@@ -4,7 +4,7 @@ import sinon from "sinon";
 
 import { IdempotencyRegistry } from "../src/infra/idempotency.js";
 import { ChildCreateInputSchema, handleChildCreate, type ChildToolContext } from "../src/tools/childTools.js";
-import type { ChildSupervisor } from "../src/children/supervisor.js";
+import type { ChildSupervisorContract } from "../src/children/supervisor.js";
 import type { ChildRuntimeStatus } from "../src/childRuntime.js";
 import type { ChildRecordSnapshot } from "../src/state/childrenIndex.js";
 import {
@@ -12,7 +12,6 @@ import {
   PlanRunReactiveInputSchema,
   handlePlanRunBT,
   handlePlanRunReactive,
-  type PlanToolContext,
 } from "../src/tools/planTools.js";
 import { StigmergyField } from "../src/coord/stigmergy.js";
 import { handleCnpAnnounce, CnpAnnounceInputSchema, type CoordinationToolContext } from "../src/tools/coordTools.js";
@@ -22,22 +21,16 @@ import { handleTxBegin, TxBeginInputSchema, type TxToolContext } from "../src/to
 import { GraphTransactionManager } from "../src/graph/tx.js";
 import { ResourceRegistry } from "../src/resources/registry.js";
 import { GraphLockManager } from "../src/graph/locks.js";
-import type { StructuredLogger } from "../src/logger.js";
 import {
   GraphBatchMutateInputSchema,
   handleGraphBatchMutate,
   type GraphBatchToolContext,
 } from "../src/tools/graphBatchTools.js";
 import { normaliseGraphPayload, type GraphDescriptorPayload } from "../src/tools/graphTools.js";
-
-function createLoggerSpy(): StructuredLogger {
-  return {
-    info: sinon.spy(),
-    warn: sinon.spy(),
-    error: sinon.spy(),
-    debug: sinon.spy(),
-  } as unknown as StructuredLogger;
-}
+import { createPlanToolContext, createSpyPlanLogger } from "./helpers/planContext.js";
+import { createStubChildSupervisor } from "./helpers/childSupervisor.js";
+import { createStubChildRuntime } from "./helpers/childRuntime.js";
+import { RecordingLogger } from "./helpers/recordingLogger.js";
 
 describe("idempotency cache integrations", () => {
   let clock: sinon.SinonFakeTimers;
@@ -52,7 +45,7 @@ describe("idempotency cache integrations", () => {
 
   it("replays child_create once the result is cached", async () => {
     const registry = new IdempotencyRegistry({ defaultTtlMs: 1_000, clock: () => clock.now });
-    const logger = createLoggerSpy();
+    const logger = new RecordingLogger();
     const runtimeStatus: ChildRuntimeStatus = {
       childId: "child-1",
       pid: 1234,
@@ -84,16 +77,40 @@ describe("idempotency cache integrations", () => {
       limits: null,
       attachedAt: null,
     };
-    const runtime = {
+    const runtime = createStubChildRuntime({
+      childId: runtimeStatus.childId,
       manifestPath: "/tmp/child-1/manifest.json",
       logPath: "/tmp/child-1/log.ndjson",
-      getStatus: () => runtimeStatus,
-    };
-    const createChild = sinon.stub().resolves({ childId: "child-1", runtime, index: indexSnapshot, readyMessage: null });
-    const send = sinon.stub().resolves();
+      status: runtimeStatus,
+    });
+    const snapshotClone = (): ChildRecordSnapshot => ({
+      ...indexSnapshot,
+      metadata: { ...indexSnapshot.metadata },
+    });
+    const createChild = sinon.spy<
+      Parameters<ChildSupervisorContract["createChild"]>,
+      ReturnType<ChildSupervisorContract["createChild"]>
+    >(async () => ({
+      childId: runtimeStatus.childId,
+      runtime,
+      index: snapshotClone(),
+      readyMessage: null,
+    }));
+    const send = sinon.spy<
+      Parameters<ChildSupervisorContract["send"]>,
+      ReturnType<ChildSupervisorContract["send"]>
+    >(async () => ({ messageId: `${runtimeStatus.childId}:0`, sentAt: clock.now }));
+    const supervisor = createStubChildSupervisor({
+      childrenIndex: {
+        list: () => [snapshotClone()],
+        getChild: (childId) => (childId === indexSnapshot.childId ? snapshotClone() : undefined),
+      },
+      createChild,
+      send,
+    });
 
     const context: ChildToolContext = {
-      supervisor: { createChild, send } as unknown as ChildSupervisor,
+      supervisor,
       logger,
       contractNet: undefined,
       supervisorAgent: undefined,
@@ -127,18 +144,14 @@ describe("idempotency cache integrations", () => {
 
   it("returns cached plan_run_bt results on retries", async () => {
     const registry = new IdempotencyRegistry({ defaultTtlMs: 5_000, clock: () => clock.now });
-    const logger = createLoggerSpy();
     const events: Array<{ kind: string; payload: unknown }> = [];
-    const context: PlanToolContext = {
-      supervisor: {} as PlanToolContext["supervisor"],
-      graphState: {} as PlanToolContext["graphState"],
+    const { logger, spies } = createSpyPlanLogger();
+    const context = createPlanToolContext({
       logger,
-      childrenRoot: "/tmp",
-      defaultChildRuntime: "codex",
       emitEvent: (event) => events.push(event),
       stigmergy: new StigmergyField(),
       idempotency: registry,
-    };
+    });
     const input = PlanRunBTInputSchema.parse({
       tree: {
         id: "cached-run",
@@ -154,23 +167,19 @@ describe("idempotency cache integrations", () => {
     expect(first.idempotent).to.equal(false);
     expect(second.idempotent).to.equal(true);
     expect(second.run_id).to.equal(first.run_id);
-    expect(logger.info.calledWithMatch("plan_run_bt_replayed", { idempotency_key: "plan-1" })).to.equal(true);
+    expect(spies.info.calledWithMatch("plan_run_bt_replayed", { idempotency_key: "plan-1" })).to.equal(true);
   });
 
   it("replays plan_run_reactive results on retries", async () => {
     const registry = new IdempotencyRegistry({ defaultTtlMs: 5_000, clock: () => clock.now });
-    const logger = createLoggerSpy();
     const events: Array<{ kind: string; payload: unknown }> = [];
-    const context: PlanToolContext = {
-      supervisor: {} as PlanToolContext["supervisor"],
-      graphState: {} as PlanToolContext["graphState"],
+    const { logger, spies } = createSpyPlanLogger();
+    const context = createPlanToolContext({
       logger,
-      childrenRoot: "/tmp",
-      defaultChildRuntime: "codex",
       emitEvent: (event) => events.push(event),
       stigmergy: new StigmergyField(),
       idempotency: registry,
-    };
+    });
     const input = PlanRunReactiveInputSchema.parse({
       tree: {
         id: "cached-reactive",
@@ -189,12 +198,15 @@ describe("idempotency cache integrations", () => {
     expect(first.idempotent).to.equal(false);
     expect(second.idempotent).to.equal(true);
     expect(second.run_id).to.equal(first.run_id);
-    expect(logger.info.calledWithMatch("plan_run_reactive_replayed", { idempotency_key: "plan-reactive-1" })).to.equal(true);
+    expect(spies.info.calledWithMatch("plan_run_reactive_replayed", { idempotency_key: "plan-reactive-1" })).to.equal(true);
   });
 
   it("replays cnp_announce decisions when the key matches", () => {
     const registry = new IdempotencyRegistry({ defaultTtlMs: 2_000, clock: () => clock.now });
-    const logger = createLoggerSpy();
+    const logger = new RecordingLogger();
+    // Instrument the logger with Sinon so the test can assert on structured
+    // info-level telemetry without mutating the production logger surface.
+    sinon.spy(logger, "info");
     const contractNet = new ContractNetCoordinator();
     const announceSpy = sinon.spy(contractNet, "announce");
     const bidSpy = sinon.spy(contractNet, "bid");

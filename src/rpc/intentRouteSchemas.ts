@@ -71,12 +71,30 @@ const IntentRouteBudgetDetailsSchema = z
   })
   .strict();
 
+/**
+ * Deterministic payload surfaced when the contextual router is disabled via
+ * feature flagging. Returning a structured object keeps the façade aligned with
+ * the public schema so downstream consumers do not need special casing when the
+ * router cannot operate.
+ */
+const IntentRouteDisabledDetailsSchema = z
+  .object({
+    idempotency_key: z.string().min(1),
+    reason: z.literal("router_disabled"),
+    diagnostics: IntentRouteDiagnosticsSchema.optional(),
+  })
+  .strict();
+
 /** Structured result returned by the façade. */
 export const IntentRouteOutputSchema = z
   .object({
     ok: z.boolean(),
     summary: z.string().min(1),
-    details: z.union([IntentRouteSuccessDetailsSchema, IntentRouteBudgetDetailsSchema]),
+    details: z.union([
+      IntentRouteSuccessDetailsSchema,
+      IntentRouteBudgetDetailsSchema,
+      IntentRouteDisabledDetailsSchema,
+    ]),
   })
   .strict();
 

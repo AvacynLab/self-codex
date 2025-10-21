@@ -64,4 +64,35 @@ describe("coordination blackboard key/value", () => {
     expect(history.map((event) => event.kind)).to.deep.equal(["set", "set", "expire"]);
     expect(history[1].previous?.value).to.deep.equal({ payload: 1 });
   });
+
+  it("accepts explicit undefined values on optional blackboard inputs", () => {
+    const store = new BlackboardStore();
+
+    // Passing `undefined` explicitly must mirror the behaviour of omitted fields
+    // so enabling `exactOptionalPropertyTypes` remains a no-op for callers.
+    const created = store.set(
+      "beta",
+      { payload: 3 },
+      { tags: undefined, ttlMs: undefined },
+    );
+
+    expect(created.tags).to.deep.equal([]);
+    expect(created.expiresAt).to.equal(null);
+
+    const [batch] = store.batchSet([
+      {
+        key: "gamma",
+        value: { payload: 4 },
+        // Ensures the batch path also tolerates explicit undefined optionals.
+        tags: undefined,
+        ttlMs: undefined,
+      },
+    ]);
+
+    expect(batch.tags).to.deep.equal([]);
+    expect(batch.expiresAt).to.equal(null);
+
+    const results = store.query({ keys: undefined, tags: undefined });
+    expect(results.map((entry) => entry.key).sort()).to.deep.equal(["beta", "gamma"]);
+  });
 });

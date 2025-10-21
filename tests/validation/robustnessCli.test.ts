@@ -1,6 +1,6 @@
 import { describe, it, beforeEach, afterEach } from "mocha";
 import { expect } from "chai";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -8,7 +8,11 @@ import {
   executeRobustnessCli,
   parseRobustnessCliOptions,
 } from "../../src/validation/robustnessCli.js";
-import { ROBUSTNESS_JSONL_FILES } from "../../src/validation/robustness.js";
+import {
+  ROBUSTNESS_JSONL_FILES,
+  type RobustnessPhaseOptions,
+  type RobustnessPhaseResult,
+} from "../../src/validation/robustness.js";
 
 /** CLI-level tests ensuring the Stage 9 workflow remains ergonomic. */
 describe("robustness validation CLI", () => {
@@ -125,5 +129,69 @@ describe("robustness validation CLI", () => {
     expect(flattenedLogs).to.contain(ROBUSTNESS_JSONL_FILES.log);
     expect(flattenedLogs).to.contain("Robustness validation run");
     expect(flattenedLogs).to.contain("Timeout status token: timeout");
+  });
+
+  it("only forwards robustness defaults when they contain data", async () => {
+    const logger = { log: () => undefined };
+    const env = {
+      MCP_HTTP_HOST: "127.0.0.1",
+      MCP_HTTP_PORT: "9002",
+      MCP_HTTP_PATH: "/mcp",
+    } as NodeJS.ProcessEnv;
+
+    const stubSummary: RobustnessPhaseResult["summary"] = {
+      artefacts: {
+        inputsJsonl: ROBUSTNESS_JSONL_FILES.inputs,
+        outputsJsonl: ROBUSTNESS_JSONL_FILES.outputs,
+        eventsJsonl: ROBUSTNESS_JSONL_FILES.events,
+        httpSnapshotLog: ROBUSTNESS_JSONL_FILES.log,
+      },
+      checks: [],
+    };
+
+    let emptyOptions: RobustnessPhaseOptions | undefined;
+    const emptyRunner = async (
+      runRoot: string,
+      environment: unknown,
+      options: RobustnessPhaseOptions,
+    ): Promise<RobustnessPhaseResult> => {
+      emptyOptions = options;
+      const summaryPath = join(runRoot, "report", "robustness_summary.json");
+      await writeFile(summaryPath, JSON.stringify(stubSummary, null, 2));
+      return { outcomes: [], summary: stubSummary, summaryPath };
+    };
+
+    await executeRobustnessCli(
+      { baseDir: workingDir, runId: "no-defaults" },
+      env,
+      logger,
+      { runner: emptyRunner },
+    );
+
+    expect(Object.prototype.hasOwnProperty.call(emptyOptions ?? {}, "defaults")).to.equal(false);
+
+    let mergedOptions: RobustnessPhaseOptions | undefined;
+    const withDefaultsRunner = async (
+      runRoot: string,
+      environment: unknown,
+      options: RobustnessPhaseOptions,
+    ): Promise<RobustnessPhaseResult> => {
+      mergedOptions = options;
+      const summaryPath = join(runRoot, "report", "robustness_summary.json");
+      await writeFile(summaryPath, JSON.stringify(stubSummary, null, 2));
+      return { outcomes: [], summary: stubSummary, summaryPath };
+    };
+
+    await executeRobustnessCli(
+      { baseDir: workingDir, runId: "with-defaults" },
+      env,
+      logger,
+      {
+        phaseOptions: { defaults: { idempotencyKey: "base" } },
+        runner: withDefaultsRunner,
+      },
+    );
+
+    expect(mergedOptions?.defaults?.idempotencyKey).to.equal("base");
   });
 });

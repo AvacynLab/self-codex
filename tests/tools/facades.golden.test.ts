@@ -10,8 +10,6 @@ import type { JsonRpcResponse } from "../../src/server.js";
 import { INTENT_ROUTE_TOOL_NAME, createIntentRouteHandler } from "../../src/tools/intent_route.js";
 import { createToolsHelpHandler } from "../../src/tools/tools_help.js";
 import { PLAN_COMPILE_EXECUTE_TOOL_NAME, createPlanCompileExecuteHandler } from "../../src/tools/plan_compile_execute.js";
-import { StigmergyField } from "../../src/coord/stigmergy.js";
-import { GraphState } from "../../src/graph/state.js";
 import { PlanLifecycleRegistry } from "../../src/executor/planLifecycle.js";
 import { IdempotencyRegistry } from "../../src/infra/idempotency.js";
 import type { ToolBudgets, ToolManifest } from "../../src/mcp/registry.js";
@@ -21,6 +19,7 @@ import type { RequestHandlerExtra, ServerNotification, ServerRequest } from "@mo
 import type { ToolsHelpRegistryView } from "../../src/tools/tools_help.js";
 import type { PlanToolContext } from "../../src/tools/planTools.js";
 import { IntentRouteInputSchema } from "../../src/rpc/schemas.js";
+import { createPlanToolContext } from "../helpers/planContext.js";
 
 /** Absolute path helper resolving fixture files alongside this test module. */
 function resolveFixture(path: string): URL {
@@ -30,17 +29,19 @@ function resolveFixture(path: string): URL {
 /** Recursively removes properties with `undefined` values from JSON snapshots. */
 function stripUndefined<T>(value: T): T {
   if (Array.isArray(value)) {
-    return value.map((entry) => stripUndefined(entry)) as unknown as T;
+    const cleaned = value.map((entry) => stripUndefined(entry));
+    return cleaned as typeof value;
   }
   if (value && typeof value === "object") {
+    const source = value as Record<string, unknown>;
     const result: Record<string, unknown> = {};
-    for (const [key, inner] of Object.entries(value as Record<string, unknown>)) {
+    for (const [key, inner] of Object.entries(source)) {
       const cleaned = stripUndefined(inner);
       if (cleaned !== undefined) {
         result[key] = cleaned;
       }
     }
-    return result as unknown as T;
+    return result as typeof value;
   }
   return value;
 }
@@ -52,7 +53,7 @@ function stripUndefined<T>(value: T): T {
  */
 function createRequestExtras(requestId: string): RequestHandlerExtra<ServerRequest, ServerNotification> {
   const controller = new AbortController();
-  return {
+  const extras: RequestHandlerExtra<ServerRequest, ServerNotification> = {
     signal: controller.signal,
     requestId,
     sendNotification: async () => {
@@ -61,7 +62,8 @@ function createRequestExtras(requestId: string): RequestHandlerExtra<ServerReque
     sendRequest: async () => {
       throw new Error("nested requests are not expected during facade golden tests");
     },
-  } as RequestHandlerExtra<ServerRequest, ServerNotification>;
+  };
+  return extras;
 }
 
 /** Utility returning a structured logger that records entries without printing. */
@@ -145,19 +147,15 @@ function buildBudgetHints(): Record<string, ToolBudgets> {
  * keeping side effects disabled for deterministic tests.
  */
 function buildPlanContext(logger: StructuredLogger): PlanToolContext {
-  return {
-    supervisor: {} as PlanToolContext["supervisor"],
-    graphState: new GraphState(),
+  return createPlanToolContext({
     logger,
     childrenRoot: "/tmp",
-    defaultChildRuntime: "codex",
     emitEvent: () => {
       // Intentionally left blank; golden tests assert outputs, not telemetry.
     },
-    stigmergy: new StigmergyField(),
     planLifecycle: new PlanLifecycleRegistry(),
     planLifecycleFeatureEnabled: true,
-  };
+  });
 }
 
 /** Constructs the structured payload returned by the intent_route façade. */

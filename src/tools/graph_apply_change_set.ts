@@ -490,20 +490,20 @@ export function createGraphApplyChangeSetHandler(
       throw error;
     }
 
-    const fingerprint: GraphApplyChangeSetFingerprint = {
+    const fingerprint = {
       graph_id: parsed.graph_id,
-      expected_version: parsed.expected_version,
       dry_run: dryRun,
-      rationale: parsed.rationale ?? undefined,
-      owner: parsed.owner ?? undefined,
-      note: parsed.note ?? undefined,
-      metadata: metadata ?? undefined,
+      ...(parsed.expected_version !== undefined ? { expected_version: parsed.expected_version } : {}),
+      ...(parsed.rationale !== undefined ? { rationale: parsed.rationale } : {}),
+      ...(parsed.owner !== undefined ? { owner: parsed.owner } : {}),
+      ...(parsed.note !== undefined ? { note: parsed.note } : {}),
+      ...(metadata !== undefined ? { metadata } : {}),
       changes: parsed.changes.map((change) => ({
         op: change.op,
         path: [...change.path],
         value: change.value,
       })),
-    };
+    } satisfies GraphApplyChangeSetFingerprint;
 
     const cacheKey = context.idempotency
       ? buildIdempotencyCacheKey(GRAPH_APPLY_CHANGE_SET_TOOL_NAME, idempotencyKey, fingerprint)

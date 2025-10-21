@@ -14,13 +14,10 @@ import { __httpServerInternals, type HttpReadinessReport } from "../../src/httpS
 import { evaluateHttpReadiness } from "../../src/http/readiness.js";
 import { resetRateLimitBuckets } from "../../src/http/rateLimit.js";
 import { MemoryHttpResponse, createHttpRequest } from "../helpers/http.js";
+import { RecordingLogger } from "../helpers/recordingLogger.js";
 
-function createLogger() {
-  return {
-    info: () => {},
-    warn: () => {},
-    error: () => {},
-  };
+function createLogger(): RecordingLogger {
+  return new RecordingLogger();
 }
 
 describe("http readyz", () => {
@@ -63,13 +60,16 @@ describe("http readyz", () => {
       },
     };
 
-    const request = createHttpRequest("GET", "/readyz", {
-      authorization: "Bearer unit-test-token",
-    });
-    (request as any).socket = { remoteAddress: "127.0.0.1" };
+    const request = createHttpRequest(
+      "GET",
+      "/readyz",
+      { authorization: "Bearer unit-test-token" },
+      undefined,
+      { remoteAddress: "127.0.0.1" },
+    );
     const response = new MemoryHttpResponse();
 
-    await __httpServerInternals.handleReadyCheck(request as any, response as any, createLogger() as any, "req-ready", readiness);
+    await __httpServerInternals.handleReadyCheck(request, response, createLogger(), "req-ready", readiness);
 
     expect(response.statusCode).to.equal(200);
     const payload = JSON.parse(response.body) as HttpReadinessReport;
@@ -85,11 +85,10 @@ describe("http readyz", () => {
       },
     };
 
-    const request = createHttpRequest("GET", "/readyz");
-    (request as any).socket = { remoteAddress: "127.0.0.1" };
+    const request = createHttpRequest("GET", "/readyz", {}, undefined, { remoteAddress: "127.0.0.1" });
     const response = new MemoryHttpResponse();
 
-    await __httpServerInternals.handleReadyCheck(request as any, response as any, createLogger() as any, "req-ready", readiness);
+    await __httpServerInternals.handleReadyCheck(request, response, createLogger(), "req-ready", readiness);
 
     expect(response.statusCode).to.equal(401);
     expect(() => JSON.parse(response.body)).to.not.throw();
@@ -113,14 +112,17 @@ describe("http readyz", () => {
         }),
     };
 
-    const request = createHttpRequest("GET", "/readyz", {
-      authorization: "Bearer unit-test-token",
-    });
-    (request as any).socket = { remoteAddress: "127.0.0.1" };
+    const request = createHttpRequest(
+      "GET",
+      "/readyz",
+      { authorization: "Bearer unit-test-token" },
+      undefined,
+      { remoteAddress: "127.0.0.1" },
+    );
     const response = new MemoryHttpResponse();
 
     try {
-      await __httpServerInternals.handleReadyCheck(request as any, response as any, createLogger() as any, "req-ready", readiness);
+      await __httpServerInternals.handleReadyCheck(request, response, createLogger(), "req-ready", readiness);
 
       expect(response.statusCode).to.equal(503);
       const payload = JSON.parse(response.body) as HttpReadinessReport;
@@ -204,13 +206,16 @@ describe("http readyz", () => {
       },
     };
 
-    const request = createHttpRequest("GET", "/readyz", {
-      authorization: "Bearer unit-test-token",
-    });
-    (request as any).socket = { remoteAddress: "127.0.0.1" };
+    const request = createHttpRequest(
+      "GET",
+      "/readyz",
+      { authorization: "Bearer unit-test-token" },
+      undefined,
+      { remoteAddress: "127.0.0.1" },
+    );
     const response = new MemoryHttpResponse();
 
-    await __httpServerInternals.handleReadyCheck(request as any, response as any, createLogger() as any, "req-ready", readiness);
+    await __httpServerInternals.handleReadyCheck(request, response, createLogger(), "req-ready", readiness);
 
     expect(response.statusCode).to.equal(503);
     const payload = JSON.parse(response.body) as HttpReadinessReport;

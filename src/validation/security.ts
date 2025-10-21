@@ -328,54 +328,57 @@ function buildSecuritySummary(outcomes: readonly SecurityCallOutcome[]): Securit
     method: outcome.call.method,
     status: outcome.check.response.status,
     statusText: outcome.check.response.statusText,
-    expectedStatus: outcome.call.expectedStatus,
     requireAuth: outcome.call.requireAuth !== false,
-    notes: outcome.call.notes,
+    ...(outcome.call.expectedStatus !== undefined
+      ? { expectedStatus: outcome.call.expectedStatus }
+      : {}),
+    ...(outcome.call.notes !== undefined ? { notes: outcome.call.notes } : {}),
   }));
 
   const redactionCalls = outcomes.filter((outcome) => outcome.call.redactionProbe);
+  const redactionSecret = redactionCalls[0]?.call.redactionProbe?.secret ?? "";
+  const redactionDescription = redactionCalls[0]?.call.redactionProbe?.description;
   const unauthorizedCalls = outcomes.filter((outcome) => outcome.call.unauthorizedProbe);
   const pathCalls = outcomes.filter((outcome) => outcome.call.pathProbe);
 
-  let redactionSummary: SecuritySummary["redaction"];
-  if (redactionCalls.length) {
-    const secret = redactionCalls[0]?.call.redactionProbe?.secret ?? "";
-    redactionSummary = {
-      secret,
-      description: redactionCalls[0]?.call.redactionProbe?.description,
-      calls: redactionCalls.map((outcome) => ({
-        scenario: outcome.call.scenario,
-        name: outcome.call.name,
-        leakedInResponse: payloadContainsSecret(outcome.check.response.body, secret),
-        leakedInEvents: outcome.events.some((event) => payloadContainsSecret(event, secret)),
-      })),
-    };
-  }
+  const redactionSummary: SecuritySummary["redaction"] | undefined = redactionCalls.length
+    ? {
+        secret: redactionSecret,
+        ...(redactionDescription !== undefined ? { description: redactionDescription } : {}),
+        calls: redactionCalls.map((outcome) => ({
+          scenario: outcome.call.scenario,
+          name: outcome.call.name,
+          leakedInResponse: payloadContainsSecret(outcome.check.response.body, redactionSecret),
+          leakedInEvents: outcome.events.some((event) => payloadContainsSecret(event, redactionSecret)),
+        })),
+      }
+    : undefined;
 
-  let unauthorizedSummary: SecuritySummary["unauthorized"];
-  if (unauthorizedCalls.length) {
-    unauthorizedSummary = {
-      calls: unauthorizedCalls.map((outcome) => ({
-        scenario: outcome.call.scenario,
-        name: outcome.call.name,
-        status: outcome.check.response.status,
-        success: outcome.check.response.status === 401 || outcome.check.response.status === 403,
-      })),
-    };
-  }
+  const unauthorizedSummary: SecuritySummary["unauthorized"] | undefined = unauthorizedCalls.length
+    ? {
+        calls: unauthorizedCalls.map((outcome) => ({
+          scenario: outcome.call.scenario,
+          name: outcome.call.name,
+          status: outcome.check.response.status,
+          success:
+            outcome.check.response.status === 401 || outcome.check.response.status === 403,
+        })),
+      }
+    : undefined;
 
-  let pathSummary: SecuritySummary["pathValidation"];
-  if (pathCalls.length) {
-    pathSummary = {
-      calls: pathCalls.map((outcome) => ({
-        scenario: outcome.call.scenario,
-        name: outcome.call.name,
-        attemptedPath: outcome.call.pathProbe?.attemptedPath ?? "",
-        status: outcome.check.response.status,
-        description: outcome.call.pathProbe?.description,
-      })),
-    };
-  }
+  const pathSummary: SecuritySummary["pathValidation"] | undefined = pathCalls.length
+    ? {
+        calls: pathCalls.map((outcome) => ({
+          scenario: outcome.call.scenario,
+          name: outcome.call.name,
+          attemptedPath: outcome.call.pathProbe?.attemptedPath ?? "",
+          status: outcome.check.response.status,
+          ...(outcome.call.pathProbe?.description !== undefined
+            ? { description: outcome.call.pathProbe.description }
+            : {}),
+        })),
+      }
+    : undefined;
 
   return {
     artefacts: {
@@ -385,9 +388,9 @@ function buildSecuritySummary(outcomes: readonly SecurityCallOutcome[]): Securit
       httpSnapshotLog: SECURITY_JSONL_FILES.log,
     },
     checks,
-    redaction: redactionSummary,
-    unauthorized: unauthorizedSummary,
-    pathValidation: pathSummary,
+    ...(redactionSummary ? { redaction: redactionSummary } : {}),
+    ...(unauthorizedSummary ? { unauthorized: unauthorizedSummary } : {}),
+    ...(pathSummary ? { pathValidation: pathSummary } : {}),
   };
 }
 
@@ -472,15 +475,19 @@ export async function runSecurityPhase(
       scenario: spec.scenario,
       name: spec.name,
       method: spec.method,
-      params,
-      headers: spec.headers,
-      requireAuth: spec.requireAuth,
-      captureEvents: spec.captureEvents,
-      expectedStatus: spec.expectedStatus,
-      notes: spec.notes,
-      redactionProbe: spec.redactionProbe,
-      unauthorizedProbe: spec.unauthorizedProbe,
-      pathProbe: spec.pathProbe,
+      // Optional call metadata is only forwarded when populated so enabling
+      // `exactOptionalPropertyTypes` does not flag these assignments.
+      ...(params !== undefined ? { params } : {}),
+      ...(spec.headers ? { headers: spec.headers } : {}),
+      ...(spec.requireAuth !== undefined ? { requireAuth: spec.requireAuth } : {}),
+      ...(spec.captureEvents !== undefined ? { captureEvents: spec.captureEvents } : {}),
+      ...(spec.expectedStatus !== undefined ? { expectedStatus: spec.expectedStatus } : {}),
+      ...(spec.notes !== undefined ? { notes: spec.notes } : {}),
+      ...(spec.redactionProbe ? { redactionProbe: spec.redactionProbe } : {}),
+      ...(spec.unauthorizedProbe !== undefined
+        ? { unauthorizedProbe: spec.unauthorizedProbe }
+        : {}),
+      ...(spec.pathProbe ? { pathProbe: spec.pathProbe } : {}),
     };
 
     await appendSecurityCallArtefacts(runRoot, executedCall, check);

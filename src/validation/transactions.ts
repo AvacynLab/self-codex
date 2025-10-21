@@ -315,10 +315,12 @@ export async function runTransactionsPhase(
       scenario: spec.scenario,
       name: spec.name,
       method: spec.method,
-      headers: spec.headers,
-      idempotencyKey: spec.idempotencyKey,
-      captureEvents: spec.captureEvents,
-      params,
+      // Optional call metadata is only forwarded when provided so enabling
+      // `exactOptionalPropertyTypes` does not trigger `undefined` assignments.
+      ...(spec.headers ? { headers: spec.headers } : {}),
+      ...(spec.idempotencyKey !== undefined ? { idempotencyKey: spec.idempotencyKey } : {}),
+      ...(spec.captureEvents !== undefined ? { captureEvents: spec.captureEvents } : {}),
+      ...(params !== undefined ? { params } : {}),
     };
 
     await appendTransactionCallArtefacts(runRoot, executedCall, check);

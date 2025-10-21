@@ -3,8 +3,9 @@ import { expect } from "chai";
 import { mkdtemp } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import sinon from "sinon";
 
-import { VectorMemoryIndex } from "../../src/memory/vector.js";
+import { VectorMemoryIndex, VECTOR_MEMORY_MAX_CAPACITY } from "../../src/memory/vector.js";
 import { PathResolutionError } from "../../src/paths.js";
 
 /** Simple deterministic clock used to control timestamps in tests. */
@@ -120,5 +121,27 @@ describe("vector memory index", () => {
 
     const reloaded = await VectorMemoryIndex.create({ directory: rootDir });
     expect(reloaded.size()).to.equal(0);
+  });
+
+  it("caps the configured capacity to the global ceiling", async () => {
+    const index = await VectorMemoryIndex.create({
+      directory: rootDir,
+      now: () => clock.now(),
+      maxDocuments: VECTOR_MEMORY_MAX_CAPACITY * 4,
+    });
+
+    const persistStub = sinon.stub(index as unknown as { persist: () => Promise<void> }, "persist").resolves();
+
+    try {
+      const oversubscribe = VECTOR_MEMORY_MAX_CAPACITY + 5;
+      for (let i = 0; i < oversubscribe; i += 1) {
+        await index.upsert({ text: `document ${i}` });
+        clock.advance(1);
+      }
+    } finally {
+      persistStub.restore();
+    }
+
+    expect(index.size()).to.equal(VECTOR_MEMORY_MAX_CAPACITY);
   });
 });

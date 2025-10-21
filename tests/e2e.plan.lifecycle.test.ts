@@ -13,6 +13,7 @@ import {
   getRuntimeFeatures,
   logJournal,
 } from "../src/server.js";
+import { assertArray, assertPlainObject, isPlainObject } from "./helpers/assertions.js";
 
 /**
  * End-to-end coverage exercising a hierarchical plan compilation followed by a reactive
@@ -157,11 +158,15 @@ describe("plan lifecycle end-to-end", () => {
         arguments: { from_seq: baselineCursor, cats: ["bt_run"], run_id: runId },
       });
       expect(eventsResponse.isError ?? false).to.equal(false);
-      const runEvents = (eventsResponse.structuredContent as {
-        events: Array<{ data?: { phase?: string } }>;
-      }).events.map((event) => event.data?.phase);
-      expect(runEvents).to.include("start");
-      expect(runEvents).to.include("cancel");
+      const lifecycleStructured = eventsResponse.structuredContent;
+      assertPlainObject(lifecycleStructured, "plan lifecycle events payload");
+      const lifecycleEvents = lifecycleStructured.events;
+      assertArray(lifecycleEvents, "plan lifecycle events list");
+      const runPhases = lifecycleEvents
+        .map((event) => (isPlainObject(event) && isPlainObject(event.data) ? event.data.phase : null))
+        .filter((phase): phase is string => typeof phase === "string");
+      expect(runPhases).to.include("start");
+      expect(runPhases).to.include("cancel");
 
       await logJournal.flush();
       const logsResponse = await client.callTool({

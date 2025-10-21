@@ -34,6 +34,7 @@ import {
   ChildToolContext,
   handleChildBatchCreate,
 } from "../src/tools/childTools.js";
+import type { ChildLifecycleState } from "../src/state/childrenIndex.js";
 import { GraphMutationLockedError } from "../src/graph/locks.js";
 import { GraphVersionConflictError } from "../src/graph/tx.js";
 import { ERROR_CODES } from "../src/types.js";
@@ -111,9 +112,22 @@ async function createChildBatchFixture(options: {
   return { context, supervisor, logger, cleanup };
 }
 
+/**
+ * Counts active child runtimes using the public index instead of the private
+ * `runtimes` map so the test remains coupled to the documented API surface.
+ */
 function getRuntimeCount(supervisor: ChildSupervisor): number {
-  const internal = supervisor as unknown as { runtimes: Map<string, unknown> };
-  return internal.runtimes.size;
+  const activeStates = new Set<ChildLifecycleState>([
+    "starting",
+    "ready",
+    "running",
+    "idle",
+    "stopping",
+  ]);
+  return supervisor.childrenIndex
+    .list()
+    .filter((snapshot) => activeStates.has(snapshot.state))
+    .length;
 }
 
 describe("bulk tools", () => {
@@ -354,34 +368,35 @@ describe("bulk tools", () => {
           ],
         });
 
-        const originalCreateChild = fixture.supervisor.createChild.bind(fixture.supervisor);
+        const originalCreateChild = fixture.supervisor.createChild;
         let spawnCount = 0;
-        // Force the supervisor to reject the second spawn to exercise the rollback path deterministically.
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        (fixture.supervisor.createChild as any) = async (...args: Parameters<typeof originalCreateChild>) => {
+        const overrideCreateChild: ChildSupervisor["createChild"] = async function (...args) {
           spawnCount += 1;
           if (spawnCount === 2) {
             throw new ChildLimitExceededError(1, 1);
           }
-          return originalCreateChild(...args);
+          return originalCreateChild.apply(this, args);
         };
+        Reflect.set(fixture.supervisor, "createChild", overrideCreateChild);
 
-        await handleChildBatchCreate(context, parsed)
-          .then(() => expect.fail("expected BulkOperationError"))
-          .catch((error: unknown) => {
-            expect(error).to.be.instanceOf(BulkOperationError);
-            const failure = (error as BulkOperationError).details.failures[0];
-            expect(failure?.code).to.equal(ERROR_CODES.CHILD_LIMIT_EXCEEDED);
-            expect(failure?.entry).to.deep.equal({
-              role: "executor",
-              idempotency_key: "child-batch-limit-2",
-              prompt_keys: ["system", "user"],
+        try {
+          await handleChildBatchCreate(context, parsed)
+            .then(() => expect.fail("expected BulkOperationError"))
+            .catch((error: unknown) => {
+              expect(error).to.be.instanceOf(BulkOperationError);
+              const failure = (error as BulkOperationError).details.failures[0];
+              expect(failure?.code).to.equal(ERROR_CODES.CHILD_LIMIT_EXCEEDED);
+              expect(failure?.entry).to.deep.equal({
+                role: "executor",
+                idempotency_key: "child-batch-limit-2",
+                prompt_keys: ["system", "user"],
+              });
+              expect((error as BulkOperationError).details.metadata?.rollback_child_ids).to.have.lengthOf(1);
             });
-            expect((error as BulkOperationError).details.metadata?.rollback_child_ids).to.have.lengthOf(1);
-          });
-        // Restore the supervisor behaviour for cleanup to avoid masking other scenarios.
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        (fixture.supervisor.createChild as any) = originalCreateChild;
+        } finally {
+          // Restore the supervisor behaviour for cleanup to avoid masking other scenarios.
+          Reflect.set(fixture.supervisor, "createChild", originalCreateChild);
+        }
         expect(getRuntimeCount(fixture.supervisor)).to.equal(0);
       } finally {
         await fixture.cleanup();

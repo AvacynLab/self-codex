@@ -7,6 +7,8 @@ import {
   computeTranscriptDigest,
   evaluateConstraints,
   evaluateGates,
+  type ScenarioEvaluationSummary,
+  type ScenarioMetrics,
   type ScenarioStepResult,
 } from "../../src/eval/metrics.js";
 
@@ -58,11 +60,21 @@ describe("evaluation metrics", () => {
   });
 
   it("aggregates campaign statistics and evaluates gates", () => {
-    const summaries = [
-      { success: true, steps: [createStepResult({ durationMs: 10 })], metrics: createMetrics(10), scenarioId: "a" },
-      { success: false, steps: [createStepResult({ durationMs: 50 })], metrics: createMetrics(50), scenarioId: "b" },
+    const summaries: ScenarioEvaluationSummary[] = [
+      createSummary({
+        scenarioId: "a",
+        success: true,
+        steps: [createStepResult({ durationMs: 10 })],
+        metrics: createMetrics(10),
+      }),
+      createSummary({
+        scenarioId: "b",
+        success: false,
+        steps: [createStepResult({ durationMs: 50 })],
+        metrics: createMetrics(50),
+      }),
     ];
-    const metrics = aggregateCampaignMetrics(summaries as any);
+    const metrics = aggregateCampaignMetrics(summaries);
     expect(metrics.successRate).to.equal(0.5);
     const gate = evaluateGates(metrics, { minSuccessRate: 0.6, maxLatencyP95Ms: 20 });
     expect(gate.passed).to.equal(false);
@@ -91,7 +103,28 @@ function createStepResult(overrides: {
   };
 }
 
-function createMetrics(duration: number) {
+function createSummary(options: {
+  scenarioId: string;
+  success: boolean;
+  steps: ScenarioStepResult[];
+  metrics: ScenarioMetrics;
+}): ScenarioEvaluationSummary {
+  return {
+    scenarioId: options.scenarioId,
+    success: options.success,
+    failureReasons: [],
+    steps: options.steps,
+    oracles: [],
+    constraintViolations: [],
+    metrics: options.metrics,
+    startedAt: new Date(0).toISOString(),
+    finishedAt: new Date(0).toISOString(),
+    transcript: "",
+    transcriptDigest: "0".repeat(64),
+  };
+}
+
+function createMetrics(duration: number): ScenarioMetrics {
   return {
     totalDurationMs: duration,
     averageLatencyMs: duration,

@@ -24,7 +24,6 @@ import { ContractNetCoordinator, ContractNetNoBidsError } from "../src/coord/con
 import { handlePlanReduce, handlePlanRunBT, PlanFanoutInputSchema, PlanReduceInputSchema } from "../src/tools/planTools.js";
 import { GraphState } from "../src/graph/state.js";
 import { ConsensusNoQuorumError, BehaviorTreeRunTimeoutError } from "../src/tools/planTools.js";
-import type { PlanToolContext } from "../src/tools/planTools.js";
 import type { ChildCollectedOutputs } from "../src/childRuntime.js";
 import { UnknownChildError } from "../src/state/childrenIndex.js";
 import {
@@ -34,6 +33,7 @@ import {
   valueToolError as formatValueToolError,
   resourceToolError as formatResourceToolError,
 } from "../src/server/toolErrors.js";
+import { createPlanToolContext, createStubPlanChildSupervisor } from "./helpers/planContext.js";
 
 /** Creates a no-op structured logger for test contexts. */
 function createLogger(): StructuredLogger {
@@ -96,36 +96,33 @@ describe("server tool error codes", () => {
       "child-a": "approve",
       "child-b": "reject",
     };
-    const planContext: PlanToolContext = {
-      supervisor: {
-        async collect(childId: string): Promise<ChildCollectedOutputs> {
-          return {
-            childId,
-            manifestPath: path.join(tmpdir(), `${childId}.manifest.json`),
-            logPath: path.join(tmpdir(), `${childId}.log`),
-            messages: [
-              {
-                raw: "",
-                parsed: { type: "response", content: votes[childId] },
-                stream: "stdout",
-                receivedAt: 0,
-                sequence: 0,
-              },
-            ],
-            artifacts: [],
-          };
-        },
-      } as unknown as PlanToolContext["supervisor"],
+    const supervisor = createStubPlanChildSupervisor({
+      async collect(childId: string): Promise<ChildCollectedOutputs> {
+        return {
+          childId,
+          manifestPath: path.join(tmpdir(), `${childId}.manifest.json`),
+          logPath: path.join(tmpdir(), `${childId}.log`),
+          messages: [
+            {
+              raw: "",
+              parsed: { type: "response", content: votes[childId] },
+              stream: "stdout",
+              receivedAt: 0,
+              sequence: 0,
+            },
+          ],
+          artifacts: [],
+        } satisfies ChildCollectedOutputs;
+      },
+    });
+
+    const planContext = createPlanToolContext({
+      supervisor,
       graphState: new GraphState(),
       logger: createLogger(),
       childrenRoot: tmpdir(),
-      defaultChildRuntime: "codex",
       emitEvent: () => {},
-      stigmergy: new StigmergyField(),
-      supervisorAgent: undefined,
-      causalMemory: undefined,
-      valueGuard: undefined,
-    };
+    });
 
     const input = PlanReduceInputSchema.parse({
       children: Object.keys(votes),
@@ -143,18 +140,13 @@ describe("server tool error codes", () => {
   });
 
   it("surfaces Behaviour Tree runtime timeouts with E-BT-RUN-TIMEOUT", async () => {
-    const planContext: PlanToolContext = {
-      supervisor: {} as PlanToolContext["supervisor"],
+    const planContext = createPlanToolContext({
+      supervisor: createStubPlanChildSupervisor(),
       graphState: new GraphState(),
       logger: createLogger(),
       childrenRoot: await mkdtemp(path.join(tmpdir(), "plan-run-timeout-")),
-      defaultChildRuntime: "codex",
       emitEvent: () => {},
-      stigmergy: new StigmergyField(),
-      supervisorAgent: undefined,
-      causalMemory: undefined,
-      valueGuard: undefined,
-    };
+    });
 
     try {
       await handlePlanRunBT(planContext, {

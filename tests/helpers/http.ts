@@ -1,6 +1,9 @@
 import { IncomingMessage } from "node:http";
 import type { IncomingHttpHeaders } from "node:http";
 import { Socket } from "node:net";
+import type { BufferEncoding } from "node:buffer";
+
+import type { HttpTransportRequest, HttpResponseLike } from "../../src/httpServer.js";
 
 /**
  * Minimal HTTP response stub capturing headers and body in memory.
@@ -9,7 +12,7 @@ import { Socket } from "node:net";
  * without spinning an actual network listener. The implementation mirrors the
  * subset of the Node.js API touched by our HTTP bridge.
  */
-export class MemoryHttpResponse {
+export class MemoryHttpResponse implements HttpResponseLike {
   public statusCode = 0;
   public headers: Record<string, string> = {};
   public body = "";
@@ -24,17 +27,23 @@ export class MemoryHttpResponse {
     return this;
   }
 
-  setHeader(name: string, value: string): void {
-    this.headers[name.toLowerCase()] = value;
+  setHeader(name: string, value: number | string | readonly string[]): this {
+    const normalisedValue = Array.isArray(value) ? value.join(", ") : String(value);
+    this.headers[name.toLowerCase()] = normalisedValue;
+    return this;
   }
 
-  end(chunk?: unknown): void {
+  end(chunk?: unknown, encoding?: BufferEncoding, callback?: () => void): this {
     if (typeof chunk === "string") {
       this.body += chunk;
     } else if (chunk instanceof Uint8Array) {
-      this.body += Buffer.from(chunk).toString("utf8");
+      this.body += Buffer.from(chunk).toString(encoding ?? "utf8");
     }
     this.headersSent = true;
+    if (callback) {
+      callback();
+    }
+    return this;
   }
 }
 
@@ -47,22 +56,37 @@ export class MemoryHttpResponse {
 export function createJsonRpcRequest(
   body: string | Record<string, unknown>,
   headers: Record<string, string>,
-): IncomingMessage {
+): HttpTransportRequest {
   const payload = typeof body === "string" ? body : JSON.stringify(body);
   return createIncomingMessageStream([payload], "POST", "/mcp", headers);
 }
 
 /**
  * Builds an arbitrary HTTP request stream pointing at the provided path. Tests
- * use the helper to exercise lightweight GET handlers without starting a real
- * network listener.
+ * use the helper to exercise lightweight handlers without starting a real
+ * network listener and may provide an optional JSON payload for POST/PUT flows.
+ * The optional extras parameter currently allows overriding the peer address so
+ * rate-limit guards can observe deterministic metadata.
  */
 export function createHttpRequest(
   method: string,
   path: string,
   headers: Record<string, string> = {},
-): IncomingMessage {
-  return createIncomingMessageStream([], method.toUpperCase(), path, headers);
+  body?: string | Uint8Array | Record<string, unknown>,
+  extras: { remoteAddress?: string } = {},
+): HttpTransportRequest {
+  const chunks: Array<string | Uint8Array> = [];
+  if (body !== undefined) {
+    if (typeof body === "string") {
+      chunks.push(body);
+    } else if (body instanceof Uint8Array) {
+      chunks.push(body);
+    } else {
+      chunks.push(JSON.stringify(body));
+    }
+  }
+
+  return createIncomingMessageStream(chunks, method.toUpperCase(), path, headers, extras.remoteAddress);
 }
 
 /**
@@ -74,8 +98,17 @@ function createIncomingMessageStream(
   method: string,
   path: string,
   headers: Record<string, string>,
-): IncomingMessage {
+  remoteAddress?: string,
+): HttpTransportRequest {
   const socket = new Socket();
+  if (remoteAddress) {
+    // Expose a stable peer address so readiness/health probes can exercise the
+    // rate limiter without mutating the native socket implementation.
+    Object.defineProperty(socket, "remoteAddress", {
+      configurable: true,
+      get: () => remoteAddress,
+    });
+  }
   const message = new IncomingMessage(socket);
 
   message.method = method;

@@ -123,7 +123,9 @@ export async function executeRobustnessCli(
 
   const phaseOptions: RobustnessPhaseOptions = {
     ...basePhaseOptions,
-    defaults: mergedDefaults,
+    // `exactOptionalPropertyTypes` forbids assigning `undefined` to optional
+    // properties, so we only forward the defaults block when it carries data.
+    ...(mergedDefaults ? { defaults: mergedDefaults } : {}),
   };
 
   const runner = overrides.runner ?? runRobustnessPhase;

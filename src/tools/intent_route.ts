@@ -479,13 +479,22 @@ function buildRoutingContext(
     .filter((entry) => entry.matched)
     .forEach((entry) => appendTag(tags, entry.label));
 
-  return {
-    goal,
-    category,
-    tags: tags.size > 0 ? Array.from(tags) : undefined,
-    preferredTools: preferred.size > 0 ? Array.from(preferred) : undefined,
-    metadata,
-  };
+  const routingContext: ToolRoutingContext = { goal };
+  if (category !== undefined) {
+    // Optional hints are only forwarded when callers explicitly provided them to keep
+    // compatibility with `exactOptionalPropertyTypes`.
+    routingContext.category = category;
+  }
+  if (tags.size > 0) {
+    routingContext.tags = Array.from(tags);
+  }
+  if (preferred.size > 0) {
+    routingContext.preferredTools = Array.from(preferred);
+  }
+  if (metadataRecord !== undefined) {
+    routingContext.metadata = metadataRecord;
+  }
+  return routingContext;
 }
 
 /** Builds a failure response when budget consumption raises an error. */
@@ -508,18 +517,22 @@ function buildBudgetExceededResult(
   };
 }
 
-/** Returns a deterministic error payload when the feature flag disables routing. */
-function buildRouterDisabledResult() {
-  const payload = {
-    error: "TOOL_ROUTER_DISABLED",
-    tool: INTENT_ROUTE_TOOL_NAME,
-    message: "tool router feature disabled",
-  } as const;
-  return {
-    isError: true,
-    content: [{ type: "text" as const, text: JSON.stringify(payload) }],
-    structuredContent: payload,
-  };
+/**
+ * Builds a deterministic degraded payload when the contextual router is
+ * disabled. Returning the union-backed structure ensures the façade keeps
+ * honouring the documented schema while signalling the disabled state through
+ * the `reason` discriminator.
+ */
+function buildRouterDisabledResult(idempotencyKey: string): IntentRouteResult {
+  return IntentRouteOutputSchema.parse({
+    ok: false,
+    summary: "routeur d'intentions désactivé",
+    details: {
+      reason: "router_disabled",
+      idempotency_key: idempotencyKey,
+      diagnostics: [],
+    },
+  });
 }
 
 /**
@@ -539,22 +552,27 @@ export function createIntentRouteHandler(
         ? (input as Record<string, unknown>)
         : {};
 
-    if (context.isRouterEnabled && !context.isRouterEnabled()) {
-      context.logger.warn("intent_route_feature_disabled", {
-        request_id: extra?.requestId ?? null,
-      });
-      return buildRouterDisabledResult();
-    }
-
-    const parsed = IntentRouteInputSchema.parse(args);
-
     const rpcContext = getJsonRpcContext();
     const traceContext = getActiveTraceContext();
+    const parsed = IntentRouteInputSchema.parse(args);
     const idempotencyKey =
       parsed.idempotency_key?.trim() ||
       (typeof rpcContext?.idempotencyKey === "string" && rpcContext.idempotencyKey.trim().length > 0
         ? rpcContext.idempotencyKey.trim()
         : randomUUID());
+
+    if (context.isRouterEnabled && !context.isRouterEnabled()) {
+      context.logger.warn("intent_route_feature_disabled", {
+        request_id: extra?.requestId ?? null,
+        trace_id: traceContext?.traceId ?? null,
+      });
+      const structured = buildRouterDisabledResult(idempotencyKey);
+      return {
+        isError: true,
+        content: [{ type: "text", text: asJsonPayload(structured) }],
+        structuredContent: structured,
+      };
+    }
 
     let charge: BudgetCharge | null = null;
     try {

@@ -1,7 +1,6 @@
 import { describe, it } from "mocha";
 import { expect } from "chai";
-import { Readable } from "node:stream";
-import type { IncomingMessage, ServerResponse } from "node:http";
+import type { IncomingMessage } from "node:http";
 
 import { GraphState } from "../src/graph/state.js";
 import { EventStore } from "../src/eventStore.js";
@@ -14,7 +13,9 @@ import type { SupervisorSchedulerSnapshot } from "../src/agents/supervisor.js";
 import {
   DashboardSnapshot,
   createDashboardRouter,
+  type DashboardHttpResponse,
 } from "../src/monitor/dashboard.js";
+import { createHttpRequest } from "./helpers/http.js";
 
 /**
  * Minimal supervisor stub exposing the cancellation contract exercised by the
@@ -37,7 +38,7 @@ class StubSupervisorAgent {
 }
 
 /** Lightweight response mock capturing SSE payloads for assertions. */
-class StreamResponse {
+class StreamResponse implements DashboardHttpResponse {
   public statusCode: number | null = null;
   public headersSent = false;
   public finished = false;
@@ -50,7 +51,7 @@ class StreamResponse {
    */
   private readonly listeners = new Map<string, Set<(...args: unknown[]) => void>>();
 
-  writeHead(status: number, headers?: Record<string, string | number>): ServerResponse {
+  writeHead(status: number, headers?: Record<string, string | number | readonly string[]>): this {
     this.statusCode = status;
     if (headers) {
       for (const [key, value] of Object.entries(headers)) {
@@ -58,7 +59,7 @@ class StreamResponse {
       }
     }
     this.headersSent = true;
-    return this as unknown as ServerResponse;
+    return this;
   }
 
   write(chunk: string | Uint8Array): boolean {
@@ -66,6 +67,10 @@ class StreamResponse {
     this.chunks.push(buffer);
     this.headersSent = true;
     return true;
+  }
+
+  setHeader(name: string, value: string | number | readonly string[]): void {
+    this.headers[name.toLowerCase()] = Array.isArray(value) ? value.join(",") : String(value);
   }
 
   end(chunk?: string | Uint8Array): void {
@@ -143,16 +148,20 @@ class StreamResponse {
 
 /** Builds a mocked HTTP request accepted by the dashboard router. */
 function createRequest(method: string, path: string, body?: unknown): IncomingMessage {
-  const payload = body === undefined ? [] : [Buffer.from(JSON.stringify(body))];
-  const stream = Readable.from(payload);
-  const request = stream as unknown as IncomingMessage;
-  request.method = method;
-  request.url = path;
-  request.headers = {
+  const headers = {
     host: "dashboard.test",
     "content-type": "application/json",
-  } as Record<string, string>;
-  return request;
+  };
+
+  if (typeof body === "string" || body instanceof Uint8Array) {
+    return createHttpRequest(method, path, headers, body);
+  }
+
+  if (body && typeof body === "object") {
+    return createHttpRequest(method, path, headers, body as Record<string, unknown>);
+  }
+
+  return createHttpRequest(method, path, headers);
 }
 
 /**
@@ -219,7 +228,7 @@ describe("monitor/dashboard streams", () => {
 
     try {
       const response = new StreamResponse();
-      await router.handleRequest(createRequest("GET", "/stream"), response as unknown as ServerResponse);
+      await router.handleRequest(createRequest("GET", "/stream"), response);
 
       expect(response.statusCode).to.equal(200);
       expect(response.headers["content-type"]).to.equal("text/event-stream");
@@ -323,7 +332,7 @@ describe("monitor/dashboard streams", () => {
 
     try {
       const response = new StreamResponse();
-      await router.handleRequest(createRequest("GET", "/stream"), response as unknown as ServerResponse);
+      await router.handleRequest(createRequest("GET", "/stream"), response);
 
       const events = await waitForSseEvents(response, 1);
       expect(events.length).to.be.greaterThan(0);

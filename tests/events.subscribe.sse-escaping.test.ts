@@ -17,6 +17,7 @@ import {
   resetCancellationRegistry,
 } from "../src/executor/cancel.js";
 import { parseSseStream } from "./helpers/sse.js";
+import { assertPlainObject, assertString, isPlainObject } from "./helpers/assertions.js";
 
 /**
  * Integration coverage asserting that the SSE variant of `events_subscribe`
@@ -47,8 +48,10 @@ describe("events subscribe SSE escaping", () => {
 
       const baselineResponse = await client.callTool({ name: "events_subscribe", arguments: { limit: 1 } });
       expect(baselineResponse.isError ?? false).to.equal(false);
-      const baselineContent = baselineResponse.structuredContent as { next_seq: number | null };
-      const cursor = baselineContent?.next_seq ?? 0;
+      const baselineContent = baselineResponse.structuredContent;
+      assertPlainObject(baselineContent, "baseline SSE events payload");
+      const baselineNextSeq = baselineContent.next_seq;
+      const cursor = typeof baselineNextSeq === "number" ? baselineNextSeq : 0;
 
       const opId = "cancel-sse-op";
       const runId = "cancel-sse-run";
@@ -72,14 +75,12 @@ describe("events subscribe SSE escaping", () => {
       });
       expect(response.isError ?? false).to.equal(false);
 
-      const structured = response.structuredContent as {
-        stream: string;
-        events: Array<{
-          data?: { reason?: string | null } | null;
-        }>;
-      };
-
-      const cancelEvents = structured.events.filter((event) => event.data?.reason === reason);
+      const structured = response.structuredContent;
+      assertPlainObject(structured, "cancellation SSE payload");
+      assertString(structured.stream, "cancellation SSE stream");
+      const cancelEvents = (Array.isArray(structured.events) ? structured.events : [])
+        .filter((event): event is Record<string, unknown> => isPlainObject(event) && isPlainObject(event.data))
+        .filter((event) => event.data.reason === reason);
       expect(cancelEvents.length).to.be.greaterThan(0);
 
       expect(structured.stream.includes("\u2028"), "stream should escape U+2028").to.equal(false);
@@ -99,8 +100,8 @@ describe("events subscribe SSE escaping", () => {
           expect(payload).to.not.include("\u2028");
           expect(payload).to.not.include("\u2029");
 
-          const decoded = JSON.parse(payload) as { data?: { reason?: string | null } };
-          if (decoded.data?.reason === reason) {
+          const decoded = JSON.parse(payload);
+          if (isPlainObject(decoded) && isPlainObject(decoded.data) && decoded.data.reason === reason) {
             decodedReasonCount += 1;
           }
         }

@@ -16,8 +16,13 @@ import {
   server as mcpServer,
 } from "../src/server.js";
 import { MemoryHttpResponse, createJsonRpcRequest } from "./helpers/http.js";
+import { RecordingLogger } from "./helpers/recordingLogger.js";
 import type { FeatureToggles } from "../src/serverOptions.js";
 import { RPC_METHOD_SCHEMAS } from "../src/rpc/schemas.js";
+import {
+  getMutableJsonRpcRequestHandlerRegistry,
+  type InternalJsonRpcHandler,
+} from "../src/mcp/jsonRpcInternals.js";
 
 /** JSON response helper mirroring the shape returned by tool handlers. */
 type ToolCallResult = {
@@ -27,27 +32,14 @@ type ToolCallResult = {
 
 describe("http json-rpc fast path", () => {
   let originalFeatures: FeatureToggles;
-  let handlers:
-    | Map<string, (request: any, extra: any) => Promise<unknown> | unknown>
-    | undefined;
-  let originalToolsCall:
-    | ((
-        request: { jsonrpc: "2.0"; id: string | number | null; method: string; params?: unknown },
-        extra: unknown,
-      ) => Promise<unknown> | unknown)
-    | undefined;
+  let handlers: Map<string, InternalJsonRpcHandler> | null = null;
+  let originalToolsCall: InternalJsonRpcHandler | undefined;
   let originalToolSchema: ZodTypeAny | undefined;
 
   before(() => {
     originalFeatures = getRuntimeFeatures();
     configureRuntimeFeatures({ ...originalFeatures, enableMcpIntrospection: true });
-    const internal = mcpServer.server as unknown as {
-      _requestHandlers?: Map<string, (request: any, extra: any) => Promise<unknown> | unknown>;
-    };
-    handlers = internal._requestHandlers;
-    if (!handlers) {
-      throw new Error("MCP server handlers map not initialised");
-    }
+    handlers = getMutableJsonRpcRequestHandlerRegistry(mcpServer);
     originalToolsCall = handlers.get("tools/call");
     originalToolSchema = RPC_METHOD_SCHEMAS["diagnostics/echo"];
     // The JSON-RPC middleware validates tool arguments against the central
@@ -92,16 +84,8 @@ describe("http json-rpc fast path", () => {
 
     const handled = await __httpServerInternals.tryHandleJsonRpc(
       request,
-      response as any,
-      new Proxy(
-        {},
-        {
-          get() {
-            // The logger interface is not required for the happy path; return no-ops.
-            return () => {};
-          },
-        },
-      ),
+      response,
+      new RecordingLogger(),
       async (payload, context) => handleJsonRpc(payload, context),
     );
 
@@ -140,15 +124,8 @@ describe("http json-rpc fast path", () => {
 
       const handled = await __httpServerInternals.tryHandleJsonRpc(
         request,
-        response as any,
-        new Proxy(
-          {},
-          {
-            get() {
-              return () => {};
-            },
-          },
-        ),
+        response,
+        new RecordingLogger(),
         async (payload, context) => handleJsonRpc(payload, context),
       );
 
@@ -175,7 +152,7 @@ describe("http json-rpc fast path", () => {
       content: [{ type: "text", text: "stub tool response" }],
       structuredContent: { echoed: true },
     };
-    handlers.set("tools/call", async (request: any) => {
+    handlers.set("tools/call", async (request) => {
       // Record the incoming arguments to guarantee the request propagation works end to end.
       if (!request?.params || typeof request.params !== "object") {
         throw new Error("expected params to be provided");
@@ -202,15 +179,8 @@ describe("http json-rpc fast path", () => {
 
     const handled = await __httpServerInternals.tryHandleJsonRpc(
       request,
-      response as any,
-      new Proxy(
-        {},
-        {
-          get() {
-            return () => {};
-          },
-        },
-      ),
+      response,
+      new RecordingLogger(),
       async (payload, context) => handleJsonRpc(payload, context),
     );
 

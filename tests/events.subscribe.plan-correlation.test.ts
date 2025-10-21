@@ -16,6 +16,7 @@ import {
 } from "../src/server.js";
 import { childWorkspacePath, resolveWithin } from "../src/paths.js";
 import { resolveFixture, runnerArgs } from "./helpers/childRunner.js";
+import { assertPlainObject, assertString, isPlainObject } from "./helpers/assertions.js";
 
 /**
  * Integration scenarios ensuring plan orchestration tools publish correlated events retrievable via
@@ -51,8 +52,10 @@ describe("events subscribe plan correlation", () => {
 
       const baselineResponse = await client.callTool({ name: "events_subscribe", arguments: { limit: 1 } });
       expect(baselineResponse.isError ?? false).to.equal(false);
-      const baselineContent = baselineResponse.structuredContent as { next_seq: number | null };
-      const cursor = baselineContent?.next_seq ?? 0;
+      const baselineContent = baselineResponse.structuredContent;
+      assertPlainObject(baselineContent, "plan loop baseline events payload");
+      const baselineNextSeq = baselineContent.next_seq;
+      const cursor = typeof baselineNextSeq === "number" ? baselineNextSeq : 0;
 
       const btResponse = await client.callTool({
         name: "plan_run_bt",
@@ -113,43 +116,39 @@ describe("events subscribe plan correlation", () => {
       });
       expect(eventsResponse.isError ?? false).to.equal(false);
 
-      const structured = eventsResponse.structuredContent as {
-        events: Array<{
-          kind: string;
-          run_id: string | null;
-          op_id: string | null;
-          job_id: string | null;
-          graph_id: string | null;
-          node_id: string | null;
-          child_id: string | null;
-          data?: { [key: string]: unknown };
-        }>;
-      };
-
-      const btEvents = structured.events.filter((event) => event.kind === "BT_RUN");
+      const structured = eventsResponse.structuredContent;
+      assertPlainObject(structured, "plan correlation JSON payload");
+      const rawEvents = Array.isArray(structured.events) ? structured.events : [];
+      const btEvents = rawEvents.filter(
+        (event): event is Record<string, unknown> => isPlainObject(event) && event.kind === "BT_RUN",
+      );
       expect(btEvents.length).to.be.at.least(2);
 
-      const btStart = btEvents.find((event) => {
-        const payload = (event.data ?? {}) as { phase?: string; mode?: string };
-        return payload.phase === "start" && payload.mode === "bt";
-      });
+      const btStart = btEvents.find(
+        (event) => isPlainObject(event.data) && event.data.phase === "start" && event.data.mode === "bt",
+      );
       expect(btStart, "Behaviour Tree start event should be present").to.not.equal(undefined);
-      expect(btStart?.run_id).to.equal(btResult.run_id);
-      expect(btStart?.op_id).to.equal(btResult.op_id);
-      expect(btStart?.job_id).to.equal(btResult.job_id);
-      expect(btStart?.graph_id).to.equal(btResult.graph_id);
-      expect(btStart?.node_id).to.equal(btResult.node_id);
+      if (!btStart) {
+        throw new Error("Behaviour Tree start event should be present");
+      }
+      expect(btStart.run_id).to.equal(btResult.run_id);
+      expect(btStart.op_id).to.equal(btResult.op_id);
+      expect(btStart.job_id).to.equal(btResult.job_id);
+      expect(btStart.graph_id).to.equal(btResult.graph_id);
+      expect(btStart.node_id).to.equal(btResult.node_id);
 
-      const reactiveStart = btEvents.find((event) => {
-        const payload = (event.data ?? {}) as { phase?: string; mode?: string };
-        return payload.phase === "start" && payload.mode === "reactive";
-      });
+      const reactiveStart = btEvents.find(
+        (event) => isPlainObject(event.data) && event.data.phase === "start" && event.data.mode === "reactive",
+      );
       expect(reactiveStart, "Reactive loop start event should be present").to.not.equal(undefined);
-      expect(reactiveStart?.run_id).to.equal(reactiveResult.run_id);
-      expect(reactiveStart?.op_id).to.equal(reactiveResult.op_id);
-      expect(reactiveStart?.job_id).to.equal(reactiveResult.job_id);
-      expect(reactiveStart?.graph_id).to.equal(reactiveResult.graph_id);
-      expect(reactiveStart?.node_id).to.equal(reactiveResult.node_id);
+      if (!reactiveStart) {
+        throw new Error("Reactive loop start event should be present");
+      }
+      expect(reactiveStart.run_id).to.equal(reactiveResult.run_id);
+      expect(reactiveStart.op_id).to.equal(reactiveResult.op_id);
+      expect(reactiveStart.job_id).to.equal(reactiveResult.job_id);
+      expect(reactiveStart.graph_id).to.equal(reactiveResult.graph_id);
+      expect(reactiveStart.node_id).to.equal(reactiveResult.node_id);
     } finally {
       configureRuntimeFeatures(baselineFeatures);
       childProcessSupervisor.childrenIndex.restore(baselineChildrenIndex);
@@ -227,36 +226,32 @@ describe("events subscribe plan correlation", () => {
       });
       expect(jsonlinesResponse.isError ?? false).to.equal(false);
 
-      const jsonlinesStructured = jsonlinesResponse.structuredContent as {
-        events: Array<{
-          run_id: string | null;
-          data?: { [key: string]: unknown };
-        }>;
-      };
-      const loopEvent = jsonlinesStructured.events.find((event) => {
-        const payload = (event.data ?? {}) as { phase?: string; reconcilers?: unknown };
-        return event.run_id === runId && payload.phase === "loop";
-      });
+      const jsonlinesStructured = jsonlinesResponse.structuredContent;
+      assertPlainObject(jsonlinesStructured, "plan loop JSON payload");
+      const jsonlinesEvents = Array.isArray(jsonlinesStructured.events) ? jsonlinesStructured.events : [];
+      const loopEvent = jsonlinesEvents.find(
+        (event): event is Record<string, unknown> =>
+          isPlainObject(event) && event.run_id === runId && isPlainObject(event.data) && event.data.phase === "loop",
+      );
       expect(loopEvent, "Reactive loop event should be exposed via JSON Lines").to.not.equal(undefined);
-      const loopPayload = (loopEvent?.data ?? {}) as {
-        reconcilers?: Array<{ id?: unknown; status?: unknown; duration_ms?: unknown; error?: unknown }>;
-      };
-      expect(Array.isArray(loopPayload.reconcilers), "Loop events must carry a reconcilers array").to.equal(true);
-      const reconcilers = (loopPayload.reconcilers ?? []) as Array<{
-        id: string;
-        status: string;
-        duration_ms: number;
-        error: unknown;
-      }>;
+      if (!loopEvent || !isPlainObject(loopEvent.data)) {
+        throw new Error("Reactive loop event should be exposed via JSON Lines");
+      }
+      const reconcilers = Array.isArray(loopEvent.data.reconcilers)
+        ? loopEvent.data.reconcilers.filter(isPlainObject)
+        : [];
       expect(reconcilers.length, "At least one reconciler should be reported").to.be.greaterThan(0);
       for (const reconciler of reconcilers) {
         expect(typeof reconciler.id).to.equal("string");
-        expect(["ok", "error"].includes(reconciler.status)).to.equal(true);
-        expect(reconciler.duration_ms).to.be.at.least(0);
-        // Errors are normalised to null when no failure occurred.
-        expect(reconciler.error === null || typeof reconciler.error === "string").to.equal(true);
+        const status = reconciler.status;
+        expect(typeof status === "string" && ["ok", "error"].includes(status)).to.equal(true);
+        expect(typeof reconciler.duration_ms).to.equal("number");
+        const errorValue = reconciler.error;
+        expect(errorValue === null || typeof errorValue === "string").to.equal(true);
       }
-      const reconcilerIds = reconcilers.map((entry) => entry.id);
+      const reconcilerIds = reconcilers
+        .map((entry) => (typeof entry.id === "string" ? entry.id : null))
+        .filter((identifier): identifier is string => identifier !== null);
       expect(reconcilerIds).to.include("supervisor");
       expect(reconcilerIds).to.include("autoscaler");
 
@@ -269,24 +264,24 @@ describe("events subscribe plan correlation", () => {
         },
       });
       expect(sseResponse.isError ?? false).to.equal(false);
-      const sseStructured = sseResponse.structuredContent as { stream: string };
-      expect(typeof sseStructured.stream).to.equal("string");
+      const sseStructured = sseResponse.structuredContent;
+      assertPlainObject(sseStructured, "plan loop SSE payload");
+      assertString(sseStructured.stream, "plan loop SSE stream");
 
       // Decode every `data:` line to confirm the SSE format preserves reconcilers telemetry.
       const sseEvents = sseStructured.stream
         .split("\n")
         .filter((line) => line.startsWith("data: "))
-        .map((line) => JSON.parse(line.slice("data: ".length)) as {
-          run_id: string | null;
-          data?: { [key: string]: unknown };
-        });
-      const sseLoop = sseEvents.find((event) => {
-        const payload = (event.data ?? {}) as { phase?: string };
-        return event.run_id === runId && payload.phase === "loop";
-      });
+        .map((line) => JSON.parse(line.slice("data: ".length)));
+      const sseLoop = sseEvents.find(
+        (event): event is Record<string, unknown> =>
+          isPlainObject(event) && event.run_id === runId && isPlainObject(event.data) && event.data.phase === "loop",
+      );
       expect(sseLoop, "Reactive loop event should be serialised in SSE output").to.not.equal(undefined);
-      const ssePayload = (sseLoop?.data ?? {}) as { reconcilers?: unknown };
-      expect(Array.isArray(ssePayload.reconcilers), "SSE payload should expose reconcilers").to.equal(true);
+      if (!sseLoop || !isPlainObject(sseLoop.data)) {
+        throw new Error("Reactive loop event should be serialised in SSE output");
+      }
+      expect(Array.isArray(sseLoop.data.reconcilers), "SSE payload should expose reconcilers").to.equal(true);
     } finally {
       configureRuntimeFeatures(baselineFeatures);
       childProcessSupervisor.childrenIndex.restore(baselineChildrenIndex);
@@ -408,36 +403,38 @@ describe("events subscribe plan correlation", () => {
       });
       expect(eventsResponse.isError ?? false).to.equal(false);
 
-      const structured = eventsResponse.structuredContent as {
-        events: Array<{
-          seq: number;
-          kind: string;
-          data: { phase?: string; node_id?: string | null } | null;
-          run_id: string | null;
-        }>;
-      };
+      const structured = eventsResponse.structuredContent;
+      assertPlainObject(structured, "plan resume events payload");
+      const runEvents = (Array.isArray(structured.events) ? structured.events : []).filter(
+        (event): event is Record<string, unknown> => isPlainObject(event) && event.run_id === planArguments.run_id,
+      );
+      expect(runEvents.some((event) => isPlainObject(event.data) && event.data.phase === "start")).to.equal(true);
+      expect(runEvents.some((event) => isPlainObject(event.data) && event.data.phase === "complete")).to.equal(true);
 
-      const runEvents = structured.events.filter((event) => event.run_id === planArguments.run_id);
-      expect(runEvents.some((event) => event.data?.phase === "start")).to.equal(true);
-      expect(runEvents.some((event) => event.data?.phase === "complete")).to.equal(true);
-
-      const nodeEvents = runEvents.filter((event) => event.data?.phase === "node");
-      const executedNodes = nodeEvents.map((event) => event.data?.node_id).filter((value): value is string => Boolean(value));
+      const nodeEvents = runEvents.filter((event) => isPlainObject(event.data) && event.data.phase === "node");
+      const executedNodes = nodeEvents
+        .map((event) => (isPlainObject(event.data) ? event.data.node_id : null))
+        .filter((value): value is string => typeof value === "string" && value.length > 0);
       const executedNodeSet = new Set(executedNodes);
       expect(executedNodeSet.has("fetch"), "fetch node should have executed").to.equal(true);
       expect(executedNodeSet.has("deploy"), "deploy node should have executed").to.equal(true);
       expect(executedNodeSet.has("verify"), "verify node should have executed").to.equal(true);
 
-      const tickLifecycle = runEvents.find((event) => event.data?.phase === "tick");
+      const tickLifecycle = runEvents.find((event) => isPlainObject(event.data) && event.data.phase === "tick");
       expect(tickLifecycle, "tick event should be published").to.not.equal(undefined);
-      const tickData = (tickLifecycle!.data ?? {}) as { event_payload?: Record<string, unknown> };
-      const tickPayload = tickData.event_payload as
-        | { pheromone_bounds?: { min_intensity?: number; max_intensity?: number | null; normalisation_ceiling?: number } }
-        | undefined;
-      const tickBounds = tickPayload?.pheromone_bounds;
-      expect(tickBounds).to.not.equal(undefined);
-      expect(tickBounds?.min_intensity).to.equal(0);
-      expect(tickBounds?.max_intensity).to.equal(null);
+      if (!tickLifecycle || !isPlainObject(tickLifecycle.data)) {
+        throw new Error("tick event should be published");
+      }
+      const tickPayload = isPlainObject(tickLifecycle.data.event_payload) ? tickLifecycle.data.event_payload : null;
+      const tickBounds = tickPayload && isPlainObject(tickPayload.pheromone_bounds)
+        ? tickPayload.pheromone_bounds
+        : null;
+      expect(tickBounds).to.not.equal(null);
+      if (!tickBounds) {
+        throw new Error("tick event should include pheromone bounds");
+      }
+      expect(tickBounds.min_intensity).to.equal(0);
+      expect(tickBounds.max_intensity ?? null).to.equal(null);
     } finally {
       if (runPromise) {
         await runPromise.catch(() => {});
@@ -531,35 +528,29 @@ describe("events subscribe plan correlation", () => {
       });
       expect(eventsResponse.isError ?? false).to.equal(false);
 
-      const structured = eventsResponse.structuredContent as {
-        events: Array<{
-          kind: string;
-          run_id: string | null;
-          op_id: string | null;
-          job_id: string | null;
-          graph_id: string | null;
-          node_id: string | null;
-          child_id: string | null;
-          data?: { [key: string]: unknown };
-        }>;
-      };
-
-      const planEvent = structured.events.find((event) => event.kind === "PLAN");
+      const structured = eventsResponse.structuredContent;
+      assertPlainObject(structured, "plan fan-out events payload");
+      const planEvent = (Array.isArray(structured.events) ? structured.events : []).find(
+        (event): event is Record<string, unknown> => isPlainObject(event) && event.kind === "PLAN",
+      );
       expect(planEvent, "PLAN fan-out event should be present").to.not.equal(undefined);
-      expect(planEvent?.run_id).to.equal(hints.run_id);
-      expect(planEvent?.op_id).to.equal(hints.op_id);
-      expect(planEvent?.job_id).to.equal(hints.job_id);
-      expect(planEvent?.graph_id).to.equal(hints.graph_id);
-      expect(planEvent?.node_id).to.equal(hints.node_id);
-      expect(planEvent?.child_id).to.equal(hints.child_id);
+      if (!planEvent) {
+        throw new Error("PLAN fan-out event should be present");
+      }
+      expect(planEvent.run_id).to.equal(hints.run_id);
+      expect(planEvent.op_id).to.equal(hints.op_id);
+      expect(planEvent.job_id).to.equal(hints.job_id);
+      expect(planEvent.graph_id).to.equal(hints.graph_id);
+      expect(planEvent.node_id).to.equal(hints.node_id);
+      expect(planEvent.child_id).to.equal(hints.child_id);
 
-      const payload = (planEvent?.data ?? {}) as {
-        children?: Array<{ name?: string; runtime?: string }>;
-        rejected?: unknown[];
-      };
-      expect(payload.children, "fan-out event should list planned children").to.be.an("array");
-      expect(payload.children?.length).to.equal(1);
-      expect(payload.children?.[0]?.name).to.equal("scout");
+      const payload = isPlainObject(planEvent.data) ? planEvent.data : {};
+      const children = Array.isArray(payload.children)
+        ? payload.children.filter(isPlainObject)
+        : [];
+      expect(children, "fan-out event should list planned children").to.be.an("array");
+      expect(children.length).to.equal(1);
+      expect(children[0]?.name).to.equal("scout");
       expect(Array.isArray(payload.rejected)).to.equal(true);
     } finally {
       for (const childId of plannedChildren) {

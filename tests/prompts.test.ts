@@ -52,10 +52,19 @@ describe("prompts", () => {
   });
 
   it("rejects nullish variable values", () => {
+    const invalidVariables = JSON.parse('{"name":null}') as {
+      /**
+       * The templating runtime rejects nullish entries at execution time. Using a JSON
+       * payload mirrors the untyped inputs received over JSON-RPC without resorting to
+       * `as unknown as`.
+       */
+      name: unknown;
+    };
+
     expect(() =>
       renderPromptTemplate(
         { system: "Value {{name}}" },
-        { variables: { name: null as unknown as string } },
+        { variables: invalidVariables },
       ),
     ).to.throw(PromptTemplatingError);
   });
@@ -71,10 +80,18 @@ describe("prompts", () => {
   });
 
   it("rejects unsupported variable types", () => {
+    const nestedPayload = JSON.parse('{"payload":{"nested":true}}') as {
+      /**
+       * Structured payloads are forbidden; the JSON fixture reproduces the invalid
+       * runtime input while keeping the TypeScript type system honest.
+       */
+      payload: unknown;
+    };
+
     expect(() =>
       renderPromptTemplate(
         { user: "Value {{payload}}" },
-        { variables: { payload: { nested: true } as unknown as string } },
+        { variables: nestedPayload },
       ),
     ).to.throw(PromptTemplatingError, /Invalid prompt variables/);
   });

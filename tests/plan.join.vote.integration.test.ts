@@ -3,7 +3,6 @@ import { expect } from "chai";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import type { ChildSupervisor } from "../src/children/supervisor.js";
 import type {
   ChildCollectedOutputs,
   ChildRuntimeMessage,

@@ -6,6 +6,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 
 import type { ChildCollectedOutputs, ChildRuntimeMessage } from "../src/childRuntime.js";
+import { assertArray, assertPlainObject, isPlainObject } from "./helpers/assertions.js";
 
 /**
  * Exercises the `child_collect` tool to ensure cognitive review/reflection events emitted by
@@ -114,44 +115,42 @@ describe("events subscribe cognitive correlation", () => {
       });
       expect(eventsResponse.isError ?? false).to.equal(false);
 
-      const structured = eventsResponse.structuredContent as {
-        events: Array<{
-          kind: string;
-          job_id: string | null;
-          run_id: string | null;
-          op_id: string | null;
-          graph_id: string | null;
-          node_id: string | null;
-          child_id: string | null;
-          data?: Record<string, unknown> | null;
-        }>;
-      };
+      const structured = eventsResponse.structuredContent;
+      assertPlainObject(structured, "cognitive events payload");
+      const events = structured.events;
+      assertArray(events, "cognitive events list");
 
-      const reviewEvent = structured.events.find((event) => {
-        const payload = (event.data ?? {}) as { msg?: string };
-        return payload.msg === "child_meta_review";
-      });
+      const reviewEvent = events.find(
+        (event): event is Record<string, unknown> =>
+          isPlainObject(event) && isPlainObject(event.data) && event.data.msg === "child_meta_review",
+      );
       expect(reviewEvent, "child_meta_review event should be published").to.not.equal(undefined);
-      expect(reviewEvent?.kind).to.equal("COGNITIVE");
-      expect(reviewEvent?.job_id).to.equal(jobId);
-      expect(reviewEvent?.run_id).to.equal(runId);
-      expect(reviewEvent?.op_id).to.equal(opId);
-      expect(reviewEvent?.graph_id).to.equal(graphId);
-      expect(reviewEvent?.node_id).to.equal(nodeId);
-      expect(reviewEvent?.child_id).to.equal(childId);
+      if (!reviewEvent) {
+        throw new Error("child_meta_review event should be published");
+      }
+      expect(reviewEvent.kind).to.equal("COGNITIVE");
+      expect(reviewEvent.job_id).to.equal(jobId);
+      expect(reviewEvent.run_id).to.equal(runId);
+      expect(reviewEvent.op_id).to.equal(opId);
+      expect(reviewEvent.graph_id).to.equal(graphId);
+      expect(reviewEvent.node_id).to.equal(nodeId);
+      expect(reviewEvent.child_id).to.equal(childId);
 
-      const reflectionEvent = structured.events.find((event) => {
-        const payload = (event.data ?? {}) as { msg?: string };
-        return payload.msg === "child_reflection";
-      });
+      const reflectionEvent = events.find(
+        (event): event is Record<string, unknown> =>
+          isPlainObject(event) && isPlainObject(event.data) && event.data.msg === "child_reflection",
+      );
       expect(reflectionEvent, "child_reflection event should be published").to.not.equal(undefined);
-      expect(reflectionEvent?.kind).to.equal("COGNITIVE");
-      expect(reflectionEvent?.job_id).to.equal(jobId);
-      expect(reflectionEvent?.run_id).to.equal(runId);
-      expect(reflectionEvent?.op_id).to.equal(opId);
-      expect(reflectionEvent?.graph_id).to.equal(graphId);
-      expect(reflectionEvent?.node_id).to.equal(nodeId);
-      expect(reflectionEvent?.child_id).to.equal(childId);
+      if (!reflectionEvent) {
+        throw new Error("child_reflection event should be published");
+      }
+      expect(reflectionEvent.kind).to.equal("COGNITIVE");
+      expect(reflectionEvent.job_id).to.equal(jobId);
+      expect(reflectionEvent.run_id).to.equal(runId);
+      expect(reflectionEvent.op_id).to.equal(opId);
+      expect(reflectionEvent.graph_id).to.equal(graphId);
+      expect(reflectionEvent.node_id).to.equal(nodeId);
+      expect(reflectionEvent.child_id).to.equal(childId);
     } finally {
       collectStub.restore();
       configureRuntimeFeatures(baselineFeatures);

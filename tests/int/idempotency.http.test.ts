@@ -15,6 +15,7 @@ import { FileIdempotencyStore } from "../../src/infra/idempotencyStore.file.js";
 import { buildIdempotencyCacheKey } from "../../src/infra/idempotency.js";
 import { MemoryHttpResponse, createJsonRpcRequest } from "../helpers/http.js";
 import type { JsonRpcRequest } from "../../src/server.js";
+import { RecordingLogger } from "../helpers/recordingLogger.js";
 
 describe("http idempotency persistence", () => {
   let sandboxRoot: string;
@@ -40,14 +41,7 @@ describe("http idempotency persistence", () => {
     const idempotency: HttpIdempotencyConfig = { store, ttlMs: 10_000 };
     let callCount = 0;
 
-    const logger = new Proxy(
-      {},
-      {
-        get() {
-          return () => {};
-        },
-      },
-    );
+    const logger = new RecordingLogger();
 
     const payload = {
       jsonrpc: "2.0" as const,
@@ -71,9 +65,9 @@ describe("http idempotency persistence", () => {
 
     const firstStartedAt = process.hrtime.bigint();
     const handledFirst = await __httpServerInternals.tryHandleJsonRpc(
-      firstRequest as any,
-      firstResponse as any,
-      logger as any,
+      firstRequest,
+      firstResponse,
+      logger,
       "rid-1",
       delegate,
       idempotency,
@@ -116,9 +110,9 @@ describe("http idempotency persistence", () => {
 
     const secondStartedAt = process.hrtime.bigint();
     const handledSecond = await __httpServerInternals.tryHandleJsonRpc(
-      secondRequest as any,
-      secondResponse as any,
-      logger as any,
+      secondRequest,
+      secondResponse,
+      logger,
       "rid-2",
       delegate,
       idempotency,
@@ -144,14 +138,7 @@ describe("http idempotency persistence", () => {
     const store = await FileIdempotencyStore.create({ directory: sandboxRoot });
     const idempotency: HttpIdempotencyConfig = { store, ttlMs: 10_000 };
 
-    const logger = new Proxy(
-      {},
-      {
-        get() {
-          return () => {};
-        },
-      },
-    );
+    const logger = new RecordingLogger();
 
     const payload = {
       jsonrpc: "2.0" as const,
@@ -168,9 +155,9 @@ describe("http idempotency persistence", () => {
     const response = new MemoryHttpResponse();
 
     await __httpServerInternals.tryHandleJsonRpc(
-      request as any,
-      response as any,
-      logger as any,
+      request,
+      response,
+      logger,
       "rid-conflict-1",
       async (req: JsonRpcRequest) => ({ jsonrpc: "2.0", id: req.id ?? null, result: { ok: true } }),
       idempotency,
@@ -189,9 +176,9 @@ describe("http idempotency persistence", () => {
     const divergentResponse = new MemoryHttpResponse();
 
     const handled = await __httpServerInternals.tryHandleJsonRpc(
-      divergentRequest as any,
-      divergentResponse as any,
-      logger as any,
+      divergentRequest,
+      divergentResponse,
+      logger,
       "rid-conflict-2",
       async (req: JsonRpcRequest) => ({ jsonrpc: "2.0", id: req.id ?? null, result: { ok: true } }),
       idempotency,

@@ -6,6 +6,7 @@ import { join } from "node:path";
 
 import type { FeatureToggles } from "../../src/serverOptions.js";
 import type { EventEnvelope } from "../../src/events/bus.js";
+import { expectEventPayload } from "../helpers/assertions.js";
 import { resolveFixture, runnerArgs } from "../helpers/childRunner.js";
 
 /**
@@ -191,6 +192,11 @@ describe("codex child lifecycle (process-backed)", function () {
     const limitEvent = eventsAfterLimits.find((event) => event.msg === "child.limits.updated");
     expect(limitEvent, "missing child.limits.updated event").to.not.equal(undefined);
     expect(limitEvent?.stage).to.equal("limits");
+    if (limitEvent) {
+      // Extract the structured payload so the assertion verifies the declared limits snapshot.
+      const payload = expectEventPayload(limitEvent, "child.limits.updated");
+      expect(payload).to.deep.equal({ childId: spawnResult.child_id, limits: limitsResult.limits });
+    }
 
     const killResult = (await routeJsonRpcRequest("child_kill", {
       child_id: spawnResult.child_id,

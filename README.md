@@ -64,7 +64,7 @@ Les principaux paramètres décrits dans `.env.example` sont regroupés par bloc
 | Limiteur HTTP | `MCP_HTTP_RATE_LIMIT_RPS`, `MCP_HTTP_RATE_LIMIT_BURST`, `MCP_HTTP_RATE_LIMIT_DISABLE` | Configure le seau à jetons exposé dans `src/http/rateLimit.ts`. |
 | Répertoires persistés | `MCP_RUNS_ROOT`, `MCP_CHILDREN_ROOT`, `MCP_FS_IPC_DIR` | Redirigent logs, snapshots et espaces enfants vers des volumes dédiés. |
 | Flux SSE | `MCP_SSE_MAX_CHUNK_BYTES`, `MCP_SSE_MAX_BUFFER`, `MCP_SSE_EMIT_TIMEOUT_MS` | Bornent la taille et la latence des événements streamés. |
-| Pool graphe & mémoire | `MCP_GRAPH_WORKERS`, `MCP_GRAPH_POOL_THRESHOLD`, `MCP_GRAPH_WORKER_TIMEOUT_MS`, `MCP_GRAPH_SNAPSHOT_*`, `MCP_MEMORY_VECTOR_MAX_DOCS`, `MEM_BACKEND`, `MEM_URL` | Ajustent la parallélisation des traitements graphe et les backends mémoire/RAG. |
+| Pool graphe & mémoire | `MCP_GRAPH_WORKERS`, `MCP_GRAPH_POOL_THRESHOLD`, `MCP_GRAPH_WORKER_TIMEOUT_MS`, `MCP_GRAPH_SNAPSHOT_*`, `MCP_MEMORY_VECTOR_MAX_DOCS`, `MEM_BACKEND`, `MEM_URL` | Ajustent la parallélisation des traitements graphe et les backends mémoire/RAG. L'index vectoriel reste plafonné à **4 096** documents même lorsque `MCP_MEMORY_VECTOR_MAX_DOCS` est surdimensionné afin d'éviter une consommation mémoire imprévisible. |
 | Outils & budgets | `MCP_TOOLS_MODE`, `MCP_TOOL_PACK`, `TOOLROUTER_TOPK`, `IDEMPOTENCY_TTL_MS`, `MCP_TOOLS_BUDGET_*` | Gouvernent les façades MCP exposées et leurs plafonds (temps, appels, octets). |
 | Observabilité | `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_EXPORTER_OTLP_HEADERS` | Connectent l'orchestrateur à un collecteur OpenTelemetry. |
 | Journalisation | `MCP_LOG_REDACT`, `MCP_LOG_FILE`, `MCP_LOG_ROTATE_SIZE`, `MCP_LOG_ROTATE_KEEP` | Contrôlent le log structuré et sa rotation par défaut. |
@@ -73,6 +73,15 @@ Les principaux paramètres décrits dans `.env.example` sont regroupés par bloc
 | Budgets entrants | `MCP_REQUEST_BUDGET_*` | Appliquent des limites globales (temps, tokens, octets) aux requêtes entrantes. |
 
 Les valeurs par défaut renseignées dans `.env.example` correspondent à un usage local sécurisé. Ajustez chaque section de manière atomique et versionnez les explications dans `docs/` lorsque vous introduisez de nouvelles variables.
+
+## Garde-fous runtime
+
+Deux garde-fous principaux protègent l'orchestrateur contre des configurations hostiles ou simplement mal calibrées :
+
+- **Index vectoriel** — `src/memory/vector.ts` borne la capacité à `4 096` entrées (constante `VECTOR_MEMORY_MAX_CAPACITY`). Les overrides supérieurs sont automatiquement ramenés à cette valeur, aussi bien lors de l'instanciation directe de `VectorMemoryIndex` que via `MCP_MEMORY_VECTOR_MAX_DOCS`. Les tests `tests/memory/vector.test.ts` et `tests/runtime.env-overrides.test.ts` couvrent le comportement de clamp.
+- **Value Graph** — `src/values/valueGraph.ts` impose des plafonds stricts sur le nombre de valeurs (`128`), de relations globales (`2 048`), de relations sortantes par valeur (`64`), d'impacts évalués par plan (`256`) et sur le poids unitaire maximal (`100`). Ces bornes (`VALUE_GRAPH_LIMITS`) garantissent que la matérialisation in-memory reste bornée ; lorsque la configuration ou l'évaluation excèdent ces limites, l'opération échoue avec un message explicite plutôt que de saturer le processus.
+
+Ces limites s'appliquent à toutes les exécutions (STDIO, HTTP, évaluations scénarisées) et sont testées systématiquement afin de repérer toute régression de sécurité mémoire.
 
 ## Développement local
 
@@ -216,6 +225,10 @@ Les valeurs par défaut renseignées dans `.env.example` correspondent à un usa
   utilisées par la mémoire vectorielle locale. Le runtime bascule ensuite sur
   `gcr.io/distroless/nodejs20-debian12` pour livrer un conteneur minimal sans
   shell ni gestionnaire de paquets.
+- **Dépendances runtime épurées** : après compilation, l'étape builder exécute
+  `npm prune --omit=dev` afin de ne copier que les dépendances de production
+  dans l'image finale. On évite ainsi d'embarquer la toolchain TypeScript ou les
+  outils de lint dans le conteneur livré en production.
 - **Ports exposés** : `EXPOSE 8765 4100` documente respectivement le transport
   MCP HTTP et le tableau de bord. Les opérateurs peuvent ainsi publier les deux
   endpoints via `docker run -P` sans avoir à relire le code.

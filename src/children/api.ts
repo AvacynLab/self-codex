@@ -9,15 +9,18 @@ import {
   ChildRuntimeStatus,
   ChildShutdownResult,
 } from "../childRuntime.js";
-import { ChildSupervisor } from "./supervisor.js";
-import type { CreateChildOptions, SendResult } from "./supervisor.js";
+import type {
+  ChildSupervisorContract,
+  CreateChildOptions,
+  SendResult,
+} from "./supervisor.js";
 import { ChildRecordSnapshot } from "../state/childrenIndex.js";
 import { StructuredLogger } from "../logger.js";
 import { SandboxExecutionResult, getSandboxRegistry } from "../sim/sandbox.js";
 import type { ChildSandboxRequest, ChildSandboxProfileName } from "./sandbox.js";
 import type { PromptTemplate } from "../prompts.js";
 import { LoopAlert, LoopDetector } from "../guard/loopDetector.js";
-import { OrchestratorSupervisor } from "../agents/supervisor.js";
+import type { OrchestratorSupervisorContract } from "../agents/supervisor.js";
 import {
   ContractNetAwardDecision,
   ContractNetCoordinator,
@@ -54,11 +57,11 @@ export interface ChildBudgetManager {
 
 /** Shared runtime dependencies used by the child-facing helpers. */
 export interface ChildToolContext {
-  supervisor: ChildSupervisor;
+  supervisor: ChildSupervisorContract;
   logger: StructuredLogger;
   loopDetector?: LoopDetector;
   contractNet?: ContractNetCoordinator;
-  supervisorAgent?: OrchestratorSupervisor;
+  supervisorAgent?: OrchestratorSupervisorContract;
   idempotency?: IdempotencyRegistry;
   budget?: ChildBudgetManager;
 }

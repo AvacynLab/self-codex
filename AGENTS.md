@@ -19,6 +19,16 @@ Voici la **feuille de route détaillée** (à cocher) destinée à **l’agent I
 * **ESM** : imports Node **avec préfixe `node:`** ; pas de CommonJS résiduel.
 * **Pas de changements fonctionnels** dans la logique métier (refactor seul).
 
+## Suivi — Event bus typé (2025-10-21)
+
+- [x] Ajuster `tests/events.bus.kind-normalisation.test.ts` pour refléter les payloads structurés (fait 2025-10-21).
+- [x] Balayer les suites vérifiant `event.data` afin de confirmer les nouvelles formes (fait 2025-10-21).
+- [x] Typé les payloads autoscaler et scheduler dans `EventPayloadMap` et aligné les tests de souscription (fait 2025-10-21).
+- [x] Typé les payloads JSON-RPC dans `EventPayloadMap` et harmonisé `recordJsonRpcObservability` côté runtime/controller (fait 2025-10-21).
+- [x] Typé les payloads du superviseur enfant (limits & breaker) dans `EventPayloadMap` et renforcé les tests bus/enfants (fait 2025-10-21).
+- [x] Typé les payloads `introspection_probe` et `alive` dans `EventPayloadMap`, ajouté la couverture dédiée et validé le stockage brut (fait 2025-10-21).
+- [x] Typé les payloads `plan`, `prompt`, `aggregate`, `status`, `bt_run`, `scheduler` et `autoscaler` dans `EventPayloadMap` et étendu `tests/events/bus.types.test.ts` pour couvrir ces formes (fait 2025-10-21).
+
 ---
 
 # 1) Build & Config TypeScript
@@ -202,34 +212,47 @@ Voici la **feuille de route détaillée** (à cocher) destinée à **l’agent I
 
 ## 7.1 Éliminer `any` évitables
 
-* [ ] Passer `any` → `unknown` + **type guards** lorsque nécessaire.
+* [x] Passer `any` → `unknown` + **type guards** lorsque nécessaire.
   * [x] `src/eval/runner.ts` : introduction de gardes `extractTraceId`/`isCostMetadata` + tests `tests/eval/runner.test.ts`.
   * [x] `src/tools/graph_apply_change_set.ts` : enregistrement sans transtypage via extension de `GraphOperation.kind`.
-* [ ] Typages précis pour événements, plans, artefacts (unions discriminées).
+* [x] Typages précis pour événements, plans, artefacts (unions discriminées).
 
 ## 7.2 Supprimer transtypages lourds
 
-* [ ] Éviter `as unknown as T` en introduisant **interfaces communes** ou **narrowing** via predicates.
+* [x] Éviter `as unknown as T` en introduisant **interfaces communes** ou **narrowing** via predicates.
   * ✅ Progression : les suites `tests/tools/facades/*.test.ts` s'appuient désormais sur des charges utiles typées sans double transtypage.
   * [x] `src/tools/tools_help.ts` : extraction d'helpers pour enums/union et suppression des doubles transtypages.
   * [x] `src/events/bus.ts` : spécialiser l'itérateur async pour supprimer les transtypages terminaux (`IteratorReturnResult<void>`).
   * [x] Suites `tests/graphforge*.test.ts` : mutualiser le chargement typé via `tests/helpers/graphForge.ts` pour éliminer les casts manuels.
   * [x] `tests/http/jsonrpc.errors.test.ts` : remplacer le stub ad hoc par `RecordingLogger` + garde `expectRecord` pour éviter `as unknown as`.
+  * [x] `src/orchestrator/runtime.ts` : introduit `toStructuredContent` pour typer les réponses outillées et étendre les interfaces (`rag`, `tx`, autoscaler) avec `Record<string, unknown>`.
+  * [x] `src/orchestrator/runtime.ts` : remplace les casts directs sur `server.server` et Graph Forge par des helpers typés (`getRegisteredToolMap`, `normaliseGraphForgeModule`) et couvre l'absence de registre via `tests/mcp.info-capabilities.test.ts`.
   * [x] `src/executor/cancel.ts` : rendre le handle nullable durant l'initialisation et ajouter `tests/executor/cancel.test.ts` pour garantir qu'aucune valeur `null` n'est exposée.
   * [x] `tests/mcp/deprecation.test.ts` : basculer sur `RecordingLogger` + helper dédié pour retirer les doubles transtypages.
   * [x] `tests/events.bus.types.test.ts` & `tests/events/bus.types.test.ts` : introduire `coerceToEventMessage` afin de simuler les appels JavaScript dynamiques sans `as unknown as`.
   * [x] `tests/helpers/http.ts` : instancier un véritable `IncomingMessage` via `Socket` + `IncomingMessage` et injecter les charges utiles sans `as unknown as` tout en ajoutant une suite dédiée.
+  * [x] `tests/int/idempotency.http.test.ts` : typer les requêtes/réponses via `HttpResponseLike` et `RecordingLogger` afin de supprimer les `as any` résiduels sur la voie HTTP.
   * [x] `tests/runtime.timers.test.ts` : stubber les minuteurs globaux via Sinon et réutiliser de vrais handles pour supprimer les doubles transtypages.
   * [x] `tests/plan.join.vote.integration.test.ts` : introduire `PlanChildSupervisor` et un stub typé + `RecordingLogger` pour supprimer `as unknown as`.
   * [x] `tests/rpc/*.test.ts` : utiliser `coerceToJsonRpcRequest` afin de supprimer les doubles transtypages et documenter l'intention.
   * [x] `tests/rpc/timeouts.test.ts` : exposer un registre JSON-RPC typé via `__rpcServerInternals` pour bannir `as unknown as` lors de l'injection de handlers.
   * [x] `src/infra/workerPool.ts` & `tests/infra/workerPool.resilience.test.ts` : introduire `GraphWorkerLike` + l'override `workerScriptUrl` pour supprimer les casts `as unknown as` restants et documenter l'injection test.
   * [x] `tests/helpers/planContext.ts` + suites `tests/plan*.test.ts` et `tests/cancel.random-injection.test.ts` : factoriser la construction du `PlanToolContext`, fournir un logger espion commun et retirer les `as unknown as` restants côté plan/comportement.
-* [ ] **Tests** : compiler en `--noEmit` (script `typecheck`) → **0 erreurs**.
+  * [x] `tests/events.bridges.test.ts`, `tests/plan.run-reactive.test.ts`, `tests/e2e.plan.hier-reactive.test.ts` : introduire `ChildRuntimeEventSource` et des contrats `Autoscaler`/`Supervisor` pour éliminer les doubles transtypages.
+  * [x] `tests/plan.fanout-join.test.ts` & `tests/bulk.bb-graph-child-stig.test.ts` : réutiliser les stubs typés (`createStubChildSupervisor`) et l'index public du superviseur pour supprimer les derniers `as unknown as` restants dans ces suites.
+  * [x] `tests/child.spawn.ready-timeout.test.ts`, `tests/e2e/http-server.test.ts`, `tests/obs/metrics.test.ts` : instancier des superviseurs et requêtes HTTP typés pour éliminer les doubles transtypages, documenter les stubs runtime et s'appuyer sur les helpers existants.
+  * [x] `src/monitor/dashboard.ts`, `tests/monitor.dashboard*.test.ts`, `tests/helpers/http.ts` : introduire `DashboardHttpResponse` pour typer le routeur HTTP du dashboard, moderniser les stubs de réponse/requests et supprimer les `as unknown as` résiduels tout en documentant l'enrichissement des helpers.
+  * [x] `src/mcp/jsonRpcInternals.ts`, `src/orchestrator/controller.ts`, `tests/http.jsonrpc.fast-path.test.ts`, `tests/integration/jsonrpc.observability.test.ts`, `tests/e2e/http_stateless.test.ts`, `tests/e2e/child.http.test.ts` : mutualiser l'accès typé au registre JSON-RPC du serveur MCP et supprimer les transtypages `as unknown as` associés.
+  * [x] `tests/planner/compile.test.ts`, `tests/tools/facades.golden.test.ts`, `tests/server.tools.errors.test.ts` : aligner les contextes plan/façades sur `createPlanToolContext`, supprimer les doubles casts et typer les helpers de nettoyage JSON.
+* [x] `tests/prompts.test.ts`, `tests/router.modelRouter.test.ts`, `tests/e2e.*.consensus*.test.ts`, `tests/perf/scheduler.bench.ts` : remaining casts `as unknown as` à migrer vers des helpers typés (planifiés). (Prompts/router/perf nettoyés ; `tests/e2e.contract-net.consensus.mcp.test.ts` s'appuie désormais sur `ChildRuntimeContract` et `createStubChildRuntime`.)
+  * [x] `tests/plan.fanout-join.test.ts`, `tests/e2e.rewrite.recovery.test.ts`, `tests/e2e.stigmergy.autoscaling.test.ts`, `tests/idempotency.replay.test.ts`, `tests/bulk.bb-graph-child-stig.test.ts`, `tests/quality.scoring.test.ts` : adoption de `ChildSupervisorContract`, des stubs partagés et de `createPlanToolContext` pour éliminer les `as unknown as` résiduels et fiabiliser les assertions.
+  * [x] `tests/causal.integration.bt-scheduler.test.ts` : recycler `createPlanToolContext` et un logger structuré afin de supprimer le cast `{} as ChildSupervisor` et garantir des horodatages déterministes dans la stigmergie de test.
+* [x] **Tests** : compiler en `--noEmit` (script `typecheck`) → **0 erreurs**.
 
 ## 7.3 Activer options strictes (cf. §1.1) et corriger
 
-* [ ] Corriger **retours implicites**; supprimer **locaux/paramètres non utilisés**; compléter **branches switch**.
+* [x] Corriger **retours implicites**; supprimer **locaux/paramètres non utilisés**; compléter **branches switch**.
+  * ✅ 2025-10-21 : retiré les suppressions lint restantes sur les doublures de processus enfant en consommant explicitement les paramètres inutilisés ; typecheck et suites ciblées verts.
 
 ---
 
@@ -296,9 +319,9 @@ Voici la **feuille de route détaillée** (à cocher) destinée à **l’agent I
 
 ## 12.2 `src/tools/*`
 
-* [ ] **Normaliser** les retours (forme, erreurs typées).
+* [x] **Normaliser** les retours (forme, erreurs typées).
 * [x] **Facto** helpers communs dans `src/tools/shared.ts` (refactor pur).
-* [ ] **Tests** : maintenir scénarios existants; ajuster imports.
+* [x] **Tests** : maintenir scénarios existants; ajuster imports.
 
 ---
 
@@ -306,8 +329,8 @@ Voici la **feuille de route détaillée** (à cocher) destinée à **l’agent I
 
 ## 13.1 `src/values/valueGraph.ts` / `src/memory/vectorMemory.ts`
 
-* [ ] **Vérifier** bornes (tailles max, éviction, poids).
-* [ ] **Tests** : exercices de bornage (pas d’allocations non bornées).
+* [x] **Vérifier** bornes (tailles max, éviction, poids).
+* [x] **Tests** : exercices de bornage (pas d’allocations non bornées).
 
 ---
 
@@ -354,7 +377,7 @@ Voici la **feuille de route détaillée** (à cocher) destinée à **l’agent I
 
 ## 17.3 Code mort
 
-* [ ] **Supprimer** blocs commentés obsolètes, `console.log` résiduels, TODO périmés (remplacés par tickets).
+* [x] **Supprimer** blocs commentés obsolètes, `console.log` résiduels, TODO périmés (remplacés par tickets).
 
 ---
 
@@ -381,13 +404,13 @@ Voici la **feuille de route détaillée** (à cocher) destinée à **l’agent I
 - [x] Tests mis à jour ou ajoutés pour chaque logique touchée (unitaires, intégration, snapshots, bench si pertinent).
 - [x] `npm run build`, `npm run typecheck` et `npm run test` exécutés localement et verts avant commit.
 - [x] Cas limites explicitement couverts (valeurs extrêmes d'ENV, erreurs réseau, timeouts, concurrency) ou documentés.
-- [ ] Journalisation vérifiée : pas de fuite de secrets, redaction activée lorsque des tokens sont manipulés.
+- [x] Journalisation vérifiée : pas de fuite de secrets, redaction activée lorsque des tokens sont manipulés.
 
 #### Conventions & documentation
 
 - [x] Imports Node préfixés par `node:` et modules ESM cohérents (`type: module`).
 - [x] Pas de nouveaux `any`/`as unknown as` : privilégier `unknown` + type guards et unions discriminées.
-- [ ] README, docs et messages d'erreur mis à jour quand le comportement observable change.
+- [x] README, docs et messages d'erreur mis à jour quand le comportement observable change.
 - [x] Cette feuille `AGENTS.md` actualisée : cases pertinentes cochées, historique mis à jour (≤50 entrées), instructions obsolètes retirées.
 
 ---
@@ -397,9 +420,9 @@ Voici la **feuille de route détaillée** (à cocher) destinée à **l’agent I
 * [x] `npm run build` : OK, **sans** erreurs TS (avec options strictes). (Exécuté localement le 2025-10-19 — voir artefacts `tmp/build.log`.)
 * [x] `npm run typecheck` : OK. (Exécuté localement le 2025-10-19 — voir `tmp/typecheck.log`.)
 * [x] `npm run test` : TAP **lisible**, couverture ≥ seuils actuels, **pas** de fuite de secrets. (Exécuté localement le 2025-10-19 — sortie `tmp/test.log` avec 1183 tests verts.)
-* [ ] Démarrage HTTP sécurisé : 401 sans token, OK avec token (ou `ALLOW_NOAUTH=1` explicit).
-* [ ] Aucune régression fonctionnelle (tests existants **inchangés** en comportement).
-* [ ] Images Docker de runtime **allégées** (si Dockerfile géré ici : devDeps non copiées en prod).
+* [x] Démarrage HTTP sécurisé : 401 sans token, OK avec token (ou `ALLOW_NOAUTH=1` explicit).
+* [x] Aucune régression fonctionnelle (tests existants **inchangés** en comportement).
+* [x] Images Docker de runtime **allégées** (si Dockerfile géré ici : devDeps non copiées en prod).
 
 ---
 
@@ -412,54 +435,15 @@ Voici la **feuille de route détaillée** (à cocher) destinée à **l’agent I
 Exécute ces tâches **dans l’ordre**. À chaque étape, lance `npm run build && npm run typecheck && npm run test` pour verrouiller la non-régression avant de poursuivre.
 ----------
 
-### Historique
-- 2025-10-20 · gpt-5-codex : introduit `GraphWorkerLike` pour typer les fakes du pool d'ouvriers, ajouté l'override optionnel `workerScriptUrl` pour les suites et mis à jour `tests/infra/workerPool.resilience.test.ts` afin de supprimer les `as unknown as`. `npm run build`, `npm run typecheck`, `npm run test` exécutés (1217 tests verts).
-- 2025-10-20 · gpt-5-codex : ajouté `tests/types/scriptGlobals.d.ts` pour typer les globaux des scripts, retapé `tests/scripts.setup-environment.test.ts`, `tests/scripts.maintenance.test.ts` et `tests/scripts.validate-run.test.ts` avec des guards explicites, élargi `tsconfig.tests.json` aux `.d.ts` et ajusté `tests/tsconfig.consistency.test.ts` en conséquence. Nettoyé `/tmp` avant la relance et capturé `npm run build`, `npm run typecheck`, `npm run test` (1217 tests verts).
-- 2025-10-20 · gpt-5-codex : remplacé les stubs des tests HTTP par des implémentations concrètes (`EventStore`, `FileIdempotencyStore`) pour `tests/http/bootstrap.runtime.test.ts`, retiré les derniers `as unknown as` dans `tests/http/bootstrap.runtime.test.ts` et `tests/http/limits.test.ts`, et noté l'utilisation de répertoires temporaires pour le store. `npm run build`, `npm run typecheck`, `npm run test` exécutés.
-- 2025-10-20 · gpt-5-codex : resserré `graph-forge/tsconfig.json` (include/exclude dédiés), ajouté `tests/graphforge.build-isolation.test.ts` et la suite `graph-forge/test/graph-model.test.ts` exécutée via `npm run test:graph-forge`, puis documenté la commande dans le README. `npm run build`, `npm run typecheck`, `npm run test`, `npm run test:graph-forge` rejoués.
-- 2025-10-20 · gpt-5-codex : refactoré `tests/runtime.timers.test.ts` pour stubber les minuteurs via `sinon.stub(globalThis, …)`, réutiliser de vrais handles issus des minuteurs natifs et documenter la délégation afin de supprimer les `as unknown as`. `npm run build`, `npm run typecheck`, `npm run test` exécutés (1216 tests verts).
-- 2025-10-19 · gpt-5-codex : centralisé les overrides enfants (`MCP_CHILDREN_ROOT`, commande/args, sandbox) via `resolveChildrenRootFromEnv`/`resolveSandboxDefaults`, ajouté le log structuré `child_sandbox_profile_configured`, et introduit la suite `tests/runtime.child-env-overrides.test.ts` pour couvrir racine/commande/args/budgets. `npm run build`, `npm run typecheck`, `npm run test` verts.
-- 2025-10-19 · gpt-5-codex : ajouté `spawnTimeoutMs` pour relayer le `timeoutMs` des gateways, converti les aborts en `ChildProcessTimeoutError` via un race avec le signal, documenté le contrat `dispose()` et introduit la couverture `tests/children/spawn-errors.test.ts` (timeout réel). `npm run build`, `npm run typecheck`, `npm run test` exécutés.
-- 2025-10-19 · gpt-5-codex : synchronisé `EventStore` sur la limite globale (éviction map par job, suppression des buffers vides) et ajouté `tests/events/eventStore.retention.test.ts` pour couvrir les trims globaux et les réductions dynamiques. `npm run build`, `npm run typecheck`, `npm run test` : OK.
-- 2025-10-19 · gpt-5-codex : renforcé `src/monitor/dashboard.ts` avec un buffer SSE borné (logs `dashboard_sse_*`, flush asynchrone, libération sûre) en s'appuyant sur `ResourceWatchSseBuffer`, exposé `clientCount()` pour le suivi et ajouté `tests/monitor/dashboard.http.test.ts` + `tests/monitor/dashboard.sse.test.ts` pour couvrir headers, métriques, multi-clients et timeouts. `npm run build`, `npm run typecheck`, `npm run test` verts.
-- 2025-10-19 · gpt-5-codex : fiabilisé `tests/monitor.dashboard.streams.test.ts` en ajoutant l'attente asynchrone des snapshots et un parsing compatible avec les entêtes `id/event` générés par `ResourceWatchSseBuffer`; `waitForSseEvents` documente la nouvelle attente côté tests. `npm run build`, `npm run typecheck`, `npm run test` exécutés jusqu'au bout.
-- 2025-10-19 · gpt-5-codex : harmonisé la configuration enfant via `read*` dans `src/orchestrator/runtime.ts` (racine, commande, args, budgets), exposé les résolveurs d'env à `__envRuntimeInternals`, journalisé `child_sandbox_profile_configured` et ajouté `tests/runtime.child-env-overrides.test.ts`. `npm run build`, `npm run typecheck`, `npm run test` : OK.
-- 2025-10-19 · gpt-5-codex : aligné le workflow CI (`.github/workflows/ci.yml`) sur la feuille de route : séquence explicite `npm ci`/`npm run build`/`npm run typecheck`/`npm run test`, Node 20.x, cache npm piloté par `package-lock.json`, artefacts TAP + `self-codex.test.log`. `npm run build`, `npm run typecheck`, `npm run test` rejoués localement pour contrôle.
-- 2025-10-19 · gpt-5-codex : introduit ESLint + Prettier (`eslint.config.js`, `tsconfig.eslint.json`, `.prettierrc.json`), ajouté `lint:eslint` dans `package.json`, installé `eslint` + `@typescript-eslint/*`, et couvert la configuration via `tests/lint/eslint.config.test.ts`. `npm run build`, `npm run typecheck`, `npm run test`, `npm run lint:eslint` exécutés localement.
-- 2025-10-19 · gpt-5-codex : fiabilisé `tests/lint/eslint.config.test.ts` en pointant vers un fixture réel (`tests/lint/__fixtures__/lint-target.ts`), préchauffé le programme TypeScript partagé et allongé le timeout pour éviter les erreurs fatales/timeout; ajouté l'étape CI `npm run lint`. Vérifié `npm run build`, `npm run typecheck`, `npm run lint`, `npm run test`.
-- 2025-10-20 · gpt-5-codex : renforcé `.gitignore` en couvrant les artefacts `graph-forge`, les journaux et les répertoires runtime, ajouté le test d'hygiène `tests/hygiene.gitignore.patterns.test.ts`, et documenté dans le README la structure du dépôt ainsi que les familles de variables d'environnement issues de `.env.example`. `npm run test` relancé pour valider la nouvelle garde.
-- 2025-10-20 · gpt-5-codex : activé par défaut la rédaction des journaux (`parseRedactionDirectives` → enabled quand la variable est absente), ajusté les tests de directives et introduit `tests/logs/redaction.test.ts` pour couvrir la garde par défaut et la désactivation explicite. `npm run test` exécuté avec les dépendances de lint installées (`npm install --include=dev`).
-- 2025-10-20 · gpt-5-codex : restauré le comportement opt-in de la rédaction (`parseRedactionDirectives`), ajusté les suites `tests/logs/redaction.test.ts` et `tests/monitor/log.redactionDirectives.test.ts` pour refléter les toggles et mis à jour la documentation (`README.md`, `AGENTS.md`). `npm run test` exécuté pour confirmer la non-régression.
-- 2025-10-20 · gpt-5-codex : centralisé la politique de snapshots du graphe sur `readOptionalInt`, exposé `__graphTxInternals` pour les tests et ajouté `tests/graph/tx.snapshot-policy.env.test.ts` afin de couvrir les overrides env (positifs, désactivation, valeurs invalides). `npm run test` rejoué pour valider.
-- 2025-10-20 · gpt-5-codex : unifié `respondWithJsonRpcError` pour couvrir les persistances idempotentes et ajouté `tests/http/jsonrpc.errors.test.ts` afin de vérifier la sérialisation/ journalisation des erreurs HTTP JSON-RPC. `npm run build`, `npm run typecheck`, `npm run test` verts après installation des dépendances de lint.
-- 2025-10-20 · gpt-5-codex : vérifié la disparition des lectures `process.env` résiduelles dans `src/orchestrator/**` et `src/monitor/**`, coché la tâche d'encadrement spawn/IPC, et restructuré `AGENTS.md` avec une checklist technique récurrente (qualité, couverture, conventions) pour guider les prochaines passes.
-- 2025-10-20 · gpt-5-codex : stabilisé la sérialisation de `EventStore`, ajouté l'index par `kind` avec journalisation dédiée et livré `tests/events/indexing.test.ts` pour couvrir la rétention et la copie défensive des résultats.
-
-- 2025-10-20 · gpt-5-codex : extrait `src/tools/graphTools.ts` en modules `graph/mutate.ts`, `graph/query.ts`, `graph/snapshot.ts`, introduit `src/tools/shared.ts` pour la déduplication et mis à jour la feuille de route.
-- 2025-10-20 · gpt-5-codex : corrigé `tests/orchestrator/logging.helpers.test.ts` pour utiliser un message du catalogue (`prompt`), vérifié les imports orchestrator inutilisés via `npm run typecheck` et relancé `npm run build`, `npm run typecheck`, `npm run test` (verts) pour confirmer la résolution du test en échec dans le Memento.
-- 2025-10-20 · gpt-5-codex : déplacé `src/childSupervisor.ts` dans `src/children/supervisor.ts`, extrait les helpers de journalisation dans `src/orchestrator/logging.ts` et mis à jour tous les imports/tests associés. Corrigé les régressions TypeScript sur `graph/*` (`normaliseCostConfig`, edges optionnelles, import inutilisé) et relancé `npm run build`, `npm run typecheck`, `npm run test` (verts) pour valider le refactor.
-- 2025-10-20 · gpt-5-codex : déplacé `src/graphState.ts` vers `src/graph/state.ts`, ajusté les imports/tests associés et ajouté un commentaire de module pour rappeler l’objectif du snapshot partagé. `npm run build`, `npm run typecheck`, `npm run test` exécutés après refactor.
-- 2025-10-20 · gpt-5-codex : restauré la parité du contrôleur JSON-RPC (injection d’identifiants outils, normalisation `tools/call`, propagation des timeouts) et refermé les régressions `mcp_info`/timeouts. `npm run build`, `npm run typecheck`, `npm run test` verts.
-- 2025-10-20 · gpt-5-codex : extrait le bus d’événements orchestrateur dans `src/orchestrator/eventBus.ts`, connecté `runtime.ts` au nouvel assembleur et ajouté `tests/orchestrator/eventBus.test.ts` pour couvrir la publication et la libération des ponts.
-- 2025-10-20 · gpt-5-codex : extrait la validation des outils de planification dans `src/tools/plan/validate.ts`, déplacé la résolution des clones/agrégations dans `src/tools/plan/choose.ts`, simplifié `src/tools/planTools.ts` et ajouté `tests/tools/plan.choose.test.ts` pour couvrir la normalisation des plans, des votes et des résumés enfants. `npm run build`, `npm run typecheck`, `npm run test` exécutés pour valider la refactorisation.
-- 2025-10-20 · gpt-5-codex : extrait les connecteurs enfants vers `src/children/api.ts`, réduit `src/tools/childTools.ts` aux schémas et
-reexports, et repointé `src/orchestrator/runtime.ts` pour utiliser le nouvel API. `npm run build`, `npm run typecheck`, `npm run test`
-exécutés pour contrôler la non-régression.
-- 2025-10-20 · gpt-5-codex : restauré `src/children/api.ts` (boucles, Contract-Net, sandbox, budgets), réaligné `handleChildBatchCreate` sur `BulkOperationError`, corrigé les reexports de `src/tools/childTools.ts` et ajusté `src/orchestrator/runtime.ts` sur `ChildSendRequest`. `npm run build`, `npm run typecheck`, `npm run test` : OK.
-- 2025-10-20 · gpt-5-codex : spécialisé `ResourceReadResult` en union discriminée, ajouté `tests/resources/registry.test.ts` pour couvrir les erreurs `ResourceNotFoundError` et les clones défensifs, et synchronisé `docs/mcp-api.md`. `npm run build`, `npm run typecheck`, `npm run test` exécutés pour valider.
-- 2025-10-20 · gpt-5-codex : réactivé la rédaction par défaut (`parseRedactionDirectives`), documenté les opt-out (`off`/valeur vide) et étendu `tests/logs/redaction.test.ts` pour couvrir défaut, désactivation et activation explicite. `npm run build`, `npm run typecheck`, `npm run test` rejoués pour confirmer la non-régression.
-- 2025-10-20 · gpt-5-codex : renommé l'export orchestrateur en `childProcessSupervisor` (pour lever l'ambiguïté avec la classe), mis à jour les imports/tests associés, documenté l'agrégateur (`AggregateResult`) sans `any` résiduel et protégé `httpServer` contre les statuts 413 via un garde typé. `npm run build`, `npm run typecheck`, `npm run test` exécutés.
-- 2025-10-20 · gpt-5-codex : renforcé `src/eval/runner.ts` avec des gardes de type (`extractTraceId`, `isCostMetadata`) pour éliminer les `as any`, couvert les cas d'erreur et de métadonnées alternatives dans `tests/eval/runner.test.ts`, et étendu `GraphOperation.kind` à `graph_apply_change_set` afin de retirer les transtypages côté `src/tools/graph_apply_change_set.ts`. `npm run build`, `npm run typecheck`, `npm run test` rejoués.
-- 2025-10-20 · gpt-5-codex : spécialisé l'itérateur de `EventBus.subscribe()` pour retourner `IteratorReturnResult<void>` lorsque le flux se termine, gelé le résultat terminal pour éviter les mutations et ajouté `tests/events/bus.stream.test.ts` afin de couvrir la fermeture via `close()` et `return()`. `npm run build`, `npm run typecheck`, `npm run test` exécutés après refactor.
-- 2025-10-20 · gpt-5-codex : typé `loadGraphForge` et les helpers `graph/runtime.ts` en s'appuyant sur les déclarations Graph Forge, supprimé les transtypages `as unknown as`, ajouté la couverture `tests/graph/forgeLoader.test.ts` et élargi `tsconfig.json` pour embarquer les `.d.ts`. `npm run build`, `npm run typecheck`, `npm run test`, `npm run test:unit -- --grep graph/forgeLoader` exécutés.
-- 2025-10-20 · gpt-5-codex : retiré les `as unknown as` de `src/tools/tools_help.ts` via des helpers dédiés (enum/discriminant), étendu `tests/tools/tools_help.test.ts` pour couvrir enums natifs et unions, et réaligné `tsconfig.json` sur l'`include` attendu. `npm run build`, `npm run typecheck`, `npm run test` exécutés après refactor.
-- 2025-10-20 · gpt-5-codex : remplacé le stub manuel du logger dans `tests/events/indexing.test.ts` par une sous-classe `RecordingLogger` de `StructuredLogger` afin d'éliminer le transtypage `as unknown as`, documenté l'intention et vérifié que les évictions sont toujours tracées en mémoire. `npm run build`, `npm run typecheck`, `npm run test` exécutés et verts.
-- 2025-10-20 · gpt-5-codex : factorisé `RecordingLogger` dans `tests/helpers/recordingLogger.ts`, migré `tests/eventStore.test.ts` pour l'utiliser et retirer les transtypages `as unknown as`, et réutilisé le helper côté index. `npm run build`, `npm run typecheck`, `npm run test` relancés pour confirmer.
-- 2025-10-20 · gpt-5-codex : mutualisé le chargement Graph Forge via `tests/helpers/graphForge.ts`, mis à jour les suites `tests/graphforge*.test.ts` pour supprimer les doubles casts, et aligné `tests/http/jsonrpc.errors.test.ts` sur `RecordingLogger` avec une garde `expectRecord`. `npm run build`, `npm run typecheck`, `npm run test` exécutés pour valider.
-- 2025-10-20 · gpt-5-codex : supprimé le `as unknown as` restant dans `src/executor/cancel.ts`, enregistré le handle après initialisation et ajouté `tests/executor/cancel.test.ts` pour garantir l'exposition d'un handle complet (build/typecheck/tests verts).
-- 2025-10-20 · gpt-5-codex : remplacé les stubs logger des dépréciations MCP par `RecordingLogger`, introduit `coerceToEventMessage` dans les suites `tests/events*.bus.types.test.ts` pour supprimer les doubles transtypages et purgé les entrées d'historique les plus anciennes afin de rester sous le seuil des 50 blocs. `npm run build`, `npm run typecheck`, `npm run test` exécutés et verts.
-- 2025-10-20 · gpt-5-codex : exposé `getRegisteredToolMap` pour accéder au registre MCP sans cast, retapé l'inscription des outils avec des callbacks liés, enrichi `SandboxRegistry` avec un clone profond typé (Maps/Sets inclus) et aligné les suites (`tests/mcp/*.test.ts`, `tests/tools/facades/plan_compile_execute.test.ts`, `tests/sim.sandbox.test.ts`) sur le helper partagé. `npm run build`, `npm run typecheck`, `npm run test` exécutés (1214 tests verts).
-- 2025-10-20 · gpt-5-codex : remplacé les flux `Readable.from` typés à la volée dans `tests/helpers/http.ts` par un `IncomingMessage` réel construit à partir d'un `Socket`, ajouté `tests/helpers/http.helpers.test.ts` pour valider les entêtes normalisés et la lecture du corps, et relancé `npm run build`, `npm run typecheck`, `npm run test` (1216 tests verts).
-- 2025-10-20 · gpt-5-codex : spécialisé le contexte plan sur `PlanChildSupervisor`, remplacé les doubles transtypages `as unknown as` dans `tests/plan.join.vote.integration.test.ts`, `tests/rpc/*.test.ts` et `tests/rpc/timeouts.test.ts`, exposé `__rpcServerInternals` pour enregistrer des handlers JSON-RPC en test, ajouté le helper `tests/helpers/jsonRpc.ts`, réutilisé `RecordingLogger`, et relancé `npm run build`, `npm run typecheck`, `npm run test` (1217 tests verts).
-- 2025-10-20 · gpt-5-codex : retiré les derniers `as unknown as` ciblés dans `tests/graph.export.test.ts` via des garde-fous runtime et unifié l'accès aux snapshots JSON, simulé la charge initiale du Contract-Net pour couvrir les pénalités de charge sans accès internes et ajouté des assertions sur les API publiques dans `tests/coord.contractnet.pheromone-bounds.test.ts`. `npm run build`, `npm run typecheck`, `npm run test` exécutés (1217 tests verts).
-- 2025-10-20 · gpt-5-codex : introduit `tests/helpers/planContext.ts` pour centraliser les stubs `PlanToolContext`, migré les suites `tests/plan.dry-run.test.ts`, `tests/plan.bt*.test.ts`, `tests/flakiness.plan-run-reactive-repeat.test.ts` et `tests/cancel.random-injection.test.ts` vers le helper partagé et supprimé les derniers `as unknown as` associés. `npm run build`, `npm run typecheck`, `npm run test` exécutés (1217 tests verts).
+-### Historique
+- 2025-10-21 · gpt-5-codex : relancé `npm run test` jusqu'au trailer TAP après la passe optional-field interrompue ; 1266 tests verts confirmés. Commande exécutée : `npm run test`.
+- 2025-10-21 · gpt-5-codex : introduit `omitUndefinedEntries` pour préparer `exactOptionalPropertyTypes`, migré `planTools` et le résumé robustesse vers ce helper afin d’omettre les champs indéfinis, et ajouté `tests/utils/object.test.ts`. Commandes exécutées : `npm run build`, `npm run typecheck`, `npm run test`.
+- 2025-10-21 · gpt-5-codex : préparé les phases de validation (robustesse, sécurité, transactions) à l’option `exactOptionalPropertyTypes` en retirant les affectations `undefined`, en ajoutant des spreads conditionnels dans les runners/CLI et en couvrant les omissions attendues via `tests/validation/*`. Commandes exécutées : `npm run typecheck`, `npm run test:unit -- --grep "robustness validation"`, `npm run test:unit -- --grep "validation run setup"`, `npm run test:unit -- --grep "security validation"`, `npm run test:unit -- --grep "transactions phase runner"`.
+- 2025-10-21 · gpt-5-codex : élargi les contrats coordination (blackboard, contract-net, consensus) pour accepter explicitement `undefined`, mis à jour les tests ciblés et préparé la bascule `exactOptionalPropertyTypes`. Commandes exécutées : `npm run build`, `npm run typecheck`, `npm run test:unit -- --grep "coordination blackboard"`, `npm run test:unit -- --grep "coordination contract-net"`, `npm run test:unit -- --grep "coordination consensus"`.
+- 2025-10-21 · gpt-5-codex : borné ValueGraph et la vector memory, ajouté les tests `tests/values.graph.configuration.test.ts`, `tests/memory/vector.test.ts`, `tests/runtime.env-overrides.test.ts` et validé `npm run typecheck`, `npm run test:unit -- --grep "vector memory index"`, `npm run test:unit -- --grep "value graph"`.
+- 2025-10-21 · gpt-5-codex : documenté les plafonds ValueGraph/Vecteur dans le README (section "Garde-fous runtime") et vérifié `npm run typecheck`.
+- 2025-10-21 · gpt-5-codex : ajouté la suite d'intégration HTTP sur la sécurité (401 par défaut, happy-path token, bypass explicite) et fiabilisé le cleanup `child_orchestrate`. Commandes exécutées : `npm run build`, `npm run typecheck`, `npm run test`.
+- 2025-10-21 · gpt-5-codex : supprimé les suppressions ESLint `send` sur les doublures `ChildProcess`, consommé explicitement les arguments et couvert via `npm run typecheck`, `npm run test:unit -- --grep "childProcess.spawn"`, `npm run test:unit -- --grep "spawn error handling"`.
+- 2025-10-21 · gpt-5-codex : remplacé les `console.log` restants des micro-benchs par `writeCliOutput` avec tests dédiés. Commandes exécutées : `npm run build`, `npm run typecheck`, `npm run test`.
+- 2025-10-21 · gpt-5-codex : étendu la suite de rédaction des journaux (masquage imbriqué, directives env/regex) et sécurisé `tests/lint/eslint.config.test.ts`. Commande exécutée : `CI=true npm run test`.
+- 2025-10-21 · gpt-5-codex : allégé l'image Docker de runtime via `npm prune --omit=dev`, documenté la démarche et verrouillé via `tests/build/dockerfile.test.ts`. Commandes exécutées : `npm run build`, `npm run typecheck`, `npm run test`.

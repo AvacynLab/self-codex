@@ -7,9 +7,10 @@ import path from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 
-import type { CreateChildOptions } from "../src/children/supervisor.js";
+import type { CreateChildOptions, CreateChildResult } from "../src/children/supervisor.js";
 import type {
   ChildCollectedOutputs,
+  ChildMessageStreamResult,
   ChildRuntimeMessage,
   ChildRuntimeStatus,
   ChildShutdownResult,
@@ -23,6 +24,7 @@ import {
   logJournal,
   contractNet,
 } from "../src/server.js";
+import { createStubChildRuntime } from "./helpers/childRuntime.js";
 
 /**
  * Builds a deep clone of the collected child outputs so the test can perform
@@ -154,37 +156,44 @@ describe("contract-net consensus MCP end-to-end", function () {
 
       stubbedChildren.add(childId);
 
-      const runtime = {
+      const runtime = createStubChildRuntime({
+        childId,
         manifestPath,
         logPath,
-        shutdown: async () => shutdownSnapshot,
-        waitForExit: async () => shutdownSnapshot,
+        status: runtimeStatus,
+        shutdownResult: shutdownSnapshot,
         waitForMessage: async () => cloneMessage(readyMessage),
         collectOutputs: async () => {
           const outputs = stubbedOutputs.get(childId);
-          return outputs ? cloneOutputs(outputs) : createOutputs(childId, {
-            type: "response",
-            content: "{}",
-            receivedAt: now,
-          });
+          return outputs
+            ? cloneOutputs(outputs)
+            : createOutputs(childId, {
+                type: "response",
+                content: "{}",
+                receivedAt: now,
+              });
         },
-        send: async () => {},
-        setRole: async () => {},
-        setLimits: async () => {},
-        attach: async () => {},
-        streamMessages: () => ({
-          messages: stubbedOutputs.get(childId)?.messages ?? [],
-          nextCursor: stubbedOutputs.get(childId)?.messages.length ?? 0,
-        }),
-        getStatus: () => runtimeStatus,
-      };
+        streamMessages: () => {
+          const outputs = stubbedOutputs.get(childId);
+          const messages = outputs ? outputs.messages.map((message) => cloneMessage(message)) : [];
+          const totalMessages = messages.length;
+          return {
+            childId,
+            totalMessages,
+            matchedMessages: totalMessages,
+            hasMore: false,
+            nextCursor: totalMessages > 0 ? messages[totalMessages - 1].sequence : null,
+            messages,
+          } satisfies ChildMessageStreamResult;
+        },
+      });
 
       return {
         childId,
         index: snapshot,
         runtime,
         readyMessage,
-      } as unknown as Awaited<ReturnType<typeof originalCreateChild>>;
+      } satisfies CreateChildResult;
     }).bind(childProcessSupervisor);
 
     childProcessSupervisor.collect = (async function stubCollect(

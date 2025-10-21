@@ -120,6 +120,108 @@ describe("security validation", () => {
     expect(summaryDocument.pathValidation.calls[0].attemptedPath).to.equal("../../etc/passwd");
   });
 
+  it("omits optional security summary fields when probes skip them", async () => {
+    const calls = [
+      {
+        scenario: "auth",
+        name: "unauthenticated",
+        method: "mcp/ping",
+        requireAuth: false,
+        unauthorizedProbe: true,
+      },
+      {
+        scenario: "redaction",
+        name: "log_guard",
+        method: "mcp/secure-info",
+        redactionProbe: { secret: "SYNTH-SECRET" },
+      },
+      {
+        scenario: "filesystem",
+        name: "escape",
+        method: "tools/call",
+        params: { name: "fs/write", arguments: { path: "../../tmp/leak", contents: "noop" } },
+        pathProbe: { attemptedPath: "../../tmp/leak" },
+      },
+    ] as const;
+
+    const responses: HttpCheckSnapshot[] = [
+      {
+        name: "auth:unauthenticated",
+        startedAt: new Date().toISOString(),
+        durationMs: 10,
+        request: {
+          method: "POST",
+          url: environment.baseUrl,
+          headers: { accept: "application/json" },
+          body: { jsonrpc: "2.0", method: "mcp/ping" },
+        },
+        response: {
+          status: 401,
+          statusText: "Unauthorized",
+          headers: { "content-type": "application/json" },
+          body: { jsonrpc: "2.0", error: { code: 401, message: "missing token" } },
+        },
+      },
+      {
+        name: "redaction:log_guard",
+        startedAt: new Date().toISOString(),
+        durationMs: 12,
+        request: {
+          method: "POST",
+          url: environment.baseUrl,
+          headers: { accept: "application/json", authorization: "Bearer token" },
+          body: { jsonrpc: "2.0", method: "mcp/secure-info" },
+        },
+        response: {
+          status: 200,
+          statusText: "OK",
+          headers: { "content-type": "application/json" },
+          body: { jsonrpc: "2.0", result: { ok: true, events: [{ type: "log", message: "safe" }] } },
+        },
+      },
+      {
+        name: "filesystem:escape",
+        startedAt: new Date().toISOString(),
+        durationMs: 14,
+        request: {
+          method: "POST",
+          url: environment.baseUrl,
+          headers: { accept: "application/json", authorization: "Bearer token" },
+          body: { jsonrpc: "2.0", method: "tools/call" },
+        },
+        response: {
+          status: 403,
+          statusText: "Forbidden",
+          headers: { "content-type": "application/json" },
+          body: { jsonrpc: "2.0", error: { code: 403, message: "denied" } },
+        },
+      },
+    ];
+
+    let index = 0;
+    const httpCheck = async (
+      name: string,
+      request: HttpCheckRequestSnapshot,
+    ): Promise<HttpCheckSnapshot> => {
+      const snapshot = responses[index] ?? responses[responses.length - 1]!;
+      index += 1;
+      return { ...snapshot, name, request };
+    };
+
+    const result = await runSecurityPhase(runRoot, environment, { calls: [...calls] }, { httpCheck });
+
+    const summary = JSON.parse(await readFile(result.summaryPath, "utf8"));
+    const unauthorizedCheck = summary.checks.find((entry: { name: string }) => entry.name === "unauthenticated");
+    expect(unauthorizedCheck).to.exist;
+    expect(Object.prototype.hasOwnProperty.call(unauthorizedCheck ?? {}, "expectedStatus")).to.equal(false);
+
+    expect(summary.redaction.secret).to.equal("SYNTH-SECRET");
+    expect(Object.prototype.hasOwnProperty.call(summary.redaction, "description")).to.equal(false);
+    expect(summary.unauthorized.calls[0].status).to.equal(401);
+    expect(summary.pathValidation.calls[0].attemptedPath).to.equal("../../tmp/leak");
+    expect(Object.prototype.hasOwnProperty.call(summary.pathValidation.calls[0], "description")).to.equal(false);
+  });
+
   it("exposes knobs to customise the default call plan", () => {
     const calls = buildDefaultSecurityCalls({
       secretText: "custom-secret",

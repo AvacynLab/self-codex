@@ -2,6 +2,7 @@ import { performance } from "node:perf_hooks";
 import path from "node:path";
 
 import { safeJoin, sanitizeFilename } from "../../src/paths.js";
+import { writeCliOutput } from "../helpers/cliOutput.js";
 
 /**
  * Target average execution time per invocation (in milliseconds) for the
@@ -95,8 +96,7 @@ async function main(): Promise<void> {
     assertWithinTarget(sample);
   }
 
-  // eslint-disable-next-line no-console -- developer feedback for manual runs.
-  console.log(formatSamples(samples));
+  writeCliOutput(formatSamples(samples));
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {

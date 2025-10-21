@@ -13,6 +13,7 @@ import {
 } from "../../src/server.js";
 import type { FeatureToggles } from "../../src/serverOptions.js";
 import type { EventEnvelope } from "../../src/events/bus.js";
+import { expectEventPayload } from "../helpers/assertions.js";
 
 /**
  * Validates that declarative limit updates propagate to the shared index while
@@ -91,6 +92,9 @@ describe("child_set_limits (http loopback)", () => {
 
     const matching = newEvents.find((event) => event.childId === spawn.child_id);
     expect(matching, "missing child.limits.updated event").to.not.equal(undefined);
-    expect(matching?.data).to.deep.equal({ childId: spawn.child_id, limits: result.limits });
+    // Narrow the event payload through the shared helper to assert the structured
+    // limits snapshot without falling back to casts.
+    const payload = matching && expectEventPayload(matching, "child.limits.updated");
+    expect(payload).to.deep.equal({ childId: spawn.child_id, limits: result.limits });
   });
 });

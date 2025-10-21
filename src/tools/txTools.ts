@@ -88,7 +88,7 @@ export type TxCommitInput = z.infer<typeof TxCommitInputSchema>;
 export type TxRollbackInput = z.infer<typeof TxRollbackInputSchema>;
 
 /** Result returned by {@link handleTxBegin}. */
-export interface TxBeginResult {
+export interface TxBeginResult extends Record<string, unknown> {
   /** Correlation identifier propagated back to clients. */
   op_id: string;
   tx_id: string;
@@ -104,7 +104,7 @@ export interface TxBeginResult {
 }
 
 /** Result returned by {@link handleTxApply}. */
-export interface TxApplyResult {
+export interface TxApplyResult extends Record<string, unknown> {
   /** Correlation identifier propagated back to clients. */
   op_id: string;
   tx_id: string;
@@ -131,7 +131,7 @@ export interface TxApplyResult {
 }
 
 /** Result returned by {@link handleTxCommit}. */
-export interface TxCommitResult {
+export interface TxCommitResult extends Record<string, unknown> {
   /** Correlation identifier propagated back to clients. */
   op_id: string;
   tx_id: string;
@@ -142,7 +142,7 @@ export interface TxCommitResult {
 }
 
 /** Result returned by {@link handleTxRollback}. */
-export interface TxRollbackResult {
+export interface TxRollbackResult extends Record<string, unknown> {
   /** Correlation identifier propagated back to clients. */
   op_id: string;
   tx_id: string;

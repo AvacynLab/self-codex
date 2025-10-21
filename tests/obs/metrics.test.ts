@@ -79,7 +79,7 @@ describe("observability metrics", () => {
   });
 
   it("exports spans to an OTLP endpoint when configured", async () => {
-    const fetchStub = sinon.stub(globalThis as unknown as { fetch: typeof fetch }, "fetch");
+    const fetchStub = sinon.stub(globalThis, "fetch");
     fetchStub.resolves(new Response(null, { status: 200 }));
     __tracingInternals.configureOtlp({ endpoint: "https://example.test/v1/traces", headers: { "content-type": "application/json" } });
 

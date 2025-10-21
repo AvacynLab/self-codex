@@ -1,5 +1,10 @@
 import { EventEmitter } from "node:events";
-import { assertValidEventMessage, type EventMessage } from "./types.js";
+import {
+  assertValidEventMessage,
+  type EventMessage,
+  type EventPayload,
+  type EventPayloadMap,
+} from "./types.js";
 // NOTE: Node built-in modules are imported with the explicit `node:` prefix to guarantee ESM resolution in Node.js.
 
 /**
@@ -28,7 +33,7 @@ export type EventLevel = "info" | "warn" | "error";
  * Event envelope persisted by the bus. Optional identifiers default to `null`
  * instead of `undefined` so JSON serialisation stays deterministic in tests.
  */
-export interface EventEnvelope {
+export interface EventEnvelope<M extends EventMessage = EventMessage> {
   seq: number;
   ts: number;
   cat: EventCategory;
@@ -55,15 +60,21 @@ export interface EventEnvelope {
    * contract expected by the regression suite.
    */
   kind?: string;
-  msg: EventMessage;
-  data?: unknown;
+  msg: M;
+  data?: EventPayload<M>;
 }
+
+/** Union of every payload emitted by the bus, expanded once to keep type inference affordable. */
+type EventPayloadUnion = EventPayloadMap[keyof EventPayloadMap] | unknown;
+
+/** Internal representation stored in history, mirroring {@link EventEnvelope} without recomputing conditionals. */
+type HistoryEnvelope = Omit<EventEnvelope<EventMessage>, "data"> & { data?: EventPayloadUnion };
 
 /**
  * Input accepted by {@link EventBus.publish}. The helper fills the timestamp
  * and sequence number when not explicitly provided.
  */
-export interface EventInput {
+export interface EventInput<M extends EventMessage = EventMessage> {
   cat: EventCategory;
   level?: EventLevel;
   jobId?: string | null;
@@ -77,8 +88,8 @@ export interface EventInput {
   elapsedMs?: number | null;
   /** Optional semantic event identifier (see {@link EventEnvelope.kind}). */
   kind?: string | null;
-  msg: EventMessage;
-  data?: unknown;
+  msg: M;
+  data?: EventPayload<M>;
   ts?: number;
 }
 
@@ -190,10 +201,10 @@ function normaliseElapsed(value: number | null | undefined): number | null {
 }
 
 class EventStream
-  implements AsyncIterable<EventEnvelope>, AsyncIterator<EventEnvelope, void, void>
+  implements AsyncIterable<EventEnvelope<EventMessage>>, AsyncIterator<EventEnvelope<EventMessage>, void, void>
 {
-  private readonly buffer: EventEnvelope[] = [];
-  private resolve?: (result: IteratorResult<EventEnvelope, void>) => void;
+  private readonly buffer: EventEnvelope<EventMessage>[] = [];
+  private resolve?: (result: IteratorResult<EventEnvelope<EventMessage>, void>) => void;
   private closed = false;
 
   /**
@@ -208,8 +219,8 @@ class EventStream
 
   constructor(
     private readonly emitter: EventEmitter,
-    private readonly matcher: (event: EventEnvelope) => boolean,
-    seed: Iterable<EventEnvelope>,
+    private readonly matcher: (event: EventEnvelope<EventMessage>) => boolean,
+    seed: Iterable<EventEnvelope<EventMessage>>,
     private readonly maxBuffer: number,
   ) {
     for (const event of seed) {
@@ -218,11 +229,11 @@ class EventStream
     this.emitter.on(BUS_EVENT, this.handleEvent);
   }
 
-  [Symbol.asyncIterator](): AsyncIterator<EventEnvelope, void> {
+  [Symbol.asyncIterator](): AsyncIterator<EventEnvelope<EventMessage>, void> {
     return this;
   }
 
-  async next(): Promise<IteratorResult<EventEnvelope, void>> {
+  async next(): Promise<IteratorResult<EventEnvelope<EventMessage>, void>> {
     if (this.buffer.length > 0) {
       return { value: this.buffer.shift()!, done: false };
     }
@@ -234,7 +245,7 @@ class EventStream
     });
   }
 
-  async return(): Promise<IteratorResult<EventEnvelope, void>> {
+  async return(): Promise<IteratorResult<EventEnvelope<EventMessage>, void>> {
     this.close();
     return EventStream.DONE;
   }
@@ -252,7 +263,7 @@ class EventStream
     this.buffer.length = 0;
   }
 
-  private handleEvent = (event: EventEnvelope) => {
+  private handleEvent = (event: EventEnvelope<EventMessage>) => {
     if (this.closed || !this.matcher(event)) {
       return;
     }
@@ -264,7 +275,7 @@ class EventStream
     this.enqueue(event);
   };
 
-  private enqueue(event: EventEnvelope): void {
+  private enqueue(event: EventEnvelope<EventMessage>): void {
     this.buffer.push(event);
     if (this.buffer.length > this.maxBuffer) {
       const idx = this.buffer.findIndex((candidate) => candidate.level === "info");
@@ -283,7 +294,7 @@ class EventStream
  */
 export class EventBus {
   private readonly emitter = new EventEmitter();
-  private readonly history: EventEnvelope[] = [];
+  private readonly history: HistoryEnvelope[] = [];
   private historyLimit: number;
   private readonly now: () => number;
   private readonly streamBufferSize: number;
@@ -300,11 +311,13 @@ export class EventBus {
     this.trimHistory();
   }
 
-  publish(input: EventInput): EventEnvelope {
-    const message = normaliseMessage(input.msg);
+  publish<M extends EventMessage>(input: EventInput<M>): EventEnvelope<M> {
+    // The normaliser trims whitespace but preserves the semantic token, hence the
+    // cast back to the caller-provided subtype remains safe.
+    const message = normaliseMessage(input.msg) as M;
     const component = normaliseTag(input.component ?? input.cat);
     const stage = normaliseTag(input.stage ?? message);
-    const envelope: EventEnvelope = {
+    const envelope: EventEnvelope<M> = {
       seq: ++this.seq,
       ts: input.ts ?? this.now(),
       cat: normaliseCategory(input.cat),

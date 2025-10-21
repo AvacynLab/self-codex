@@ -130,6 +130,11 @@ describe("robustness validation runner", () => {
     const result = await runRobustnessPhase(runRoot, environment);
 
     expect(result.outcomes).to.have.lengthOf(6);
+    const firstCall = result.outcomes[0]?.call ?? null;
+    expect(firstCall).to.not.equal(null);
+    // Optional execution metadata must be omitted entirely when the specification leaves them unset.
+    expect(Object.prototype.hasOwnProperty.call(firstCall!, "group")).to.equal(false);
+    expect(Object.prototype.hasOwnProperty.call(firstCall!, "captureEvents")).to.equal(false);
     expect(result.summary.checks[0]?.status).to.equal(400);
     expect(result.summary.checks[1]?.status).to.equal(404);
     expect(result.summary.idempotency?.consistent).to.equal(true);
@@ -151,6 +156,45 @@ describe("robustness validation runner", () => {
     expect(eventsLog).to.contain("plan.timeout");
     expect(httpLog).to.contain("invalid-schema:graph_diff_invalid");
     expect(summaryDocument.checks).to.have.lengthOf(6);
+  });
+
+  it("omits timeout summary fields when the backend does not provide them", async () => {
+    const responses = [
+      { status: 400, payload: { jsonrpc: "2.0", error: { message: "Invalid" } } },
+      { status: 404, payload: { jsonrpc: "2.0", error: { message: "Unknown" } } },
+      { status: 200, payload: { jsonrpc: "2.0", result: {} } },
+      { status: 200, payload: { jsonrpc: "2.0", result: {} } },
+      {
+        status: 500,
+        payload: {
+          jsonrpc: "2.0",
+          error: {
+            code: 5001,
+            message: "Crash",
+            data: { events: [{ type: "child.error", seq: 1 }] },
+          },
+        },
+      },
+      {
+        status: 200,
+        payload: { jsonrpc: "2.0", result: { status: "timeout", events: [] } },
+      },
+    ];
+
+    globalThis.fetch = (async () => {
+      const next = responses.shift() ?? { status: 200, payload: { jsonrpc: "2.0", result: {} } };
+      return new Response(JSON.stringify(next.payload), {
+        status: next.status,
+        headers: { "content-type": "application/json" },
+      });
+    }) as typeof fetch;
+
+    const result = await runRobustnessPhase(runRoot, environment);
+
+    expect(result.summary.timeout).to.exist;
+    // With `exactOptionalPropertyTypes` prepared we should not serialise
+    // undefined values: the message key disappears when absent upstream.
+    expect(Object.prototype.hasOwnProperty.call(result.summary.timeout ?? {}, "message")).to.equal(false);
   });
 
   it("fails when required error responses do not expose the expected status codes", async () => {

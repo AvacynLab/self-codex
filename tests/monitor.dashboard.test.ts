@@ -1,10 +1,9 @@
 import { describe, it } from "mocha";
 import { expect } from "chai";
-import { Readable } from "node:stream";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { IncomingMessage, ServerResponse } from "node:http";
+import type { IncomingMessage } from "node:http";
 
 import { EventStore } from "../src/eventStore.js";
 import { GraphState } from "../src/graph/state.js";
@@ -17,6 +16,7 @@ import {
   computeDashboardHeatmap,
   summariseRuntimeCosts,
   type DashboardSnapshot,
+  type DashboardHttpResponse,
 } from "../src/monitor/dashboard.js";
 import {
   buildLessonsPromptPayload,
@@ -25,13 +25,14 @@ import {
 } from "../src/learning/lessonPromptDiff.js";
 import { LogJournal } from "../src/monitor/log.js";
 import type { ChildShutdownResult } from "../src/childRuntime.js";
-import type { ChildSupervisor } from "../src/children/supervisor.js";
+import type { ChildSupervisorContract } from "../src/children/supervisor.js";
+import { createHttpRequest } from "./helpers/http.js";
 
 /**
  * Minimal supervisor stub satisfying the dashboard router contract. The class
  * records every cancelled child so assertions can verify the control endpoints.
  */
-class StubSupervisor implements Pick<ChildSupervisor, "cancel"> {
+class StubSupervisor implements Pick<ChildSupervisorContract, "cancel"> {
   public readonly cancelled: string[] = [];
 
   async cancel(childId: string): Promise<ChildShutdownResult> {
@@ -45,7 +46,7 @@ class StubSupervisor implements Pick<ChildSupervisor, "cancel"> {
  * payloads and headers so the tests can inspect the dashboard output without
  * performing real network operations (forbidden by the offline guard).
  */
-class MockResponse {
+class MockResponse implements DashboardHttpResponse {
   public statusCode: number | null = null;
   public headersSent = false;
   public finished = false;
@@ -53,7 +54,7 @@ class MockResponse {
   private readonly chunks: Buffer[] = [];
   private readonly closeHandlers: Array<() => void> = [];
 
-  writeHead(status: number, headers?: Record<string, string | number>): ServerResponse {
+  writeHead(status: number, headers?: Record<string, string | number | readonly string[]>): this {
     this.statusCode = status;
     if (headers) {
       for (const [key, value] of Object.entries(headers)) {
@@ -61,10 +62,10 @@ class MockResponse {
       }
     }
     this.headersSent = true;
-    return this as unknown as ServerResponse;
+    return this;
   }
 
-  setHeader(name: string, value: string | number): void {
+  setHeader(name: string, value: string | number | readonly string[]): void {
     this.headers[name.toLowerCase()] = String(value);
   }
 
@@ -106,16 +107,19 @@ class MockResponse {
  * payload. The helper mirrors the HTTP requests issued by the dashboard UI.
  */
 function createMockRequest(method: string, path: string, body?: unknown): IncomingMessage {
-  const payload = body === undefined ? [] : [Buffer.from(JSON.stringify(body))];
-  const stream = Readable.from(payload);
-  const request = stream as IncomingMessage;
-  request.method = method;
-  request.url = path;
-  request.headers = {
+  const headers = {
     host: "dashboard.test",
     "content-type": "application/json",
   };
-  return request;
+  if (typeof body === "string" || body instanceof Uint8Array) {
+    return createHttpRequest(method, path, headers, body);
+  }
+
+  if (body && typeof body === "object") {
+    return createHttpRequest(method, path, headers, body as Record<string, unknown>);
+  }
+
+  return createHttpRequest(method, path, headers);
 }
 
 /**
@@ -317,7 +321,7 @@ describe("monitor/dashboard", function () {
             error: { name: "SyntaxError", message: "Unexpected token", stack: "stack-trace" },
           },
         }),
-        logRes as unknown as ServerResponse,
+        logRes,
       );
       expect(logRes.statusCode).to.equal(204);
       const lastEntry = entries.at(-1);
@@ -331,7 +335,7 @@ describe("monitor/dashboard", function () {
       const entryCountBeforeInvalid = entries.length;
       await router.handleRequest(
         createMockRequest("POST", "/logs", { level: "debug", event: "oops" }),
-        invalidLogRes as unknown as ServerResponse,
+        invalidLogRes,
       );
       expect(invalidLogRes.statusCode).to.equal(400);
       expect(entries.length).to.equal(entryCountBeforeInvalid);
@@ -339,7 +343,7 @@ describe("monitor/dashboard", function () {
       const pauseRes = new MockResponse();
       await router.handleRequest(
         createMockRequest("POST", "/controls/pause", { childId: "child-1" }),
-        pauseRes as unknown as ServerResponse,
+        pauseRes,
       );
       expect(JSON.parse(pauseRes.body)).to.deep.equal({ status: "paused" });
       expect(graphState.getChild("child-1")?.state).to.equal("paused");
@@ -347,7 +351,7 @@ describe("monitor/dashboard", function () {
       const prioritiseRes = new MockResponse();
       await router.handleRequest(
         createMockRequest("POST", "/controls/prioritise", { childId: "child-1", priority: 3 }),
-        prioritiseRes as unknown as ServerResponse,
+        prioritiseRes,
       );
       expect(JSON.parse(prioritiseRes.body)).to.deep.equal({ status: "prioritised", priority: 3 });
       expect(graphState.getChild("child-1")?.priority).to.equal(3);
@@ -355,7 +359,7 @@ describe("monitor/dashboard", function () {
       const cancelRes = new MockResponse();
       await router.handleRequest(
         createMockRequest("POST", "/controls/cancel", { childId: "child-1" }),
-        cancelRes as unknown as ServerResponse,
+        cancelRes,
       );
       expect(JSON.parse(cancelRes.body)).to.deep.equal({ status: "cancelled" });
       expect(supervisor.cancelled).to.deep.equal(["child-1"]);
@@ -421,7 +425,7 @@ describe("monitor/dashboard", function () {
       const pageOneRes = new MockResponse();
       await router.handleRequest(
         createMockRequest("GET", "/replay?jobId=job-replay&limit=1"),
-        pageOneRes as unknown as ServerResponse,
+        pageOneRes,
       );
       expect(pageOneRes.statusCode).to.equal(200);
       const pageOne = JSON.parse(pageOneRes.body) as {
@@ -436,7 +440,7 @@ describe("monitor/dashboard", function () {
       const pageTwoRes = new MockResponse();
       await router.handleRequest(
         createMockRequest("GET", `/replay?jobId=job-replay&cursor=${pageOne.nextCursor}`),
-        pageTwoRes as unknown as ServerResponse,
+        pageTwoRes,
       );
       expect(pageTwoRes.statusCode).to.equal(200);
       const pageTwo = JSON.parse(pageTwoRes.body) as { events: Array<{ kind: string }>; nextCursor: number | null };
@@ -469,20 +473,20 @@ describe("monitor/dashboard", function () {
 
     try {
       const missingJobRes = new MockResponse();
-      await router.handleRequest(createMockRequest("GET", "/replay"), missingJobRes as unknown as ServerResponse);
+      await router.handleRequest(createMockRequest("GET", "/replay"), missingJobRes);
       expect(missingJobRes.statusCode).to.equal(400);
 
       const badLimitRes = new MockResponse();
       await router.handleRequest(
         createMockRequest("GET", "/replay?jobId=test&limit=zero"),
-        badLimitRes as unknown as ServerResponse,
+        badLimitRes,
       );
       expect(badLimitRes.statusCode).to.equal(400);
 
       const badCursorRes = new MockResponse();
       await router.handleRequest(
         createMockRequest("GET", "/replay?jobId=test&cursor=-5"),
-        badCursorRes as unknown as ServerResponse,
+        badCursorRes,
       );
       expect(badCursorRes.statusCode).to.equal(400);
     } finally {
@@ -513,7 +517,7 @@ describe("monitor/dashboard", function () {
     const missingRes = new MockResponse();
     await routerWithoutJournal.handleRequest(
       createMockRequest("GET", "/logs?stream=server"),
-      missingRes as unknown as ServerResponse,
+      missingRes,
     );
     expect(missingRes.statusCode).to.equal(503);
     expect(JSON.parse(missingRes.body)).to.deep.equal({ error: "LOGS_UNAVAILABLE", message: "log journal not configured" });
@@ -549,7 +553,7 @@ describe("monitor/dashboard", function () {
       const response = new MockResponse();
       await router.handleRequest(
         createMockRequest("GET", "/logs?stream=server&levels=error&messageIncludes=failed"),
-        response as unknown as ServerResponse,
+        response,
       );
 
       expect(response.statusCode).to.equal(200);

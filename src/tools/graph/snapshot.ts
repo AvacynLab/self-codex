@@ -8,7 +8,7 @@ import {
   type HyperEdge,
   type HyperGraph,
 } from "../../graph/hypergraph.js";
-import type { NormalisedGraph } from "../../graph/types.js";
+import type { GraphEdgeRecord, GraphNodeRecord, NormalisedGraph } from "../../graph/types.js";
 import { resolveOperationId } from "../operationIds.js";
 
 /** Allowed attribute value stored on nodes/edges. */
@@ -81,28 +81,11 @@ export const GraphHyperExportInputSchema = z
 
 export const GraphHyperExportInputShape = GraphHyperExportInputSchema.shape;
 
-export interface GraphNodePayload extends Record<string, unknown> {
-  id: string;
-  label?: string;
-  attributes?: Record<string, string | number | boolean>;
-}
+export type GraphNodePayload = z.output<typeof GraphNodeSchema> & Record<string, unknown>;
 
-export interface GraphEdgePayload extends Record<string, unknown> {
-  from: string;
-  to: string;
-  label?: string;
-  weight?: number;
-  attributes?: Record<string, string | number | boolean>;
-}
+export type GraphEdgePayload = z.output<typeof GraphEdgeSchema> & Record<string, unknown>;
 
-export interface GraphDescriptorPayload extends Record<string, unknown> {
-  name: string;
-  nodes: GraphNodePayload[];
-  edges: GraphEdgePayload[];
-  metadata?: Record<string, string | number | boolean>;
-  graph_id?: string;
-  graph_version?: number;
-}
+export type GraphDescriptorPayload = z.output<typeof GraphDescriptorSchema> & Record<string, unknown>;
 
 export interface GraphHyperExportResult extends Record<string, unknown> {
   op_id: string;
@@ -246,42 +229,69 @@ export function serialiseDescriptor(descriptor: NormalisedGraph): GraphDescripto
     name: descriptor.name,
     graph_id: descriptor.graphId,
     graph_version: descriptor.graphVersion,
-    nodes: descriptor.nodes.map((node) => ({
-      id: node.id,
-      label: node.label,
-      attributes: sortAttributes(node.attributes),
-    })),
-    edges: descriptor.edges.map((edge) => ({
-      from: edge.from,
-      to: edge.to,
-      label: edge.label,
-      weight: edge.weight,
-      attributes: sortAttributes(edge.attributes),
-    })),
+    nodes: descriptor.nodes.map((node) => {
+      const payload: GraphDescriptorPayload["nodes"][number] = {
+        id: node.id,
+        attributes: sortAttributes(node.attributes),
+      };
+      if (node.label !== undefined) {
+        // Optional labels are copied verbatim only when explicitly set, ensuring the
+        // serialised payload keeps working under `exactOptionalPropertyTypes`.
+        payload.label = node.label;
+      }
+      return payload;
+    }),
+    edges: descriptor.edges.map((edge) => {
+      const payload: GraphDescriptorPayload["edges"][number] = {
+        from: edge.from,
+        to: edge.to,
+        attributes: sortAttributes(edge.attributes),
+      };
+      if (edge.label !== undefined) {
+        payload.label = edge.label;
+      }
+      if (edge.weight !== undefined) {
+        payload.weight = edge.weight;
+      }
+      return payload;
+    }),
     metadata: sortAttributes(descriptor.metadata),
-  };
+  } satisfies GraphDescriptorPayload;
 }
 
 export function normaliseDescriptor(graph: z.infer<typeof GraphDescriptorSchema>): NormalisedGraph {
-  const nodes = graph.nodes.map((node) => ({
-    id: node.id,
-    label: node.label,
-    attributes: filterAttributes({
-      ...node.attributes,
-      ...(node.label ? { label: node.label } : {}),
-    }),
-  }));
-  const edges = graph.edges.map((edge) => ({
-    from: edge.from,
-    to: edge.to,
-    label: edge.label,
-    weight: edge.weight,
-    attributes: filterAttributes({
-      ...edge.attributes,
-      ...(edge.label ? { label: edge.label } : {}),
-      ...(typeof edge.weight === "number" ? { weight: edge.weight } : {}),
-    }),
-  }));
+  const nodes = graph.nodes.map((node) => {
+    const descriptor: GraphNodeRecord = {
+      id: node.id,
+      attributes: filterAttributes({
+        ...node.attributes,
+        ...(node.label ? { label: node.label } : {}),
+      }),
+    };
+    if (node.label !== undefined) {
+      // With `exactOptionalPropertyTypes`, optional fields must be omitted when absent.
+      descriptor.label = node.label;
+    }
+    return descriptor;
+  });
+  const edges = graph.edges.map((edge) => {
+    const descriptor: GraphEdgeRecord = {
+      from: edge.from,
+      to: edge.to,
+      attributes: filterAttributes({
+        ...edge.attributes,
+        ...(edge.label ? { label: edge.label } : {}),
+        ...(typeof edge.weight === "number" ? { weight: edge.weight } : {}),
+      }),
+    };
+    if (edge.label !== undefined) {
+      descriptor.label = edge.label;
+    }
+    if (edge.weight !== undefined) {
+      descriptor.weight = edge.weight;
+    }
+    return descriptor;
+  });
   const metadata = filterAttributes(graph.metadata ?? {});
   const descriptor: NormalisedGraph = {
     name: graph.name,
@@ -379,18 +389,32 @@ export function adoptGraphDescriptor(target: NormalisedGraph, source: Normalised
   target.name = source.name;
   target.graphId = source.graphId;
   target.graphVersion = source.graphVersion;
-  target.nodes = source.nodes.map((node) => ({
-    id: node.id,
-    label: node.label,
-    attributes: { ...node.attributes },
-  }));
-  target.edges = source.edges.map((edge) => ({
-    from: edge.from,
-    to: edge.to,
-    label: edge.label,
-    weight: edge.weight,
-    attributes: { ...edge.attributes },
-  }));
+  target.nodes = source.nodes.map((node) => {
+    const descriptor: GraphNodeRecord = {
+      id: node.id,
+      attributes: { ...node.attributes },
+    };
+    if (node.label !== undefined) {
+      // Preserve labels only when callers explicitly provided one to avoid
+      // serialising `label: undefined` once strict optional semantics are enforced.
+      descriptor.label = node.label;
+    }
+    return descriptor;
+  });
+  target.edges = source.edges.map((edge) => {
+    const descriptor: GraphEdgeRecord = {
+      from: edge.from,
+      to: edge.to,
+      attributes: { ...edge.attributes },
+    };
+    if (edge.label !== undefined) {
+      descriptor.label = edge.label;
+    }
+    if (edge.weight !== undefined) {
+      descriptor.weight = edge.weight;
+    }
+    return descriptor;
+  });
   target.metadata = { ...source.metadata };
 }
 
