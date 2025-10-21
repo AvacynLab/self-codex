@@ -8,6 +8,7 @@ import {
   type SchedulerEventName,
   type TaskReadyEvent,
 } from "../../src/executor/reactiveScheduler.js";
+import { writeCliOutput } from "../helpers/cliOutput.js";
 import { ManualClock, ScriptedNode } from "../helpers/reactiveSchedulerTestUtils.js";
 
 import {
@@ -47,6 +48,74 @@ interface SchedulerInternals {
   ) => number;
   readonly selectNextIndex: (now: number) => number;
   readonly rebalancePheromone: (nodeId: string, intensity: number) => void;
+}
+
+/**
+ * Extracts the scheduler internals guarded by the TypeScript private modifier. We
+ * rely on reflective access instead of `as unknown as` so benchmarks can mutate the
+ * queue while keeping strong typing and runtime validation of the expected shape.
+ */
+function extractSchedulerInternals(scheduler: ReactiveScheduler): SchedulerInternals {
+  const queueHandle = Reflect.get(scheduler, "queue");
+  if (!isSchedulerQueue(queueHandle)) {
+    throw new Error("ReactiveScheduler queue not initialised as an array of scheduled ticks");
+  }
+
+  const computeBasePriority = Reflect.get(scheduler, "computeBasePriority");
+  if (!isSchedulerPriorityFn(computeBasePriority)) {
+    throw new Error("ReactiveScheduler missing computeBasePriority implementation");
+  }
+
+  const selectNextIndex = Reflect.get(scheduler, "selectNextIndex");
+  if (!isSelectNextIndexFn(selectNextIndex)) {
+    throw new Error("ReactiveScheduler missing selectNextIndex implementation");
+  }
+
+  const rebalancePheromone = Reflect.get(scheduler, "rebalancePheromone");
+  if (!isRebalancePheromoneFn(rebalancePheromone)) {
+    throw new Error("ReactiveScheduler missing rebalancePheromone implementation");
+  }
+
+  return {
+    queue: queueHandle,
+    computeBasePriority: computeBasePriority.bind(scheduler),
+    selectNextIndex: selectNextIndex.bind(scheduler),
+    rebalancePheromone: rebalancePheromone.bind(scheduler),
+  };
+}
+
+function isSchedulerQueue(value: unknown): value is SchedulerInternals["queue"] {
+  return (
+    Array.isArray(value) &&
+    value.every((entry) => {
+      return (
+        typeof entry === "object" &&
+        entry !== null &&
+        typeof (entry as { id?: unknown }).id === "number" &&
+        typeof (entry as { event?: unknown }).event === "string" &&
+        typeof (entry as { payload?: unknown }).payload === "object" &&
+        entry.payload !== null &&
+        typeof (entry as { enqueuedAt?: unknown }).enqueuedAt === "number" &&
+        typeof (entry as { basePriority?: unknown }).basePriority === "number"
+      );
+    })
+  );
+}
+
+function isSchedulerPriorityFn(
+  value: unknown,
+): value is SchedulerInternals["computeBasePriority"] {
+  return typeof value === "function";
+}
+
+function isSelectNextIndexFn(value: unknown): value is SchedulerInternals["selectNextIndex"] {
+  return typeof value === "function";
+}
+
+function isRebalancePheromoneFn(
+  value: unknown,
+): value is SchedulerInternals["rebalancePheromone"] {
+  return typeof value === "function";
 }
 
 /** Sample captured by the fairness bench, storing the average runtime. */
@@ -124,7 +193,7 @@ function createSchedulerForFairness(): {
     }),
   });
 
-  return { scheduler, clock, internals: scheduler as unknown as SchedulerInternals };
+  return { scheduler, clock, internals: extractSchedulerInternals(scheduler) };
 }
 
 /**
@@ -330,8 +399,7 @@ async function main(): Promise<void> {
     for (const sample of samples) {
       assertFairnessSample(sample);
     }
-    // eslint-disable-next-line no-console -- CLI utility intended for local runs.
-    console.log(renderSchedulerFairnessSamples(samples));
+    writeCliOutput(renderSchedulerFairnessSamples(samples));
     return;
   }
 
@@ -339,8 +407,7 @@ async function main(): Promise<void> {
   const comparison = await compareSchedulerBenchmarks(config);
   const table = renderSchedulerBenchmarkTable(comparison);
 
-  // eslint-disable-next-line no-console -- CLI utility intended for local runs.
-  console.log(table);
+  writeCliOutput(table);
 
   const direction = comparison.deltaAverageMsPerTick >= 0 ? "faster" : "slower";
   const magnitude = Math.abs(comparison.relativeAverageImprovementPct).toFixed(2);
@@ -348,8 +415,7 @@ async function main(): Promise<void> {
     comparison.relativeAverageImprovementPct === 0
       ? "No average latency change detected between baseline and stigmergy runs."
       : `Stigmergic scheduling is ${direction} by ${magnitude}% on average.`;
-  // eslint-disable-next-line no-console -- CLI utility intended for local runs.
-  console.log(`\n${summary}`);
+  writeCliOutput(["", summary]);
 }
 
 void main();

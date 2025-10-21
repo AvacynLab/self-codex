@@ -6,6 +6,11 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 
 import { GraphDescriptorPayload } from "../src/tools/graphTools.js";
+import {
+  adoptGraphDescriptor,
+  normaliseGraphPayload,
+  serialiseNormalisedGraph,
+} from "../src/tools/graph/snapshot.js";
 import { renderMermaidFromGraph } from "../src/viz/mermaid.js";
 import { renderDotFromGraph } from "../src/viz/dot.js";
 import { renderGraphmlFromGraph } from "../src/viz/graphml.js";
@@ -151,6 +156,55 @@ describe("graph export helpers", () => {
     expect(dot).to.include('"node \\\"alpha\\"\\n"');
     expect(dot).to.include('"target[edge]"');
     expect(dot).to.include('label=\"Edge \\\"Label\\"\\nNext\"');
+  });
+
+  it("round-trips descriptors containing optional fields", () => {
+    const descriptorWithOptionals: GraphDescriptorPayload = {
+      name: "optional-demo",
+      nodes: [
+        { id: "node.alpha", label: undefined, attributes: undefined },
+        { id: "node.beta", attributes: { role: "sink" } },
+      ],
+      edges: [
+        { from: "node.alpha", to: "node.beta", label: undefined, weight: undefined, attributes: undefined },
+      ],
+      metadata: undefined,
+      graph_id: undefined,
+      graph_version: undefined,
+    };
+
+    const normalised = normaliseGraphPayload(descriptorWithOptionals);
+    const serialised = serialiseNormalisedGraph(normalised);
+
+    expect(serialised.name).to.equal("optional-demo");
+    expect(serialised.nodes).to.have.length(2);
+    expect("label" in serialised.nodes[0]).to.equal(false);
+    expect(serialised.nodes[0]).to.have.property("attributes");
+    expect(serialised.edges).to.have.length(1);
+    expect("label" in serialised.edges[0]).to.equal(false);
+    expect("weight" in serialised.edges[0]).to.equal(false);
+  });
+
+  it("omits undefined fields when adopting descriptors", () => {
+    const source = normaliseGraphPayload({
+      name: "adopt-source",
+      nodes: [{ id: "start" }, { id: "end", label: "Finish" }],
+      edges: [{ from: "start", to: "end" }],
+    });
+    const target = normaliseGraphPayload({
+      name: "adopt-target",
+      nodes: [{ id: "placeholder" }],
+      edges: [],
+    });
+
+    adoptGraphDescriptor(target, source);
+
+    // The copy should not serialise `label: undefined` when a node omits its label.
+    expect(target.nodes).to.have.length(2);
+    expect("label" in target.nodes[0]).to.equal(false);
+    expect(target.nodes[1]).to.have.property("label", "Finish");
+    expect(target.edges[0]).to.include({ from: "start", to: "end" });
+    expect("weight" in target.edges[0]).to.equal(false);
   });
 
   it("renders a GraphML document", () => {

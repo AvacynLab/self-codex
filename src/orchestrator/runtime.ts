@@ -19,7 +19,7 @@ import {
 import { GraphState, type ChildSnapshot, type JobSnapshot } from "../graph/state.js";
 import { GraphTransactionManager, GraphTransactionError, GraphVersionConflictError } from "../graph/tx.js";
 import { GraphLockManager } from "../graph/locks.js";
-import { loadGraphForge } from "../graph/forgeLoader.js";
+import { loadGraphForge, type GraphForgeExports } from "../graph/forgeLoader.js";
 import {
   LoggerOptions,
   StructuredLogger,
@@ -42,6 +42,13 @@ import {
   mergeCorrelationHints,
   type EventCorrelationHints,
 } from "../events/correlation.js";
+import type {
+  JsonRpcEventMessage,
+  JsonRpcEventPayload,
+  JsonRpcEventPayloadByMessage,
+  JsonRpcEventSharedFields,
+  JsonRpcEventStatus,
+} from "../events/types.js";
 import { buildChildCognitiveEvents, type QualityAssessmentSnapshot } from "../events/cognitive.js";
 import { serialiseForSse } from "../events/sse.js";
 import { LogJournal, type LogStream } from "../monitor/log.js";
@@ -62,11 +69,20 @@ import { MetaCritic, ReviewKind, ReviewResult } from "../agents/metaCritic.js";
 import { reflect, ReflectionResult } from "../agents/selfReflect.js";
 import { scoreCode, scorePlan, scoreText, ScoreCodeInput, ScorePlanInput, ScoreTextInput } from "../quality/scoring.js";
 import { appendWalEntry } from "../state/wal.js";
-import { ToolRegistry, ToolRegistrationError, type CompositeRegistrationRequest } from "../mcp/registry.js";
+import {
+  ToolRegistry,
+  ToolRegistrationError,
+  getRegisteredToolMap,
+  type CompositeRegistrationRequest,
+} from "../mcp/registry.js";
 import { evaluateToolDeprecation, logToolDeprecation } from "../mcp/deprecations.js";
+import {
+  getMutableJsonRpcRequestHandlerRegistry,
+  type InternalJsonRpcHandler,
+} from "../mcp/jsonRpcInternals.js";
 import { SharedMemoryStore } from "../memory/store.js";
 import { PersistentKnowledgeGraph } from "../memory/kg.js";
-import { VectorMemoryIndex } from "../memory/vector.js";
+import { VectorMemoryIndex, VECTOR_MEMORY_MAX_CAPACITY } from "../memory/vector.js";
 import { LocalVectorMemory } from "../memory/vectorMemory.js";
 import { HybridRetriever } from "../memory/retriever.js";
 import {
@@ -583,7 +599,8 @@ function resolveIdempotencyTtlFromEnv(): number | undefined {
 /** Resolves the maximum number of vector documents kept in memory. */
 function resolveVectorIndexCapacity(): number {
   // Keep the legacy default (1024 documents) while honouring positive overrides.
-  return readInt("MCP_MEMORY_VECTOR_MAX_DOCS", 1024, { min: 1 });
+  const requested = readInt("MCP_MEMORY_VECTOR_MAX_DOCS", 1024, { min: 1 });
+  return Math.min(VECTOR_MEMORY_MAX_CAPACITY, requested);
 }
 
 /** Resolves the default configuration used by the hybrid RAG retriever. */
@@ -3209,6 +3226,17 @@ type ChildChatToolResult = {
   structuredContent: ChildChatStructuredPayload;
 };
 
+/**
+ * Ensures tool handlers only emit structured payloads compatible with the MCP
+ * schema without relying on unsafe `as unknown as` casts.  The generic keeps
+ * the domain specific type (`T`) intact for callers while letting TypeScript
+ * verify that it matches the JSON object contract expected by
+ * {@link CallToolResult#structuredContent}.
+ */
+function toStructuredContent<T extends NonNullable<CallToolResult["structuredContent"]>>(value: T): T {
+  return value;
+}
+
 const ChildRenameShape = { child_id: z.string(), name: z.string().min(1) } as const;
 const ChildRenameSchema = z.object(ChildRenameShape);
 type ChildRenameInput = z.infer<typeof ChildRenameSchema>;
@@ -3351,6 +3379,11 @@ interface GraphForgeCompiled {
   analyses: GraphForgeCompiledAnalysis[];
 }
 
+/**
+ * Subset of the Graph Forge public API exercised par l'orchestrateur. On garde
+ * une interface dédiée pour ne pas accoupler le runtime aux détails des
+ * modules internes (GraphModel, heuristiques additionnelles, etc.).
+ */
 interface GraphForgeModule {
   compileSource(source: string, options?: { entryGraph?: string }): GraphForgeCompiled;
   shortestPath(graph: GraphForgeGraph, start: string, goal: string, options?: { weightAttribute?: string }): unknown;
@@ -3365,6 +3398,36 @@ interface GraphForgeTask {
   args: string[];
   weightKey?: string;
   source: GraphForgeTaskSource;
+}
+
+/**
+ * Effectue un contrôle défensif sur le module Graph Forge dynamiquement importé
+ * afin de ne conserver que les fonctions utilisées par l'orchestrateur. Cela
+ * évite de propager des transtypages risqués tout en fournissant un message
+ * d'erreur clair si la dépendance change sa surface.
+ */
+function normaliseGraphForgeModule(exports: GraphForgeExports): GraphForgeModule {
+  const candidate = exports as Record<string, unknown>;
+  const compileSource = candidate.compileSource;
+  const shortestPath = candidate.shortestPath;
+  const criticalPath = candidate.criticalPath;
+  const tarjanScc = candidate.tarjanScc;
+
+  if (
+    typeof compileSource === "function" &&
+    typeof shortestPath === "function" &&
+    typeof criticalPath === "function" &&
+    typeof tarjanScc === "function"
+  ) {
+    return {
+      compileSource: compileSource as GraphForgeModule["compileSource"],
+      shortestPath: shortestPath as GraphForgeModule["shortestPath"],
+      criticalPath: criticalPath as GraphForgeModule["criticalPath"],
+      tarjanScc: tarjanScc as GraphForgeModule["tarjanScc"],
+    };
+  }
+
+  throw new Error("Graph Forge module missing expected algorithms");
 }
 
 function describeError(err: unknown) {
@@ -3443,20 +3506,10 @@ async function invokeToolForRegistry(
 
 const server = new McpServer({ name: SERVER_NAME, version: SERVER_VERSION });
 
-function isPlainRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
-}
-
-function getMutableRequestHandlerRegistry(): Map<string, unknown> {
-  const registryHost: unknown = server.server;
-  if (!isPlainRecord(registryHost)) {
-    throw new Error("JSON-RPC request handler registry unavailable");
-  }
-  const candidate = Reflect.get(registryHost, "_requestHandlers");
-  if (!(candidate instanceof Map)) {
-    throw new Error("JSON-RPC request handler registry unavailable");
-  }
-  return candidate;
+function getMutableRequestHandlerRegistry(): Map<string, InternalJsonRpcHandler> {
+  // Delegate to the shared helper so runtime code never relies on structural
+  // casts against the MCP server internals.
+  return getMutableJsonRpcRequestHandlerRegistry(server);
 }
 
 /**
@@ -3464,10 +3517,10 @@ function getMutableRequestHandlerRegistry(): Map<string, unknown> {
  * handlers can be registered without relying on private casts.
  */
 export const __rpcServerInternals = {
-  getRequestHandler(method: string): unknown {
+  getRequestHandler(method: string): InternalJsonRpcHandler | undefined {
     return getMutableRequestHandlerRegistry().get(method);
   },
-  setRequestHandler(method: string, handler: unknown): void {
+  setRequestHandler(method: string, handler: InternalJsonRpcHandler): void {
     getMutableRequestHandlerRegistry().set(method, handler);
   },
   deleteRequestHandler(method: string): void {
@@ -3565,9 +3618,9 @@ toolRouter.register(memorySearchManifest);
 // underlying `McpServer` instance. The SDK stores registrations in a private
 // field therefore we rely on a defensive cast to access the internal map.
 bindToolIntrospectionProvider(() => {
-  const registry = (server as unknown as {
-    _registeredTools?: Record<string, { inputSchema?: ZodTypeAny; enabled?: boolean }>;
-  })._registeredTools;
+  // The registry helper hides the SDK private field access while surfacing a
+  // readonly view the introspection layer can safely iterate over.
+  const registry = getRegisteredToolMap(server);
   if (!registry) {
     return [];
   }
@@ -5461,7 +5514,7 @@ server.registerTool(
       const result = await handleRagIngest(context, parsed);
       return {
         content: [{ type: "text" as const, text: j({ tool: "rag_ingest", result }) }],
-        structuredContent: result as unknown as Record<string, unknown>,
+        structuredContent: toStructuredContent(result),
       };
     } catch (error) {
       return knowledgeToolError(logger, "rag_ingest", error);
@@ -5490,7 +5543,7 @@ server.registerTool(
       const result = await handleRagQuery(context, { ...parsed, min_score: minScore });
       return {
         content: [{ type: "text" as const, text: j({ tool: "rag_query", result }) }],
-        structuredContent: result as unknown as Record<string, unknown>,
+        structuredContent: toStructuredContent(result),
       };
     } catch (error) {
       return knowledgeToolError(logger, "rag_query", error);
@@ -5998,7 +6051,7 @@ server.registerTool(
       }
       return {
         content: [{ type: "text" as const, text: j({ tool: "tx_begin", result }) }],
-        structuredContent: result as unknown as Record<string, unknown>,
+        structuredContent: toStructuredContent(result),
       };
     } catch (error) {
       return transactionToolError(logger, "tx_begin", error, {
@@ -6044,7 +6097,7 @@ server.registerTool(
       });
       return {
         content: [{ type: "text" as const, text: j({ tool: "tx_apply", result }) }],
-        structuredContent: result as unknown as Record<string, unknown>,
+        structuredContent: toStructuredContent(result),
       };
     } catch (error) {
       return transactionToolError(logger, "tx_apply", error, {
@@ -6085,7 +6138,7 @@ server.registerTool(
       });
       return {
         content: [{ type: "text" as const, text: j({ tool: "tx_commit", result }) }],
-        structuredContent: result as unknown as Record<string, unknown>,
+        structuredContent: toStructuredContent(result),
       };
     } catch (error) {
       return transactionToolError(logger, "tx_commit", error, {
@@ -6126,7 +6179,7 @@ server.registerTool(
       });
       return {
         content: [{ type: "text" as const, text: j({ tool: "tx_rollback", result }) }],
-        structuredContent: result as unknown as Record<string, unknown>,
+        structuredContent: toStructuredContent(result),
       };
     } catch (error) {
       return transactionToolError(logger, "tx_rollback", error, {
@@ -7275,7 +7328,7 @@ server.registerTool(
       const result = handleAgentAutoscaleSet(getAgentToolContext(), parsed);
       return {
         content: [{ type: "text" as const, text: j({ tool: "agent_autoscale_set", result }) }],
-        structuredContent: result as unknown as Record<string, unknown>,
+        structuredContent: toStructuredContent(result),
       };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -8546,7 +8599,9 @@ server.registerTool(
       };
     }
     try {
-      const mod = (await loadGraphForge()) as unknown as GraphForgeModule;
+      // On convertit le module Graph Forge dynamique en surface minimale typée
+      // pour garder le compilateur strict sans toucher aux exports bruts.
+      const mod = normaliseGraphForgeModule(await loadGraphForge());
       let resolvedPath: string | undefined;
       let source = cfg.source;
       if (!source && cfg.path) {
@@ -8796,20 +8851,6 @@ export interface JsonRpcResponse {
   error?: { code: number; message: string; data?: unknown };
 }
 
-/** Signature of the internal request handler registered by the MCP SDK. */
-type InternalJsonRpcHandler = (
-  request: { jsonrpc: "2.0"; id: string | number | null; method: string; params?: unknown },
-  extra: {
-    signal: AbortSignal;
-    sessionId?: string;
-    sendNotification: (notification: unknown) => Promise<void>;
-    sendRequest: (req: unknown, schema?: unknown, options?: unknown) => Promise<unknown>;
-    authInfo?: unknown;
-    requestId: string | number | null;
-    requestInfo?: { headers?: Record<string, string> };
-  },
-) => Promise<unknown> | unknown;
-
 /**
  * Normalises human-friendly method names (e.g. `mcp_info`) into actual MCP
  * requests understood by the underlying SDK. Tools are exposed via
@@ -8886,14 +8927,7 @@ export async function routeJsonRpcRequest(
   context: JsonRpcRouteContext = {},
 ): Promise<unknown> {
   const originalMethod = method.trim();
-  const internalServer = server.server as unknown as {
-    _requestHandlers?: Map<string, InternalJsonRpcHandler>;
-  };
-
-  const handlers = internalServer._requestHandlers;
-  if (!handlers) {
-    throw new Error("JSON-RPC handlers not initialised");
-  }
+  const handlers = getMutableRequestHandlerRegistry();
 
   let invocation = normaliseJsonRpcInvocation(method, params);
   const handler = handlers.get(invocation.method);
@@ -9333,35 +9367,89 @@ function recordJsonRpcObservability(input: JsonRpcObservabilityInput): void {
   const metricMethod = deriveMetricMethodLabel(input.method, input.toolName ?? null);
 
   annotateTraceContext({ method: metricMethod });
-  const payload = {
-    msg: `jsonrpc_${input.stage}`,
+  const jsonRpcMessage = `jsonrpc_${input.stage}` as JsonRpcEventMessage;
+
+  // Clamp optional numeric telemetry (elapsed, duration, bytes, timeout) to non-negative integers while
+  // preserving `null` for absent measurements so downstream serialisation stays deterministic.
+  const normaliseOptionalMetric = (value: number | null | undefined): number | null => {
+    if (typeof value !== "number" || !Number.isFinite(value)) {
+      return null;
+    }
+    if (value < 0) {
+      return 0;
+    }
+    return Math.round(value);
+  };
+
+  // Ensure the emitted payload status matches the JSON-RPC stage; unexpected values are coerced to the
+  // documented lifecycle token so dashboards keep a stable contract.
+  const resolveStatus = <M extends JsonRpcEventMessage>(
+    message: M,
+    status: JsonRpcObservabilityInput["status"],
+  ): JsonRpcEventPayloadByMessage<M>["status"] => {
+    const fallback: JsonRpcEventStatus =
+      message === "jsonrpc_request" ? "pending" : message === "jsonrpc_response" ? "ok" : "error";
+    const candidate = status ?? fallback;
+    return (candidate === fallback ? candidate : fallback) as JsonRpcEventPayloadByMessage<M>["status"];
+  };
+
+  const sharedFields: JsonRpcEventSharedFields = {
     method: input.method,
     metric_method: metricMethod,
     tool: input.toolName ?? null,
     request_id: input.requestId ?? null,
     transport: input.transport ?? null,
-    status: input.status ?? null,
-    elapsed_ms:
-      typeof input.elapsedMs === "number" && Number.isFinite(input.elapsedMs)
-        ? Math.max(0, Math.round(input.elapsedMs))
-        : null,
+    elapsed_ms: normaliseOptionalMetric(input.elapsedMs ?? null),
     trace_id: trace?.traceId ?? null,
     span_id: trace?.spanId ?? null,
-    duration_ms: duration !== null ? Math.round(duration) : null,
-    bytes_in: bytesIn !== null ? Math.round(bytesIn) : null,
-    bytes_out: bytesOut !== null ? Math.round(bytesOut) : null,
+    duration_ms: normaliseOptionalMetric(duration),
+    bytes_in: normaliseOptionalMetric(bytesIn),
+    bytes_out: normaliseOptionalMetric(bytesOut),
     run_id: input.correlation.runId ?? null,
     op_id: input.correlation.opId ?? null,
     child_id: input.correlation.childId ?? null,
     job_id: input.correlation.jobId ?? null,
     idempotency_key: input.idempotencyKey ?? null,
-    error_message: input.errorMessage ?? null,
-    error_code: input.errorCode ?? null,
-    timeout_ms:
-      typeof input.timeoutMs === "number" && Number.isFinite(input.timeoutMs)
-        ? Math.max(0, Math.round(input.timeoutMs))
-        : null,
-  } as const;
+    timeout_ms: normaliseOptionalMetric(input.timeoutMs ?? null),
+  } satisfies JsonRpcEventSharedFields;
+
+  let payload: JsonRpcEventPayload;
+  switch (jsonRpcMessage) {
+    case "jsonrpc_request": {
+      const requestPayload = {
+        msg: "jsonrpc_request",
+        status: resolveStatus("jsonrpc_request", input.status),
+        error_message: null,
+        error_code: null,
+        ...sharedFields,
+      } satisfies JsonRpcEventPayloadByMessage<"jsonrpc_request">;
+      payload = requestPayload;
+      break;
+    }
+    case "jsonrpc_response": {
+      const responsePayload = {
+        msg: "jsonrpc_response",
+        status: resolveStatus("jsonrpc_response", input.status),
+        error_message: null,
+        error_code: null,
+        ...sharedFields,
+      } satisfies JsonRpcEventPayloadByMessage<"jsonrpc_response">;
+      payload = responsePayload;
+      break;
+    }
+    case "jsonrpc_error":
+    default: {
+      const errorPayload = {
+        msg: "jsonrpc_error",
+        status: resolveStatus("jsonrpc_error", input.status),
+        error_message: input.errorMessage ?? null,
+        error_code: input.errorCode ?? null,
+        ...sharedFields,
+      } satisfies JsonRpcEventPayloadByMessage<"jsonrpc_error">;
+      payload = errorPayload;
+      break;
+    }
+  }
 
   if (input.stage === "error") {
     registerRpcError(input.errorCode ?? null);
@@ -9369,9 +9457,8 @@ function recordJsonRpcObservability(input: JsonRpcObservabilityInput): void {
     registerRpcSuccess();
   }
 
-  let envelope: ReturnType<EventBus["publish"]> | undefined;
   try {
-    envelope = eventBus.publish({
+    eventBus.publish<typeof payload.msg>({
       cat: "scheduler",
       level: input.stage === "error" ? "error" : "info",
       runId: input.correlation.runId ?? null,
@@ -9379,7 +9466,7 @@ function recordJsonRpcObservability(input: JsonRpcObservabilityInput): void {
       childId: input.correlation.childId ?? null,
       jobId: input.correlation.jobId ?? null,
       component: "jsonrpc",
-      stage: payload.msg,
+      stage: jsonRpcMessage,
       elapsedMs: payload.elapsed_ms ?? undefined,
       kind: `JSONRPC_${input.stage.toUpperCase()}`,
       msg: payload.msg,
@@ -9397,8 +9484,9 @@ function recordJsonRpcObservability(input: JsonRpcObservabilityInput): void {
     );
   }
 
-  const seq = envelope?.seq;
-  const ts = envelope?.ts;
+  const latestEnvelope = eventBus.list({ limit: 1 }).at(-1);
+  const seq = latestEnvelope?.seq;
+  const ts = latestEnvelope?.ts;
   try {
     const level = input.stage === "error" ? "error" : "info";
     const baseEntry = {

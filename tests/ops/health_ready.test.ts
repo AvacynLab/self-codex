@@ -9,18 +9,12 @@ import sinon from "sinon";
 
 import { resetRateLimitBuckets } from "../../src/http/rateLimit.js";
 import { MemoryHttpResponse, createHttpRequest } from "../helpers/http.ts";
+import { RecordingLogger } from "../helpers/recordingLogger.js";
 
 // `/healthz` considers the event loop healthy when the synthetic delay stays within 100ms.
 const HEALTH_DELAY_BUDGET_MS = 100;
 
-const noopLogger = new Proxy(
-  {},
-  {
-    get() {
-      return () => {};
-    },
-  },
-);
+const createLogger = () => new RecordingLogger();
 
 describe("ops probes", () => {
   let httpInternals: Awaited<ReturnType<typeof loadHttpServerInternals>>;
@@ -73,11 +67,10 @@ describe("ops probes", () => {
   });
 
   it("exposes a healthy status without requiring authentication", async () => {
-    const request = createHttpRequest("GET", "/healthz");
-    (request as any).socket = { remoteAddress: "127.0.0.1" };
+    const request = createHttpRequest("GET", "/healthz", {}, undefined, { remoteAddress: "127.0.0.1" });
     const response = new MemoryHttpResponse();
 
-    await httpInternals.handleHealthCheck(request as any, response as any, noopLogger as any, "rid");
+    await httpInternals.handleHealthCheck(request, response, createLogger(), "rid");
 
     expect(response.statusCode).to.equal(200);
     const payload = JSON.parse(response.body) as { ok?: boolean };
@@ -85,23 +78,23 @@ describe("ops probes", () => {
   });
 
   it("reports an unhealthy status when the event loop is delayed", async () => {
-    const request = createHttpRequest("GET", "/healthz");
-    (request as any).socket = { remoteAddress: "127.0.0.1" };
+    const request = createHttpRequest("GET", "/healthz", {}, undefined, { remoteAddress: "127.0.0.1" });
     const response = new MemoryHttpResponse();
 
     const originalSetImmediate = setImmediate;
+    const nodeGlobal = globalThis as typeof globalThis & { setImmediate: typeof setImmediate };
     const simulatedDelayMs = 200;
     // Simulate an event-loop delay by wrapping setImmediate with a delayed callback.
-    (globalThis as any).setImmediate = ((callback: (...args: unknown[]) => void, ...args: unknown[]) => {
+    nodeGlobal.setImmediate = ((callback: (...args: unknown[]) => void, ...args: unknown[]) => {
       return originalSetImmediate((...cbArgs: unknown[]) => {
         setTimeout(() => callback(...cbArgs), simulatedDelayMs);
       }, ...args);
     }) as typeof setImmediate;
 
     try {
-      await httpInternals.handleHealthCheck(request as any, response as any, noopLogger as any, "rid");
+      await httpInternals.handleHealthCheck(request, response, createLogger(), "rid");
     } finally {
-      (globalThis as any).setImmediate = originalSetImmediate;
+      nodeGlobal.setImmediate = originalSetImmediate;
     }
 
     const payload = JSON.parse(response.body) as { ok?: boolean; event_loop_delay_ms?: number };
@@ -112,10 +105,13 @@ describe("ops probes", () => {
 
   it("reports readiness success when all dependencies pass", async () => {
     process.env.MCP_HTTP_TOKEN = "test-token";
-    const request = createHttpRequest("GET", "/readyz", {
-      authorization: "Bearer test-token",
-    });
-    (request as any).socket = { remoteAddress: "127.0.0.1" };
+    const request = createHttpRequest(
+      "GET",
+      "/readyz",
+      { authorization: "Bearer test-token" },
+      undefined,
+      { remoteAddress: "127.0.0.1" },
+    );
     const response = new MemoryHttpResponse();
 
     const readiness = {
@@ -132,9 +128,9 @@ describe("ops probes", () => {
     };
 
     await httpInternals.handleReadyCheck(
-      request as any,
-      response as any,
-      noopLogger as any,
+      request,
+      response,
+      createLogger(),
       "rid",
       readiness,
     );
@@ -146,10 +142,13 @@ describe("ops probes", () => {
 
   it("fails readiness when a dependency is unhealthy", async () => {
     process.env.MCP_HTTP_TOKEN = "test-token";
-    const request = createHttpRequest("GET", "/readyz", {
-      authorization: "Bearer test-token",
-    });
-    (request as any).socket = { remoteAddress: "127.0.0.1" };
+    const request = createHttpRequest(
+      "GET",
+      "/readyz",
+      { authorization: "Bearer test-token" },
+      undefined,
+      { remoteAddress: "127.0.0.1" },
+    );
     const response = new MemoryHttpResponse();
 
     const readiness = {
@@ -166,9 +165,9 @@ describe("ops probes", () => {
     };
 
     await httpInternals.handleReadyCheck(
-      request as any,
-      response as any,
-      noopLogger as any,
+      request,
+      response,
+      createLogger(),
       "rid",
       readiness,
     );
@@ -185,24 +184,18 @@ describe("ops probes", () => {
     // readiness handler invoked the limiter before the auth guard it would spend the
     // last token and the assertion below would fail.
     for (let attempt = 0; attempt < 19; attempt += 1) {
-      const ok = httpInternals.enforceRateLimit(
-        key,
-        new MemoryHttpResponse() as any,
-        noopLogger as any,
-        `rid-${attempt}`,
-      );
+      const ok = httpInternals.enforceRateLimit(key, new MemoryHttpResponse(), createLogger(), `rid-${attempt}`);
       expect(ok, `pre-flight attempt ${attempt} should succeed`).to.equal(true);
     }
 
     const readinessInvoked: { called: boolean } = { called: false };
-    const request = createHttpRequest("GET", "/readyz");
-    (request as any).socket = { remoteAddress: "127.0.0.1" };
+    const request = createHttpRequest("GET", "/readyz", {}, undefined, { remoteAddress: "127.0.0.1" });
     const response = new MemoryHttpResponse();
 
     await httpInternals.handleReadyCheck(
-      request as any,
-      response as any,
-      noopLogger as any,
+      request,
+      response,
+      createLogger(),
       "rid-final",
       {
         async check() {
@@ -224,12 +217,7 @@ describe("ops probes", () => {
     const payload = JSON.parse(response.body) as { error?: { data?: { category?: string } } };
     expect(payload.error?.data?.category).to.equal("AUTH_REQUIRED");
 
-    const bucketIntact = httpInternals.enforceRateLimit(
-      key,
-      new MemoryHttpResponse() as any,
-      noopLogger as any,
-      "rid-post",
-    );
+    const bucketIntact = httpInternals.enforceRateLimit(key, new MemoryHttpResponse(), createLogger(), "rid-post");
     expect(bucketIntact, "last token should remain available").to.equal(true);
   });
 });

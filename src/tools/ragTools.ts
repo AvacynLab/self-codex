@@ -73,7 +73,7 @@ export interface RagIngestedChunk {
 }
 
 /** Result returned after the ingestion pipeline stores new chunks. */
-export interface RagIngestResult {
+export interface RagIngestResult extends Record<string, unknown> {
   documents: number;
   chunks: number;
   stored: RagIngestedChunk[];
@@ -95,7 +95,7 @@ export interface RagQueryHit {
 }
 
 /** Result returned when executing a semantic query. */
-export interface RagQueryResult {
+export interface RagQueryResult extends Record<string, unknown> {
   query: string;
   hits: RagQueryHit[];
   total: number;

@@ -23,6 +23,7 @@ import { PathResolutionError, childWorkspacePath } from "../src/paths.js";
 import { writeArtifact } from "../src/artifacts.js";
 import type { ChildProcessGateway } from "../src/gateways/childProcess.js";
 import { resolveFixture, runnerArgs } from "./helpers/childRunner.js";
+import { expectChildRuntimeMessageType, hasChildRuntimeMessageType } from "./helpers/childRuntime.js";
 
 const mockRunnerPath = resolveFixture(import.meta.url, "./fixtures/mock-runner.ts");
 const stubbornRunnerPath = resolveFixture(import.meta.url, "./fixtures/stubborn-runner.ts");
@@ -103,8 +104,9 @@ describe("child runtime lifecycle", () => {
 
       const readyMessage = await runtime.waitForMessage(
         (message: ChildRuntimeMessage) =>
-          message.stream === "stdout" && Boolean(message.parsed && (message.parsed as any).type === "ready"),
+          message.stream === "stdout" && hasChildRuntimeMessageType(message, "ready"),
       );
+      expectChildRuntimeMessageType(readyMessage, "ready");
       const readyStatus: ChildRuntimeStatus = runtime.getStatus();
       expect(readyStatus.lifecycle).to.equal("running");
       expect(readyStatus.lastHeartbeatAt).to.be.a("number");
@@ -117,10 +119,15 @@ describe("child runtime lifecycle", () => {
 
       const response = await runtime.waitForMessage(
         (message: ChildRuntimeMessage) =>
-          message.stream === "stdout" && Boolean(message.parsed && (message.parsed as any).type === "response"),
+          message.stream === "stdout" && hasChildRuntimeMessageType(message, "response"),
       );
 
-      expect((response.parsed as any).content).to.equal("hello orchestrator");
+      const responseMessage = expectChildRuntimeMessageType(response, "response");
+      const responseContent = responseMessage.parsed.content;
+      if (typeof responseContent !== "string") {
+        throw new Error("response message did not expose textual content");
+      }
+      expect(responseContent).to.equal("hello orchestrator");
 
       await writeArtifact({
         childrenRoot,
@@ -289,7 +296,7 @@ describe("child runtime lifecycle", () => {
 
       await runtime.waitForMessage(
         (message: ChildRuntimeMessage) =>
-          message.stream === "stdout" && Boolean(message.parsed && (message.parsed as any).type === "ready"),
+          message.stream === "stdout" && hasChildRuntimeMessageType(message, "ready"),
       );
 
       const shutdown = await runtime.shutdown({ signal: "SIGTERM", timeoutMs: 100 });
@@ -356,7 +363,7 @@ it("retries spawning children when configured with exponential backoff", async (
 
     await runtime.waitForMessage(
       (message: ChildRuntimeMessage) =>
-        message.stream === "stdout" && Boolean(message.parsed && (message.parsed as any).type === "ready"),
+        message.stream === "stdout" && hasChildRuntimeMessageType(message, "ready"),
       2000,
     );
   } finally {
@@ -416,7 +423,7 @@ it("rejects invalid pagination parameters when streaming child messages", async 
 
     await runtime.waitForMessage(
       (message: ChildRuntimeMessage) =>
-        message.stream === "stdout" && Boolean(message.parsed && (message.parsed as any).type === "ready"),
+        message.stream === "stdout" && hasChildRuntimeMessageType(message, "ready"),
     );
 
     // Guard rails should reject zero/negative pagination bounds so the caller

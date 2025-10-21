@@ -4,17 +4,17 @@ import { EventEmitter } from "node:events";
 /** Options accepted by {@link BlackboardStore}. */
 export interface BlackboardStoreOptions {
   /** Clock used for TTL computations. Defaults to {@link Date.now}. */
-  now?: () => number;
+  now?: (() => number) | undefined;
   /** Maximum number of events retained in history for watchers. */
-  historyLimit?: number;
+  historyLimit?: number | undefined;
 }
 
 /** Additional parameters supported when storing an entry. */
 export interface BlackboardSetOptions {
   /** Optional set of tags used to group entries semantically. */
-  tags?: string[];
+  tags?: string[] | undefined;
   /** Time-to-live in milliseconds. When omitted the entry never expires. */
-  ttlMs?: number;
+  ttlMs?: number | undefined;
 }
 
 /**
@@ -25,8 +25,8 @@ export interface BlackboardSetOptions {
 export interface BlackboardBatchSetInput {
   key: string;
   value: unknown;
-  tags?: string[];
-  ttlMs?: number;
+  tags?: string[] | undefined;
+  ttlMs?: number | undefined;
 }
 
 /**
@@ -50,9 +50,9 @@ export class BlackboardBatchSetEntryError extends Error {
 /** Filtering options consumed by {@link BlackboardStore.query}. */
 export interface BlackboardQueryOptions {
   /** Restrict the result set to the provided keys. */
-  keys?: string[];
+  keys?: string[] | undefined;
   /** Require all provided tags to be present on the entry. */
-  tags?: string[];
+  tags?: string[] | undefined;
 }
 
 /** Kinds of events emitted by the blackboard when its content changes. */
@@ -75,15 +75,15 @@ export interface BlackboardEvent {
   kind: BlackboardEventKind;
   key: string;
   timestamp: number;
-  entry?: BlackboardEntrySnapshot;
-  previous?: BlackboardEntrySnapshot;
-  reason?: "ttl";
+  entry?: BlackboardEntrySnapshot | undefined;
+  previous?: BlackboardEntrySnapshot | undefined;
+  reason?: "ttl" | undefined;
 }
 
 /** Options required to start a live watch on the blackboard. */
 export interface BlackboardWatchOptions {
   /** Version after which events must be delivered (exclusive). */
-  fromVersion?: number;
+  fromVersion?: number | undefined;
   /** Callback invoked for every event greater than {@link fromVersion}. */
   listener: (event: BlackboardEvent) => void;
 }

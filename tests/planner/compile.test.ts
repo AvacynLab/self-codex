@@ -13,42 +13,42 @@ import {
 } from "../../src/tools/planTools.js";
 import { PlanLifecycleRegistry } from "../../src/executor/planLifecycle.js";
 import { StigmergyField } from "../../src/coord/stigmergy.js";
+import { GraphState } from "../../src/graph/state.js";
+import {
+  createPlanToolContext,
+  type PlanToolContextOverrides,
+} from "../helpers/planContext.js";
 
-/** Build a minimal context satisfying {@link PlanToolContext} requirements for tests. */
-function buildContext(overrides: Partial<PlanToolContext> = {}): { context: PlanToolContext; events: sinon.SinonSpy } {
-  const logger =
-    overrides.logger ??
-    ({
-      info: sinon.spy(),
-      warn: sinon.spy(),
-      error: sinon.spy(),
-    } as unknown as PlanToolContext["logger"]);
+/**
+ * Builds a deterministic {@link PlanToolContext} for compilation tests while
+ * keeping every dependency swappable. The helper records emitted events via a
+ * Sinon spy so assertions can observe the payload without reaching into
+ * internals or resorting to unsafe casts.
+ */
+function buildContext(
+  overrides: PlanToolContextOverrides = {},
+): { context: PlanToolContext; events: sinon.SinonSpy<[Parameters<PlanToolContext["emitEvent"]>[0]], void> } {
+  const eventSpy = sinon.spy((event: Parameters<PlanToolContext["emitEvent"]>[0]) => {
+    // The spy captures the structured telemetry emitted by plan compilation.
+  });
 
-  const emitEvent = overrides.emitEvent ?? sinon.spy();
+  const emitEvent: PlanToolContext["emitEvent"] =
+    overrides.emitEvent ?? ((event) => {
+      eventSpy(event);
+    });
+
   const planLifecycle = overrides.planLifecycle ?? new PlanLifecycleRegistry();
 
-  const context: PlanToolContext = {
-    supervisor: overrides.supervisor ?? ({} as PlanToolContext["supervisor"]),
-    graphState: overrides.graphState ?? ({} as PlanToolContext["graphState"]),
-    logger,
-    childrenRoot: overrides.childrenRoot ?? "/tmp",
-    defaultChildRuntime: overrides.defaultChildRuntime ?? "codex",
-    emitEvent: emitEvent as PlanToolContext["emitEvent"],
-    stigmergy: overrides.stigmergy ?? new StigmergyField(),
+  const context = createPlanToolContext({
+    ...overrides,
+    emitEvent,
     planLifecycle,
     planLifecycleFeatureEnabled: overrides.planLifecycleFeatureEnabled ?? true,
-    autoscaler: overrides.autoscaler,
-    supervisorAgent: overrides.supervisorAgent,
-    blackboard: overrides.blackboard,
-    causalMemory: overrides.causalMemory,
-    valueGuard: overrides.valueGuard,
-    loopDetector: overrides.loopDetector,
-    btStatusRegistry: overrides.btStatusRegistry,
-    activeCancellation: overrides.activeCancellation ?? null,
-    idempotency: overrides.idempotency,
-  } as PlanToolContext;
+    graphState: overrides.graphState ?? new GraphState(),
+    stigmergy: overrides.stigmergy ?? new StigmergyField(),
+  });
 
-  return { context, events: emitEvent as sinon.SinonSpy };
+  return { context, events: eventSpy };
 }
 
 /** Generate a sample planner specification used by multiple tests. */
@@ -174,14 +174,31 @@ describe("planner compilation", () => {
     const plan = parsePlannerPlan(planInput.plan);
     const compilation = compilePlannerPlan(plan);
 
-    expect(compilation.behaviorTree.root.type).to.equal("sequence");
-    const phaseOne = (compilation.behaviorTree.root as any).children[0];
+    const rootNode = compilation.behaviorTree.root;
+    expect(rootNode.type).to.equal("sequence");
+    if (rootNode.type !== "sequence") {
+      throw new Error("expected planner compilation to produce a sequence root node");
+    }
+
+    const [phaseOne, phaseTwo] = rootNode.children;
+    if (!phaseOne || !phaseTwo) {
+      throw new Error("expected planner sequence to contain at least two phases");
+    }
+
     expect(phaseOne.type).to.equal("task");
+    if (phaseOne.type !== "task") {
+      throw new Error("expected first phase to be a task node");
+    }
     expect(phaseOne.input_key).to.equal(`${INPUT_VARIABLE_PREFIX}.prepare`);
 
-    const phaseTwo = (compilation.behaviorTree.root as any).children[1];
     expect(phaseTwo.type).to.equal("guard");
+    if (phaseTwo.type !== "guard") {
+      throw new Error("expected second phase to be a guard node");
+    }
     expect(phaseTwo.child.type).to.equal("timeout");
+    if (phaseTwo.child.type !== "timeout") {
+      throw new Error("expected guard child to wrap a timeout node");
+    }
     expect(phaseTwo.child.child.type).to.equal("task");
 
     const guardKeys = Object.keys(compilation.guardConditions);

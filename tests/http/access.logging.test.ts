@@ -3,6 +3,7 @@ import { expect } from "chai";
 
 import { __httpServerInternals } from "../../src/httpServer.js";
 import { EventStore } from "../../src/eventStore.js";
+import { RecordingLogger } from "../helpers/recordingLogger.js";
 
 /**
  * Verifies that the HTTP transport emits structured access events into the
@@ -16,16 +17,9 @@ describe("http access logging", function () {
     const completedAt = startedAt + BigInt(5_000_000); // ~5 ms
     // Capture the structured log emitted through the main logger so we can
     // assert that both the logger and event store observe the same payload.
-    const logEntries: Array<{ event: string; payload: Record<string, unknown> }> = [];
-    const logger = {
-      info(event: string, payload: Record<string, unknown>) {
-        logEntries.push({ event, payload });
-      },
-      warn() {},
-      error() {},
-    };
+    const logger = new RecordingLogger();
     __httpServerInternals.publishHttpAccessEvent(
-      logger as any,
+      logger,
       eventStore,
       "127.0.0.1",
       "/mcp",
@@ -45,9 +39,9 @@ describe("http access logging", function () {
     expect(typeof payload.latency_ms).to.equal("number");
     expect(payload.latency_ms as number).to.be.greaterThanOrEqual(0);
     expect(typeof payload.ip).to.equal("string");
-    expect(logEntries).to.have.lengthOf(1);
-    expect(logEntries[0]?.event).to.equal("http_access");
-    expect(logEntries[0]?.payload).to.deep.equal(payload);
+    const accessLogs = logger.entries.filter((entry) => entry.message === "http_access");
+    expect(accessLogs).to.have.lengthOf(1);
+    expect(accessLogs[0]?.payload).to.deep.equal(payload);
   });
 
   it("logs requests even when no event store is wired", () => {
@@ -55,17 +49,10 @@ describe("http access logging", function () {
     const completedAt = startedAt + BigInt(2_000_000); // ~2 ms
     // Without an event store, the helper must still emit the canonical
     // `http_access` log so operators retain visibility in development setups.
-    const logEntries: Array<{ event: string; payload: Record<string, unknown> }> = [];
-    const logger = {
-      info(event: string, payload: Record<string, unknown>) {
-        logEntries.push({ event, payload });
-      },
-      warn() {},
-      error() {},
-    };
+    const logger = new RecordingLogger();
 
     __httpServerInternals.publishHttpAccessEvent(
-      logger as any,
+      logger,
       undefined,
       "127.0.0.1",
       "/readyz",
@@ -75,9 +62,9 @@ describe("http access logging", function () {
       completedAt,
     );
 
-    expect(logEntries).to.have.lengthOf(1);
-    expect(logEntries[0]?.event).to.equal("http_access");
-    expect(logEntries[0]?.payload).to.deep.equal({
+    const accessLogs = logger.entries.filter((entry) => entry.message === "http_access");
+    expect(accessLogs).to.have.lengthOf(1);
+    expect(accessLogs[0]?.payload).to.deep.equal({
       ip: "127.0.0.1",
       route: "/readyz",
       method: "GET",

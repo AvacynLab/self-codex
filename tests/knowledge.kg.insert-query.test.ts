@@ -1,5 +1,6 @@
 import { describe, it } from "mocha";
 import { expect } from "chai";
+import sinon from "sinon";
 
 import { KnowledgeGraph } from "../src/knowledge/knowledgeGraph.js";
 import {
@@ -203,6 +204,37 @@ describe("knowledge graph storage and queries", () => {
 
     expect(exact).to.have.length(1);
     expect(exact[0].object).to.equal("detect");
+  });
+
+  it("omits undefined fields when dispatching queries and exports", () => {
+    const graph = new KnowledgeGraph({ now: () => 0 });
+    const logger = new StructuredLogger();
+    const context: KnowledgeToolContext = { knowledgeGraph: graph, logger };
+
+    const insertSpy = sinon.spy(graph, "insert");
+    const querySpy = sinon.spy(graph, "query");
+    const exportStub = sinon.stub(graph, "exportForRag").callsFake(() => []);
+
+    handleKgInsert(context, { triples: [{ subject: "alpha", predicate: "beta", object: "gamma" }] });
+    expect(insertSpy.callCount).to.equal(1);
+    const insertedPayload = insertSpy.firstCall.args[0];
+    expect("source" in insertedPayload).to.equal(false);
+    expect("confidence" in insertedPayload).to.equal(false);
+
+    handleKgQuery(context, { limit: 10, order: "asc" });
+    expect(querySpy.callCount).to.equal(1);
+    const [patternArg, optionsArg] = querySpy.firstCall.args;
+    expect(Object.prototype.hasOwnProperty.call(patternArg, "subject")).to.equal(false);
+    expect(Object.prototype.hasOwnProperty.call(patternArg, "minConfidence")).to.equal(false);
+    expect(optionsArg).to.deep.equal({ limit: 10, order: "asc" });
+
+    handleKgExport(context, { format: "rag_documents" });
+    expect(exportStub.callCount).to.equal(1);
+    expect(Object.keys(exportStub.firstCall.args[0] ?? {})).to.have.length(0);
+
+    insertSpy.restore();
+    querySpy.restore();
+    exportStub.restore();
   });
 
   it("clears and restores triples using exported snapshots", () => {

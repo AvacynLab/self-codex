@@ -6,10 +6,7 @@ import path from "node:path";
 import { BlackboardStore } from "../src/coord/blackboard.js";
 import { ContractNetCoordinator } from "../src/coord/contractNet.js";
 import { StigmergyField } from "../src/coord/stigmergy.js";
-import { StructuredLogger } from "../src/logger.js";
-import { GraphState } from "../src/graph/state.js";
 import type { ChildCollectedOutputs, ChildRuntimeMessage } from "../src/childRuntime.js";
-import type { ChildSupervisor } from "../src/children/supervisor.js";
 import type { CoordinationToolContext } from "../src/tools/coordTools.js";
 import {
   CnpAnnounceInputSchema,
@@ -18,10 +15,11 @@ import {
 import {
   PlanJoinInputSchema,
   PlanReduceInputSchema,
-  type PlanToolContext,
   handlePlanJoin,
   handlePlanReduce,
 } from "../src/tools/planTools.js";
+import { RecordingLogger } from "./helpers/recordingLogger.js";
+import { createPlanToolContext, createStubPlanChildSupervisor } from "./helpers/planContext.js";
 
 interface StubMessageOptions {
   /** Terminal message type emitted by the stub child. */
@@ -98,7 +96,7 @@ describe("contract-net to consensus end-to-end flow", function () {
       blackboard: new BlackboardStore(),
       stigmergy: new StigmergyField(),
       contractNet: coordinator,
-      logger: new StructuredLogger(),
+      logger: new RecordingLogger(),
     };
 
     const announceInput = CnpAnnounceInputSchema.parse({
@@ -152,37 +150,25 @@ describe("contract-net to consensus end-to-end flow", function () {
       ],
     ]);
 
-    const supervisorStub = {
-      collect: async (childId: string) => {
-        const snapshot = outputs.get(childId);
-        if (!snapshot) {
-          throw new Error(`unexpected child ${childId}`);
-        }
-        return cloneOutputs(snapshot);
-      },
-      waitForMessage: async () => {
-        throw new Error("waitForMessage should not be invoked for pre-collected outputs");
-      },
-    } as unknown as ChildSupervisor;
-
-    const logger = {
-      info: () => {},
-      debug: () => {},
-      warn: () => {},
-      error: () => {},
-      flush: async () => {},
-    } as unknown as StructuredLogger;
-
     const events: Array<{ kind: string; payload?: unknown }> = [];
-    const planContext: PlanToolContext = {
-      supervisor: supervisorStub,
-      graphState: new GraphState(),
-      logger,
+    const planContext = createPlanToolContext({
+      // Reuse the shared helper so the suite exercises the public plan context surface
+      // while stubbing child collection behaviour with strict runtime checks.
+      supervisor: createStubPlanChildSupervisor({
+        async collect(childId) {
+          const snapshot = outputs.get(childId);
+          if (!snapshot) {
+            throw new Error(`unexpected child ${childId}`);
+          }
+          return cloneOutputs(snapshot);
+        },
+        async waitForMessage() {
+          throw new Error("waitForMessage should not be invoked for pre-collected outputs");
+        },
+      }),
       childrenRoot: tmpdir(),
-      defaultChildRuntime: "codex",
       emitEvent: (event) => events.push({ kind: event.kind, payload: event.payload }),
-      stigmergy: new StigmergyField(),
-    };
+    });
 
     const joinInput = PlanJoinInputSchema.parse({
       children: ["childA", "childB", "childC"],

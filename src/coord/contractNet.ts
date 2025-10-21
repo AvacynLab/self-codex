@@ -24,21 +24,21 @@ type ContractNetBidKind = "manual" | "heuristic";
 /** Options controlling how the coordinator behaves. */
 export interface ContractNetCoordinatorOptions {
   /** Clock used for deterministic timestamps in tests. Defaults to {@link Date.now}. */
-  now?: () => number;
+  now?: (() => number) | undefined;
   /** Additional cost applied per active assignment when evaluating bids. */
-  defaultBusyPenalty?: number;
+  defaultBusyPenalty?: number | undefined;
 }
 
 /** Options accepted when registering an agent inside the coordinator. */
 export interface RegisterAgentOptions {
   /** Baseline cost announced by the agent. Lower values are preferred. */
-  baseCost?: number;
+  baseCost?: number | undefined;
   /** Reliability ratio in [0,1]. Lower reliability increases the heuristic cost. */
-  reliability?: number;
+  reliability?: number | undefined;
   /** Semantic tags describing the agent capabilities. */
-  tags?: string[];
+  tags?: string[] | undefined;
   /** Additional metadata associated with the agent profile. */
-  metadata?: Record<string, unknown>;
+  metadata?: Record<string, unknown> | undefined;
 }
 
 /** Snapshot describing a registered agent. */
@@ -59,45 +59,45 @@ export interface ContractNetAgentSnapshot {
  * fabricate placeholder values.
  */
 export interface ContractNetCorrelationContext {
-  runId?: string | null;
-  opId?: string | null;
-  jobId?: string | null;
-  graphId?: string | null;
-  nodeId?: string | null;
-  childId?: string | null;
+  runId?: string | null | undefined;
+  opId?: string | null | undefined;
+  jobId?: string | null | undefined;
+  graphId?: string | null | undefined;
+  nodeId?: string | null | undefined;
+  childId?: string | null | undefined;
 }
 
 /** Heuristic hints influencing the bid evaluation order. */
 export interface ContractNetHeuristics {
   /** Agents that should receive a negative bias during selection. */
-  preferAgents?: string[];
+  preferAgents?: string[] | undefined;
   /** Per-agent bias subtracted from their cost (positive favours the agent). */
-  agentBias?: Record<string, number>;
+  agentBias?: Record<string, number> | undefined;
   /** Overrides the busy penalty applied during evaluation. */
-  busyPenalty?: number;
+  busyPenalty?: number | undefined;
   /** Additional cost removed when an agent is inside {@link preferAgents}. */
-  preferenceBonus?: number;
+  preferenceBonus?: number | undefined;
 }
 
 /** Shape describing the task announced to the contract-net. */
 export interface ContractNetTaskAnnouncement {
   taskId: string;
-  payload?: unknown;
-  tags?: string[];
-  metadata?: Record<string, unknown>;
-  deadlineMs?: number | null;
-  heuristics?: ContractNetHeuristics;
+  payload?: unknown | undefined;
+  tags?: string[] | undefined;
+  metadata?: Record<string, unknown> | undefined;
+  deadlineMs?: number | null | undefined;
+  heuristics?: ContractNetHeuristics | undefined;
   /** Auto-generate heuristic bids for registered agents when true (default). */
-  autoBid?: boolean;
+  autoBid?: boolean | undefined;
   /** Optional correlation identifiers attached to the resulting lifecycle events. */
-  correlation?: ContractNetCorrelationContext | null;
+  correlation?: ContractNetCorrelationContext | null | undefined;
   /** Optional pheromone bounds captured when the task is announced. */
-  pheromoneBounds?: ContractNetPheromoneBounds | null;
+  pheromoneBounds?: ContractNetPheromoneBounds | null | undefined;
 }
 
 /** Additional metadata attached to a bid. */
 export interface ContractNetBidOptions {
-  metadata?: Record<string, unknown>;
+  metadata?: Record<string, unknown> | undefined;
 }
 
 /** Public snapshot representing a bid recorded in a call. */
@@ -156,13 +156,13 @@ export interface ContractNetPheromoneRefreshOptions {
    * this when the caller merely wants to update the stored bounds without
    * touching bid order or timestamps.
    */
-  refreshAutoBids?: boolean;
+  refreshAutoBids?: boolean | undefined;
   /**
    * When {@link refreshAutoBids} is enabled, controls whether agents that
    * registered after the call announcement should submit fresh heuristic bids.
    * Defaults to true so updates bring late joiners into the auction.
    */
-  includeNewAgents?: boolean;
+  includeNewAgents?: boolean | undefined;
 }
 
 /** Result returned by {@link ContractNetCoordinator.award}. */
@@ -202,7 +202,7 @@ export type ContractNetEvent =
       kind: "call_announced";
       at: number;
       call: ContractNetCallSnapshot;
-      correlation?: ContractNetCorrelationContext | null;
+      correlation?: ContractNetCorrelationContext | null | undefined;
     }
   | {
       kind: "bid_recorded";
@@ -212,14 +212,14 @@ export type ContractNetEvent =
       bid: ContractNetBidSnapshot;
       /** Previous bid kind, when a manual bid overrides an heuristic one. */
       previousKind: ContractNetBidKind | null;
-      correlation?: ContractNetCorrelationContext | null;
+      correlation?: ContractNetCorrelationContext | null | undefined;
     }
   | {
       kind: "call_awarded";
       at: number;
       call: ContractNetCallSnapshot;
       decision: ContractNetAwardDecision;
-      correlation?: ContractNetCorrelationContext | null;
+      correlation?: ContractNetCorrelationContext | null | undefined;
     }
   | {
       kind: "call_bounds_updated";
@@ -232,13 +232,13 @@ export type ContractNetEvent =
         autoBidRefreshed: boolean;
         refreshedAgents: string[];
       };
-      correlation?: ContractNetCorrelationContext | null;
+      correlation?: ContractNetCorrelationContext | null | undefined;
     }
   | {
       kind: "call_completed";
       at: number;
       call: ContractNetCallSnapshot;
-      correlation?: ContractNetCorrelationContext | null;
+      correlation?: ContractNetCorrelationContext | null | undefined;
     };
 
 /** Callback invoked when the coordinator emits lifecycle events. */

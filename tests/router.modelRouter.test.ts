@@ -3,7 +3,6 @@ import { expect } from "chai";
 import { z } from "zod";
 
 import { ModelRouter, RoutingTaskDescriptor } from "../src/router/modelRouter.js";
-import type { SpecialistConfig } from "../src/router/modelRouter.js";
 
 describe("ModelRouter", () => {
   function createRouter() {
@@ -95,7 +94,7 @@ describe("ModelRouter", () => {
         // Missing identifier and invalid capacity to trigger schema validation.
         id: "",
         maxTokens: -10,
-      } as unknown as SpecialistConfig);
+      });
     }).to.throw(z.ZodError);
   });
 

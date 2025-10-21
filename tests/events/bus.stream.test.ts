@@ -4,6 +4,26 @@ import { EventBus } from "../../src/events/bus.js";
 import type { EventMessage } from "../../src/events/types.js";
 
 /**
+ * Builds a minimal child stdout payload matching the discriminated union enforced
+ * by the event bus. Tests reuse the helper to keep focus on iterator semantics
+ * rather than replicating payload scaffolding inline.
+ */
+function createChildStdoutPayload(overrides: Partial<ReturnType<typeof buildBasePayload>> = {}) {
+  return { ...buildBasePayload(), ...overrides };
+}
+
+function buildBasePayload() {
+  return {
+    childId: "child-test",
+    stream: "stdout" as const,
+    raw: "payload",
+    parsed: null,
+    receivedAt: 0,
+    sequence: 0,
+  };
+}
+
+/**
  * Behavioural tests covering the async iterator contract exposed by
  * {@link EventBus.subscribe}. The scenarios make sure stream consumers observe
  * deterministic completion semantics whenever they dispose the iterator or the
@@ -31,7 +51,7 @@ describe("events/bus stream iteration", () => {
     // Publish a single event so the iterator yields one envelope before
     // returning the terminal result.
     const firstResultPromise = stream.next();
-    bus.publish({ cat: "child", msg: message });
+    bus.publish({ cat: "child", msg: message, data: createChildStdoutPayload() });
 
     const firstResult = await firstResultPromise;
     expect(firstResult.done).to.equal(false);

@@ -10,6 +10,7 @@ import { expect } from "chai";
 import { checkToken, resolveHttpAuthToken } from "../../src/http/auth.js";
 import { __httpServerInternals } from "../../src/httpServer.js";
 import { createHttpRequest, createJsonRpcRequest, MemoryHttpResponse } from "../helpers/http.js";
+import { RecordingLogger } from "../helpers/recordingLogger.js";
 
 describe("http auth token", () => {
   it("accepts matching tokens", () => {
@@ -135,6 +136,9 @@ describe("resolveHttpAuthToken", () => {
 describe("http bearer guard", () => {
   const previousToken = process.env.MCP_HTTP_TOKEN;
   const previousAllow = process.env.MCP_HTTP_ALLOW_NOAUTH;
+  /** Convenience helper returning the structured log entries matching a message. */
+  const findEntries = (logger: RecordingLogger, message: string) =>
+    logger.entries.filter((entry) => entry.message === message);
 
   afterEach(() => {
     // Restore the expected token so unrelated tests continue observing the
@@ -158,25 +162,19 @@ describe("http bearer guard", () => {
 
     const request = createHttpRequest("GET", "/mcp");
     const response = new MemoryHttpResponse();
-    const warnings: Array<{ event: string; payload: Record<string, unknown> }> = [];
-    const logger = {
-      warn(event: string, payload: Record<string, unknown>) {
-        warnings.push({ event, payload });
-      },
-      info() {},
-      error() {},
-    };
+    const logger = new RecordingLogger();
 
-    const allowed = __httpServerInternals.enforceBearerToken(
-      request as any,
-      response as any,
-      logger as any,
-      "no-token",
-    );
+    const allowed = __httpServerInternals.enforceBearerToken(request, response, logger, "no-token");
 
     expect(allowed, "guard must reject unauthenticated calls when no token is configured").to.equal(false);
     expect(response.statusCode, "HTTP status").to.equal(401);
-    expect(warnings.some(({ payload }) => payload.reason === "token_not_configured")).to.equal(true);
+    expect(
+      findEntries(logger, "http_auth_rejected").some((entry) =>
+        typeof entry.payload === "object" && entry.payload !== null && "reason" in (entry.payload as Record<string, unknown>)
+          ? (entry.payload as Record<string, unknown>).reason === "token_not_configured"
+          : false,
+      ),
+    ).to.equal(true);
   });
 
   it("allows unauthenticated calls when the development override is enabled", () => {
@@ -185,27 +183,13 @@ describe("http bearer guard", () => {
 
     const request = createHttpRequest("GET", "/mcp");
     const response = new MemoryHttpResponse();
-    let bypassWarnings = 0;
-    const logger = {
-      warn(event: string) {
-        if (event === "http_auth_bypassed") {
-          bypassWarnings += 1;
-        }
-      },
-      info() {},
-      error() {},
-    };
+    const logger = new RecordingLogger();
 
-    const allowed = __httpServerInternals.enforceBearerToken(
-      request as any,
-      response as any,
-      logger as any,
-      "dev-override",
-    );
+    const allowed = __httpServerInternals.enforceBearerToken(request, response, logger, "dev-override");
 
     expect(allowed, "guard must honour the no-auth development override").to.equal(true);
     expect(response.statusCode, "guard should not mutate the response when bypassing").to.equal(0);
-    expect(bypassWarnings, "override should be logged once for operator visibility").to.equal(1);
+    expect(findEntries(logger, "http_auth_bypassed").length).to.equal(1);
   });
 
   it("rejects same-length bearer tokens with a 401 response", () => {
@@ -214,21 +198,9 @@ describe("http bearer guard", () => {
       authorization: "Bearer wrong",
     });
     const response = new MemoryHttpResponse();
-    const warnings: Array<{ event: string; payload: Record<string, unknown> }> = [];
-    const logger = {
-      warn(event: string, payload: Record<string, unknown>) {
-        warnings.push({ event, payload });
-      },
-      info() {},
-      error() {},
-    };
+    const logger = new RecordingLogger();
 
-    const allowed = __httpServerInternals.enforceBearerToken(
-      request as any,
-      response as any,
-      logger as any,
-      "test-request",
-    );
+    const allowed = __httpServerInternals.enforceBearerToken(request, response, logger, "test-request");
 
     expect(allowed, "guard must reject mismatched payloads").to.equal(false);
     expect(response.statusCode, "HTTP status").to.equal(401);
@@ -237,7 +209,7 @@ describe("http bearer guard", () => {
     };
     expect(payload.error?.data?.meta?.code).to.equal("E-MCP-AUTH");
     expect(
-      warnings.every(({ payload: meta }) => !JSON.stringify(meta).includes("wrong")),
+      findEntries(logger, "http_auth_rejected").every((entry) => !JSON.stringify(entry.payload).includes("wrong")),
       "logger output should not contain the presented token",
     ).to.equal(true);
   });
@@ -258,26 +230,15 @@ describe("http bearer guard", () => {
       },
     );
     const response = new MemoryHttpResponse();
-    const logger = {
-      warn() {
-        throw new Error("guard should not emit warnings when the token matches");
-      },
-      info() {},
-      error() {},
-    };
+    const logger = new RecordingLogger();
 
-    const allowed = __httpServerInternals.enforceBearerToken(
-      request as any,
-      response as any,
-      logger as any,
-      "test-request",
-    );
+    const allowed = __httpServerInternals.enforceBearerToken(request, response, logger, "test-request");
 
     expect(allowed, "guard must accept the configured token").to.equal(true);
     const handled = await __httpServerInternals.tryHandleJsonRpc(
-      request as any,
-      response as any,
-      logger as any,
+      request,
+      response,
+      logger,
       "test-request",
       async (rpcRequest) => ({
         jsonrpc: "2.0" as const,
@@ -290,6 +251,7 @@ describe("http bearer guard", () => {
     expect(response.statusCode, "HTTP status").to.equal(200);
     const parsed = JSON.parse(response.body) as { result?: unknown };
     expect(parsed.result).to.deep.equal({ ok: true });
+    expect(findEntries(logger, "http_auth_rejected")).to.have.length(0);
   });
 
   it("accepts the fallback header when the token matches", () => {
@@ -298,17 +260,13 @@ describe("http bearer guard", () => {
       "x-mcp-token": "fallback",
     });
     const response = new MemoryHttpResponse();
-    const logger = { warn() {}, info() {}, error() {} };
+    const logger = new RecordingLogger();
 
-    const allowed = __httpServerInternals.enforceBearerToken(
-      request as any,
-      response as any,
-      logger as any,
-      "test-request",
-    );
+    const allowed = __httpServerInternals.enforceBearerToken(request, response, logger, "test-request");
 
     expect(allowed, "fallback header should allow the request").to.equal(true);
     expect(response.statusCode === 0 || response.statusCode === 200).to.equal(true);
+    expect(findEntries(logger, "http_auth_rejected")).to.have.length(0);
   });
 
   it("rejects mismatched fallback tokens with a 401 response", () => {
@@ -317,24 +275,12 @@ describe("http bearer guard", () => {
       "x-mcp-token": "incorrect",
     });
     const response = new MemoryHttpResponse();
-    const warnings: Array<{ event: string; payload: Record<string, unknown> }> = [];
-    const logger = {
-      warn(event: string, payload: Record<string, unknown>) {
-        warnings.push({ event, payload });
-      },
-      info() {},
-      error() {},
-    };
+    const logger = new RecordingLogger();
 
-    const allowed = __httpServerInternals.enforceBearerToken(
-      request as any,
-      response as any,
-      logger as any,
-      "test-request",
-    );
+    const allowed = __httpServerInternals.enforceBearerToken(request, response, logger, "test-request");
 
     expect(allowed, "fallback mismatch must be rejected").to.equal(false);
     expect(response.statusCode, "HTTP status").to.equal(401);
-    expect(warnings.some(({ event }) => event === "http_auth_rejected")).to.equal(true);
+    expect(findEntries(logger, "http_auth_rejected")).to.have.lengthOf.at.least(1);
   });
 });

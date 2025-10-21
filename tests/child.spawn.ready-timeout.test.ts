@@ -2,9 +2,9 @@ import { afterEach, beforeEach, describe, it } from "mocha";
 import { expect } from "chai";
 import sinon from "sinon";
 
-import type { ChildRuntime, ChildRuntimeStatus } from "../src/childRuntime.js";
+import { ChildRuntime, type ChildRuntimeStatus } from "../src/childRuntime.js";
 import type { ChildRecordSnapshot } from "../src/state/childrenIndex.js";
-import type { ChildSupervisor, CreateChildOptions } from "../src/children/supervisor.js";
+import { ChildSupervisor, type CreateChildOptions } from "../src/children/supervisor.js";
 import { StructuredLogger } from "../src/logger.js";
 import { handleChildSpawnCodex, type ChildToolContext } from "../src/tools/childTools.js";
 
@@ -28,6 +28,24 @@ describe("child_spawn_codex ready timeout", () => {
       process.env.MCP_HTTP_STATELESS = originalStateless;
     }
   });
+
+  /**
+   * Builds a lightweight {@link ChildRuntime} double backed by the class
+   * prototype so the supervisor stub can expose a fully typed handle without
+   * relying on structural casts. Only the properties exercised by the test are
+   * initialised which keeps the implementation straightforward while still
+   * honouring the runtime contract.
+   */
+  function createRuntimeStub(status: ChildRuntimeStatus): ChildRuntime {
+    const runtime = Object.create<ChildRuntime>(ChildRuntime.prototype);
+    Object.assign(runtime, {
+      manifestPath: `/tmp/${status.childId}/manifest.json`,
+      logPath: `/tmp/${status.childId}/child.log`,
+      workdir: status.workdir,
+      getStatus: () => status,
+    });
+    return runtime;
+  }
 
   it("forwards overrides and applies the extended default", async () => {
     const recordedTimeouts: Array<number | undefined> = [];
@@ -53,12 +71,7 @@ describe("child_spawn_codex ready timeout", () => {
         resourceUsage: null,
       };
 
-      const runtime = {
-        manifestPath: `/tmp/${childId}/manifest.json`,
-        logPath: `/tmp/${childId}/child.log`,
-        workdir: runtimeStatus.workdir,
-        getStatus: () => runtimeStatus,
-      } as unknown as ChildRuntime;
+      const runtime = createRuntimeStub(runtimeStatus);
 
       const indexSnapshot: ChildRecordSnapshot = {
         childId,
@@ -82,7 +95,11 @@ describe("child_spawn_codex ready timeout", () => {
       return { childId, runtime, index: indexSnapshot, readyMessage: null };
     });
 
-    const supervisor = { createChild } as unknown as ChildSupervisor;
+    const supervisor = new ChildSupervisor({
+      childrenRoot: "/tmp/child-ready-timeout",
+      defaultCommand: "node",
+    });
+    sinon.replace(supervisor, "createChild", createChild);
     const context: ChildToolContext = { supervisor, logger: new StructuredLogger() };
 
     await handleChildSpawnCodex(context, {

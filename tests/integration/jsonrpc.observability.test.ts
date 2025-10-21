@@ -5,6 +5,10 @@ import { z, type ZodTypeAny } from "zod";
 import { handleJsonRpc, logJournal, buildLiveEvents, server as mcpServer } from "../../src/server.js";
 import type { JsonRpcResponse } from "../../src/server.js";
 import { RPC_METHOD_SCHEMAS } from "../../src/rpc/schemas.js";
+import {
+  getMutableJsonRpcRequestHandlerRegistry,
+  type InternalJsonRpcHandler,
+} from "../../src/mcp/jsonRpcInternals.js";
 
 /**
  * Observability regression suite ensuring JSON-RPC requests emit correlated events and logs.
@@ -136,20 +140,14 @@ describe("jsonrpc observability", () => {
 
   it("extracts correlation from structuredContent tool responses", async () => {
     logJournal.reset();
-    const internal = mcpServer.server as unknown as {
-      _requestHandlers?: Map<string, (request: any, extra: any) => Promise<unknown> | unknown>;
-    };
-    const handlers = internal._requestHandlers;
-    if (!handlers) {
-      throw new Error("JSON-RPC handlers map not initialised");
-    }
+    const handlers = getMutableJsonRpcRequestHandlerRegistry(mcpServer);
 
-    const originalToolsCall = handlers.get("tools/call");
+    const originalToolsCall: InternalJsonRpcHandler | undefined = handlers.get("tools/call");
     const childId = `child-structured-${Date.now()}`;
     const runId = `run-structured-${Date.now()}`;
     const jobId = `job-structured-${Date.now()}`;
 
-    handlers.set("tools/call", async (request: any, extra: any) => {
+    handlers.set("tools/call", async (request, extra) => {
       if (request?.params && typeof request.params === "object") {
         const params = request.params as { name?: string };
         if (params.name === "structured_test") {

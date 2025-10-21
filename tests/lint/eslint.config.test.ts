@@ -13,7 +13,11 @@ const flatConfigFilePath = path.join(projectRoot, 'eslint.config.js');
 const lintFixturePath = path.join(projectRoot, 'tests', 'lint', '__fixtures__', 'lint-target.ts');
 
 describe('lint/eslint.config', function () {
-  this.timeout(10_000);
+  // Purpose: the ESLint warmup occasionally exceeds 10s once the full test
+  // suite grows past several hundred cases, especially after adding new
+  // integration coverage. Allow 20s so the shared program initialisation stays
+  // reliable on slower CI runners.
+  this.timeout(20_000);
   /**
    * Reuse a single ESLint instance wired to the real flat-config file so the
    * tests exercise the exact configuration loaded by `npm run lint:eslint`.

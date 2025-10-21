@@ -10,6 +10,7 @@ import type {
   TickRuntime,
 } from "../../src/executor/bt/types.js";
 import { ReactiveEventBus, ReactiveScheduler } from "../../src/executor/reactiveScheduler.js";
+import { writeCliOutput } from "../helpers/cliOutput.js";
 
 /**
  * Configuration shared by the scheduler micro-benchmarks. Keeping the structure
@@ -187,8 +188,7 @@ async function runAndReport(config: SchedulerBenchConfig = DEFAULT_SCHEDULER_BEN
     ].join(" | ");
   const rows: string[] = [header, separator, formatRow(baseline), formatRow(stigmergy)];
 
-  // eslint-disable-next-line no-console -- the benchmark is a CLI utility.
-  console.log(rows.join("\n"));
+  writeCliOutput(rows);
 }
 
 const currentFile = fileURLToPath(import.meta.url);

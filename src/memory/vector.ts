@@ -6,6 +6,13 @@ import { dirname } from "node:path";
 import { safePath } from "../gateways/fsArtifacts.js";
 import { normaliseProvenanceList, type Provenance } from "../types/provenance.js";
 
+/**
+ * Hard ceiling applied to the vector index capacity. The limit keeps the
+ * in-memory map bounded even when operators accidentally (or maliciously)
+ * configure an extremely large `MCP_MEMORY_VECTOR_MAX_DOCS` override.
+ */
+export const VECTOR_MEMORY_MAX_CAPACITY = 4096;
+
 /** Normalised representation of a single vectorised memory document. */
 export interface VectorMemoryDocument {
   /** Stable identifier assigned when the document is persisted. */
@@ -101,7 +108,11 @@ export class VectorMemoryIndex {
     // artefact gateway guarantees so even crafted filenames ("../index.json")
     // cannot escape the configured directory.
     this.filePath = safePath(options.directory, options.fileName ?? "index.json");
-    this.maxDocuments = Math.max(1, options.maxDocuments ?? 512);
+    const requestedCapacity = options.maxDocuments ?? 512;
+    const normalisedCapacity = Number.isFinite(requestedCapacity)
+      ? Math.floor(requestedCapacity)
+      : 512;
+    this.maxDocuments = Math.max(1, Math.min(VECTOR_MEMORY_MAX_CAPACITY, normalisedCapacity));
     this.now = options.now ?? (() => Date.now());
   }
 

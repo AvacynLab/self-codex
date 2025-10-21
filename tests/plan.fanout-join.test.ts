@@ -13,6 +13,7 @@ import {
   PlanFanoutInputSchema,
   PlanJoinInputSchema,
   PlanReduceInputSchema,
+  type PlanChildSupervisor,
   PlanToolContext,
   handlePlanFanout,
   handlePlanJoin,
@@ -23,6 +24,8 @@ import { StigmergyField } from "../src/coord/stigmergy.js";
 import type { EventCorrelationHints } from "../src/events/correlation.js";
 import { ThoughtGraphCoordinator } from "../src/reasoning/thoughtCoordinator.js";
 import { resolveFixture, runnerArgs } from "./helpers/childRunner.js";
+import { createStubChildSupervisor } from "./helpers/childSupervisor.js";
+import { RecordingLogger } from "./helpers/recordingLogger.js";
 
 const mockRunnerPath = resolveFixture(import.meta.url, "./fixtures/mock-runner.ts");
 const stubbornRunnerPath = resolveFixture(import.meta.url, "./fixtures/stubborn-runner.ts");
@@ -40,7 +43,7 @@ interface RecordedEvent {
 
 function createPlanContext(options: {
   childrenRoot: string;
-  supervisor: ChildSupervisor;
+  supervisor: PlanChildSupervisor;
   graphState: GraphState;
   logger: StructuredLogger;
   defaultRuntime?: string;
@@ -266,7 +269,9 @@ describe("plan tools", () => {
 
   it("emits correlated STATUS and AGGREGATE events when hints are supplied", async () => {
     const events: RecordedEvent[] = [];
-    const supervisor = {
+    // Use the shared stub so the suite exercises the correlation plumbing without spawning
+    // real child processes or reaching into the supervisor internals.
+    const supervisor = createStubChildSupervisor({
       collect: async (childId: string): Promise<ChildCollectedOutputs> => {
         const message: ChildRuntimeMessage<{ type: string; content: string }> = {
           raw: JSON.stringify({ type: "response", content: `${childId}:ok` }),
@@ -284,17 +289,13 @@ describe("plan tools", () => {
         };
       },
       waitForMessage: async () => {
-        throw new Error("waitForMessage should not be invoked when outputs are already terminal");
+        throw new Error(
+          "waitForMessage should not be invoked when outputs are already terminal",
+        );
       },
-    } as unknown as ChildSupervisor;
+    });
 
-    const logger = {
-      info: () => {},
-      debug: () => {},
-      warn: () => {},
-      error: () => {},
-      flush: async () => {},
-    } as unknown as StructuredLogger;
+    const logger = new RecordingLogger();
 
     const context = createPlanContext({
       childrenRoot: tmpdir(),

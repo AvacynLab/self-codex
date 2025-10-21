@@ -18,6 +18,7 @@ import {
 import type { ToolBudgets, ToolManifest } from "../../../src/mcp/registry.js";
 import { ToolRouter } from "../../../src/tools/toolRouter.js";
 import type { ToolRouterDecisionRecord } from "../../../src/tools/toolRouter.js";
+import { IntentRouteOutputSchema } from "../../../src/rpc/schemas.js";
 
 /** Budgets mirroring the manifests registered in production. */
 const BUDGET_HINTS: Record<string, ToolBudgets> = {
@@ -356,6 +357,28 @@ describe("intent_route facade", () => {
     expect(structured.details.diagnostics).to.deep.equal([]);
   });
 
+  it("publishes a typed degraded payload when the router is disabled", async () => {
+    const logger = new StructuredLogger();
+    const handler = createIntentRouteHandler({
+      logger,
+      resolveBudget: (tool) => BUDGET_HINTS[tool],
+      isRouterEnabled: () => false,
+    });
+    const extras = createRequestExtras("req-router-disabled-1");
+
+    const result = await runWithJsonRpcContext(
+      { requestId: "req-router-disabled-1" },
+      () => handler({ natural_language_goal: "Inspecter un artefact" }, extras),
+    );
+
+    expect(result.isError).to.equal(true);
+    const structured = IntentRouteOutputSchema.parse(result.structuredContent);
+    expect(structured.ok).to.equal(false);
+    expect(structured.summary).to.equal("routeur d'intentions désactivé");
+    expect(structured.details).to.deep.include({ reason: "router_disabled" });
+    expect(structured.details.idempotency_key).to.be.a("string").with.length.greaterThan(0);
+  });
+
   it("orders multiple heuristic hits by confidence before adding fallbacks", async () => {
     const logger = new StructuredLogger();
     const router = createToolRouter();
@@ -460,6 +483,37 @@ describe("intent_route facade", () => {
 
     const structured = result.structuredContent as Record<string, any>;
     expect(structured.details.metadata).to.deep.equal(metadata);
+  });
+
+  it("omits optional routing hints when metadata is absent", async () => {
+    const logger = new StructuredLogger();
+    const router = createToolRouter();
+    const recordedDecisions: ToolRouterDecisionRecord[] = [];
+    const handler = createIntentRouteHandler({
+      logger,
+      resolveBudget: (tool) => BUDGET_HINTS[tool],
+      toolRouter: router,
+      recordRouterDecision: (record) => recordedDecisions.push(record),
+    });
+    const extras = createRequestExtras("req-router-minimal");
+    const budget = new BudgetTracker({ toolCalls: 2 });
+
+    await runWithRpcTrace(
+      { method: `tools/${INTENT_ROUTE_TOOL_NAME}`, traceId: "trace-router-minimal", requestId: extras.requestId },
+      async () =>
+        await runWithJsonRpcContext({ requestId: extras.requestId, budget }, () =>
+          handler({ natural_language_goal: "Inspecte les options" }, extras),
+        ),
+    );
+
+    expect(recordedDecisions).to.have.length(1);
+    const context = recordedDecisions[0]!.context;
+    // Optional properties such as category, tags or preferred tools must be omitted entirely when no hint is provided.
+    expect(context.goal).to.equal("inspecte les options");
+    expect("category" in context).to.equal(false);
+    expect("tags" in context).to.equal(false);
+    expect("preferredTools" in context).to.equal(false);
+    expect("metadata" in context).to.equal(false);
   });
 
   it("validates the natural language goal string", async () => {

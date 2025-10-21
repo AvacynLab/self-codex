@@ -11,6 +11,7 @@ import {
   type HttpCheckSnapshot,
   type HttpEnvironmentSummary,
 } from "./runSetup.js";
+import { omitUndefinedEntries } from "../utils/object.js";
 
 /** JSONL artefacts associated with the Stage 9 robustness validation workflow. */
 export const ROBUSTNESS_JSONL_FILES = {
@@ -227,10 +228,10 @@ export async function runRobustnessPhase(
       scenario: spec.scenario,
       name: spec.name,
       method: spec.method,
-      captureEvents: spec.captureEvents,
-      group: spec.group,
-      params,
-      meta,
+      ...(spec.captureEvents !== undefined ? { captureEvents: spec.captureEvents } : {}),
+      ...(spec.group !== undefined ? { group: spec.group } : {}),
+      ...(params !== undefined ? { params } : {}),
+      ...(meta !== undefined ? { meta } : {}),
     };
 
     await appendHttpCheckArtefactsToFiles(runRoot, ROBUSTNESS_TARGETS, check, ROBUSTNESS_JSONL_FILES.log);
@@ -387,11 +388,15 @@ function extractJsonRpcError(body: unknown): {
     return null;
   }
   const result: { code?: number; message?: string; data?: Record<string, unknown> } = {};
-  if (typeof (error as { code?: unknown }).code === "number") {
-    result.code = (error as { code?: number }).code;
+  const code = (error as { code?: unknown }).code;
+  if (typeof code === "number") {
+    // Avoid storing an explicit `undefined` on optional properties so the helper stays compatible
+    // with `exactOptionalPropertyTypes`.
+    result.code = code;
   }
-  if (typeof (error as { message?: unknown }).message === "string") {
-    result.message = (error as { message?: string }).message;
+  const message = (error as { message?: unknown }).message;
+  if (typeof message === "string") {
+    result.message = message;
   }
   const data = (error as { data?: unknown }).data;
   if (data && typeof data === "object") {
@@ -421,18 +426,23 @@ function buildRobustnessSummary(
   const checks = outcomes.map((outcome) => {
     const error = extractJsonRpcError(outcome.check.response.body);
     const result = extractJsonRpcResult(outcome.check.response.body);
+    const idempotentValue =
+      typeof (result as { idempotent?: unknown })?.idempotent === "boolean"
+        ? ((result as { idempotent?: boolean }).idempotent as boolean)
+        : undefined;
+    const idempotencyKey = extractIdempotencyKey(outcome.check.response.body) ?? undefined;
     return {
       scenario: outcome.call.scenario,
       name: outcome.call.name,
       method: outcome.call.method,
       status: outcome.check.response.status,
       statusText: outcome.check.response.statusText,
-      errorCode: error?.code,
-      errorMessage: error?.message,
-      idempotent: typeof (result as { idempotent?: unknown })?.idempotent === "boolean"
-        ? ((result as { idempotent?: boolean }).idempotent as boolean)
-        : undefined,
-      idempotencyKey: extractIdempotencyKey(outcome.check.response.body) ?? undefined,
+      ...omitUndefinedEntries({
+        errorCode: error?.code,
+        errorMessage: error?.message,
+        idempotent: idempotentValue,
+        idempotencyKey,
+      }),
     };
   });
 
@@ -448,9 +458,11 @@ function buildRobustnessSummary(
       httpSnapshotLog: join(runRoot, ROBUSTNESS_JSONL_FILES.log),
     },
     checks,
-    idempotency: idempotency ?? undefined,
-    crashSimulation: crashSimulation ?? undefined,
-    timeout: timeout ?? undefined,
+    ...omitUndefinedEntries({
+      idempotency: idempotency ?? undefined,
+      crashSimulation: crashSimulation ?? undefined,
+      timeout: timeout ?? undefined,
+    }),
   };
 }
 
@@ -477,11 +489,13 @@ function computeIdempotencySummary(
 
   return {
     group: IDEMPOTENCY_GROUP,
-    idempotencyKey: extractIdempotencyKey(first.check.response.body) ?? undefined,
     consistent,
     firstStatus: first.check.response.status,
     secondStatus: second.check.response.status,
-    mismatchReason,
+    ...omitUndefinedEntries({
+      idempotencyKey: extractIdempotencyKey(first.check.response.body) ?? undefined,
+      mismatchReason,
+    }),
   };
 }
 
@@ -496,9 +510,11 @@ function computeCrashSummary(
   const error = extractJsonRpcError(crashOutcome.check.response.body);
   return {
     status: crashOutcome.check.response.status,
-    errorCode: error?.code,
-    errorMessage: error?.message,
     eventCount: crashOutcome.events.length,
+    ...omitUndefinedEntries({
+      errorCode: error?.code,
+      errorMessage: error?.message,
+    }),
   };
 }
 
@@ -524,11 +540,13 @@ function computeTimeoutSummary(
       ? ((result as { message?: string }).message as string)
       : undefined) ??
     (typeof error?.message === "string" ? error.message : undefined);
+  // NOTE: With `exactOptionalPropertyTypes` enabled we must omit optional
+  // fields instead of forwarding `undefined`, hence the conditional spread.
   return {
     status: timeoutOutcome.check.response.status,
     timedOut,
-    message,
     statusToken,
+    ...(message !== undefined ? { message } : {}),
   };
 }
 

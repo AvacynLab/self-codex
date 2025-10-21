@@ -219,12 +219,18 @@ export async function performHttpCheck(
   const timeout = setTimeout(() => controller.abort(), 15_000);
 
   try {
-    const response = await fetch(request.url, {
+    const fetchInit: RequestInit = {
       method: request.method,
       headers: request.headers,
-      body: request.body ? JSON.stringify(request.body) : undefined,
       signal: controller.signal,
-    });
+    };
+    if (request.body) {
+      // Avoid serialising `undefined` to satisfy `exactOptionalPropertyTypes`
+      // once enabled: optional init fields are only included when populated.
+      fetchInit.body = JSON.stringify(request.body);
+    }
+
+    const response = await fetch(request.url, fetchInit);
 
     const bodyText = await response.text();
     let parsedBody: unknown;

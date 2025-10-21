@@ -2,9 +2,10 @@ import { z } from "zod";
 
 import type {
   KnowledgeGraph,
+  KnowledgeQueryPattern,
   KnowledgeRagDocument,
-  KnowledgeTripleSnapshot,
   KnowledgeRagExportOptions,
+  KnowledgeTripleSnapshot,
 } from "../knowledge/knowledgeGraph.js";
 import {
   assistKnowledgeQuery,
@@ -172,7 +173,23 @@ export function handleKgInsert(
   let created = 0;
   let updated = 0;
   const inserted = input.triples.map((triple) => {
-    const result = context.knowledgeGraph.insert(triple);
+    const payload: Parameters<KnowledgeGraph["insert"]>[0] = {
+      subject: triple.subject,
+      predicate: triple.predicate,
+      object: triple.object,
+    };
+    if (triple.source !== undefined) {
+      // Forward optional fields only when present so the call remains valid once
+      // `exactOptionalPropertyTypes` is enabled on the project.
+      payload.source = triple.source;
+    }
+    if (triple.confidence !== undefined) {
+      payload.confidence = triple.confidence;
+    }
+    if (triple.provenance !== undefined) {
+      payload.provenance = triple.provenance;
+    }
+    const result = context.knowledgeGraph.insert(payload);
     if (result.created) created += 1;
     if (result.updated) updated += 1;
     return serializeTriple(result.snapshot);
@@ -192,16 +209,26 @@ export function handleKgQuery(
   context: KnowledgeToolContext,
   input: z.infer<typeof KgQueryInputSchema>,
 ): KgQueryResult {
-  const triples = context.knowledgeGraph.query(
-    {
-      subject: input.subject,
-      predicate: input.predicate,
-      object: input.object,
-      source: input.source,
-      minConfidence: input.min_confidence,
-    },
-    { limit: input.limit, order: input.order },
-  );
+  const pattern: KnowledgeQueryPattern = {};
+  if (input.subject !== undefined) {
+    pattern.subject = input.subject;
+  }
+  if (input.predicate !== undefined) {
+    pattern.predicate = input.predicate;
+  }
+  if (input.object !== undefined) {
+    pattern.object = input.object;
+  }
+  if (input.source !== undefined) {
+    pattern.source = input.source;
+  }
+  if (input.min_confidence !== undefined) {
+    pattern.minConfidence = input.min_confidence;
+  }
+  const triples = context.knowledgeGraph.query(pattern, {
+    limit: input.limit,
+    order: input.order,
+  });
   const serialised = triples.map(serializeTriple);
   const nextCursor = serialised.length ? serialised[serialised.length - 1].ordinal : null;
   context.logger.info("kg_query", {
@@ -221,11 +248,17 @@ export function handleKgExport(
   input: z.infer<typeof KgExportInputSchema>,
 ): KgExportResult {
   if (input.format === "rag_documents") {
-    const documents = exportKnowledgeForRag(context.knowledgeGraph, {
-      minConfidence: input.min_confidence,
-      includePredicates: input.include_predicates,
-      maxTriplesPerSubject: input.max_triples_per_subject,
-    });
+    const exportOptions: KnowledgeRagExportOptions = {};
+    if (input.min_confidence !== undefined) {
+      exportOptions.minConfidence = input.min_confidence;
+    }
+    if (input.include_predicates !== undefined) {
+      exportOptions.includePredicates = input.include_predicates;
+    }
+    if (input.max_triples_per_subject !== undefined) {
+      exportOptions.maxTriplesPerSubject = input.max_triples_per_subject;
+    }
+    const documents = exportKnowledgeForRag(context.knowledgeGraph, exportOptions);
     context.logger.info("kg_export", {
       format: "rag_documents",
       total: documents.length,

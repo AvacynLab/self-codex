@@ -17,12 +17,19 @@ import {
   resetCancellationRegistry,
   OperationCancelledError,
 } from "../src/executor/cancel.js";
+import type { AutoscalerContract, AutoscalerConfig } from "../src/agents/autoscaler.js";
+import type {
+  OrchestratorSupervisorContract,
+  SupervisorSchedulerSnapshot,
+} from "../src/agents/supervisor.js";
+import { createPlanToolContext, createSpyPlanLogger } from "./helpers/planContext.js";
 
-class StubAutoscaler {
+class StubAutoscaler implements AutoscalerContract {
   public readonly id = "autoscaler";
   public backlogUpdates: number[] = [];
   public samples: Array<{ durationMs: number; success: boolean }> = [];
   public reconcileCalls = 0;
+  private config: AutoscalerConfig = { minChildren: 0, maxChildren: 10, cooldownMs: 0 };
 
   updateBacklog(value: number): void {
     this.backlogUpdates.push(value);
@@ -35,16 +42,35 @@ class StubAutoscaler {
   async reconcile(): Promise<void> {
     this.reconcileCalls += 1;
   }
+
+  getConfiguration(): AutoscalerConfig {
+    return { ...this.config };
+  }
+
+  configure(patch: Partial<AutoscalerConfig>): AutoscalerConfig {
+    this.config = { ...this.config, ...patch };
+    return this.getConfiguration();
+  }
 }
 
-class StubSupervisorAgent {
+class StubSupervisorAgent implements OrchestratorSupervisorContract {
   public readonly id = "supervisor";
-  public snapshots: Array<{ backlog: number }> = [];
+  public snapshots: Array<SupervisorSchedulerSnapshot & { updatedAt: number }> = [];
   public reconcileCalls = 0;
 
-  recordSchedulerSnapshot(snapshot: { backlog: number }): void {
-    this.snapshots.push({ backlog: snapshot.backlog });
+  recordSchedulerSnapshot(snapshot: SupervisorSchedulerSnapshot): void {
+    this.snapshots.push({ ...snapshot, updatedAt: Date.now() });
   }
+
+  getLastSchedulerSnapshot(): (SupervisorSchedulerSnapshot & { updatedAt: number }) | null {
+    const last = this.snapshots.at(-1);
+    if (!last) {
+      return null;
+    }
+    return { ...last };
+  }
+
+  async recordLoopAlert(): Promise<void> {}
 
   async reconcile(): Promise<void> {
     this.reconcileCalls += 1;
@@ -83,31 +109,20 @@ describe("plan_run_reactive tool", () => {
     lifecycleEnabled?: boolean;
     events?: Array<{ kind: string; level?: string; payload?: unknown }>;
   } = {}): PlanToolContext {
-    const logger = {
-      info: sinon.spy(),
-      warn: sinon.spy(),
-      error: sinon.spy(),
-      debug: sinon.spy(),
-    } as unknown as PlanToolContext["logger"];
-
     const events = options.events ?? [];
-    const lifecycleEnabled = options.lifecycleEnabled ?? (options.lifecycle ? true : undefined);
-    const context: PlanToolContext = {
-      supervisor: {} as PlanToolContext["supervisor"],
-      graphState: {} as PlanToolContext["graphState"],
+    const { logger } = createSpyPlanLogger();
+
+    return createPlanToolContext({
       logger,
-      childrenRoot: "/tmp",
-      defaultChildRuntime: "codex",
+      stigmergy: new StigmergyField(),
       emitEvent: (event) => {
         events.push({ kind: event.kind, level: event.level, payload: event.payload });
       },
-      stigmergy: new StigmergyField(),
-      autoscaler: options.autoscaler as unknown as PlanToolContext["autoscaler"],
-      supervisorAgent: options.supervisorAgent as unknown as PlanToolContext["supervisorAgent"],
+      autoscaler: options.autoscaler,
+      supervisorAgent: options.supervisorAgent,
       planLifecycle: options.lifecycle,
-      planLifecycleFeatureEnabled: lifecycleEnabled,
-    } satisfies PlanToolContext;
-    return context;
+      planLifecycleFeatureEnabled: options.lifecycleEnabled ?? (options.lifecycle ? true : undefined),
+    });
   }
 
   it("runs the reactive loop and surfaces scheduler telemetry", async () => {

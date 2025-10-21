@@ -52,13 +52,19 @@ class FakeChildProcess extends PassThrough implements ChildProcess {
     return this;
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   override send(
-    _message: unknown,
-    _sendHandle?: unknown,
-    _options?: unknown,
-    _callback?: ((error: Error | null) => void) | undefined,
+    message: unknown,
+    sendHandle?: unknown,
+    options?: unknown,
+    callback?: ((error: Error | null) => void) | undefined,
   ): boolean {
+    // The fake child never exposes an IPC channel; explicitly void each
+    // parameter so the strict unused-parameter check acknowledges the intent
+    // while keeping the signature aligned with the real `ChildProcess#send`.
+    void message;
+    void sendHandle;
+    void options;
+    void callback;
     throw new Error("IPC channel not available on fake child process");
   }
 

@@ -84,4 +84,23 @@ describe("coordination consensus helpers", () => {
     expect(strictWeighted.satisfied).to.equal(false);
     expect(strictWeighted.threshold).to.equal(5);
   });
+
+  it("accepts explicit undefined consensus option fields", () => {
+    const votes: ConsensusVote[] = [successVote("alpha"), failureVote("beta")];
+
+    // Explicit undefined should be equivalent to omitting the optional knobs.
+    const majorityDecision = majority(votes, {
+      tieBreaker: undefined,
+      preferValue: undefined,
+      weights: undefined,
+    });
+    expect(majorityDecision.tie).to.equal(true);
+    expect(majorityDecision.outcome).to.equal(null);
+
+    // Likewise for the weighted mode and its optional quorum override.
+    const weightedDecision = weighted(votes, { weights: undefined, quorum: undefined });
+    expect(weightedDecision.mode).to.equal("weighted");
+    expect(weightedDecision.threshold).to.equal(2);
+    expect(weightedDecision.satisfied).to.equal(false);
+  });
 });

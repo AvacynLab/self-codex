@@ -134,7 +134,9 @@ export async function executeSecurityCli(
 
   const phaseOptions: SecurityPhaseOptions = {
     ...basePhaseOptions,
-    defaults,
+    // Do not assign `undefined` defaults so the future
+    // `exactOptionalPropertyTypes` pass remains type-safe.
+    ...(defaults ? { defaults } : {}),
   };
 
   const runner = overrides.runner ?? runSecurityPhase;

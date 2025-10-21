@@ -8,15 +8,12 @@ import type { EventBus, EventInput } from "./bus.js";
 import { mergeCorrelationHints, type EventCorrelationHints } from "./correlation.js";
 import type {
   CancellationEventMessage,
-  ChildLifecycleMessage,
   ConsensusEventMessage,
   ContractNetEventMessage,
-  ValueGuardEventMessage,
 } from "./types.js";
 import type { BlackboardEvent, BlackboardStore } from "../coord/blackboard.js";
 import type { StigmergyChangeEvent, StigmergyField } from "../coord/stigmergy.js";
 import type {
-  ChildRuntime,
   ChildRuntimeLifecycleEvent,
   ChildRuntimeMessage,
 } from "../childRuntime.js";
@@ -47,9 +44,28 @@ import type {
  * to correlation resolvers so they can surface identifiers from the original
  * payloads.
  */
+/**
+ * Minimal contract satisfied by child runtime emitters consumed by the bridge
+ * helpers. The structure intentionally mirrors the subset of
+ * {@link ChildRuntime} exercised in tests so lightweight stubs can stand in for
+ * the production implementation without resorting to double assertions.
+ */
+export interface ChildRuntimeEventSource {
+  /** Identifier advertised by the runtime when emitting lifecycle events. */
+  readonly childId: string;
+  /** Subscribes to structured message events emitted by the runtime. */
+  on(event: "message", listener: (message: ChildRuntimeMessage) => void): this;
+  /** Subscribes to lifecycle transitions emitted by the runtime. */
+  on(event: "lifecycle", listener: (event: ChildRuntimeLifecycleEvent) => void): this;
+  /** Detaches a previously registered message listener. */
+  off(event: "message", listener: (message: ChildRuntimeMessage) => void): this;
+  /** Detaches a previously registered lifecycle listener. */
+  off(event: "lifecycle", listener: (event: ChildRuntimeLifecycleEvent) => void): this;
+}
+
 export type ChildRuntimeBridgeContext =
-  | { kind: "message"; runtime: ChildRuntime; message: ChildRuntimeMessage }
-  | { kind: "lifecycle"; runtime: ChildRuntime; lifecycle: ChildRuntimeLifecycleEvent };
+  | { kind: "message"; runtime: ChildRuntimeEventSource; message: ChildRuntimeMessage }
+  | { kind: "lifecycle"; runtime: ChildRuntimeEventSource; lifecycle: ChildRuntimeLifecycleEvent };
 
 /** Options consumed when bridging blackboard events to the {@link EventBus}. */
 export interface BlackboardBridgeOptions {
@@ -181,7 +197,7 @@ export interface CancellationBridgeOptions {
 /** Options consumed when bridging child runtime events to the {@link EventBus}. */
 export interface ChildRuntimeBridgeOptions {
   /** Child runtime emitting message and lifecycle events. */
-  runtime: ChildRuntime;
+  runtime: ChildRuntimeEventSource;
   /** Event bus receiving structured child lifecycle outputs. */
   bus: EventBus;
   /** Optional resolver enriching emitted events with correlation hints. */
@@ -388,6 +404,7 @@ export function bridgeChildRuntimeEvents(options: ChildRuntimeBridgeOptions): ()
     const correlation = handleCorrelation({ kind: "message", runtime, message });
     const level: EventInput["level"] = message.stream === "stderr" ? "warn" : "info";
 
+    const msg = message.stream === "stderr" ? "child_stderr" : "child_stdout";
     bus.publish({
       cat: "child",
       level,
@@ -399,8 +416,8 @@ export function bridgeChildRuntimeEvents(options: ChildRuntimeBridgeOptions): ()
       nodeId: correlation.nodeId ?? null,
       // Preserve the stream origin to disambiguate stdout vs stderr lines in
       // the consolidated bus feed.
-      kind: message.stream === "stderr" ? "CHILD_STDERR" : "CHILD_STDOUT",
-      msg: message.stream === "stderr" ? "child_stderr" : "child_stdout",
+      kind: msg === "child_stderr" ? "CHILD_STDERR" : "CHILD_STDOUT",
+      msg,
       data: {
         childId: runtime.childId,
         stream: message.stream,
@@ -414,47 +431,77 @@ export function bridgeChildRuntimeEvents(options: ChildRuntimeBridgeOptions): ()
 
   const lifecycleListener = (event: ChildRuntimeLifecycleEvent) => {
     const correlation = handleCorrelation({ kind: "lifecycle", runtime, lifecycle: event });
-
-      let level: EventInput["level"] = "info";
-    let msg: ChildLifecycleMessage = "child_lifecycle";
-    const data: Record<string, unknown> = {
-      childId: runtime.childId,
-      phase: event.phase,
-      at: event.at,
-      pid: event.pid,
-      forced: event.forced,
-      reason: event.reason,
-    };
-
-    if (event.phase === "spawned") {
-      msg = "child_spawned";
-    } else if (event.phase === "exit") {
-      msg = "child_exit";
-      data.code = event.code;
-      data.signal = event.signal;
-      if (event.forced || (typeof event.code === "number" && event.code !== 0) || event.signal) {
-        level = "warn";
-      }
-    } else if (event.phase === "error") {
-      msg = "child_error";
-      level = "error";
-    }
-
-    bus.publish({
-      cat: "child",
-      level,
+    const base = {
+      cat: "child" as const,
       childId: correlation.childId ?? null,
       jobId: correlation.jobId ?? null,
       runId: correlation.runId ?? null,
       opId: correlation.opId ?? null,
       graphId: correlation.graphId ?? null,
       nodeId: correlation.nodeId ?? null,
-      // Promote the lifecycle message (SPAWNED/EXITED/...) so subscribers can
-      // filter specific child runtime transitions without inspecting payloads.
-      kind: msg.toUpperCase(),
-      msg,
-      data,
-    });
+    };
+
+    switch (event.phase) {
+      case "spawned": {
+        bus.publish({
+          ...base,
+          level: "info",
+          kind: "CHILD_SPAWNED",
+          msg: "child_spawned",
+          data: {
+            childId: runtime.childId,
+            phase: event.phase,
+            at: event.at,
+            pid: event.pid,
+            forced: event.forced,
+            reason: null,
+          },
+        });
+        break;
+      }
+      case "exit": {
+        const level: EventInput["level"] =
+          event.forced || (typeof event.code === "number" && event.code !== 0) || event.signal ? "warn" : "info";
+        bus.publish({
+          ...base,
+          level,
+          kind: "CHILD_EXIT",
+          msg: "child_exit",
+          data: {
+            childId: runtime.childId,
+            phase: event.phase,
+            at: event.at,
+            pid: event.pid,
+            forced: event.forced,
+            reason: event.reason,
+            code: event.code,
+            signal: event.signal,
+          },
+        });
+        break;
+      }
+      case "error": {
+        bus.publish({
+          ...base,
+          level: "error",
+          kind: "CHILD_ERROR",
+          msg: "child_error",
+          data: {
+            childId: runtime.childId,
+            phase: event.phase,
+            at: event.at,
+            pid: event.pid,
+            forced: event.forced,
+            reason: event.reason,
+          },
+        });
+        break;
+      }
+      default: {
+        const neverEvent: never = event;
+        throw new TypeError(`unsupported child lifecycle phase: ${(neverEvent as { phase?: unknown }).phase}`);
+      }
+    }
   };
 
   runtime.on("message", messageListener);
@@ -485,73 +532,127 @@ export function bridgeContractNetEvents(options: ContractNetBridgeOptions): () =
     if (resolved) {
       mergeCorrelationHints(correlation, resolved);
     }
-    const level: EventInput["level"] = "info";
-    let msg: ContractNetEventMessage = "cnp_event";
-    let data: Record<string, unknown> = {};
-
-    switch (event.kind) {
-      case "agent_registered":
-        msg = event.updated ? "cnp_agent_updated" : "cnp_agent_registered";
-        data = { agent: event.agent, updated: event.updated };
-        break;
-      case "agent_unregistered":
-        msg = "cnp_agent_unregistered";
-        data = { agentId: event.agentId, remainingAssignments: event.remainingAssignments };
-        break;
-      case "call_announced":
-        msg = "cnp_call_announced";
-        data = { call: event.call };
-        break;
-      case "bid_recorded":
-        msg = event.previousKind ? "cnp_bid_updated" : "cnp_bid_recorded";
-        data = {
-          callId: event.callId,
-          agentId: event.agentId,
-          bid: event.bid,
-          previousKind: event.previousKind,
-        };
-        break;
-      case "call_awarded":
-        msg = "cnp_call_awarded";
-        data = { call: event.call, decision: event.decision };
-        break;
-      case "call_bounds_updated":
-        msg = "cnp_call_bounds_updated";
-        data = {
-          call: event.call,
-          bounds: event.bounds,
-          refresh: {
-            requested: event.refresh.requested,
-            includeNewAgents: event.refresh.includeNewAgents,
-            autoBidRefreshed: event.refresh.autoBidRefreshed,
-            refreshedAgents: [...event.refresh.refreshedAgents],
-          },
-        };
-        break;
-      case "call_completed":
-        msg = "cnp_call_completed";
-        data = { call: event.call };
-        break;
-      default:
-        data = event as Record<string, unknown>;
-        break;
-    }
-
-    bus.publish({
-      cat: "cnp",
-      level,
+    const base = {
+      cat: "cnp" as const,
+      level: "info" as const,
       jobId: correlation.jobId ?? null,
       runId: correlation.runId ?? null,
       opId: correlation.opId ?? null,
       graphId: correlation.graphId ?? null,
       nodeId: correlation.nodeId ?? null,
       childId: correlation.childId ?? null,
-      // Surface the contract-net lifecycle state (ANNOUNCED/BID/...) for more
-      // granular consumer filtering.
-      kind: msg.toUpperCase(),
-      msg,
-      data,
-    });
+    };
+
+    switch (event.kind) {
+      case "agent_registered": {
+        const msg: ContractNetEventMessage = event.updated ? "cnp_agent_updated" : "cnp_agent_registered";
+        bus.publish({
+          ...base,
+          kind: msg.toUpperCase(),
+          msg,
+          data: {
+            kind: event.updated ? "agent_updated" : "agent_registered",
+            agent: event.agent,
+            updated: event.updated,
+          },
+        });
+        break;
+      }
+      case "agent_unregistered": {
+        bus.publish({
+          ...base,
+          kind: "CNP_AGENT_UNREGISTERED",
+          msg: "cnp_agent_unregistered",
+          data: {
+            kind: "agent_unregistered",
+            agentId: event.agentId,
+            remainingAssignments: event.remainingAssignments,
+          },
+        });
+        break;
+      }
+      case "call_announced": {
+        bus.publish({
+          ...base,
+          kind: "CNP_CALL_ANNOUNCED",
+          msg: "cnp_call_announced",
+          data: {
+            kind: "call_announced",
+            call: event.call,
+          },
+        });
+        break;
+      }
+      case "bid_recorded": {
+        const msg: ContractNetEventMessage = event.previousKind ? "cnp_bid_updated" : "cnp_bid_recorded";
+        bus.publish({
+          ...base,
+          kind: msg.toUpperCase(),
+          msg,
+          data: {
+            kind: event.previousKind ? "bid_updated" : "bid_recorded",
+            callId: event.callId,
+            agentId: event.agentId,
+            bid: event.bid,
+            previousKind: event.previousKind,
+          },
+        });
+        break;
+      }
+      case "call_awarded": {
+        bus.publish({
+          ...base,
+          kind: "CNP_CALL_AWARDED",
+          msg: "cnp_call_awarded",
+          data: {
+            kind: "call_awarded",
+            call: event.call,
+            decision: event.decision,
+          },
+        });
+        break;
+      }
+      case "call_bounds_updated": {
+        bus.publish({
+          ...base,
+          kind: "CNP_CALL_BOUNDS_UPDATED",
+          msg: "cnp_call_bounds_updated",
+          data: {
+            kind: "call_bounds_updated",
+            call: event.call,
+            bounds: event.bounds,
+            refresh: {
+              requested: event.refresh.requested,
+              includeNewAgents: event.refresh.includeNewAgents,
+              autoBidRefreshed: event.refresh.autoBidRefreshed,
+              refreshedAgents: [...event.refresh.refreshedAgents],
+            },
+          },
+        });
+        break;
+      }
+      case "call_completed": {
+        bus.publish({
+          ...base,
+          kind: "CNP_CALL_COMPLETED",
+          msg: "cnp_call_completed",
+          data: {
+            kind: "call_completed",
+            call: event.call,
+          },
+        });
+        break;
+      }
+      default: {
+        bus.publish({
+          ...base,
+          kind: "CNP_EVENT",
+          msg: "cnp_event",
+          data: event,
+        });
+        break;
+      }
+    }
   };
 
   const dispose = subscribe(listener);
@@ -576,14 +677,12 @@ export function bridgeConsensusEvents(options: ConsensusBridgeOptions): () => vo
     const resolved = resolveCorrelation?.(event);
     mergeCorrelationHints(correlation, resolved ?? undefined);
 
-    let level: EventInput["level"] = event.satisfied ? "info" : "warn";
-    let msg: ConsensusEventMessage = "consensus_decision";
-    if (event.tie && !event.outcome) {
-      msg = "consensus_tie_unresolved";
-      level = "warn";
-    } else if (!event.satisfied) {
-      msg = "consensus_decision_unsatisfied";
-    }
+    const msg: ConsensusEventMessage = event.tie && !event.outcome
+      ? "consensus_tie_unresolved"
+      : event.satisfied
+        ? "consensus_decision"
+        : "consensus_decision_unsatisfied";
+    const level: EventInput["level"] = msg === "consensus_decision" && event.satisfied ? "info" : "warn";
 
     bus.publish({
       cat: "consensus",
@@ -639,80 +738,96 @@ export function bridgeValueEvents(options: ValueGuardBridgeOptions): () => void 
     mergeCorrelationHints(hints, event.correlation);
     const resolved = resolveCorrelation?.(event);
     mergeCorrelationHints(hints, resolved ?? undefined);
-    let level: EventInput["level"] = "info";
-    let msg: ValueGuardEventMessage = "values_event";
-    let data: Record<string, unknown> = {};
-
-    switch (event.kind) {
-      case "config_updated":
-        msg = "values_config_updated";
-        data = {
-          summary: event.summary,
-        };
-        break;
-      case "plan_scored": {
-        msg = "values_scored";
-        const violations = event.result.violations.length;
-        if (violations > 0) {
-          level = "warn";
-        }
-        data = {
-          plan_id: event.planId,
-          plan_label: event.planLabel,
-          impacts_count: event.impacts.length,
-          impacts: event.impacts,
-          result: event.result,
-          violations_count: violations,
-        };
-        break;
-      }
-      case "plan_filtered": {
-        const allowed = event.decision.allowed;
-        msg = allowed ? "values_filter_allowed" : "values_filter_blocked";
-        level = allowed ? "info" : "warn";
-        data = {
-          plan_id: event.planId,
-          plan_label: event.planLabel,
-          impacts_count: event.impacts.length,
-          impacts: event.impacts,
-          decision: event.decision,
-        };
-        break;
-      }
-      case "plan_explained": {
-        const allowed = event.result.decision.allowed;
-        msg = allowed ? "values_explain_allowed" : "values_explain_blocked";
-        level = allowed ? "info" : "warn";
-        data = {
-          plan_id: event.planId,
-          plan_label: event.planLabel,
-          impacts_count: event.impacts.length,
-          impacts: event.impacts,
-          result: event.result,
-        };
-        break;
-      }
-      default:
-        data = event as Record<string, unknown>;
-        break;
-    }
-
-    bus.publish({
-      cat: "values",
-      level,
+    const base = {
+      cat: "values" as const,
       jobId: hints.jobId ?? null,
       runId: hints.runId ?? null,
       opId: hints.opId ?? null,
       graphId: hints.graphId ?? null,
       nodeId: hints.nodeId ?? null,
       childId: hints.childId ?? null,
-      // Expose the value guard outcome (VIOLATION/RECOVERED/...) via the kind
-      // token so policy dashboards retain semantic fidelity.
-      kind: msg.toUpperCase(),
-      msg,
-      data,
       ts: event.at,
-    });
+    };
+
+    switch (event.kind) {
+      case "config_updated": {
+        bus.publish({
+          ...base,
+          level: "info",
+          kind: "VALUES_CONFIG_UPDATED",
+          msg: "values_config_updated",
+          data: {
+            summary: event.summary,
+          },
+        });
+        break;
+      }
+      case "plan_scored": {
+        const violations = event.result.violations.length;
+        const level: EventInput["level"] = violations > 0 ? "warn" : "info";
+        bus.publish({
+          ...base,
+          level,
+          kind: "VALUES_SCORED",
+          msg: "values_scored",
+          data: {
+            plan_id: event.planId,
+            plan_label: event.planLabel,
+            impacts_count: event.impacts.length,
+            impacts: event.impacts,
+            result: event.result,
+            violations_count: violations,
+          },
+        });
+        break;
+      }
+      case "plan_filtered": {
+        const allowed = event.decision.allowed;
+        const level: EventInput["level"] = allowed ? "info" : "warn";
+        bus.publish({
+          ...base,
+          level,
+          kind: allowed ? "VALUES_FILTER_ALLOWED" : "VALUES_FILTER_BLOCKED",
+          msg: allowed ? "values_filter_allowed" : "values_filter_blocked",
+          data: {
+            plan_id: event.planId,
+            plan_label: event.planLabel,
+            impacts_count: event.impacts.length,
+            impacts: event.impacts,
+            decision: event.decision,
+          },
+        });
+        break;
+      }
+      case "plan_explained": {
+        const allowed = event.result.decision.allowed;
+        const level: EventInput["level"] = allowed ? "info" : "warn";
+        bus.publish({
+          ...base,
+          level,
+          kind: allowed ? "VALUES_EXPLAIN_ALLOWED" : "VALUES_EXPLAIN_BLOCKED",
+          msg: allowed ? "values_explain_allowed" : "values_explain_blocked",
+          data: {
+            plan_id: event.planId,
+            plan_label: event.planLabel,
+            impacts_count: event.impacts.length,
+            impacts: event.impacts,
+            result: event.result,
+          },
+        });
+        break;
+      }
+      default: {
+        bus.publish({
+          ...base,
+          level: "info",
+          kind: "VALUES_EVENT",
+          msg: "values_event",
+          data: event,
+        });
+        break;
+      }
+    }
   };
 
   const dispose = subscribe(listener);

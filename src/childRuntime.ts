@@ -62,7 +62,7 @@ export type ChildRuntimeLifecycleEvent =
 /**
  * Exit event returned when a child is terminated.
  */
-interface ChildExitEvent {
+export interface ChildRuntimeExitEvent {
   code: number | null;
   signal: Signal | null;
   at: number;
@@ -82,6 +82,31 @@ interface ChildExitEvent {
  */
 export interface ChildRuntimeLimits {
   [key: string]: number | string | boolean | null | undefined;
+}
+
+/**
+ * Public contract surfaced by {@link ChildRuntime} when registering a child in the supervisor.
+ * Tests rely on this structural interface to provide lightweight doubles without reaching for
+ * `as unknown as` casts while the production runtime keeps exposing the richer implementation.
+ */
+export interface ChildRuntimeContract {
+  readonly childId: string;
+  readonly manifestPath: string;
+  readonly logPath: string;
+  readonly toolsAllow: readonly string[];
+  getStatus(): ChildRuntimeStatus;
+  collectOutputs(): Promise<ChildCollectedOutputs>;
+  streamMessages(options?: ChildMessageStreamOptions): ChildMessageStreamResult;
+  waitForMessage(
+    predicate: (message: ChildRuntimeMessage) => boolean,
+    timeoutMs?: number,
+  ): Promise<ChildRuntimeMessage>;
+  waitForExit(timeoutMs?: number): Promise<ChildRuntimeExitEvent>;
+  shutdown(options?: ChildShutdownOptions): Promise<ChildShutdownResult>;
+  send(payload: unknown): Promise<void>;
+  setRole(role: string | null, extras?: Record<string, unknown>): Promise<void>;
+  setLimits(limits: ChildRuntimeLimits | null, extras?: Record<string, unknown>): Promise<void>;
+  attach(extras?: Record<string, unknown>): Promise<void>;
 }
 
 /**
@@ -295,9 +320,9 @@ export class ChildRuntime extends EventEmitter {
   private spawnResolve: (() => void) | null = null;
   private spawnReject: ((error: Error) => void) | null = null;
 
-  private readonly exitPromise: Promise<ChildExitEvent>;
-  private exitResolve: ((event: ChildExitEvent) => void) | null = null;
-  private exitEvent: ChildExitEvent | null = null;
+  private readonly exitPromise: Promise<ChildRuntimeExitEvent>;
+  private exitResolve: ((event: ChildRuntimeExitEvent) => void) | null = null;
+  private exitEvent: ChildRuntimeExitEvent | null = null;
 
   private stdoutBuffer = "";
   private stderrBuffer = "";
@@ -330,7 +355,7 @@ export class ChildRuntime extends EventEmitter {
       this.spawnReject = reject;
     });
 
-    this.exitPromise = new Promise<ChildExitEvent>((resolve) => {
+    this.exitPromise = new Promise<ChildRuntimeExitEvent>((resolve) => {
       this.exitResolve = resolve;
     });
 
@@ -656,7 +681,7 @@ export class ChildRuntime extends EventEmitter {
       throw error;
     }
 
-    let exit: ChildExitEvent;
+    let exit: ChildRuntimeExitEvent;
     try {
       exit = await this.waitForExit(timeoutMs);
     } catch (err) {
@@ -710,12 +735,12 @@ export class ChildRuntime extends EventEmitter {
   /**
    * Resolves once the underlying process exits.
    */
-  async waitForExit(timeoutMs?: number): Promise<ChildExitEvent> {
+  async waitForExit(timeoutMs?: number): Promise<ChildRuntimeExitEvent> {
     if (timeoutMs === undefined) {
       return this.exitPromise;
     }
 
-    return new Promise<ChildExitEvent>((resolve, reject) => {
+    return new Promise<ChildRuntimeExitEvent>((resolve, reject) => {
       let timer: TimeoutHandle | null = null;
 
       const cancelTimer = () => {
@@ -807,7 +832,7 @@ export class ChildRuntime extends EventEmitter {
       this.recordInternal("stderr", `process-error:${error.message}`);
       const at = Date.now();
       if (!this.exitEvent) {
-        const event: ChildExitEvent = {
+        const event: ChildRuntimeExitEvent = {
           code: null,
           signal: null,
           at,
@@ -829,7 +854,7 @@ export class ChildRuntime extends EventEmitter {
 
     this.child.once("exit", (code, signal) => {
       const at = Date.now();
-      const event: ChildExitEvent = {
+      const event: ChildRuntimeExitEvent = {
         code,
         signal,
         at,

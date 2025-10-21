@@ -70,4 +70,8 @@ describe("Dockerfile runtime configuration", () => {
       expect(dockerfileContents, `Missing ENV for ${envLine}`).to.include(envLine);
     }
   });
+
+  it("prunes development dependencies before copying node_modules", () => {
+    expect(dockerfileContents).to.match(/npm run build \\\s+&& npm prune --omit=dev/);
+  });
 });

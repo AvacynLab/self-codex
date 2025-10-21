@@ -12,6 +12,7 @@ import {
   generateValidationRunId,
   headersToObject,
   persistContextDocument,
+  performHttpCheck,
   toJsonlLine,
   type HttpCheckSnapshot,
 } from "../../src/validation/runSetup.js";
@@ -100,5 +101,33 @@ describe("validation run setup helpers", () => {
     headers.append("x-custom", "abc");
     const snapshot = headersToObject(headers);
     expect(snapshot).to.deep.equal({ "content-type": "application/json", "x-custom": "abc" });
+  });
+
+  it("omits the fetch body when the request payload is undefined", async () => {
+    const originalFetch = globalThis.fetch;
+    let capturedInit: RequestInit | undefined;
+
+    globalThis.fetch = (async (_url: RequestInfo | URL, init?: RequestInit) => {
+      capturedInit = init;
+      return new Response(JSON.stringify({ jsonrpc: "2.0", result: { ok: true } }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as typeof fetch;
+
+    try {
+      await performHttpCheck("no-body", {
+        method: "GET",
+        url: "http://127.0.0.1:9000/mcp",
+        headers: {},
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+
+    expect(capturedInit).to.exist;
+    // Ensures the helper keeps optional RequestInit fields unset instead of
+    // writing `undefined`, which would violate `exactOptionalPropertyTypes`.
+    expect(Object.prototype.hasOwnProperty.call(capturedInit ?? {}, "body")).to.equal(false);
   });
 });

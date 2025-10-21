@@ -1,12 +1,11 @@
 import { describe, it } from "mocha";
 import { expect } from "chai";
 
-import { handlePlanRunBT, type PlanToolContext } from "../src/tools/planTools.js";
+import { handlePlanRunBT } from "../src/tools/planTools.js";
 import { CausalMemory } from "../src/knowledge/causalMemory.js";
 import { StructuredLogger } from "../src/logger.js";
 import { StigmergyField } from "../src/coord/stigmergy.js";
-import type { ChildSupervisor } from "../src/children/supervisor.js";
-import type { GraphState } from "../src/graph/state.js";
+import { createPlanToolContext } from "./helpers/planContext.js";
 
 /** Manual clock controlling timestamps for deterministic assertions. */
 class ManualClock {
@@ -29,17 +28,16 @@ describe("causal memory integration with BT scheduler", () => {
   it("records scheduler ticks and tool invocations", async () => {
     const clock = new ManualClock();
     const memory = new CausalMemory({ now: () => clock.now() });
-    const context = {
-      supervisor: {} as ChildSupervisor,
-      graphState: {} as GraphState,
+    const context = createPlanToolContext({
+      // Structured logger keeps the scheduler output aligned with production while
+      // remaining side-effect free inside the test process.
       logger: new StructuredLogger(),
-      childrenRoot: "/tmp",
-      defaultChildRuntime: "codex",
-      emitEvent: () => undefined,
+      // Deterministic stigmergy timestamps ensure the behaviour tree scheduler
+      // records causal events in a predictable order.
       stigmergy: new StigmergyField({ now: () => clock.now() }),
-      supervisorAgent: undefined,
+      emitEvent: () => undefined,
       causalMemory: memory,
-    } satisfies PlanToolContext;
+    });
 
     const result = await handlePlanRunBT(context, {
       tree: {

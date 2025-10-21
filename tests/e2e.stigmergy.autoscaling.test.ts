@@ -3,7 +3,6 @@ import { expect } from "chai";
 import sinon from "sinon";
 
 import { PlanCompileBTInputSchema, handlePlanCompileBT } from "../src/tools/planTools.js";
-import type { PlanToolContext } from "../src/tools/planTools.js";
 import type { HierGraph } from "../src/graph/hierarchy.js";
 import { StigmergyField } from "../src/coord/stigmergy.js";
 import { BlackboardStore } from "../src/coord/blackboard.js";
@@ -13,6 +12,7 @@ import type { CreateChildOptions } from "../src/children/supervisor.js";
 import { BehaviorTreeInterpreter, buildBehaviorTree } from "../src/executor/bt/interpreter.js";
 import type { BehaviorTickResult } from "../src/executor/bt/types.js";
 import { ReactiveScheduler } from "../src/executor/reactiveScheduler.js";
+import { createPlanToolContext } from "./helpers/planContext.js";
 
 class ScriptedAutoscaler {
   public readonly backlogHistory: number[] = [];
@@ -81,13 +81,6 @@ describe("stigmergy driven autoscaling", function () {
   this.timeout(5000);
 
   it("scales up under stigmergy pressure then scales down once backlog clears", async () => {
-    const logger = {
-      info: sinon.spy(),
-      warn: sinon.spy(),
-      error: sinon.spy(),
-      debug: sinon.spy(),
-    };
-
     const children: ChildRecordSnapshot[] = [];
     const createChild = sinon.spy((options?: CreateChildOptions) => {
       const childId = options?.childId ?? `child_${children.length + 1}`;
@@ -127,16 +120,12 @@ describe("stigmergy driven autoscaling", function () {
 
     const autoscaler = new ScriptedAutoscaler(supervisor);
 
-    const compileContext: PlanToolContext = {
-      supervisor: supervisor as unknown as PlanToolContext["supervisor"],
-      graphState: {} as PlanToolContext["graphState"],
-      logger: logger as unknown as PlanToolContext["logger"],
-      childrenRoot: "/tmp",
-      defaultChildRuntime: "codex",
-      emitEvent: () => {},
+    const compileContext = createPlanToolContext({
+      // The helper surfaces a fully typed plan context so the compilation step stays faithful to
+      // production wiring without reaching for structural casts in the test fixture.
       stigmergy: new StigmergyField(),
       blackboard: new BlackboardStore(),
-    };
+    });
 
     const hierGraph: HierGraph = {
       id: "stigmergy-autoscale",

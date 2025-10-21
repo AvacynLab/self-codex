@@ -22,7 +22,7 @@ describe("http jsonrpc error helper", () => {
     const startedAt = process.hrtime.bigint();
 
     const bytes = await __httpServerInternals.respondWithJsonRpcError(
-      response as any,
+      response,
       400,
       "VALIDATION_ERROR",
       "Invalid Request",
@@ -76,7 +76,7 @@ describe("http jsonrpc error helper", () => {
     const persisted: Array<{ key: string; status: number; body: string; ttl: number }> = [];
 
     const bytes = await __httpServerInternals.respondWithJsonRpcError(
-      response as any,
+      response,
       500,
       "INTERNAL",
       "Internal error",

@@ -24,13 +24,18 @@ import {
   updateMcpRuntimeSnapshot,
 } from "../src/mcp/info.js";
 import { getRegisteredToolMap } from "../src/mcp/registry.js";
+import { IntentRouteOutputSchema } from "../src/rpc/schemas.js";
 import type {
   ChildSafetyOptions,
   FeatureToggles,
   RuntimeTimingOptions,
 } from "../src/serverOptions.js";
 
-type McpToolResponse = { content?: Array<{ text: string }>; isError?: boolean };
+type McpToolResponse = {
+  content?: Array<{ text: string }>;
+  isError?: boolean;
+  structuredContent?: unknown;
+};
 
 /**
  * Retrieves the internal tool callback so the test suite can trigger handlers without wiring a client transport.
@@ -269,12 +274,15 @@ describe("mcp introspection helpers", () => {
     configureRuntimeFeatures({ ...originalFeatures, enableToolRouter: false });
 
     const intentRouteCallback = getRegisteredToolCallback("intent_route");
-    const disabledResponse = await intentRouteCallback({
+    const disabledResponse = (await intentRouteCallback({
       natural_language_goal: "ouvrir un fichier",
-    });
+    })) as McpToolResponse;
     expect(disabledResponse).to.have.property("isError", true);
-    const disabledPayload = JSON.parse(disabledResponse.content?.[0]?.text ?? "{}");
-    expect(disabledPayload).to.include({ error: "TOOL_ROUTER_DISABLED", tool: "intent_route" });
+    const disabledStructured = IntentRouteOutputSchema.parse(disabledResponse.structuredContent);
+    expect(disabledStructured.ok).to.equal(false);
+    expect(disabledStructured.summary).to.equal("routeur d'intentions désactivé");
+    expect(disabledStructured.details).to.deep.include({ reason: "router_disabled" });
+    expect(disabledStructured.details.idempotency_key).to.be.a("string").with.length.greaterThan(0);
 
     const disabledCapabilities = getMcpCapabilities();
     const disabledTools = disabledCapabilities.tools.map((entry) => entry.name);
@@ -291,5 +299,20 @@ describe("mcp introspection helpers", () => {
     const enabledCapabilities = getMcpCapabilities();
     const enabledTools = enabledCapabilities.tools.map((entry) => entry.name);
     expect(enabledTools).to.include("intent_route");
+  });
+
+  it("tolère l'absence du registre interne des outils", () => {
+    const host = server as { _registeredTools?: unknown };
+    const originalRegistry = Reflect.get(host, "_registeredTools");
+    Reflect.set(host, "_registeredTools", undefined);
+
+    try {
+      // La couche d'introspection doit se contenter d'un tableau vide lorsque
+      // le SDK ne publie pas son registre privé, sans lancer d'exception.
+      const capabilities = getMcpCapabilities();
+      expect(capabilities.tools).to.deep.equal([]);
+    } finally {
+      Reflect.set(host, "_registeredTools", originalRegistry);
+    }
   });
 });

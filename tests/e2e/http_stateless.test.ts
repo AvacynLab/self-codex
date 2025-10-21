@@ -6,8 +6,12 @@ import { startHttpServer, type HttpServerHandle } from "../../src/httpServer.js"
 import { StructuredLogger } from "../../src/logger.js";
 import { configureRuntimeFeatures, getRuntimeFeatures, server as mcpServer } from "../../src/server.js";
 import type { FeatureToggles } from "../../src/serverOptions.js";
+import {
+  getMutableJsonRpcRequestHandlerRegistry,
+  type InternalJsonRpcHandler,
+} from "../../src/mcp/jsonRpcInternals.js";
 
-type ToolsCallHandler = (request: any, extra: any) => Promise<unknown> | unknown;
+type ToolsCallHandler = InternalJsonRpcHandler;
 
 interface CapturedInvocation {
   headers: Record<string, string>;
@@ -55,7 +59,7 @@ describe("http child context propagation", () => {
   let originalFeatures: FeatureToggles;
   let originalToken: string | undefined;
   let originalAllow: string | undefined;
-  let handlers: Map<string, ToolsCallHandler> | undefined;
+  let handlers: Map<string, ToolsCallHandler> | null = null;
   let originalToolsCall: ToolsCallHandler | undefined;
   let captured: CapturedInvocation | null = null;
 
@@ -84,13 +88,7 @@ describe("http child context propagation", () => {
     );
     baseUrl = `http://127.0.0.1:${handle.port}/mcp`;
 
-    const internal = mcpServer.server as unknown as {
-      _requestHandlers?: Map<string, (request: any, extra: any) => Promise<unknown> | unknown>;
-    };
-    handlers = internal._requestHandlers;
-    if (!handlers) {
-      throw new Error("MCP handlers map not initialised");
-    }
+    handlers = getMutableJsonRpcRequestHandlerRegistry(mcpServer);
     originalToolsCall = handlers.get("tools/call");
     handlers.set("tools/call", async (request, extra) => {
       const params = request?.params ?? {};

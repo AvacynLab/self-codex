@@ -15,6 +15,7 @@ import {
   resetRateLimitBuckets,
 } from "../../src/http/rateLimit.js";
 import { MemoryHttpResponse, createJsonRpcRequest } from "../helpers/http.js";
+import { RecordingLogger } from "../helpers/recordingLogger.js";
 
 describe("http limits", () => {
   const envKeys = [
@@ -59,18 +60,7 @@ describe("http limits", () => {
     });
     const response = new MemoryHttpResponse();
 
-    const handled = await __httpServerInternals.tryHandleJsonRpc(
-      request,
-      response as any,
-      new Proxy(
-        {},
-        {
-          get() {
-            return () => {};
-          },
-        },
-      ),
-    );
+    const handled = await __httpServerInternals.tryHandleJsonRpc(request, response, new RecordingLogger());
 
     expect(handled, "request should be consumed by the fast-path").to.equal(true);
     expect(response.statusCode, "HTTP status").to.equal(413);
@@ -82,23 +72,16 @@ describe("http limits", () => {
     __httpServerInternals.configureRateLimiter({ disabled: false, rps: 10, burst: 20 });
     resetRateLimitBuckets();
     const key = "127.0.0.1:/mcp";
-    const logger = new Proxy(
-      {},
-      {
-        get() {
-          return () => {};
-        },
-      },
-    );
+    const logger = new RecordingLogger();
 
     // Consume the full burst allowance.
     for (let attempt = 0; attempt < 20; attempt += 1) {
-      const ok = __httpServerInternals.enforceRateLimit(key, new MemoryHttpResponse() as any, logger as any, "rid");
+      const ok = __httpServerInternals.enforceRateLimit(key, new MemoryHttpResponse(), logger, "rid");
       expect(ok, `attempt ${attempt} should be allowed`).to.equal(true);
     }
 
     const throttledResponse = new MemoryHttpResponse();
-    const allowed = __httpServerInternals.enforceRateLimit(key, throttledResponse as any, logger as any, "rid");
+    const allowed = __httpServerInternals.enforceRateLimit(key, throttledResponse, logger, "rid");
     expect(allowed, "21st attempt should be throttled").to.equal(false);
     expect(throttledResponse.statusCode, "HTTP status").to.equal(429);
     const throttledBody = JSON.parse(throttledResponse.body) as {
@@ -113,17 +96,10 @@ describe("http limits", () => {
     __httpServerInternals.configureRateLimiter({ disabled: true });
     resetRateLimitBuckets();
     const key = "127.0.0.1:/mcp";
-    const logger = new Proxy(
-      {},
-      {
-        get() {
-          return () => {};
-        },
-      },
-    );
+    const logger = new RecordingLogger();
 
     for (let attempt = 0; attempt < 50; attempt += 1) {
-      const ok = __httpServerInternals.enforceRateLimit(key, new MemoryHttpResponse() as any, logger as any, "rid");
+      const ok = __httpServerInternals.enforceRateLimit(key, new MemoryHttpResponse(), logger, "rid");
       expect(ok, `attempt ${attempt} should bypass throttling`).to.equal(true);
     }
   });

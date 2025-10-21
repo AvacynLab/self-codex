@@ -66,11 +66,27 @@ export interface OrchestratorSupervisorOptions {
 }
 
 /**
+ * Contract satisfied by supervisor implementations registered in orchestrator
+ * contexts. Tests rely on the interface to provide lightweight doubles without
+ * bypassing the type system via double assertions.
+ */
+export interface OrchestratorSupervisorContract extends LoopReconciler {
+  /** Identifier surfaced in execution loop diagnostics and lifecycle events. */
+  readonly id: string;
+  /** Records the latest scheduler snapshot emitted after a loop tick. */
+  recordSchedulerSnapshot(snapshot: SupervisorSchedulerSnapshot): void;
+  /** Retrieves the most recent scheduler snapshot alongside its timestamp. */
+  getLastSchedulerSnapshot(): (SupervisorSchedulerSnapshot & { updatedAt: number }) | null;
+  /** Processes loop alerts raised by the loop detector. */
+  recordLoopAlert(alert: LoopAlert | null): Promise<void>;
+}
+
+/**
  * Supervisor observing scheduler progress, loop alerts and child inactivity to
  * initiate mitigating actions. The component implements {@link LoopReconciler}
  * so it can be registered alongside the autoscaler inside the execution loop.
  */
-export class OrchestratorSupervisor implements LoopReconciler {
+export class OrchestratorSupervisor implements OrchestratorSupervisorContract {
   /** Identifier surfaced in execution loop diagnostics and lifecycle events. */
   public readonly id = "supervisor";
 

@@ -4,6 +4,51 @@ import { expect } from "chai";
 import { EventBus, type EventEnvelope } from "../../src/events/bus.js";
 
 /**
+ * Produces lifecycle payloads covering the different phases exercised by the
+ * sequencing regression. Each payload adheres to the discriminated union
+ * enforced on the event bus so the tests stay faithful to production usage.
+ */
+function createLifecyclePayload(
+  phase: "spawned" | "exit" | "error",
+  overrides: Partial<ReturnType<typeof baseLifecyclePayload>> = {},
+) {
+  return { ...baseLifecyclePayload(phase), ...overrides };
+}
+
+function baseLifecyclePayload(phase: "spawned" | "exit" | "error") {
+  if (phase === "spawned") {
+    return {
+      childId: "child-seq",
+      phase,
+      at: 0,
+      pid: 1000,
+      forced: false,
+      reason: null,
+    } as const;
+  }
+  if (phase === "exit") {
+    return {
+      childId: "child-seq",
+      phase,
+      at: 1,
+      pid: 1000,
+      forced: false,
+      reason: null,
+      code: 0,
+      signal: null,
+    } as const;
+  }
+  return {
+    childId: "child-seq",
+    phase,
+    at: 2,
+    pid: 1000,
+    forced: false,
+    reason: "error",
+  } as const;
+}
+
+/**
  * Integration regression suite verifying that the event bus keeps a strictly monotonic sequence even
  * when history windows rotate or when callers mix historical seeds with live streaming. The tests
  * deliberately go through both code paths (list/subscribe) to guarantee downstream consumers can
@@ -13,9 +58,9 @@ describe("event bus sequencing", () => {
   it("assigns a strictly increasing sequence to every published event", () => {
     const bus = new EventBus({ historyLimit: 4, now: () => 1700 });
 
-    const first = bus.publish({ cat: "child", msg: "child_spawned" });
-    const second = bus.publish({ cat: "child", msg: "child_lifecycle" });
-    const third = bus.publish({ cat: "child", msg: "child_exit" });
+    const first = bus.publish({ cat: "child", msg: "child_spawned", data: createLifecyclePayload("spawned") });
+    const second = bus.publish({ cat: "child", msg: "child_lifecycle", data: createLifecyclePayload("spawned") });
+    const third = bus.publish({ cat: "child", msg: "child_exit", data: createLifecyclePayload("exit") });
 
     expect(first.seq).to.equal(1);
     expect(second.seq).to.equal(2);

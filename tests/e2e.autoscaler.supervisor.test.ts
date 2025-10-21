@@ -5,8 +5,8 @@ import sinon from "sinon";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 
-import type { CreateChildOptions } from "../src/children/supervisor.js";
-import type { ChildShutdownResult } from "../src/childRuntime.js";
+import type { CreateChildOptions, CreateChildResult } from "../src/children/supervisor.js";
+import type { ChildRuntimeStatus, ChildShutdownResult } from "../src/childRuntime.js";
 import {
   server,
   graphState,
@@ -15,6 +15,52 @@ import {
   getRuntimeFeatures,
   logJournal,
 } from "../src/server.js";
+import { createStubChildRuntime } from "./helpers/childRuntime.js";
+import { assertArray, assertNumber, assertPlainObject, assertString, isPlainObject } from "./helpers/assertions.js";
+import type { EventPayload } from "../src/events/types.js";
+
+type AutoscalerScaleUpPayload = EventPayload<"scale_up">;
+type AutoscalerScaleUpFailedPayload = EventPayload<"scale_up_failed">;
+type AutoscalerScaleDownPayload = EventPayload<"scale_down">;
+type AutoscalerScaleDownCancelFailedPayload = EventPayload<"scale_down_cancel_failed">;
+type AutoscalerScaleDownForcedPayload = EventPayload<"scale_down_forced">;
+type AutoscalerScaleDownFailedPayload = EventPayload<"scale_down_failed">;
+type AutoscalerEventPayload =
+  | AutoscalerScaleUpPayload
+  | AutoscalerScaleUpFailedPayload
+  | AutoscalerScaleDownPayload
+  | AutoscalerScaleDownCancelFailedPayload
+  | AutoscalerScaleDownForcedPayload
+  | AutoscalerScaleDownFailedPayload;
+
+/**
+ * Runtime guard narrowing autoscaler event payloads to the structured union exposed by the event
+ * bus. The helper verifies numeric samples and error messages so assertions below can rely on typed
+ * fields without introducing casts.
+ */
+function assertAutoscalerEventPayload(
+  value: unknown,
+  description: string,
+): asserts value is AutoscalerEventPayload {
+  assertPlainObject(value, description);
+  const payload = value as Record<string, unknown>;
+  assertString(payload.msg, `${description}.msg`);
+  assertString(payload.reason, `${description}.reason`);
+  assertNumber(payload.backlog, `${description}.backlog`);
+  assertNumber(payload.samples, `${description}.samples`);
+
+  const childId = payload.child_id;
+  if (childId !== undefined) {
+    assertString(childId, `${description}.child_id`);
+  }
+
+  const msg = payload.msg;
+  if (msg === "scale_up_failed" || msg === "scale_down_cancel_failed" || msg === "scale_down_failed") {
+    assertString(payload.message, `${description}.message`);
+  } else {
+    expect(payload.message, `${description}.message`).to.equal(undefined);
+  }
+}
 
 /**
  * End-to-end validation ensuring the autoscaler reacts to stigmergic pressure, spawns a
@@ -47,7 +93,7 @@ describe("autoscaler and supervisor end-to-end", () => {
     const stubbedChildren = new Set<string>();
 
     const stubbedShutdown: ChildShutdownResult = { code: 0, signal: null, forced: false, durationMs: 0 };
-    const autoscalerEventsLog: Array<{ data?: { msg?: string; child_id?: string } }> = [];
+    const autoscalerEventsLog: Array<Record<string, unknown>> = [];
 
     // Replace the supervisor spawning helpers with lightweight stubs so the autoscaler can
     // manipulate lifecycle state deterministically while keeping the index in sync.
@@ -72,15 +118,38 @@ describe("autoscaler and supervisor end-to-end", () => {
       this.childrenIndex.updateState(childId, "ready");
       stubbedChildren.add(childId);
       createdChildren.push(childId);
+
+      const workdir = snapshot.workdir;
+      const manifestPath = `${workdir}/${childId}.manifest.json`;
+      const logPath = `${workdir}/${childId}.log`;
+      const runtimeStatus: ChildRuntimeStatus = {
+        childId,
+        pid: snapshot.pid,
+        command: options.command ?? "stub-runtime",
+        args: options.args ? [...options.args] : [],
+        workdir,
+        startedAt,
+        lastHeartbeatAt: startedAt,
+        lifecycle: "running",
+        closed: false,
+        exit: null,
+        resourceUsage: null,
+      };
+
+      const runtime = createStubChildRuntime({
+        childId,
+        manifestPath,
+        logPath,
+        status: runtimeStatus,
+        shutdownResult: stubbedShutdown,
+      });
+
       return {
         childId,
         index: snapshot,
-        runtime: {
-          shutdown: async () => stubbedShutdown,
-          waitForExit: async () => stubbedShutdown,
-          getStatus: () => ({ startedAt }),
-        },
-      } as unknown as Awaited<ReturnType<typeof originalCreateChild>>;
+        runtime,
+        readyMessage: null,
+      } satisfies CreateChildResult;
     }).bind(childProcessSupervisor);
 
     childProcessSupervisor.cancel = (async function stubCancel(
@@ -133,7 +202,10 @@ describe("autoscaler and supervisor end-to-end", () => {
 
       const baselineEvents = await client.callTool({ name: "events_subscribe", arguments: { limit: 1 } });
       expect(baselineEvents.isError ?? false).to.equal(false);
-      const baselineCursor = (baselineEvents.structuredContent as { next_seq: number | null }).next_seq ?? 0;
+      const baselineStructured = baselineEvents.structuredContent;
+      assertPlainObject(baselineStructured, "baseline autoscaler events_subscribe payload");
+      const baselineNextSeq = baselineStructured.next_seq;
+      const baselineCursor = typeof baselineNextSeq === "number" ? baselineNextSeq : 0;
       let autoscalerCursor = baselineCursor;
       // Preserve the Behaviour Tree cursor so the run timeline can be replayed after the
       // autoscaler polling loop advances its own sequence position.
@@ -192,7 +264,7 @@ describe("autoscaler and supervisor end-to-end", () => {
       });
       expect(scaleUpConfig.isError ?? false).to.equal(false);
 
-      let scaleUpEvent: { data?: { msg?: string; child_id?: string } } | null = null;
+      let scaleUpEvent: Record<string, unknown> | null = null;
       let spawnedChildId: string | null = null;
       for (let attempt = 0; attempt < 200 && !scaleUpEvent; attempt += 1) {
         await clock.tickAsync(50);
@@ -201,15 +273,32 @@ describe("autoscaler and supervisor end-to-end", () => {
           arguments: { from_seq: autoscalerCursor, cats: ["autoscaler"] },
         });
         expect(autoscalerPressureResponse.isError ?? false).to.equal(false);
-        const pressureContent = autoscalerPressureResponse.structuredContent as {
-          events: Array<{ data?: { msg?: string; child_id?: string } }>;
-          next_seq: number | null;
-        };
-        autoscalerEventsLog.push(...pressureContent.events);
-        autoscalerCursor = pressureContent.next_seq ?? autoscalerCursor;
-        scaleUpEvent = autoscalerEventsLog.find((event) => event.data?.msg === "scale_up") ?? null;
-        if (scaleUpEvent?.data?.child_id) {
-          spawnedChildId = scaleUpEvent.data.child_id;
+        const pressureContent = autoscalerPressureResponse.structuredContent;
+        assertPlainObject(pressureContent, "autoscaler pressure events payload");
+        const pressureEvents = pressureContent.events;
+        assertArray(pressureEvents, "autoscaler pressure events list");
+        for (const rawEvent of pressureEvents) {
+          if (isPlainObject(rawEvent)) {
+            autoscalerEventsLog.push(rawEvent);
+          }
+        }
+        const nextSeqCandidate = pressureContent.next_seq;
+        if (typeof nextSeqCandidate === "number") {
+          autoscalerCursor = nextSeqCandidate;
+        }
+        scaleUpEvent =
+          autoscalerEventsLog.find(
+            (event) => isPlainObject((event as { data?: unknown }).data) &&
+              (event as { data?: { msg?: unknown } }).data?.msg === "scale_up",
+          ) ?? null;
+        if (scaleUpEvent) {
+          const dataCandidate = (scaleUpEvent as { data?: unknown }).data;
+          if (isPlainObject(dataCandidate)) {
+            assertAutoscalerEventPayload(dataCandidate, "scale_up event payload");
+            if (typeof dataCandidate.child_id === "string") {
+              spawnedChildId = dataCandidate.child_id;
+            }
+          }
         } else if (createdChildren[0]) {
           spawnedChildId = createdChildren[0]!;
         }
@@ -252,7 +341,7 @@ describe("autoscaler and supervisor end-to-end", () => {
         },
       });
 
-      let scaleDownEvent: { data?: { msg?: string; child_id?: string } } | null = null;
+      let scaleDownEvent: Record<string, unknown> | null = null;
       for (let attempt = 0; attempt < 200 && !scaleDownEvent; attempt += 1) {
         await clock.tickAsync(50);
         if (spawnedChildId) {
@@ -267,16 +356,33 @@ describe("autoscaler and supervisor end-to-end", () => {
           arguments: { from_seq: autoscalerCursor, cats: ["autoscaler"] },
         });
         expect(autoscalerRelaxResponse.isError ?? false).to.equal(false);
-        const relaxContent = autoscalerRelaxResponse.structuredContent as {
-          events: Array<{ data?: { msg?: string; child_id?: string } }>;
-          next_seq: number | null;
-        };
-        autoscalerEventsLog.push(...relaxContent.events);
-        autoscalerCursor = relaxContent.next_seq ?? autoscalerCursor;
-        scaleDownEvent = autoscalerEventsLog.find((event) => event.data?.msg === "scale_down") ?? null;
+        const relaxContent = autoscalerRelaxResponse.structuredContent;
+        assertPlainObject(relaxContent, "autoscaler relax events payload");
+        const relaxEvents = relaxContent.events;
+        assertArray(relaxEvents, "autoscaler relax events list");
+        for (const rawEvent of relaxEvents) {
+          if (isPlainObject(rawEvent)) {
+            autoscalerEventsLog.push(rawEvent);
+          }
+        }
+        const relaxNextSeq = relaxContent.next_seq;
+        if (typeof relaxNextSeq === "number") {
+          autoscalerCursor = relaxNextSeq;
+        }
+        scaleDownEvent =
+          autoscalerEventsLog.find(
+            (event) => isPlainObject((event as { data?: unknown }).data) &&
+              (event as { data?: { msg?: unknown } }).data?.msg === "scale_down",
+          ) ?? null;
       }
 
       expect(scaleDownEvent, "autoscaler should emit a scale_down event").to.not.equal(null);
+      if (scaleDownEvent) {
+        const scaleDownData = (scaleDownEvent as { data?: unknown }).data;
+        if (isPlainObject(scaleDownData)) {
+          assertAutoscalerEventPayload(scaleDownData, "scale_down event payload");
+        }
+      }
       if (spawnedChildId) {
         expect(retiredChildren).to.include(spawnedChildId);
       }
@@ -290,7 +396,7 @@ describe("autoscaler and supervisor end-to-end", () => {
       const secondRunOutcome = await secondRunPromise;
       expect(secondRunOutcome.isError ?? false).to.equal(false);
       const autoscalerPhases = autoscalerEventsLog
-        .map((event) => event.data?.msg)
+        .map((event) => (isPlainObject(event.data) ? event.data.msg : undefined))
         .filter((msg): msg is string => typeof msg === "string");
       expect(autoscalerPhases).to.include("scale_up");
       expect(autoscalerPhases).to.include("scale_down");
@@ -300,16 +406,43 @@ describe("autoscaler and supervisor end-to-end", () => {
         arguments: { from_seq: runEventsCursor, cats: ["bt_run"], run_id: runId },
       });
       expect(runEvents.isError ?? false).to.equal(false);
-      const loopReconcilers = (runEvents.structuredContent as {
-        events: Array<{ data?: { phase?: string; reconcilers?: Array<{ id?: string; status?: string }> } }>;
-      }).events
-        .filter((event) => event.data?.phase === "loop")
-        .flatMap((event) => event.data?.reconcilers ?? []);
-      const reconcilerIds = new Set(loopReconcilers.map((entry) => entry.id));
+      const runEventsStructured = runEvents.structuredContent;
+      assertPlainObject(runEventsStructured, "plan run events payload");
+      const runEventsList = runEventsStructured.events;
+      assertArray(runEventsList, "plan run events list");
+      const loopReconcilers: Array<Record<string, unknown>> = [];
+      for (const rawEvent of runEventsList) {
+        if (!isPlainObject(rawEvent)) {
+          continue;
+        }
+        if (!isPlainObject(rawEvent.data)) {
+          continue;
+        }
+        if (rawEvent.data.phase !== "loop") {
+          continue;
+        }
+        const reconcilers = rawEvent.data.reconcilers;
+        if (!Array.isArray(reconcilers)) {
+          continue;
+        }
+        for (const reconciler of reconcilers) {
+          if (isPlainObject(reconciler)) {
+            loopReconcilers.push(reconciler);
+          }
+        }
+      }
+      const reconcilerIds = new Set(
+        loopReconcilers
+          .map((entry) => (typeof entry.id === "string" ? entry.id : null))
+          .filter((identifier): identifier is string => identifier !== null),
+      );
       expect(reconcilerIds.has("autoscaler")).to.equal(true);
       expect(reconcilerIds.has("supervisor")).to.equal(true);
       loopReconcilers
-        .filter((entry) => entry.id === "autoscaler" || entry.id === "supervisor")
+        .filter(
+          (entry) =>
+            typeof entry.id === "string" && (entry.id === "autoscaler" || entry.id === "supervisor"),
+        )
         .forEach((entry) => {
           expect(entry.status).to.equal("ok");
         });

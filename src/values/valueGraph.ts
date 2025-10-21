@@ -4,6 +4,25 @@ import { EventEmitter } from "node:events";
 
 const DEFAULT_THRESHOLD = 0.6;
 
+/**
+ * Hard safety limits applied to value graph operations. The caps keep the
+ * in-memory representation predictable so hostile configurations cannot blow
+ * through memory (for instance by loading tens of thousands of values or
+ * impacts in a single plan evaluation).
+ */
+export const VALUE_GRAPH_LIMITS = Object.freeze({
+  /** Maximum number of values accepted in a single configuration update. */
+  maxValues: 128,
+  /** Global cap on relationships across every value. */
+  maxRelationships: 2048,
+  /** Maximum number of outgoing relationships per value. */
+  maxRelationshipsPerValue: 64,
+  /** Maximum number of impacts processed when scoring a plan. */
+  maxImpactsPerPlan: 256,
+  /** Highest allowed weight for a single value (arbitrary large values offer no benefit). */
+  maxValueWeight: 100,
+} as const);
+
 /** Allowed relationship kinds between value nodes. */
 export type ValueRelationshipKind = "supports" | "conflicts";
 
@@ -12,23 +31,23 @@ export interface ValueRelationshipInput {
   from: string;
   to: string;
   kind: ValueRelationshipKind;
-  weight?: number;
+  weight?: number | undefined;
 }
 
 /** Declarative description of a value node accepted when configuring the graph. */
 export interface ValueNodeInput {
   id: string;
-  label?: string;
-  description?: string;
-  weight?: number;
-  tolerance?: number;
+  label?: string | undefined;
+  description?: string | undefined;
+  weight?: number | undefined;
+  tolerance?: number | undefined;
 }
 
 /** Fully normalised value node stored internally by the graph. */
 interface ValueNode {
   id: string;
-  label?: string;
-  description?: string;
+  label?: string | undefined;
+  description?: string | undefined;
   weight: number;
   tolerance: number;
 }
@@ -45,11 +64,11 @@ interface ValueRelationship {
 export interface ValueImpactInput {
   value: string;
   impact: "support" | "risk";
-  severity?: number;
-  rationale?: string;
-  source?: string;
+  severity?: number | undefined;
+  rationale?: string | undefined;
+  source?: string | undefined;
   /** Optional identifier of the plan node producing this impact. */
-  nodeId?: string;
+  nodeId?: string | undefined;
 }
 
 /** Contribution captured when computing the score for a single value node. */
@@ -57,8 +76,8 @@ interface ValueContribution {
   type: "support" | "risk";
   amount: number;
   impact: ValueImpactInput;
-  propagatedFrom?: string;
-  relationKind?: ValueRelationshipKind;
+  propagatedFrom?: string | undefined;
+  relationKind?: ValueRelationshipKind | undefined;
 }
 
 interface ValueContributionBucket {
@@ -97,8 +116,8 @@ export interface ValueViolationContributorDetails extends Record<string, unknown
   amount: number;
   type: "support" | "risk";
   propagated: boolean;
-  via?: ValueRelationshipKind;
-  from?: string;
+  via?: ValueRelationshipKind | undefined;
+  from?: string | undefined;
 }
 
 export interface ValueViolation extends Record<string, unknown> {
@@ -144,20 +163,20 @@ export interface ValueExplanationResult extends Record<string, unknown> {
 /** Input payload accepted when scoring or filtering a plan. */
 export interface ValueScoreInput {
   id: string;
-  label?: string;
+  label?: string | undefined;
   impacts: ValueImpactInput[];
 }
 
 /** Extended input accepted when filtering with an override threshold. */
 export interface ValueFilterInput extends ValueScoreInput {
-  threshold?: number;
+  threshold?: number | undefined;
 }
 
 /** Configuration accepted when initialising or replacing the value graph. */
 export interface ValueGraphConfig {
   values: ValueNodeInput[];
-  relationships?: ValueRelationshipInput[];
-  defaultThreshold?: number;
+  relationships?: ValueRelationshipInput[] | undefined;
+  defaultThreshold?: number | undefined;
 }
 
 /** Summary returned after updating the value graph configuration. */
@@ -273,7 +292,7 @@ function normaliseWeight(weight: number | undefined): number {
   if (weight === undefined) {
     return 1;
   }
-  const clamped = clamp(weight, 0, Number.POSITIVE_INFINITY);
+  const clamped = clamp(weight, 0, VALUE_GRAPH_LIMITS.maxValueWeight);
   return clamped === 0 ? 1 : clamped;
 }
 
@@ -370,16 +389,20 @@ export class ValueGraph {
   set(config: ValueGraphConfig): ValueGraphSummary {
     assert(config.values.length > 0, "value graph requires at least one value definition");
 
-    this.nodes.clear();
-    this.adjacency.clear();
+    if (config.values.length > VALUE_GRAPH_LIMITS.maxValues) {
+      throw new RangeError(
+        `value graph supports at most ${VALUE_GRAPH_LIMITS.maxValues} values per configuration (received ${config.values.length})`,
+      );
+    }
 
+    const nextNodes = new Map<string, ValueNode>();
     for (const value of config.values) {
       assert(value.id.trim().length > 0, "value id must not be empty");
       const id = value.id.trim();
-      if (this.nodes.has(id)) {
+      if (nextNodes.has(id)) {
         throw new Error(`duplicate value id '${id}' in configuration`);
       }
-      this.nodes.set(id, {
+      nextNodes.set(id, {
         id,
         label: value.label?.trim() || undefined,
         description: value.description?.trim() || undefined,
@@ -388,14 +411,17 @@ export class ValueGraph {
       });
     }
 
+    const nextAdjacency = new Map<string, ValueRelationship[]>();
+    let relationshipCount = 0;
+
     if (config.relationships) {
       for (const relationship of config.relationships) {
         const from = relationship.from.trim();
         const to = relationship.to.trim();
-        if (!this.nodes.has(from)) {
+        if (!nextNodes.has(from)) {
           throw new Error(`relationship source '${from}' is not declared as a value`);
         }
-        if (!this.nodes.has(to)) {
+        if (!nextNodes.has(to)) {
           throw new Error(`relationship target '${to}' is not declared as a value`);
         }
         if (from === to) {
@@ -410,12 +436,33 @@ export class ValueGraph {
         if (entry.weight === 0) {
           continue; // Zero-weight edges would not influence the score anyway.
         }
-        const bucket = ensureRecord(this.adjacency, entry.from, () => []);
+        if (relationshipCount + 1 > VALUE_GRAPH_LIMITS.maxRelationships) {
+          throw new RangeError(
+            `value graph supports at most ${VALUE_GRAPH_LIMITS.maxRelationships} relationships (received ${relationshipCount + 1})`,
+          );
+        }
+        const bucket = ensureRecord(nextAdjacency, entry.from, () => []);
+        if (bucket.length >= VALUE_GRAPH_LIMITS.maxRelationshipsPerValue) {
+          throw new RangeError(
+            `value '${entry.from}' declares more than ${VALUE_GRAPH_LIMITS.maxRelationshipsPerValue} outgoing relationships (received ${bucket.length + 1})`,
+          );
+        }
         bucket.push(entry);
+        relationshipCount += 1;
       }
     }
 
-    this.defaultThreshold = clamp(config.defaultThreshold ?? this.defaultThreshold, 0, 1);
+    const nextDefaultThreshold = clamp(config.defaultThreshold ?? this.defaultThreshold, 0, 1);
+
+    this.nodes.clear();
+    this.adjacency.clear();
+    for (const [id, node] of nextNodes) {
+      this.nodes.set(id, node);
+    }
+    for (const [source, edges] of nextAdjacency) {
+      this.adjacency.set(source, edges);
+    }
+    this.defaultThreshold = nextDefaultThreshold;
     this.version += 1;
 
     const summary: ValueGraphSummary = {
@@ -606,6 +653,12 @@ export class ValueGraph {
 
   /** Compute the full evaluation for a plan, including intermediate metrics. */
   private evaluatePlan(input: ValueScoreInput): ValueEvaluationResult {
+    if (input.impacts.length > VALUE_GRAPH_LIMITS.maxImpactsPerPlan) {
+      throw new RangeError(
+        `value graph can only evaluate up to ${VALUE_GRAPH_LIMITS.maxImpactsPerPlan} impacts per plan (received ${input.impacts.length})`,
+      );
+    }
+
     const perValue: Map<string, ValueContributionBucket> = new Map();
     for (const node of this.nodes.values()) {
       perValue.set(node.id, { node, support: 0, risk: 0, contributions: [] });

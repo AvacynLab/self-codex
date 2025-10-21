@@ -130,4 +130,44 @@ describe("security validation CLI", () => {
     expect(capturedOptions?.defaults?.pathTool).to.equal("fs/cli-write");
     expect(capturedOptions?.defaults?.pathAttempt).to.equal("../cli");
   });
+
+  it("keeps security defaults undefined when no overrides are provided", async () => {
+    const logger = { log: () => undefined };
+    const env = {
+      MCP_HTTP_HOST: "127.0.0.1",
+      MCP_HTTP_PORT: "9100",
+      MCP_HTTP_PATH: "/mcp",
+    } as NodeJS.ProcessEnv;
+
+    let capturedOptions: SecurityPhaseOptions | undefined;
+    const overrides: SecurityCliOverrides = {
+      runner: async (runRoot, _environment, options) => {
+        capturedOptions = options;
+        const summaryPath = join(runRoot, "report", "security_summary.json");
+        await writeFile(
+          summaryPath,
+          JSON.stringify(
+            {
+              artefacts: SECURITY_JSONL_FILES,
+              checks: [],
+            },
+            null,
+            2,
+          ),
+        );
+        return {
+          outcomes: [],
+          summary: {
+            artefacts: SECURITY_JSONL_FILES,
+            checks: [],
+          },
+          summaryPath,
+        };
+      },
+    };
+
+    await executeSecurityCli({ baseDir: workingDir, runId: "no-overrides" }, env, logger, overrides);
+
+    expect(Object.prototype.hasOwnProperty.call(capturedOptions ?? {}, "defaults")).to.equal(false);
+  });
 });

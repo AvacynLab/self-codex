@@ -29,11 +29,8 @@ import {
   resetConsensusEventClock,
   setConsensusEventClock,
 } from "../src/coord/consensus.js";
-import type {
-  ChildRuntime,
-  ChildRuntimeLifecycleEvent,
-  ChildRuntimeMessage,
-} from "../src/childRuntime.js";
+import type { ChildRuntimeLifecycleEvent, ChildRuntimeMessage } from "../src/childRuntime.js";
+import type { ChildRuntimeEventSource } from "../src/events/bridges.js";
 import { ValueGraph } from "../src/values/valueGraph.js";
 
 describe("event bridges", () => {
@@ -472,12 +469,12 @@ describe("event bridges", () => {
     const now = () => ++tick;
     const bus = new EventBus({ historyLimit: 10, now });
 
-    class FakeChildRuntime extends EventEmitter {
+    class FakeChildRuntime extends EventEmitter implements ChildRuntimeEventSource {
       // Minimal stub mirroring the ChildRuntime shape for subscription tests.
-      childId = "child-007";
+      public readonly childId = "child-007";
     }
 
-    const runtime = new FakeChildRuntime() as unknown as ChildRuntime;
+    const runtime = new FakeChildRuntime();
 
     const dispose = bridgeChildRuntimeEvents({
       runtime,
@@ -582,11 +579,11 @@ describe("event bridges", () => {
     const now = () => ++tick;
     const bus = new EventBus({ historyLimit: 10, now });
 
-    class FakeChildRuntime extends EventEmitter {
-      childId = "child-correlation";
+    class FakeChildRuntime extends EventEmitter implements ChildRuntimeEventSource {
+      public readonly childId = "child-correlation";
     }
 
-    const runtime = new FakeChildRuntime() as unknown as ChildRuntime;
+    const runtime = new FakeChildRuntime();
 
     const dispose = bridgeChildRuntimeEvents({
       runtime,

@@ -3,6 +3,26 @@ import { expect } from "chai";
 
 import { EventBus } from "../src/events/bus.js";
 
+/**
+ * Builds a deterministic child spawned payload so the sequencing tests can
+ * focus on pagination behaviour without re-specifying the lifecycle structure
+ * required by the event bus discriminated unions.
+ */
+function createChildSpawnedPayload(childId: string, overrides: Partial<ReturnType<typeof baseSpawnPayload>> = {}) {
+  return { ...baseSpawnPayload(childId), ...overrides };
+}
+
+function baseSpawnPayload(childId: string) {
+  return {
+    childId,
+    phase: "spawned" as const,
+    at: 0,
+    pid: 1234,
+    forced: false,
+    reason: null,
+  };
+}
+
 describe("event bus progress", () => {
   it("filters correlation identifiers within a category", () => {
     let tick = 0;
@@ -10,7 +30,13 @@ describe("event bus progress", () => {
 
     bus.publish({ cat: "graph", jobId: "job-1", runId: "run-1", opId: "op-alpha", msg: "plan" });
     bus.publish({ cat: "graph", jobId: "job-2", runId: "run-2", opId: "op-beta", msg: "status" });
-    bus.publish({ cat: "child", jobId: "job-1", childId: "child-9", msg: "child_spawned" });
+    bus.publish({
+      cat: "child",
+      jobId: "job-1",
+      childId: "child-9",
+      msg: "child_spawned",
+      data: createChildSpawnedPayload("child-9"),
+    });
 
     const filtered = bus.list({ cats: ["graph"], runId: "run-1" });
     expect(filtered).to.have.lengthOf(1);
@@ -32,7 +58,12 @@ describe("event bus progress", () => {
     const bus = new EventBus({ historyLimit: 10 });
 
     const planStart = bus.publish({ cat: "graph", runId: "run-multi", msg: "plan" });
-    const childReady = bus.publish({ cat: "child", childId: "child-multi", msg: "child_spawned" });
+    const childReady = bus.publish({
+      cat: "child",
+      childId: "child-multi",
+      msg: "child_spawned",
+      data: createChildSpawnedPayload("child-multi"),
+    });
     const planFinish = bus.publish({ cat: "graph", runId: "run-multi", msg: "aggregate" });
     bus.publish({ cat: "scheduler", msg: "scheduler" });
 

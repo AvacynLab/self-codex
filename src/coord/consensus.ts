@@ -58,13 +58,13 @@ export interface ConsensusEvent {
   /** Total number of ballots processed. */
   votes: number;
   /** Optional job identifier propagated when available. */
-  jobId?: string | null;
+  jobId?: string | null | undefined;
   /** Optional run identifier propagated when available. */
-  runId?: string | null;
+  runId?: string | null | undefined;
   /** Optional operation identifier propagated when available. */
-  opId?: string | null;
+  opId?: string | null | undefined;
   /** Additional metadata providing contextual hints (policy, winner, ...). */
-  metadata?: Record<string, unknown>;
+  metadata?: Record<string, unknown> | undefined;
 }
 
 /** Payload accepted when publishing consensus events. */
@@ -128,9 +128,9 @@ export function subscribeConsensusEvents(listener: ConsensusEventListener): () =
  * ties should be reported.
  */
 export interface ConsensusOptions {
-  weights?: Record<string, number>;
-  preferValue?: string;
-  tieBreaker?: "null" | "first" | "prefer";
+  weights?: Record<string, number> | undefined;
+  preferValue?: string | undefined;
+  tieBreaker?: ("null" | "first" | "prefer") | undefined;
 }
 
 /** Additional parameters accepted by quorum-based strategies. */
@@ -140,7 +140,7 @@ export interface QuorumOptions extends ConsensusOptions {
 
 /** Parameters accepted by the weighted strategy. */
 export interface WeightedOptions extends ConsensusOptions {
-  quorum?: number;
+  quorum?: number | undefined;
 }
 
 /**

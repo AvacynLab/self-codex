@@ -60,7 +60,9 @@ describe("child_orchestrate facade", () => {
 
   afterEach(async () => {
     await supervisor.disposeAll();
-    await rm(childrenRoot, { recursive: true, force: true });
+    // Retry the recursive removal to absorb transient ENOTEMPTY errors when the
+    // child runner still has pending async log writes despite disposeAll().
+    await rm(childrenRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 10 });
   });
 
   it("spawns, exchanges messages and shuts down the child", async () => {

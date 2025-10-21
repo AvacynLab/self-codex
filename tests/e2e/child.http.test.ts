@@ -6,6 +6,10 @@ import { configureRuntimeFeatures, getRuntimeFeatures, handleJsonRpc, server as 
 import { StructuredLogger } from "../../src/logger.js";
 import { MemoryHttpResponse, createJsonRpcRequest } from "../helpers/http.js";
 import type { FeatureToggles } from "../../src/serverOptions.js";
+import {
+  getMutableJsonRpcRequestHandlerRegistry,
+  type InternalJsonRpcHandler,
+} from "../../src/mcp/jsonRpcInternals.js";
 
 /**
  * End-to-end checks covering child orchestration over the stateless HTTP bridge.
@@ -17,28 +21,17 @@ import type { FeatureToggles } from "../../src/serverOptions.js";
 describe("http child orchestration", () => {
   const logger = new StructuredLogger();
   let originalFeatures: FeatureToggles;
-  let originalToolsCall:
-    | ((
-        request: { jsonrpc: "2.0"; id: string | number | null; method: string; params?: unknown },
-        extra: unknown,
-      ) => Promise<unknown> | unknown)
-    | undefined;
-  let handlers: Map<string, (request: any, extra: any) => Promise<unknown> | unknown> | undefined;
+  let originalToolsCall: InternalJsonRpcHandler | undefined;
+  let handlers: Map<string, InternalJsonRpcHandler> | null = null;
   let capturedSpawnArgs: Record<string, unknown> | null = null;
   const stubChildId = "child-http-stub";
 
   before(() => {
     originalFeatures = getRuntimeFeatures();
     configureRuntimeFeatures({ ...originalFeatures, enableChildOpsFine: true });
-    const internal = mcpServer.server as unknown as {
-      _requestHandlers?: Map<string, (request: any, extra: any) => Promise<unknown> | unknown>;
-    };
-    handlers = internal._requestHandlers;
-    if (!handlers) {
-      throw new Error("MCP server handlers map not initialised");
-    }
+    handlers = getMutableJsonRpcRequestHandlerRegistry(mcpServer);
     originalToolsCall = handlers.get("tools/call");
-    handlers.set("tools/call", async (request: any, extra: any) => {
+    handlers.set("tools/call", async (request, extra) => {
       if (request?.params && typeof request.params === "object") {
         const params = request.params as { name?: string; arguments?: Record<string, unknown> };
         if (params.name === "child_spawn_codex") {
@@ -101,7 +94,7 @@ describe("http child orchestration", () => {
 
     const handled = await __httpServerInternals.tryHandleJsonRpc(
       spawnRequest,
-      spawnResponse as any,
+      spawnResponse,
       logger,
       async (payload, context) => handleJsonRpc(payload, context),
     );
@@ -135,7 +128,7 @@ describe("http child orchestration", () => {
 
     const statusHandled = await __httpServerInternals.tryHandleJsonRpc(
       statusRequest,
-      statusResponse as any,
+      statusResponse,
       logger,
       async (payload, context) => {
         capturedContext = context;

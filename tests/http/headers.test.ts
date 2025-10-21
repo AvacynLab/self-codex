@@ -17,7 +17,7 @@ describe("http headers", () => {
     });
     const response = new MemoryHttpResponse();
 
-    const requestId = ensureRequestId(request, response as any);
+    const requestId = ensureRequestId(request, response);
     expect(requestId, "generated id").to.be.a("string");
     expect(requestId.length, "non-empty id").to.be.greaterThan(10);
     expect(response.headers["x-request-id"], "response header").to.equal(requestId);
@@ -31,14 +31,14 @@ describe("http headers", () => {
     });
     const response = new MemoryHttpResponse();
 
-    const requestId = ensureRequestId(request, response as any);
+    const requestId = ensureRequestId(request, response);
     expect(requestId, "forwarded id").to.equal("abc-123");
     expect(response.headers["x-request-id"], "response header").to.equal("abc-123");
   });
 
   it("applies the standard security headers", () => {
     const response = new MemoryHttpResponse();
-    applySecurityHeaders(response as any);
+    applySecurityHeaders(response);
 
     expect(response.headers["x-content-type-options"], "nosniff header").to.equal("nosniff");
     expect(response.headers["x-frame-options"], "frame protection").to.equal("DENY");

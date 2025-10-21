@@ -113,6 +113,11 @@ describe("transactions phase runner", () => {
     expect(outcomes).to.have.lengthOf(2);
     expect(capturedRequests).to.have.lengthOf(2);
 
+    expect(Object.prototype.hasOwnProperty.call(outcomes[0]?.call ?? {}, "headers")).to.equal(false);
+    expect(Object.prototype.hasOwnProperty.call(outcomes[0]?.call ?? {}, "captureEvents")).to.equal(false);
+    expect(Object.prototype.hasOwnProperty.call(outcomes[0]?.call ?? {}, "params")).to.equal(true);
+    expect(Object.prototype.hasOwnProperty.call(outcomes[1]?.call ?? {}, "idempotencyKey")).to.equal(false);
+
     const authorisation = resolveAuthorization(capturedRequests[0]?.init?.headers);
     expect(authorisation).to.equal("Bearer transactions-secret");
 

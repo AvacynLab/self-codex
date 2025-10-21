@@ -16,6 +16,7 @@ import {
   ChildMessageStreamOptions,
   ChildMessageStreamResult,
   ChildRuntime,
+  ChildRuntimeContract,
   ChildRuntimeLimits,
   ChildRuntimeMessage,
   ChildRuntimeStatus,
@@ -24,6 +25,7 @@ import {
   startChildRuntime,
 } from "../childRuntime.js";
 import type { EventBus } from "../events/bus.js";
+import type { ChildSupervisorEventPayload } from "../events/types.js";
 import { bridgeChildRuntimeEvents, type ChildRuntimeBridgeContext } from "../events/bridges.js";
 import { extractCorrelationHints, mergeCorrelationHints, type EventCorrelationHints } from "../events/correlation.js";
 import { ChildrenIndex, ChildRecordSnapshot } from "../state/childrenIndex.js";
@@ -252,6 +254,50 @@ export interface RegisterHttpChildResult {
   startedAt: number;
 }
 
+/**
+ * Narrow contract implemented by {@link ChildSupervisor} and consumed by the tool layer.
+ * Tests can provide lightweight doubles that satisfy this interface without reaching for
+ * structural casts while production code keeps relying on the full supervisor implementation.
+ */
+export interface ChildSupervisorContract {
+  readonly childrenIndex: {
+    list(): ChildRecordSnapshot[];
+    getChild(childId: string): ChildRecordSnapshot | undefined;
+  };
+  createChildId(): string;
+  createChild(options?: CreateChildOptions): Promise<CreateChildResult>;
+  registerHttpChild(options: RegisterHttpChildOptions): Promise<RegisterHttpChildResult>;
+  getHttpEndpoint(childId: string): { url: string; headers: Record<string, string> } | null;
+  status(childId: string): ChildStatusSnapshot;
+  send(childId: string, payload: unknown): Promise<SendResult>;
+  waitForMessage(
+    childId: string,
+    predicate: (message: ChildRuntimeMessage) => boolean,
+    timeoutMs?: number,
+  ): Promise<ChildRuntimeMessage>;
+  collect(childId: string): Promise<ChildCollectedOutputs>;
+  stream(childId: string, options?: ChildMessageStreamOptions): ChildMessageStreamResult;
+  attachChild(
+    childId: string,
+    options?: { manifestExtras?: Record<string, unknown> },
+  ): Promise<ChildStatusSnapshot>;
+  setChildRole(
+    childId: string,
+    role: string | null,
+    options?: { manifestExtras?: Record<string, unknown> },
+  ): Promise<ChildStatusSnapshot>;
+  setChildLimits(
+    childId: string,
+    limits: ChildRuntimeLimits | null,
+    options?: { manifestExtras?: Record<string, unknown> },
+  ): Promise<ChildStatusSnapshot & { limits: ChildRuntimeLimits | null }>;
+  cancel(childId: string, options?: { signal?: Signal; timeoutMs?: number }): Promise<ChildShutdownResult>;
+  kill(childId: string, options?: { timeoutMs?: number }): Promise<ChildShutdownResult>;
+  waitForExit(childId: string, timeoutMs?: number): Promise<ChildShutdownResult>;
+  gc(childId: string): void;
+  getAllowedTools(childId: string): readonly string[];
+}
+
 /** Error raised when the caller attempts to exceed the configured child cap. */
 export class ChildLimitExceededError extends Error {
   public readonly code = "E-CHILD-LIMIT";
@@ -334,7 +380,7 @@ export interface CreateChildResult {
   /** Snapshot captured immediately after registration. */
   index: ChildRecordSnapshot;
   /** Low level runtime handle (useful for waiters in tests). */
-  runtime: ChildRuntime;
+  runtime: ChildRuntimeContract;
   /** JSON message that satisfied the ready handshake, if any. */
   readyMessage: ChildRuntimeMessage | null;
 }
@@ -365,7 +411,7 @@ export interface ChildStatusSnapshot {
  * the MCP server can share a single instance and tests can exercise the
  * high-level behaviour without going through JSON-RPC plumbing yet.
  */
-export class ChildSupervisor {
+export class ChildSupervisor implements ChildSupervisorContract {
   private readonly childrenRoot: string;
   private readonly defaultCommand: string;
   private readonly defaultArgs: string[];
@@ -1560,51 +1606,84 @@ export class ChildSupervisor {
         relatedChildren.push(childId);
       }
     }
-    const baseData = {
-      event,
-      relatedChildren,
-      maxRestartsPerMinute: this.supervisionMaxRestartsPerMinute,
-    };
     const base = {
       cat: "child" as const,
       component: "child_supervisor",
       stage: "supervision",
       childId: relatedChildren.length === 1 ? relatedChildren[0] : null,
-      data: baseData,
     };
+    const maxRestartsPerMinute = this.supervisionMaxRestartsPerMinute;
     switch (event.type) {
-      case "child_restart":
+      case "child_restart": {
+        const payload: ChildSupervisorEventPayload & {
+          event: Extract<SupervisorEvent, { type: "child_restart" }>;
+        } = {
+          event,
+          relatedChildren,
+          maxRestartsPerMinute,
+        };
+        // Surface restart scheduling alongside the structured supervision payload.
         this.eventBus.publish({
           ...base,
           level: "info",
           kind: "CHILD_RESTART",
           msg: "child.restart.scheduled",
+          data: payload,
         });
         break;
-      case "breaker_open":
+      }
+      case "breaker_open": {
+        const payload: ChildSupervisorEventPayload & {
+          event: Extract<SupervisorEvent, { type: "breaker_open" }>;
+        } = {
+          event,
+          relatedChildren,
+          maxRestartsPerMinute,
+        };
+        // Emit breaker transitions with the retry timestamp for observability dashboards.
         this.eventBus.publish({
           ...base,
           level: "warn",
           kind: "BREAKER_OPEN",
           msg: "child.breaker.open",
+          data: payload,
         });
         break;
-      case "breaker_half_open":
+      }
+      case "breaker_half_open": {
+        const payload: ChildSupervisorEventPayload & {
+          event: Extract<SupervisorEvent, { type: "breaker_half_open" }>;
+        } = {
+          event,
+          relatedChildren,
+          maxRestartsPerMinute,
+        };
         this.eventBus.publish({
           ...base,
           level: "info",
           kind: "BREAKER_HALF_OPEN",
           msg: "child.breaker.half_open",
+          data: payload,
         });
         break;
-      case "breaker_closed":
+      }
+      case "breaker_closed": {
+        const payload: ChildSupervisorEventPayload & {
+          event: Extract<SupervisorEvent, { type: "breaker_closed" }>;
+        } = {
+          event,
+          relatedChildren,
+          maxRestartsPerMinute,
+        };
         this.eventBus.publish({
           ...base,
           level: "info",
           kind: "BREAKER_CLOSED",
           msg: "child.breaker.closed",
+          data: payload,
         });
         break;
+      }
     }
   }
 

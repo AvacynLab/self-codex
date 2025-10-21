@@ -30,6 +30,7 @@ import { SandboxRegistry, setSandboxRegistry } from "../src/sim/sandbox.js";
 import { LoopDetector } from "../src/guard/loopDetector.js";
 import { ContractNetCoordinator } from "../src/coord/contractNet.js";
 import { resolveFixture, runnerArgs } from "./helpers/childRunner.js";
+import { expectChildRuntimeMessageType, hasChildRuntimeMessageType } from "./helpers/childRuntime.js";
 
 const mockRunnerPath = resolveFixture(import.meta.url, "./fixtures/mock-runner.ts");
 const stubbornRunnerPath = resolveFixture(import.meta.url, "./fixtures/stubborn-runner.ts");
@@ -89,13 +90,19 @@ describe("child tool handlers", function () {
 
       const initialResponse = await supervisor.waitForMessage(
         created.child_id,
-        (message) => {
-          const parsed = message.parsed as { type?: string; content?: string } | null;
-          return parsed?.type === "response" && parsed.content === "hello child";
-        },
+        (message) =>
+          message.stream === "stdout" &&
+          hasChildRuntimeMessageType(message, "response") &&
+          typeof message.parsed.content === "string" &&
+          message.parsed.content === "hello child",
         1000,
       );
-      expect((initialResponse.parsed as any).content).to.equal("hello child");
+      const initialPayload = expectChildRuntimeMessageType(initialResponse, "response");
+      const initialContent = initialPayload.parsed.content;
+      if (typeof initialContent !== "string") {
+        throw new Error("initial response did not expose textual content");
+      }
+      expect(initialContent).to.equal("hello child");
 
       const statusAfterReady = handleChildStatus(
         context,
@@ -116,9 +123,12 @@ describe("child tool handlers", function () {
 
       const response = sendResult.awaited_message!;
       expect(response.stream).to.equal("stdout");
-      const parsedResponse = response.parsed as { type?: string; content?: string } | null;
-      expect(parsedResponse?.type).to.equal("response");
-      expect(parsedResponse?.content).to.equal("ping from test");
+      const awaitedResponse = expectChildRuntimeMessageType(response, "response");
+      const awaitedContent = awaitedResponse.parsed.content;
+      if (typeof awaitedContent !== "string") {
+        throw new Error("awaited response did not expose textual content");
+      }
+      expect(awaitedContent).to.equal("ping from test");
 
       const streamSend = await handleChildSend(
         context,
@@ -132,8 +142,8 @@ describe("child tool handlers", function () {
       expect(streamSend.awaited_message).to.not.equal(null);
       expect(streamSend.loop_alert).to.equal(null);
       const streamMessage = streamSend.awaited_message!;
-      const streamParsed = streamMessage.parsed as { type?: string } | null;
-      expect(streamParsed?.type).to.equal("pong");
+      const streamPayload = expectChildRuntimeMessageType(streamMessage, "pong");
+      expect(streamPayload.parsed.type).to.equal("pong");
 
       await writeArtifact({
         childrenRoot,

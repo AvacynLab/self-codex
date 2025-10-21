@@ -6,7 +6,7 @@ import { z } from "zod";
 // NOTE: Node built-in modules are imported with the explicit `node:` prefix to guarantee ESM resolution in Node.js.
 
 import { ChildCollectedOutputs, ChildRuntimeMessage } from "../childRuntime.js";
-import type { ChildSupervisor } from "../children/supervisor.js";
+import type { ChildSupervisorContract } from "../children/supervisor.js";
 import { compileHierGraphToBehaviorTree } from "../executor/bt/compiler.js";
 import { BehaviorTreeInterpreter, buildBehaviorTree } from "../executor/bt/interpreter.js";
 import { type BehaviorNodeDefinition, CompiledBehaviorTreeSchema, type BTStatus, type BehaviorTickResult, type CompiledBehaviorTree, type TickRuntime } from "../executor/bt/types.js";
@@ -50,8 +50,8 @@ import type {
 import { IdempotencyRegistry, buildIdempotencyCacheKey } from "../infra/idempotency.js";
 import { GraphState } from "../graph/state.js";
 import { StructuredLogger } from "../logger.js";
-import { OrchestratorSupervisor } from "../agents/supervisor.js";
-import { Autoscaler } from "../agents/autoscaler.js";
+import type { OrchestratorSupervisorContract } from "../agents/supervisor.js";
+import type { AutoscalerContract } from "../agents/autoscaler.js";
 import { ensureDirectory, resolveWithin } from "../paths.js";
 import { parsePlannerPlan, PlannerSchemas, type PlannerPlan } from "../planner/domain.js";
 import { compilePlannerPlan, generatePlanRunId } from "../planner/compileBT.js";
@@ -79,6 +79,7 @@ import { flatten } from "../graph/hierarchy.js";
 import type { NormalisedGraph } from "../graph/types.js";
 import { EventKind, EventLevel } from "../eventStore.js";
 import type { EventCorrelationHints } from "../events/correlation.js";
+import type { EventStorePayload } from "../events/types.js";
 import type { LoopDetector } from "../guard/loopDetector.js";
 import { BehaviorTreeStatusRegistry } from "../monitor/btStatusRegistry.js";
 import {
@@ -90,6 +91,7 @@ import {
 import { BehaviorTreeCancellationError } from "../executor/bt/nodes.js";
 import { GraphDescriptorSchema, normaliseDescriptor } from "./graphTools.js";
 import { ThoughtGraphCoordinator, type ThoughtBranchGuardSnapshot } from "../reasoning/thoughtCoordinator.js";
+import { omitUndefinedEntries } from "../utils/object.js";
 
 /**
  * Type used when emitting orchestration events. The server injects a concrete
@@ -101,7 +103,7 @@ export type PlanEventEmitter = (event: {
   level?: EventLevel;
   jobId?: string;
   childId?: string;
-  payload?: unknown;
+  payload?: EventStorePayload<EventKind>;
   /** Optional correlation metadata forwarded to the unified event bus. */
   correlation?: EventCorrelationHints | null;
 }) => void;
@@ -193,7 +195,7 @@ function deriveBlackboardImportance(event: BlackboardEvent): number {
  * these lifecycle operations which keeps fixtures lightweight.
  */
 export type PlanChildSupervisor = Pick<
-  ChildSupervisor,
+  ChildSupervisorContract,
   "createChild" | "send" | "collect" | "waitForMessage"
 >;
 
@@ -215,9 +217,9 @@ export interface PlanToolContext {
   /** Optional blackboard store relaying shared signals across agents. */
   blackboard?: BlackboardStore;
   /** Optional orchestrator supervisor handling loop and stagnation mitigation. */
-  supervisorAgent?: OrchestratorSupervisor;
+  supervisorAgent?: OrchestratorSupervisorContract;
   /** Optional autoscaler reconciling scheduler pressure after every loop tick. */
-  autoscaler?: Autoscaler;
+  autoscaler?: AutoscalerContract;
   /**
    * Cancellation handle associated with the currently executing plan operation.
    * Behaviour Tree tools such as `wait` rely on the handle to cooperate with
@@ -1293,16 +1295,20 @@ function resolveChildrenPlans(
       return input.children_spec.list.map((child) => ({
         name: child.name,
         runtime: child.runtime ?? defaultRuntime,
-        system: child.system,
-        goals: child.goals,
-        command: child.command,
-        args: child.args,
-        env: child.env,
-        metadata: child.metadata,
-        manifestExtras: child.manifest_extras,
         promptVariables: { ...(child.prompt_variables ?? {}) },
-        ttlSeconds: child.ttl_s,
-        valueImpacts: child.value_impacts?.map((impact) => ({ ...impact })),
+        // NOTE: keep optional fields absent rather than `undefined` so the
+        // object remains compatible with `exactOptionalPropertyTypes`.
+        ...omitUndefinedEntries({
+          system: child.system,
+          goals: child.goals,
+          command: child.command,
+          args: child.args,
+          env: child.env,
+          metadata: child.metadata,
+          manifestExtras: child.manifest_extras,
+          ttlSeconds: child.ttl_s,
+          valueImpacts: child.value_impacts?.map((impact) => ({ ...impact })),
+        }),
       }));
     }
 
@@ -1312,15 +1318,17 @@ function resolveChildrenPlans(
       plans.push({
         name: `${base.name_prefix}-${index + 1}`,
         runtime: base.runtime ?? defaultRuntime,
-        system: base.system,
-        goals: base.goals,
-        metadata: base.metadata,
-        manifestExtras: base.manifest_extras,
         promptVariables: {
           ...(base.prompt_variables ?? {}),
           child_index: index + 1,
         },
-        valueImpacts: base.value_impacts?.map((impact) => ({ ...impact })),
+        ...omitUndefinedEntries({
+          system: base.system,
+          goals: base.goals,
+          metadata: base.metadata,
+          manifestExtras: base.manifest_extras,
+          valueImpacts: base.value_impacts?.map((impact) => ({ ...impact })),
+        }),
       });
     }
     return plans;
@@ -1330,16 +1338,18 @@ function resolveChildrenPlans(
     return input.children.map((child) => ({
       name: child.name,
       runtime: child.runtime ?? defaultRuntime,
-      system: child.system,
-      goals: child.goals,
-      command: child.command,
-      args: child.args,
-      env: child.env,
-      metadata: child.metadata,
-      manifestExtras: child.manifest_extras,
       promptVariables: { ...(child.prompt_variables ?? {}) },
-      ttlSeconds: child.ttl_s,
-      valueImpacts: child.value_impacts?.map((impact) => ({ ...impact })),
+      ...omitUndefinedEntries({
+        system: child.system,
+        goals: child.goals,
+        command: child.command,
+        args: child.args,
+        env: child.env,
+        metadata: child.metadata,
+        manifestExtras: child.manifest_extras,
+        ttlSeconds: child.ttl_s,
+        valueImpacts: child.value_impacts?.map((impact) => ({ ...impact })),
+      }),
     }));
   }
 
@@ -1456,9 +1466,11 @@ async function spawnChildWithRetry(
     childId,
     {
       name: plan.name,
-      system: plan.system,
-      goals: plan.goals,
       runtime: plan.runtime,
+      ...omitUndefinedEntries({
+        system: plan.system,
+        goals: plan.goals,
+      }),
     },
     {
       createdAt,
@@ -1479,10 +1491,12 @@ async function spawnChildWithRetry(
   const lessonRecall =
     lessonStore !== null
       ? recallLessons(lessonStore, {
-          metadata: plan.metadata,
-          goals: plan.goals ?? [],
           variables,
           additionalTags: ["plan", plan.runtime ?? ""],
+          ...omitUndefinedEntries({
+            metadata: plan.metadata,
+            goals: plan.goals,
+          }),
         })
       : { matches: [], tags: [] };
   const lessonManifest =
@@ -1536,9 +1550,11 @@ async function spawnChildWithRetry(
 
       const created = await context.supervisor.createChild({
         childId,
-        command: plan.command,
-        args: plan.args,
-        env: plan.env,
+        ...omitUndefinedEntries({
+          command: plan.command,
+          args: plan.args,
+          env: plan.env,
+        }),
         metadata: buildFanoutChildMetadata(plan, variables, guardSnapshot, correlation),
         manifestExtras,
         waitForReady: true,
@@ -1557,13 +1573,15 @@ async function spawnChildWithRetry(
       if (lessonsPromptPayload) {
         context.emitEvent({
           kind: "PROMPT",
-          jobId,
-          childId,
           payload: {
             operation: "plan_fanout",
             lessons_prompt: lessonsPromptPayload,
           },
           correlation: eventCorrelation,
+          ...omitUndefinedEntries({
+            jobId,
+            childId,
+          }),
         });
       }
 
@@ -1792,9 +1810,9 @@ export async function handlePlanFanout(
   const existingJob = context.graphState.getJob(jobId);
   if (!existingJob) {
     context.graphState.createJob(jobId, {
-      goal: input.goal,
       createdAt,
       state: "running",
+      ...omitUndefinedEntries({ goal: input.goal ?? undefined }),
     });
   } else {
     context.graphState.patchJob(jobId, {
@@ -1824,14 +1842,16 @@ export async function handlePlanFanout(
 
   context.emitEvent({
     kind: "PLAN",
-    jobId,
-    childId: parentChildId ?? undefined,
     payload: {
       ...correlationPayload,
       children: plans.map((plan) => ({ name: plan.name, runtime: plan.runtime })),
       rejected: rejectedPlans.map((entry) => entry.name),
     },
     correlation: eventCorrelation,
+    ...omitUndefinedEntries({
+      jobId,
+      childId: parentChildId ?? undefined,
+    }),
   });
 
   const sharedVariables: Record<string, string | number | boolean> = {
@@ -2249,8 +2269,6 @@ export async function handlePlanJoin(
 
   context.emitEvent({
     kind: "STATUS",
-    jobId: correlationHints.jobId ?? undefined,
-    childId: correlationHints.childId ?? undefined,
     payload: {
       ...correlationPayload,
       policy: input.join_policy,
@@ -2260,6 +2278,10 @@ export async function handlePlanJoin(
       consensus: consensusPayload,
     },
     correlation: correlationHints,
+    ...omitUndefinedEntries({
+      jobId: correlationHints.jobId ?? undefined,
+      childId: correlationHints.childId ?? undefined,
+    }),
   });
 
   context.logger.info("plan_join_completed", {
@@ -2411,14 +2433,16 @@ export async function handlePlanReduce(
 
   context.emitEvent({
     kind: "AGGREGATE",
-    jobId: correlationHints.jobId ?? undefined,
-    childId: correlationHints.childId ?? undefined,
     payload: {
       ...correlationPayload,
       reducer: input.reducer,
       children: summaries.map((item) => item.child_id),
     },
     correlation: correlationHints,
+    ...omitUndefinedEntries({
+      jobId: correlationHints.jobId ?? undefined,
+      childId: correlationHints.childId ?? undefined,
+    }),
   });
 
   let result: PlanReduceCoreResult;

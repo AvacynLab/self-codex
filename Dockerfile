@@ -12,7 +12,11 @@ RUN apk add --no-cache python3 make g++
 COPY package.json package-lock.json ./
 RUN npm ci --include=dev
 COPY . ./
-RUN npm run build
+# Compile the TypeScript sources before pruning development dependencies so the
+# runtime stage only receives the production tree and keeps the final image
+# lightweight.
+RUN npm run build \
+  && npm prune --omit=dev
 
 # Distroless runtime containing only the production dependencies and compiled
 # assets. The resulting image has a small attack surface while keeping startup
@@ -68,6 +72,8 @@ ENV MCP_DASHBOARD_HOST=${MCP_DASHBOARD_HOST}
 ENV MCP_DASHBOARD_PORT=${MCP_DASHBOARD_PORT}
 ENV MCP_DASHBOARD_INTERVAL_MS=${MCP_DASHBOARD_INTERVAL_MS}
 
+# Copy only the production dependency tree trimmed by `npm prune --omit=dev` so
+# the runtime image does not embed the TypeScript toolchain or linting stack.
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/graph-forge/dist ./graph-forge/dist

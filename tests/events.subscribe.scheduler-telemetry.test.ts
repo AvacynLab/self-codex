@@ -12,6 +12,66 @@ import {
   getRuntimeFeatures,
 } from "../src/server.js";
 import { parseSseStream } from "./helpers/sse.js";
+import {
+  assertArray,
+  assertNumber,
+  assertPlainObject,
+  assertString,
+  isPlainObject,
+} from "./helpers/assertions.js";
+import type { EventPayload } from "../src/events/types.js";
+
+type SchedulerEventEnqueuedPayload = EventPayload<"scheduler_event_enqueued">;
+type SchedulerTickResultPayload = EventPayload<"scheduler_tick_result">;
+type SchedulerTelemetryPayload = SchedulerEventEnqueuedPayload | SchedulerTickResultPayload;
+
+/**
+ * Runtime guard narrowing arbitrary JSON objects to {@link SchedulerTelemetryPayload}. The helper
+ * asserts numeric fields and correlation hints so arithmetic parity checks remain honest across
+ * transports while still providing rich TypeScript narrowing for the assertions below.
+ */
+function assertSchedulerTelemetryPayload(
+  value: unknown,
+  description: string,
+): asserts value is SchedulerTelemetryPayload {
+  assertPlainObject(value, description);
+  assertString(value.msg, `${description}.msg`);
+  assertString(value.event_type, `${description}.event_type`);
+  assertNumber(value.pending, `${description}.pending`);
+  assertNumber(value.pending_before, `${description}.pending_before`);
+  assertNumber(value.pending_after, `${description}.pending_after`);
+  assertNumber(value.base_priority, `${description}.base_priority`);
+  assertNumber(value.enqueued_at_ms, `${description}.enqueued_at_ms`);
+  assertNumber(value.sequence, `${description}.sequence`);
+  assertPlainObject(value.event_payload, `${description}.event_payload`);
+
+  const correlationFields = ["run_id", "op_id", "job_id", "graph_id", "node_id", "child_id"] as const;
+  for (const field of correlationFields) {
+    expect(field in value, `${description}.${field} should be present`).to.equal(true);
+    const fieldValue = (value as Record<string, unknown>)[field];
+    expect(
+      fieldValue === null || typeof fieldValue === "string",
+      `${description}.${field} should be null or string`,
+    ).to.equal(true);
+  }
+
+  if (value.msg === "scheduler_event_enqueued") {
+    expect(value.duration_ms, `${description}.duration_ms`).to.equal(null);
+    expect(value.batch_index, `${description}.batch_index`).to.equal(null);
+    expect(value.ticks_in_batch, `${description}.ticks_in_batch`).to.equal(null);
+    expect(value.priority, `${description}.priority`).to.equal(undefined);
+    expect(value.status, `${description}.status`).to.equal(undefined);
+    expect(value.source_event, `${description}.source_event`).to.equal(undefined);
+    return;
+  }
+
+  assertNumber(value.duration_ms, `${description}.duration_ms`);
+  assertNumber(value.batch_index, `${description}.batch_index`);
+  assertNumber(value.ticks_in_batch, `${description}.ticks_in_batch`);
+  assertNumber(value.priority, `${description}.priority`);
+  assertString(value.status, `${description}.status`);
+  assertString(value.source_event, `${description}.source_event`);
+}
 
 /**
  * Integration coverage ensuring that the unified MCP event bus exposes
@@ -48,8 +108,10 @@ describe("events subscribe scheduler telemetry", () => {
 
       const baselineResponse = await client.callTool({ name: "events_subscribe", arguments: { limit: 1 } });
       expect(baselineResponse.isError ?? false).to.equal(false);
-      const baselineContent = baselineResponse.structuredContent as { next_seq: number | null };
-      const cursor = baselineContent?.next_seq ?? 0;
+      const baselineContent = baselineResponse.structuredContent;
+      assertPlainObject(baselineContent, "baseline events_subscribe content");
+      const cursorCandidate = baselineContent.next_seq;
+      const cursor = typeof cursorCandidate === "number" ? cursorCandidate : 0;
 
       const runId = "scheduler-telemetry-run";
       const opId = "scheduler-telemetry-op";
@@ -86,20 +148,22 @@ describe("events subscribe scheduler telemetry", () => {
         },
       });
       expect(jsonlinesResponse.isError ?? false).to.equal(false);
-      const jsonlinesStructured = jsonlinesResponse.structuredContent as {
-        events: Array<{
-          kind: string;
-          run_id: string | null;
-          op_id: string | null;
-          job_id: string | null;
-          graph_id: string | null;
-          node_id: string | null;
-          child_id: string | null;
-          data?: Record<string, unknown> | null;
-        }>;
-      };
+      const jsonlinesStructured = jsonlinesResponse.structuredContent;
+      assertPlainObject(jsonlinesStructured, "scheduler JSON Lines response");
+      const eventsValue = jsonlinesStructured.events;
+      assertArray(eventsValue, "scheduler JSON Lines events");
 
-      const schedulerEvents = jsonlinesStructured.events.filter((event) => event.kind === "SCHEDULER");
+      const schedulerEvents: Array<Record<string, unknown>> = [];
+      for (const candidate of eventsValue) {
+        if (!isPlainObject(candidate)) {
+          continue;
+        }
+        if (candidate.kind !== "SCHEDULER") {
+          continue;
+        }
+        schedulerEvents.push(candidate);
+      }
+
       expect(schedulerEvents.length, "Scheduler telemetry should be exposed via JSON Lines").to.be.greaterThan(1);
       for (const event of schedulerEvents) {
         expect(event.run_id).to.equal(runId);
@@ -109,94 +173,51 @@ describe("events subscribe scheduler telemetry", () => {
         expect(event.node_id).to.equal(nodeId);
       }
 
-      const enqueuedEvent = schedulerEvents.find((event) => {
-        const payload = (event.data ?? {}) as { event_type?: string };
-        return payload.event_type === "taskReady";
-      });
+      const enqueuedEvent = schedulerEvents.find(
+        (event) => isPlainObject(event.data) && event.data.msg === "scheduler_event_enqueued",
+      );
       expect(enqueuedEvent, "scheduler_event_enqueued payload should be present").to.not.equal(undefined);
-      // JSON Lines payload must mirror the queue telemetry exposed to SSE
-      // subscribers. The scheduler now surfaces both queue depths directly, so
-      // these assertions confirm the instrumentation propagates the explicit
-      // `pending_before` snapshot alongside the post-enqueue depth.
-      const enqueuedPayload = (enqueuedEvent?.data ?? {}) as {
-        event_type?: unknown;
-        msg?: unknown;
-        pending?: unknown;
-        pending_before?: unknown;
-        pending_after?: unknown;
-        base_priority?: unknown;
-        batch_index?: unknown;
-        duration_ms?: unknown;
-        sequence?: unknown;
-        ticks_in_batch?: unknown;
-      };
+      if (!enqueuedEvent || !isPlainObject(enqueuedEvent.data)) {
+        throw new Error("scheduler_event_enqueued payload should be present");
+      }
+      assertSchedulerTelemetryPayload(enqueuedEvent.data, "jsonlines scheduler_event_enqueued payload");
+      const enqueuedPayload = enqueuedEvent.data;
       expect(enqueuedPayload.event_type).to.equal("taskReady");
       expect(enqueuedPayload.msg).to.equal("scheduler_event_enqueued");
-      expect(typeof enqueuedPayload.pending).to.equal("number");
-      expect(typeof enqueuedPayload.pending_before).to.equal("number");
-      expect(typeof enqueuedPayload.pending_after).to.equal("number");
-      if (typeof enqueuedPayload.pending === "number" && typeof enqueuedPayload.pending_before === "number") {
-        expect(enqueuedPayload.pending_before).to.equal(
-          Math.max(0, enqueuedPayload.pending - 1),
-        );
-      }
-      if (
-        typeof enqueuedPayload.pending === "number" &&
-        typeof enqueuedPayload.pending_after === "number"
-      ) {
-        // The post-enqueue depth mirrors the `pending` counter exposed to
-        // streaming clients, so parity requires both fields to match exactly.
-        expect(enqueuedPayload.pending_after).to.equal(enqueuedPayload.pending);
-      }
-      expect(typeof enqueuedPayload.base_priority).to.equal("number");
+      expect(enqueuedPayload.pending_before).to.equal(Math.max(0, enqueuedPayload.pending - 1));
+      expect(enqueuedPayload.pending_after).to.equal(enqueuedPayload.pending);
       expect(enqueuedPayload.batch_index).to.equal(null);
       expect(enqueuedPayload.duration_ms).to.equal(null);
-      expect(typeof enqueuedPayload.sequence).to.equal("number");
       expect(enqueuedPayload.ticks_in_batch).to.equal(null);
-      const enqueuedPending = enqueuedPayload.pending as number;
-      const enqueuedPendingBefore = enqueuedPayload.pending_before as number;
-      const enqueuedPendingAfter = enqueuedPayload.pending_after as number;
-      const enqueuedBasePriority = enqueuedPayload.base_priority as number;
-      const enqueuedSequence = enqueuedPayload.sequence as number;
+      const enqueuedPending = enqueuedPayload.pending;
+      const enqueuedPendingBefore = enqueuedPayload.pending_before;
+      const enqueuedPendingAfter = enqueuedPayload.pending_after;
+      const enqueuedBasePriority = enqueuedPayload.base_priority;
+      const enqueuedSequence = enqueuedPayload.sequence;
 
-      const tickResultEvent = schedulerEvents.find((event) => {
-        const payload = (event.data ?? {}) as { status?: string };
-        return payload.status === "success";
-      });
+      const tickResultEvent = schedulerEvents.find(
+        (event) => isPlainObject(event.data) && event.data.msg === "scheduler_tick_result",
+      );
       expect(tickResultEvent, "scheduler_tick_result payload should be present").to.not.equal(undefined);
-      // The tick result telemetry carries aggregated metrics describing the
-      // scheduler batch execution. Ensuring JSON Lines includes the "after"
-      // queue depth and `ticks_in_batch` count prevents future regressions when
-      // SSE clients rely on these fields for parity with the streaming view.
-      const tickPayload = (tickResultEvent?.data ?? {}) as {
-        msg?: unknown;
-        event_type?: unknown;
-        duration_ms?: unknown;
-        batch_index?: unknown;
-        pending?: unknown;
-        pending_before?: unknown;
-        pending_after?: unknown;
-        base_priority?: unknown;
-        sequence?: unknown;
-        ticks_in_batch?: unknown;
-      };
-      expect(tickPayload.msg).to.equal("scheduler_tick_result");
+      if (!tickResultEvent || !isPlainObject(tickResultEvent.data)) {
+        throw new Error("scheduler_tick_result payload should be present");
+      }
+      assertSchedulerTelemetryPayload(tickResultEvent.data, "jsonlines scheduler_tick_result payload");
+      const tickPayload = tickResultEvent.data;
       expect(tickPayload.event_type).to.equal("tick_result");
-      expect(typeof tickPayload.duration_ms).to.equal("number");
-      expect(typeof tickPayload.batch_index).to.equal("number");
-      expect(typeof tickPayload.pending).to.equal("number");
-      expect(typeof tickPayload.pending_before).to.equal("number");
-      expect(typeof tickPayload.pending_after).to.equal("number");
-      expect(typeof tickPayload.base_priority).to.equal("number");
-      expect(typeof tickPayload.sequence).to.equal("number");
-      expect(typeof tickPayload.ticks_in_batch).to.equal("number");
-      const tickPending = tickPayload.pending as number;
-      const tickPendingBefore = tickPayload.pending_before as number;
-      const tickPendingAfter = tickPayload.pending_after as number;
-      const tickBasePriority = tickPayload.base_priority as number;
-      const tickSequence = tickPayload.sequence as number;
-      const tickBatchIndex = tickPayload.batch_index as number;
-      const tickTicksInBatch = tickPayload.ticks_in_batch as number;
+      expect(tickPayload.duration_ms).to.not.equal(null);
+      expect(tickPayload.batch_index).to.not.equal(null);
+      expect(tickPayload.ticks_in_batch).to.not.equal(null);
+      if (tickPayload.duration_ms === null || tickPayload.batch_index === null || tickPayload.ticks_in_batch === null) {
+        throw new Error("scheduler_tick_result payload should expose duration and batch metrics");
+      }
+      const tickPending = tickPayload.pending;
+      const tickPendingBefore = tickPayload.pending_before;
+      const tickPendingAfter = tickPayload.pending_after;
+      const tickBasePriority = tickPayload.base_priority;
+      const tickSequence = tickPayload.sequence;
+      const tickBatchIndex = tickPayload.batch_index;
+      const tickTicksInBatch = tickPayload.ticks_in_batch;
 
       const sseResponse = await client.callTool({
         name: "events_subscribe",
@@ -208,8 +229,9 @@ describe("events subscribe scheduler telemetry", () => {
         },
       });
       expect(sseResponse.isError ?? false).to.equal(false);
-      const sseStructured = sseResponse.structuredContent as { stream: string };
-      expect(typeof sseStructured.stream).to.equal("string");
+      const sseStructured = sseResponse.structuredContent;
+      assertPlainObject(sseStructured, "scheduler SSE response");
+      assertString(sseStructured.stream, "scheduler SSE stream");
 
       // Parse the SSE framing so the assertions can validate both the transport-level
       // event name (`event:`) and the JSON payload delivered to streaming clients.
@@ -220,21 +242,18 @@ describe("events subscribe scheduler telemetry", () => {
         "Scheduler SSE payload should expose the SCHEDULER event type",
       ).to.be.greaterThan(0);
 
-      const decodedSseEvents = schedulerStreamEvents.flatMap((entry) =>
-        entry.data.map((chunk) =>
-          JSON.parse(chunk) as {
-            kind: string;
-            run_id: string | null;
-            op_id: string | null;
-            job_id: string | null;
-            graph_id: string | null;
-            node_id: string | null;
-            data?: Record<string, unknown> | null;
-          },
-        ),
-      );
+      const decodedSseEvents = schedulerStreamEvents.flatMap((entry) => entry.data.map((chunk) => JSON.parse(chunk)));
 
-      const correlatedSseEvents = decodedSseEvents.filter((event) => event.kind === "SCHEDULER");
+      const correlatedSseEvents: Array<Record<string, unknown>> = [];
+      for (const candidate of decodedSseEvents) {
+        if (!isPlainObject(candidate)) {
+          continue;
+        }
+        if (candidate.kind !== "SCHEDULER") {
+          continue;
+        }
+        correlatedSseEvents.push(candidate);
+      }
       expect(
         correlatedSseEvents.length,
         "Scheduler SSE events should carry the SCHEDULER kind in the payload",
@@ -247,92 +266,53 @@ describe("events subscribe scheduler telemetry", () => {
         expect(event.node_id).to.equal(nodeId);
       }
 
-      const sseEnqueuedEvent = correlatedSseEvents.find((event) => {
-        const payload = (event.data ?? {}) as { msg?: string | null };
-        return payload.msg === "scheduler_event_enqueued";
-      });
+      const sseEnqueuedEvent = correlatedSseEvents.find(
+        (event) => isPlainObject(event.data) && event.data.msg === "scheduler_event_enqueued",
+      );
       expect(sseEnqueuedEvent, "SSE stream should include the enqueue telemetry").to.not.equal(undefined);
-      const sseEnqueuedPayload = (sseEnqueuedEvent?.data ?? {}) as {
-        event_type?: unknown;
-        msg?: unknown;
-        pending?: unknown;
-        pending_before?: unknown;
-        pending_after?: unknown;
-        base_priority?: unknown;
-        sequence?: unknown;
-        batch_index?: unknown;
-        duration_ms?: unknown;
-        ticks_in_batch?: unknown;
-      };
+      if (!sseEnqueuedEvent || !isPlainObject(sseEnqueuedEvent.data)) {
+        throw new Error("scheduler_event_enqueued SSE payload should be present");
+      }
+      assertSchedulerTelemetryPayload(sseEnqueuedEvent.data, "sse scheduler_event_enqueued payload");
+      const sseEnqueuedPayload = sseEnqueuedEvent.data;
       expect(sseEnqueuedPayload.event_type).to.equal("taskReady");
       expect(sseEnqueuedPayload.msg).to.equal("scheduler_event_enqueued");
-      expect(typeof sseEnqueuedPayload.pending).to.equal("number");
-      expect(typeof sseEnqueuedPayload.pending_before).to.equal("number");
-      expect(typeof sseEnqueuedPayload.pending_after).to.equal("number");
-      if (
-        typeof sseEnqueuedPayload.pending === "number" &&
-        typeof sseEnqueuedPayload.pending_before === "number"
-      ) {
-        expect(sseEnqueuedPayload.pending_before).to.equal(
-          Math.max(0, sseEnqueuedPayload.pending - 1),
-        );
-      }
-      if (
-        typeof sseEnqueuedPayload.pending === "number" &&
-        typeof sseEnqueuedPayload.pending_after === "number"
-      ) {
-        // SSE consumers must observe the same queue depth snapshot as JSON
-        // Lines clients, so `pending_after` mirrors the emitted `pending`
-        // counter for the enqueue telemetry.
-        expect(sseEnqueuedPayload.pending_after).to.equal(sseEnqueuedPayload.pending);
-      }
-      expect(typeof sseEnqueuedPayload.base_priority).to.equal("number");
+      expect(sseEnqueuedPayload.pending_before).to.equal(Math.max(0, sseEnqueuedPayload.pending - 1));
+      expect(sseEnqueuedPayload.pending_after).to.equal(sseEnqueuedPayload.pending);
       expect(sseEnqueuedPayload.batch_index).to.equal(null);
       expect(sseEnqueuedPayload.duration_ms).to.equal(null);
-      expect(typeof sseEnqueuedPayload.sequence).to.equal("number");
       expect(sseEnqueuedPayload.ticks_in_batch).to.equal(null);
-      const sseEnqueuedPending = sseEnqueuedPayload.pending as number;
-      const sseEnqueuedPendingBefore = sseEnqueuedPayload.pending_before as number;
-      const sseEnqueuedPendingAfter = sseEnqueuedPayload.pending_after as number;
-      const sseEnqueuedBasePriority = sseEnqueuedPayload.base_priority as number;
-      const sseEnqueuedSequence = sseEnqueuedPayload.sequence as number;
+      const sseEnqueuedPending = sseEnqueuedPayload.pending;
+      const sseEnqueuedPendingBefore = sseEnqueuedPayload.pending_before;
+      const sseEnqueuedPendingAfter = sseEnqueuedPayload.pending_after;
+      const sseEnqueuedBasePriority = sseEnqueuedPayload.base_priority;
+      const sseEnqueuedSequence = sseEnqueuedPayload.sequence;
 
-      const sseTickResultEvent = correlatedSseEvents.find((event) => {
-        const payload = (event.data ?? {}) as { msg?: string | null };
-        return payload.msg === "scheduler_tick_result";
-      });
+      const sseTickResultEvent = correlatedSseEvents.find(
+        (event) => isPlainObject(event.data) && event.data.msg === "scheduler_tick_result",
+      );
       expect(sseTickResultEvent, "SSE stream should include the tick telemetry").to.not.equal(undefined);
-      const sseTickPayload = (sseTickResultEvent?.data ?? {}) as {
-        status?: unknown;
-        msg?: unknown;
-        event_type?: unknown;
-        duration_ms?: unknown;
-        pending?: unknown;
-        pending_before?: unknown;
-        pending_after?: unknown;
-        base_priority?: unknown;
-        batch_index?: unknown;
-        ticks_in_batch?: unknown;
-        sequence?: unknown;
-      };
-      expect(sseTickPayload.status).to.equal("success");
+      if (!sseTickResultEvent || !isPlainObject(sseTickResultEvent.data)) {
+        throw new Error("scheduler_tick_result SSE payload should be present");
+      }
+      assertSchedulerTelemetryPayload(sseTickResultEvent.data, "sse scheduler_tick_result payload");
+      const sseTickPayload = sseTickResultEvent.data;
       expect(sseTickPayload.msg).to.equal("scheduler_tick_result");
       expect(sseTickPayload.event_type).to.equal("tick_result");
-      expect(typeof sseTickPayload.duration_ms).to.equal("number");
-      expect(typeof sseTickPayload.pending).to.equal("number");
-      expect(typeof sseTickPayload.pending_before).to.equal("number");
-      expect(typeof sseTickPayload.pending_after).to.equal("number");
-      expect(typeof sseTickPayload.base_priority).to.equal("number");
-      expect(typeof sseTickPayload.batch_index).to.equal("number");
-      expect(typeof sseTickPayload.ticks_in_batch).to.equal("number");
-      expect(typeof sseTickPayload.sequence).to.equal("number");
-      const sseTickPending = sseTickPayload.pending as number;
-      const sseTickPendingBefore = sseTickPayload.pending_before as number;
-      const sseTickPendingAfter = sseTickPayload.pending_after as number;
-      const sseTickBasePriority = sseTickPayload.base_priority as number;
-      const sseTickSequence = sseTickPayload.sequence as number;
-      const sseTickBatchIndex = sseTickPayload.batch_index as number;
-      const sseTickTicksInBatch = sseTickPayload.ticks_in_batch as number;
+      expect(sseTickPayload.status).to.equal("success");
+      expect(sseTickPayload.duration_ms).to.not.equal(null);
+      expect(sseTickPayload.batch_index).to.not.equal(null);
+      expect(sseTickPayload.ticks_in_batch).to.not.equal(null);
+      if (sseTickPayload.duration_ms === null || sseTickPayload.batch_index === null || sseTickPayload.ticks_in_batch === null) {
+        throw new Error("scheduler_tick_result SSE payload should expose duration and batch metrics");
+      }
+      const sseTickPending = sseTickPayload.pending;
+      const sseTickPendingBefore = sseTickPayload.pending_before;
+      const sseTickPendingAfter = sseTickPayload.pending_after;
+      const sseTickBasePriority = sseTickPayload.base_priority;
+      const sseTickSequence = sseTickPayload.sequence;
+      const sseTickBatchIndex = sseTickPayload.batch_index;
+      const sseTickTicksInBatch = sseTickPayload.ticks_in_batch;
 
       // Assert transport parity: the JSON Lines and SSE payloads must expose the
       // exact same scheduler metrics so downstream observers can rely on either

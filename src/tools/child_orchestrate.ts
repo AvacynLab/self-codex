@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import type { RequestHandlerExtra } from "@modelcontextprotocol/sdk/shared/protocol.js";
 import type { CallToolResult, ServerNotification, ServerRequest } from "@modelcontextprotocol/sdk/types.js";
 
-import type { ChildSupervisor, SendResult } from "../children/supervisor.js";
+import type { ChildSupervisorContract, SendResult } from "../children/supervisor.js";
 import type { ChildCollectedOutputs, ChildRuntimeMessage, ChildShutdownResult } from "../childRuntime.js";
 import type { Signal } from "../nodePrimitives.js";
 import { StructuredLogger } from "../logger.js";
@@ -61,7 +61,7 @@ export const ChildOrchestrateManifestDraft: ToolManifestDraft = {
 /** Dependencies required by {@link createChildOrchestrateHandler}. */
 export interface ChildOrchestrateToolContext {
   /** Supervisor coordinating child runtimes and exposing lifecycle helpers. */
-  readonly supervisor: ChildSupervisor;
+  readonly supervisor: ChildSupervisorContract;
   /** Structured logger fulfilling the observability requirements. */
   readonly logger: StructuredLogger;
   /** Optional idempotency registry replaying cached orchestration results. */

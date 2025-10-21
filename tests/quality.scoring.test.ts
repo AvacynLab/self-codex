@@ -1,6 +1,10 @@
 import { describe, it } from "mocha";
 import { expect } from "chai";
 
+import type {
+  ScoreCodeInput,
+  ScorePlanInput,
+} from "../src/quality/scoring.js";
 import { scoreCode, scorePlan, scoreText } from "../src/quality/scoring.js";
 
 describe("quality/scoring", () => {
@@ -34,8 +38,13 @@ describe("quality/scoring", () => {
   });
 
   it("rejects invalid numeric ranges", () => {
-    expect(() => scoreCode({ testsPassed: -1 } as unknown as any)).to.throw();
-    expect(() => scorePlan({ coherence: 2 } as unknown as any)).to.throw();
+    const invalidCodeInput: ScoreCodeInput = { testsPassed: -1 };
+    const invalidPlanInput: ScorePlanInput = { coherence: 2 };
+
+    // The helpers should surface validation failures for out-of-range values
+    // instead of accepting them silently via unsafe casts.
+    expect(() => scoreCode(invalidCodeInput)).to.throw();
+    expect(() => scorePlan(invalidPlanInput)).to.throw();
   });
 
   it("scores plans by balancing coverage and risk", () => {

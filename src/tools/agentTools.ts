@@ -1,11 +1,11 @@
 import { z } from "zod";
 
-import { Autoscaler } from "../agents/autoscaler.js";
+import type { AutoscalerContract } from "../agents/autoscaler.js";
 import { StructuredLogger } from "../logger.js";
 
 /** Context provided to agent management tools. */
 export interface AgentToolContext {
-  autoscaler: Autoscaler;
+  autoscaler: AutoscalerContract;
   logger: StructuredLogger;
 }
 
@@ -32,9 +32,12 @@ export const AgentAutoscaleSetInputSchema = AgentAutoscaleSetInputBase.superRefi
 
 export const AgentAutoscaleSetInputShape = AgentAutoscaleSetInputBase.shape;
 
-export interface AgentAutoscaleSetResult {
+export interface AgentAutoscaleSetResult extends Record<string, unknown> {
+  /** Minimum number of runtimes retained by the autoscaler. */
   min: number;
+  /** Maximum concurrent runtimes allowed after the update. */
   max: number;
+  /** Cooldown window, in milliseconds, applied between scaling operations. */
   cooldown_ms: number;
 }
 

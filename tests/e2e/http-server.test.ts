@@ -3,7 +3,7 @@ import { expect } from "chai";
 
 import { __httpServerInternals } from "../../src/httpServer.js";
 import { StructuredLogger } from "../../src/logger.js";
-import { MemoryHttpResponse, createJsonRpcRequest } from "../helpers/http.js";
+import { MemoryHttpResponse, createHttpRequest, createJsonRpcRequest } from "../helpers/http.js";
 
 describe("http server helpers", () => {
   const logger = new StructuredLogger();
@@ -18,10 +18,10 @@ describe("http server helpers", () => {
     });
 
     it("rejects requests that omit the bearer token", () => {
-      const request = { headers: {} } as Parameters<typeof __httpServerInternals.enforceBearerToken>[0];
+      const request = createHttpRequest("GET", "/health", {});
       const response = new MemoryHttpResponse();
 
-      const allowed = __httpServerInternals.enforceBearerToken(request, response as any, logger);
+      const allowed = __httpServerInternals.enforceBearerToken(request, response, logger, "reject-missing");
 
       expect(allowed).to.equal(false);
       expect(response.statusCode).to.equal(401);
@@ -30,12 +30,10 @@ describe("http server helpers", () => {
     });
 
     it("accepts matching bearer tokens", () => {
-      const request = {
-        headers: { authorization: "Bearer secret" },
-      } as unknown as Parameters<typeof __httpServerInternals.enforceBearerToken>[0];
+      const request = createHttpRequest("GET", "/health", { authorization: "Bearer secret" });
       const response = new MemoryHttpResponse();
 
-      const allowed = __httpServerInternals.enforceBearerToken(request, response as any, logger);
+      const allowed = __httpServerInternals.enforceBearerToken(request, response, logger, "accept-matching");
 
       expect(allowed).to.equal(true);
       expect(response.headersSent).to.equal(false);
@@ -62,12 +60,7 @@ describe("http server helpers", () => {
         return { jsonrpc: "2.0", id: payload.id, result: { ok: true } };
       };
 
-      const handled = await __httpServerInternals.tryHandleJsonRpc(
-        request,
-        response as any,
-        logger,
-        delegate,
-      );
+      const handled = await __httpServerInternals.tryHandleJsonRpc(request, response, logger, delegate);
 
       expect(handled).to.equal(true);
       expect(response.statusCode).to.equal(200);

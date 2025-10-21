@@ -56,8 +56,18 @@ class StubChildProcess extends EventEmitter implements ChildProcessWithoutNullSt
   }
 
   // The IPC channel is not required for these tests.
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  override send(_message: unknown, _sendHandle?: unknown, _options?: unknown, _callback?: ((error: Error | null) => void) | undefined): boolean {
+  override send(
+    message: unknown,
+    sendHandle?: unknown,
+    options?: unknown,
+    callback?: ((error: Error | null) => void) | undefined,
+  ): boolean {
+    // Deliberately mark every parameter as consumed to satisfy
+    // `noUnusedParameters` while keeping the runtime-compatible signature.
+    void message;
+    void sendHandle;
+    void options;
+    void callback;
     throw new Error("IPC channel not available in StubChildProcess");
   }
 

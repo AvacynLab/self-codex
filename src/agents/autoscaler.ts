@@ -86,6 +86,25 @@ export interface AutoscalerEventInput {
 }
 
 /**
+ * Contract satisfied by autoscaler implementations registered in the plan tool
+ * context. The interface keeps tests lightweight by allowing specialised
+ * doubles to stand in for the production class without resorting to unsafe
+ * casts.
+ */
+export interface AutoscalerContract extends LoopReconciler {
+  /** Identifier surfaced in execution loop diagnostics and lifecycle events. */
+  readonly id: string;
+  /** Returns the currently applied configuration snapshot. */
+  getConfiguration(): AutoscalerConfig;
+  /** Applies a partial configuration update while enforcing invariants. */
+  configure(next: Partial<AutoscalerConfig>): AutoscalerConfig;
+  /** Records the backlog depth observed after a scheduler tick. */
+  updateBacklog(backlog: number): void;
+  /** Records the outcome of a task execution sampled by the scheduler. */
+  recordTaskResult(sample: { durationMs: number; success: boolean }): void;
+}
+
+/**
  * Builds correlation hints from a child snapshot already registered in the index.
  * The helper keeps explicit `null` overrides while defaulting to the known
  * `childId` when metadata does not surface one.
@@ -146,7 +165,7 @@ const DEFAULT_THRESHOLDS: AutoscalerThresholds = {
  * rate. Decisions obey hard bounds (`minChildren`/`maxChildren`) and a cooldown
  * period to avoid oscillations.
  */
-export class Autoscaler implements LoopReconciler {
+export class Autoscaler implements AutoscalerContract {
   /** Identifier surfaced in execution loop diagnostics and lifecycle events. */
   public readonly id = "autoscaler";
 

@@ -8,19 +8,19 @@ import {
   mergeCorrelationHints,
   type EventCorrelationHints,
 } from "./correlation.js";
+import type {
+  ChildMetaReviewEventPayload,
+  ChildReflectionEventPayload,
+  ChildCognitiveEventPayload,
+  QualityAssessmentSnapshot,
+} from "./types.js";
 
-/**
- * Snapshot describing the quality gate computation associated with a child
- * collection. The structure mirrors the enriched object produced by the
- * orchestrator when the meta critic scores an output.
- */
-export interface QualityAssessmentSnapshot {
-  kind: ReviewKind;
-  score: number;
-  rubric: Record<string, number>;
-  metrics: Record<string, number>;
-  gate: { enabled: boolean; threshold: number; needs_revision: boolean };
-}
+export type {
+  ChildCognitiveEventPayload,
+  ChildMetaReviewEventPayload,
+  ChildReflectionEventPayload,
+  QualityAssessmentSnapshot,
+} from "./types.js";
 
 /**
  * Input required to build structured cognitive events for a child collection.
@@ -47,19 +47,19 @@ export interface ChildCognitiveEventOptions {
 }
 
 /** Structured payload returned for a cognitive event ready to be published. */
-export interface CognitiveEventRecord {
+export interface CognitiveEventRecord<P extends ChildCognitiveEventPayload = ChildCognitiveEventPayload> {
   kind: Extract<EventKind, "COGNITIVE">;
   level: EventLevel;
   childId: string;
   jobId?: string | null;
-  payload: Record<string, unknown>;
+  payload: P;
   correlation: EventCorrelationHints;
 }
 
 /** Pair of cognitive events derived from a single child collection. */
 export interface ChildCognitiveEvents {
-  review: CognitiveEventRecord;
-  reflection: CognitiveEventRecord | null;
+  review: CognitiveEventRecord<ChildMetaReviewEventPayload>;
+  reflection: CognitiveEventRecord<ChildReflectionEventPayload> | null;
 }
 
 /**
@@ -105,16 +105,21 @@ export function buildChildCognitiveEvents(options: ChildCognitiveEventOptions): 
     jobId: options.jobId ?? null,
   } satisfies Pick<CognitiveEventRecord, "kind" | "level" | "childId" | "jobId">;
 
-  const basePayloadFields = {
+  type SharedCorrelationFields = Pick<
+    ChildMetaReviewEventPayload,
+    "child_id" | "job_id" | "run_id" | "op_id" | "graph_id" | "node_id"
+  >;
+
+  const basePayloadFields: SharedCorrelationFields = {
     child_id: options.childId,
     job_id: options.jobId ?? null,
     run_id: baseCorrelation.runId ?? null,
     op_id: baseCorrelation.opId ?? null,
     graph_id: baseCorrelation.graphId ?? null,
     node_id: baseCorrelation.nodeId ?? null,
-  } as const;
+  };
 
-  const reviewPayload: Record<string, unknown> = {
+  const reviewPayload: ChildMetaReviewEventPayload = {
     ...basePayloadFields,
     msg: "child_meta_review",
     summary: {
@@ -144,15 +149,15 @@ export function buildChildCognitiveEvents(options: ChildCognitiveEventOptions): 
       : null,
   };
 
-  const reviewEvent: CognitiveEventRecord = {
+  const reviewEvent: CognitiveEventRecord<ChildMetaReviewEventPayload> = {
     ...sharedEnvelope,
     payload: reviewPayload,
     correlation: cloneCorrelationHints(baseCorrelation),
   };
 
-  let reflectionEvent: CognitiveEventRecord | null = null;
+  let reflectionEvent: CognitiveEventRecord<ChildReflectionEventPayload> | null = null;
   if (options.reflection) {
-    const reflectionPayload: Record<string, unknown> = {
+    const reflectionPayload: ChildReflectionEventPayload = {
       ...basePayloadFields,
       msg: "child_reflection",
       summary: {
