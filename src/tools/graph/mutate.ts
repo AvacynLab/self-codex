@@ -522,13 +522,14 @@ export function handleGraphRewriteApply(input: GraphRewriteApplyInput): GraphRew
     const evaluation = mapAdaptiveEvaluation(input.evaluation);
     stopOnNoChange = adaptiveOptions?.stop_on_no_change ?? true;
     const avoidLabels = toTrimmedStringList(adaptiveOptions?.avoid_labels);
+    const rewriteOptions = {
+      stopOnNoChange,
+      ...(avoidLabels ? { avoidLabels } : {}),
+    } as const;
     const { graph: rewritten, history: rewriteHistory } = applyAdaptiveRewrites(
       descriptor,
       evaluation,
-      {
-        stopOnNoChange,
-        avoidLabels: avoidLabels ?? undefined,
-      },
+      rewriteOptions,
     );
     rewrittenGraph = rewritten;
     history = rewriteHistory;
@@ -568,7 +569,7 @@ function deriveTasks(input: GraphGenerateInput, context?: GraphGenerationContext
   }
 
   const knowledgeEnabled = context?.knowledgeEnabled ?? true;
-  const knowledgeGraph = knowledgeEnabled ? context?.knowledgeGraph ?? undefined : undefined;
+  const knowledgeGraph = knowledgeEnabled ? context?.knowledgeGraph : undefined;
 
   if (knowledgeGraph) {
     const pattern = knowledgeGraph.buildPlanPattern(input.name);

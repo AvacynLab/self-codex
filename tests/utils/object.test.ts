@@ -1,6 +1,6 @@
 import { strict as assert } from "node:assert";
 
-import { omitUndefinedEntries } from "../../src/utils/object.js";
+import { coerceNullToUndefined, omitUndefinedEntries } from "../../src/utils/object.js";
 
 describe("utils/object", () => {
   describe("omitUndefinedEntries", () => {
@@ -30,6 +30,23 @@ describe("utils/object", () => {
 
       assert.deepEqual(compacted, { nested });
       assert.strictEqual(compacted.nested, nested);
+    });
+  });
+
+  describe("coerceNullToUndefined", () => {
+    it("returns undefined for null inputs", () => {
+      assert.strictEqual(coerceNullToUndefined(null), undefined);
+    });
+
+    it("preserves defined values without cloning", () => {
+      const payload = { marker: true };
+      assert.strictEqual(coerceNullToUndefined(payload), payload);
+      assert.strictEqual(coerceNullToUndefined("value"), "value");
+      assert.strictEqual(coerceNullToUndefined(42), 42);
+    });
+
+    it("keeps explicit undefined untouched", () => {
+      assert.strictEqual(coerceNullToUndefined(undefined), undefined);
     });
   });
 });

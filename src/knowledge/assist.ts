@@ -1,4 +1,5 @@
 import type { HierGraph } from "../graph/hierarchy.js";
+import { coerceNullToUndefined } from "../utils/object.js";
 import type {
   KnowledgeGraph,
   KnowledgePlanPattern,
@@ -315,7 +316,7 @@ function buildFragment(
     return {
       id: task.id,
       kind: "task" as const,
-      label: task.label ?? undefined,
+      label: coerceNullToUndefined(task.label),
       attributes,
     };
   });

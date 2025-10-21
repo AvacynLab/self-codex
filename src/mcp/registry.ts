@@ -15,6 +15,7 @@ import { z } from "zod";
 import { StructuredLogger } from "../logger.js";
 import { readOptionalString } from "../config/env.js";
 import { ensureParentDirectory, sanitizeFilename } from "../paths.js";
+import { coerceNullToUndefined } from "../utils/object.js";
 import {
   evaluateToolDeprecation,
   getRegisteredToolDeprecation,
@@ -641,7 +642,7 @@ export class ToolRegistry {
       category: resolvedCategory,
       tags,
       hidden,
-      deprecated: deprecationState.metadata ?? undefined,
+      deprecated: coerceNullToUndefined(deprecationState.metadata),
       budgets,
       steps: draft.steps ? cloneJson(draft.steps) : undefined,
       inputs: draft.inputs ? [...draft.inputs] : undefined,
@@ -898,7 +899,7 @@ export class ToolRegistry {
             id: step.id,
             tool: step.tool,
             is_error: result.isError === true,
-            structured: structured ?? undefined,
+            structured: coerceNullToUndefined(structured),
             content: result.content,
           });
         }

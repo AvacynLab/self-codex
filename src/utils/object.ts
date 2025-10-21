@@ -23,3 +23,13 @@ export function omitUndefinedEntries<
   }
   return result;
 }
+
+/**
+ * Collapses nullable values to `undefined` so they can be omitted by
+ * {@link omitUndefinedEntries}. This is useful when callers surface `null`
+ * placeholders but downstream consumers expect properties to disappear
+ * entirely when no concrete value is available.
+ */
+export function coerceNullToUndefined<T>(value: T | null | undefined): T | undefined {
+  return value === null ? undefined : value;
+}

@@ -2,6 +2,24 @@ import { strict as assert } from "node:assert";
 import { EventEmitter } from "node:events";
 // NOTE: Node built-in modules are imported with the explicit `node:` prefix to guarantee ESM resolution in Node.js.
 const DEFAULT_THRESHOLD = 0.6;
+/**
+ * Hard safety limits applied to value graph operations. The caps keep the
+ * in-memory representation predictable so hostile configurations cannot blow
+ * through memory (for instance by loading tens of thousands of values or
+ * impacts in a single plan evaluation).
+ */
+export const VALUE_GRAPH_LIMITS = Object.freeze({
+    /** Maximum number of values accepted in a single configuration update. */
+    maxValues: 128,
+    /** Global cap on relationships across every value. */
+    maxRelationships: 2048,
+    /** Maximum number of outgoing relationships per value. */
+    maxRelationshipsPerValue: 64,
+    /** Maximum number of impacts processed when scoring a plan. */
+    maxImpactsPerPlan: 256,
+    /** Highest allowed weight for a single value (arbitrary large values offer no benefit). */
+    maxValueWeight: 100,
+});
 /** Deterministic helper capping a number within the inclusive `[min, max]` range. */
 function clamp(value, min, max) {
     if (!Number.isFinite(value)) {
@@ -31,7 +49,7 @@ function normaliseWeight(weight) {
     if (weight === undefined) {
         return 1;
     }
-    const clamped = clamp(weight, 0, Number.POSITIVE_INFINITY);
+    const clamped = clamp(weight, 0, VALUE_GRAPH_LIMITS.maxValueWeight);
     return clamped === 0 ? 1 : clamped;
 }
 /** Normalises relationship weights to the `[0, 1]` interval. */
@@ -114,15 +132,17 @@ export class ValueGraph {
     /** Replace the entire graph configuration with the provided specification. */
     set(config) {
         assert(config.values.length > 0, "value graph requires at least one value definition");
-        this.nodes.clear();
-        this.adjacency.clear();
+        if (config.values.length > VALUE_GRAPH_LIMITS.maxValues) {
+            throw new RangeError(`value graph supports at most ${VALUE_GRAPH_LIMITS.maxValues} values per configuration (received ${config.values.length})`);
+        }
+        const nextNodes = new Map();
         for (const value of config.values) {
             assert(value.id.trim().length > 0, "value id must not be empty");
             const id = value.id.trim();
-            if (this.nodes.has(id)) {
+            if (nextNodes.has(id)) {
                 throw new Error(`duplicate value id '${id}' in configuration`);
             }
-            this.nodes.set(id, {
+            nextNodes.set(id, {
                 id,
                 label: value.label?.trim() || undefined,
                 description: value.description?.trim() || undefined,
@@ -130,14 +150,16 @@ export class ValueGraph {
                 tolerance: normaliseTolerance(value.tolerance),
             });
         }
+        const nextAdjacency = new Map();
+        let relationshipCount = 0;
         if (config.relationships) {
             for (const relationship of config.relationships) {
                 const from = relationship.from.trim();
                 const to = relationship.to.trim();
-                if (!this.nodes.has(from)) {
+                if (!nextNodes.has(from)) {
                     throw new Error(`relationship source '${from}' is not declared as a value`);
                 }
-                if (!this.nodes.has(to)) {
+                if (!nextNodes.has(to)) {
                     throw new Error(`relationship target '${to}' is not declared as a value`);
                 }
                 if (from === to) {
@@ -152,11 +174,27 @@ export class ValueGraph {
                 if (entry.weight === 0) {
                     continue; // Zero-weight edges would not influence the score anyway.
                 }
-                const bucket = ensureRecord(this.adjacency, entry.from, () => []);
+                if (relationshipCount + 1 > VALUE_GRAPH_LIMITS.maxRelationships) {
+                    throw new RangeError(`value graph supports at most ${VALUE_GRAPH_LIMITS.maxRelationships} relationships (received ${relationshipCount + 1})`);
+                }
+                const bucket = ensureRecord(nextAdjacency, entry.from, () => []);
+                if (bucket.length >= VALUE_GRAPH_LIMITS.maxRelationshipsPerValue) {
+                    throw new RangeError(`value '${entry.from}' declares more than ${VALUE_GRAPH_LIMITS.maxRelationshipsPerValue} outgoing relationships (received ${bucket.length + 1})`);
+                }
                 bucket.push(entry);
+                relationshipCount += 1;
             }
         }
-        this.defaultThreshold = clamp(config.defaultThreshold ?? this.defaultThreshold, 0, 1);
+        const nextDefaultThreshold = clamp(config.defaultThreshold ?? this.defaultThreshold, 0, 1);
+        this.nodes.clear();
+        this.adjacency.clear();
+        for (const [id, node] of nextNodes) {
+            this.nodes.set(id, node);
+        }
+        for (const [source, edges] of nextAdjacency) {
+            this.adjacency.set(source, edges);
+        }
+        this.defaultThreshold = nextDefaultThreshold;
         this.version += 1;
         const summary = {
             version: this.version,
@@ -325,6 +363,9 @@ export class ValueGraph {
     }
     /** Compute the full evaluation for a plan, including intermediate metrics. */
     evaluatePlan(input) {
+        if (input.impacts.length > VALUE_GRAPH_LIMITS.maxImpactsPerPlan) {
+            throw new RangeError(`value graph can only evaluate up to ${VALUE_GRAPH_LIMITS.maxImpactsPerPlan} impacts per plan (received ${input.impacts.length})`);
+        }
         const perValue = new Map();
         for (const node of this.nodes.values()) {
             perValue.set(node.id, { node, support: 0, risk: 0, contributions: [] });

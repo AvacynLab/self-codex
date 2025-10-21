@@ -145,4 +145,72 @@ describe("performance validation CLI", () => {
     expect(mergedOptions.performance?.toolName).to.equal("echo");
     expect(mergedOptions.performance?.logPath).to.equal("logs/custom.log");
   });
+
+  it("omits performance overrides when CLI flags are absent", async () => {
+    const logger = { log: () => undefined };
+    const captured: PerformancePhaseOptions[] = [];
+
+    const summary = {
+      artefacts: {
+        inputsJsonl: "inputs.jsonl",
+        outputsJsonl: "outputs.jsonl",
+        eventsJsonl: "events.jsonl",
+        httpSnapshotLog: "log.json",
+      },
+      latency: {
+        label: null,
+        toolName: null,
+        samples: 0,
+        averageMs: null,
+        minMs: null,
+        maxMs: null,
+        p50Ms: null,
+        p95Ms: null,
+        p99Ms: null,
+      },
+      concurrency: { groups: [] },
+      logs: {
+        path: null,
+        existedBefore: false,
+        existedAfter: false,
+        sizeBeforeBytes: null,
+        sizeAfterBytes: null,
+        growthBytes: null,
+        rotated: false,
+      },
+    } as const;
+
+    const overrides = {
+      runner: async (
+        runRoot: string,
+        _environment: unknown,
+        options: PerformancePhaseOptions,
+      ): Promise<PerformancePhaseResult> => {
+        captured.push(structuredClone(options));
+        const summaryPath = join(runRoot, "report", "perf_summary.json");
+        await writeFile(summaryPath, JSON.stringify(summary, null, 2));
+        return {
+          outcomes: [],
+          summary,
+          summaryPath,
+          logBefore: { exists: false, size: 0, mtimeMs: 0 },
+          logAfter: { exists: false, size: 0, mtimeMs: 0 },
+        };
+      },
+    };
+
+    await executePerformanceCli(
+      { baseDir: workingDir, runId: "no-overrides" },
+      {
+        MCP_HTTP_HOST: "127.0.0.1",
+        MCP_HTTP_PORT: "9000",
+        MCP_HTTP_PATH: "/mcp",
+      } as NodeJS.ProcessEnv,
+      logger,
+      overrides,
+    );
+
+    const [options] = captured;
+    expect(options.performance).to.equal(undefined);
+  });
 });

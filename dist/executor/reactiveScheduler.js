@@ -1,4 +1,5 @@
 import { EventEmitter } from "node:events";
+import { coerceNullToUndefined } from "../utils/object.js";
 /**
  * Event bus used by the scheduler and external components to exchange signals.
  * The API mirrors Node's {@link EventEmitter} while providing type inference on
@@ -207,7 +208,7 @@ export class ReactiveScheduler {
             payload,
             enqueuedAt: this.now(),
             basePriority: this.computeBasePriority(event, payload),
-            causalEventId: this.recordCausalEvent(`scheduler.event.${event}`, this.serialiseEventPayload(event, payload), this.buildCauses(this.lastTickResultEventId)) ?? undefined,
+            causalEventId: coerceNullToUndefined(this.recordCausalEvent(`scheduler.event.${event}`, this.serialiseEventPayload(event, payload), this.buildCauses(this.lastTickResultEventId))),
         };
         this.sequence += 1;
         const pendingBefore = this.queue.length;

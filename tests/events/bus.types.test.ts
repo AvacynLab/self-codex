@@ -160,7 +160,7 @@ describe("events/bus type safety", () => {
       msg: reviewPayload.msg,
       data: reviewPayload,
       childId: reviewPayload.child_id,
-      jobId: reviewPayload.job_id ?? undefined,
+      jobId: reviewPayload.job_id,
     });
 
     expect(reviewEnvelope.msg).to.equal("child_meta_review");
@@ -191,7 +191,7 @@ describe("events/bus type safety", () => {
       msg: reflectionPayload.msg,
       data: reflectionPayload,
       childId: reflectionPayload.child_id,
-      jobId: reflectionPayload.job_id ?? undefined,
+      jobId: reflectionPayload.job_id,
     });
 
     expect(reflectionEnvelope.msg).to.equal("child_reflection");

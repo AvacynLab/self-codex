@@ -195,6 +195,14 @@ describe("robustness validation runner", () => {
     // With `exactOptionalPropertyTypes` prepared we should not serialise
     // undefined values: the message key disappears when absent upstream.
     expect(Object.prototype.hasOwnProperty.call(result.summary.timeout ?? {}, "message")).to.equal(false);
+    const idempotencyChecks = result.summary.checks.filter((check) =>
+      check.name.includes("idempotency:tx_begin"),
+    );
+    // Optional per-call metadata should likewise vanish when the backend does
+    // not expose the idempotency token we are probing for.
+    for (const check of idempotencyChecks) {
+      expect(Object.prototype.hasOwnProperty.call(check, "idempotencyKey")).to.equal(false);
+    }
   });
 
   it("fails when required error responses do not expose the expected status codes", async () => {

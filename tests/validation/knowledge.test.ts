@@ -213,4 +213,18 @@ describe("knowledge validation runner", () => {
     expect(error).to.be.instanceOf(Error);
     expect((error as Error).message).to.contain("kg_get_subgraph returned");
   });
+
+  it("omits undefined optional fields from the knowledge summary", () => {
+    const summary = buildKnowledgeSummary(runRoot, [], {
+      valuesGraphExportPath: null,
+      causalExportPath: null,
+    });
+
+    expect(Object.prototype.hasOwnProperty.call(summary.knowledge, "assistQuery")).to.equal(false);
+    expect(Object.prototype.hasOwnProperty.call(summary.knowledge, "planTitle")).to.equal(false);
+    expect(Object.prototype.hasOwnProperty.call(summary.knowledge, "planSteps")).to.equal(false);
+    expect(summary.values.explanationConsistent).to.equal(false);
+    expect(Object.prototype.hasOwnProperty.call(summary.values, "topic")).to.equal(false);
+    expect(Object.prototype.hasOwnProperty.call(summary.values, "citationCount")).to.equal(false);
+  });
 });

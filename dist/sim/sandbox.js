@@ -219,7 +219,6 @@ function normaliseError(error) {
     const message = typeof error === "string" ? error : JSON.stringify(error);
     return { name: "SandboxError", message };
 }
-// -- Internal helpers -----------------------------------------------------
 function cloneValue(value) {
     const structuredCloneFn = typeof globalThis.structuredClone === "function"
         ? globalThis.structuredClone

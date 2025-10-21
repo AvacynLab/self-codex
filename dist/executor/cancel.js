@@ -1,4 +1,6 @@
 import { EventEmitter } from "node:events";
+// NOTE: Node built-in modules are imported with the explicit `node:` prefix to guarantee ESM resolution in Node.js.
+import { coerceNullToUndefined } from "../utils/object.js";
 /** Event emitted whenever a cancellation is requested. */
 const EVENT_CANCELLED = "cancelled";
 /** Shared emitter used to fan-out cancellation notifications. */
@@ -65,7 +67,7 @@ export function registerCancellation(opId, options = {}) {
         createdAt,
         cancelledAt: null,
         reason: null,
-        handle: undefined,
+        handle: null,
     };
     const handle = {
         get opId() {
@@ -129,6 +131,8 @@ export function registerCancellation(opId, options = {}) {
             });
         },
     };
+    // The handle is assigned after construction so the registry always exposes a
+    // fully initialised structure when accessed through {@link getCancellation}.
     entry.handle = handle;
     operations.set(opId, entry);
     if (runId) {
@@ -141,7 +145,8 @@ export function registerCancellation(opId, options = {}) {
 }
 /** Retrieve a handle previously registered with {@link registerCancellation}. */
 export function getCancellation(opId) {
-    return operations.get(opId)?.handle;
+    const handle = operations.get(opId)?.handle;
+    return coerceNullToUndefined(handle);
 }
 /** Remove the bookkeeping for an operation once it settles. */
 export function unregisterCancellation(opId) {

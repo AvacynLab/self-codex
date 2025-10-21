@@ -5,6 +5,8 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { ChildSupervisor } from "../src/children/supervisor.js";
+import type { ChildSupervisorContract } from "../src/children/supervisor.js";
+import type { ChildRecordSnapshot } from "../src/state/childrenIndex.js";
 import {
   ChildCancelInputSchema,
   ChildCollectInputSchema,
@@ -28,6 +30,7 @@ import { StructuredLogger } from "../src/logger.js";
 import { writeArtifact } from "../src/artifacts.js";
 import { SandboxRegistry, setSandboxRegistry } from "../src/sim/sandbox.js";
 import { LoopDetector } from "../src/guard/loopDetector.js";
+import type { LoopInteractionSample } from "../src/guard/loopDetector.js";
 import { ContractNetCoordinator } from "../src/coord/contractNet.js";
 import { resolveFixture, runnerArgs } from "./helpers/childRunner.js";
 import { expectChildRuntimeMessageType, hasChildRuntimeMessageType } from "./helpers/childRuntime.js";
@@ -609,4 +612,135 @@ describe("child tool handlers", function () {
       }
     }
   });
+
+  it("omits loop task identifiers when metadata does not expose them", async () => {
+    const { samples } = await executeLoopSampleWithMetadata({});
+
+    expect(samples).to.have.length(1);
+    const [sample] = samples;
+    expect(sample.childId).to.equal("child-loop-test");
+    expect(sample.taskType).to.equal("child_send");
+    expect("taskId" in sample).to.equal(false);
+  });
+
+  it("records loop task identifiers when metadata surfaces one", async () => {
+    const { samples } = await executeLoopSampleWithMetadata({ task_id: "plan-42" });
+
+    expect(samples).to.have.length(1);
+    const [sample] = samples;
+    expect(sample.taskId).to.equal("plan-42");
+  });
 });
+
+/**
+ * Runs `handleChildSend` with a lightweight supervisor stub so we can capture
+ * the loop detector samples without spawning real child processes.
+ */
+async function executeLoopSampleWithMetadata(metadata: Record<string, unknown>): Promise<{
+  samples: LoopInteractionSample[];
+}> {
+  const childSnapshot: ChildRecordSnapshot = {
+    childId: "child-loop-test",
+    pid: 1234,
+    workdir: "/tmp/child-loop-test",
+    state: "ready",
+    startedAt: Date.now(),
+    lastHeartbeatAt: null,
+    retries: 0,
+    metadata,
+    endedAt: null,
+    exitCode: null,
+    exitSignal: null,
+    forcedTermination: false,
+    stopReason: null,
+    role: null,
+    limits: null,
+    attachedAt: null,
+  };
+
+  const supervisor: ChildSupervisorContract = {
+    childrenIndex: {
+      list: () => [childSnapshot],
+      getChild: () => childSnapshot,
+    },
+    createChildId: () => childSnapshot.childId,
+    createChild: async () => {
+      throw new Error("createChild should not be called in loop sample tests");
+    },
+    registerHttpChild: async () => {
+      throw new Error("registerHttpChild should not be called in loop sample tests");
+    },
+    getHttpEndpoint: () => null,
+    status: () => {
+      throw new Error("status should not be called in loop sample tests");
+    },
+    send: async () => ({ messageId: "msg-loop", sentAt: Date.now() }),
+    waitForMessage: async () => {
+      throw new Error("waitForMessage should not be called in loop sample tests");
+    },
+    collect: async () => {
+      throw new Error("collect should not be called in loop sample tests");
+    },
+    stream: () => ({
+      childId: childSnapshot.childId,
+      totalMessages: 0,
+      matchedMessages: 0,
+      hasMore: false,
+      nextCursor: null,
+      messages: [],
+    }),
+    attachChild: async () => {
+      throw new Error("attachChild should not be called in loop sample tests");
+    },
+    setChildRole: async () => {
+      throw new Error("setChildRole should not be called in loop sample tests");
+    },
+    setChildLimits: async () => {
+      throw new Error("setChildLimits should not be called in loop sample tests");
+    },
+    cancel: async () => {
+      throw new Error("cancel should not be called in loop sample tests");
+    },
+    kill: async () => {
+      throw new Error("kill should not be called in loop sample tests");
+    },
+    waitForExit: async () => {
+      throw new Error("waitForExit should not be called in loop sample tests");
+    },
+    gc: () => {
+      throw new Error("gc should not be called in loop sample tests");
+    },
+    getAllowedTools: () => [],
+  };
+
+  const recordedSamples: LoopInteractionSample[] = [];
+  const loopDetector = {
+    recordInteraction: (sample: LoopInteractionSample) => {
+      recordedSamples.push(sample);
+      return null;
+    },
+    recordTaskObservation: () => undefined,
+  } as unknown as LoopDetector;
+
+  const logger = {
+    info: () => undefined,
+    warn: () => undefined,
+    logCognitive: () => undefined,
+  } as unknown as StructuredLogger;
+
+  const context: ChildToolContext = {
+    supervisor,
+    logger,
+    loopDetector,
+  };
+
+  await handleChildSend(
+    context,
+    ChildSendInputSchema.parse({
+      child_id: childSnapshot.childId,
+      payload: { type: "prompt", content: "loop test" },
+    }),
+  );
+
+  return { samples: recordedSamples };
+}

@@ -550,7 +550,11 @@ export class TimeoutNode {
     resolveBudget(runtime) {
         const { category, complexityScore } = this.options;
         if (category && runtime.recommendTimeout) {
-            const recommended = runtime.recommendTimeout(category, complexityScore ?? undefined, this.fallbackTimeoutMs ?? undefined);
+            const complexitySource = complexityScore;
+            const complexityArg = complexitySource === null || complexitySource === undefined ? undefined : complexitySource;
+            const fallbackSource = this.fallbackTimeoutMs;
+            const fallbackArg = fallbackSource === null ? undefined : fallbackSource;
+            const recommended = runtime.recommendTimeout(category, complexityArg, fallbackArg);
             if (recommended !== undefined && Number.isFinite(recommended) && recommended > 0) {
                 return Math.round(recommended);
             }

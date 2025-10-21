@@ -703,7 +703,7 @@ async function tryHandleJsonRpc(
           cacheKey !== null,
           logger,
           requestId,
-          cacheKey ?? undefined,
+          cacheKey === null ? undefined : cacheKey,
           idempotency,
         );
         logJsonRpcOutcome(logger, "info", {
@@ -859,7 +859,7 @@ async function respondWithJsonRpcError(
     shouldPersist,
     logger,
     httpRequestId,
-    shouldPersist ? (cacheKey ?? undefined) : undefined,
+    shouldPersist ? (cacheKey === null ? undefined : cacheKey) : undefined,
     idempotency,
   );
   const cacheStatus: JsonRpcOutcomeDetails["cacheStatus"] = shouldPersist ? "miss" : "bypass";

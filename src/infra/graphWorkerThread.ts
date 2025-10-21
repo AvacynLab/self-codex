@@ -27,7 +27,11 @@ type GraphWorkerMessage = GraphWorkerSuccessMessage | GraphWorkerErrorMessage;
 
 function serialiseError(error: unknown): GraphWorkerErrorMessage["error"] {
   if (error instanceof Error) {
-    return { name: error.name ?? "Error", message: error.message, stack: error.stack ?? undefined };
+    return {
+      name: error.name ?? "Error",
+      message: error.message,
+      stack: typeof error.stack === "string" ? error.stack : undefined,
+    };
   }
   return { name: "Error", message: typeof error === "string" ? error : JSON.stringify(error) };
 }

@@ -32,10 +32,17 @@ const SENSITIVE_KEYS = new Set([
  * redaction when custom patterns are provided without an explicit toggle.
  */
 export function parseRedactionDirectives(raw) {
-    if (!raw) {
+    // Redaction is enabled by default so deployments redact secrets out of the
+    // box. Operators can still opt out explicitly (for instance during local
+    // debugging sessions) by providing a disabling directive or an empty value.
+    if (raw === undefined) {
+        return { enabled: true, tokens: [] };
+    }
+    const trimmed = raw.trim();
+    if (trimmed.length === 0) {
         return { enabled: false, tokens: [] };
     }
-    const directives = raw
+    const directives = trimmed
         .split(",")
         .map((value) => value.trim())
         .filter((value) => value.length > 0);
@@ -57,7 +64,7 @@ export function parseRedactionDirectives(raw) {
         tokens.push(directive);
     }
     if (enabled === undefined) {
-        enabled = tokens.length > 0;
+        enabled = true;
     }
     // Deduplicate tokens while preserving insertion order. Operators occasionally
     // repeat the same pattern (for example when composing shell snippets) and we
@@ -95,7 +102,8 @@ export class StructuredLogger {
     /** Whether automatic header redaction is enabled via environment variable. */
     redactionEnabled;
     constructor(options = {}) {
-        this.logFile = options.logFile ?? undefined;
+        const logFile = options.logFile;
+        this.logFile = logFile === null ? undefined : logFile;
         this.maxFileSizeBytes = options.maxFileSizeBytes ?? DEFAULT_MAX_FILE_SIZE;
         this.maxFileCount = Math.max(1, options.maxFileCount ?? DEFAULT_MAX_FILE_COUNT);
         const directives = parseRedactionDirectives(readOptionalString("MCP_LOG_REDACT", { allowEmpty: true }));
@@ -133,7 +141,7 @@ export class StructuredLogger {
             child_id: event.childId ?? null,
             phase: event.phase,
             score: event.score ?? null,
-            metadata: event.metadata ?? undefined,
+            metadata: event.metadata === undefined ? undefined : event.metadata,
             excerpt: event.content ? this.truncateAndRedact(String(event.content)) : undefined,
         };
         this.log("info", "cognitive_event", payload);

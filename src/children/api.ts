@@ -20,6 +20,7 @@ import { SandboxExecutionResult, getSandboxRegistry } from "../sim/sandbox.js";
 import type { ChildSandboxRequest, ChildSandboxProfileName } from "./sandbox.js";
 import type { PromptTemplate } from "../prompts.js";
 import { LoopAlert, LoopDetector } from "../guard/loopDetector.js";
+import type { LoopInteractionSample } from "../guard/loopDetector.js";
 import type { OrchestratorSupervisorContract } from "../agents/supervisor.js";
 import {
   ContractNetAwardDecision,
@@ -909,6 +910,32 @@ function extractTaskType(metadata?: Record<string, unknown>): string {
 }
 
 /**
+ * Normalises the loop detector sample so optional identifiers are omitted when unknown.
+ * This keeps the structure compatible with `exactOptionalPropertyTypes` by setting
+ * the `taskId` field only when the caller surfaced a concrete identifier in the metadata.
+ */
+function buildLoopInteractionSample(
+  from: string,
+  to: string,
+  signature: string,
+  childId: string,
+  taskType: string,
+  taskId: string | null,
+): LoopInteractionSample {
+  const sample: LoopInteractionSample = {
+    from,
+    to,
+    signature,
+    childId,
+    taskType,
+  };
+  if (taskId) {
+    sample.taskId = taskId;
+  }
+  return sample;
+}
+
+/**
  * Generates a compact summary of the payload so loop detection heuristics can
  * differentiate exchanges without leaking sensitive data.
  */
@@ -1525,16 +1552,17 @@ export async function handleChildSend(
     const loopSignature = loopDetector ? rememberLoopSignature(childId, metadataRecord, input.payload) : null;
 
     if (loopDetector && loopSignature) {
+      const outboundSample = buildLoopInteractionSample(
+        "orchestrator",
+        `child:${childId}`,
+        loopSignature,
+        childId,
+        loopTaskType,
+        loopTaskId,
+      );
       loopAlert = mergeLoopAlerts(
         loopAlert,
-        loopDetector.recordInteraction({
-          from: "orchestrator",
-          to: `child:${childId}`,
-          signature: loopSignature,
-          childId,
-          taskId: loopTaskId ?? undefined,
-          taskType: loopTaskType,
-        }),
+        loopDetector.recordInteraction(outboundSample),
         context,
       );
       if (loopAlert && context.supervisorAgent) {
@@ -1573,18 +1601,15 @@ export async function handleChildSend(
       awaitedMessage = awaited;
 
       if (loopDetector && loopSignature) {
-        loopAlert = mergeLoopAlerts(
-          loopAlert,
-          loopDetector.recordInteraction({
-            from: `child:${childId}`,
-            to: "orchestrator",
-            signature: loopSignature,
-            childId,
-            taskId: loopTaskId ?? undefined,
-            taskType: loopTaskType,
-          }),
-          context,
+        const inboundSample = buildLoopInteractionSample(
+          `child:${childId}`,
+          "orchestrator",
+          loopSignature,
+          childId,
+          loopTaskType,
+          loopTaskId,
         );
+        loopAlert = mergeLoopAlerts(loopAlert, loopDetector.recordInteraction(inboundSample), context);
         if (loopAlert && context.supervisorAgent) {
           await context.supervisorAgent.recordLoopAlert(loopAlert);
         }

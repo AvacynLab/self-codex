@@ -142,6 +142,9 @@ describe("planning validation runner", () => {
     expect(result.summary.opCancel.opId).to.equal("reactive-op");
     expect(result.summary.events.total).to.equal(5);
     expect(result.summary.events.types).to.have.property("plan.cancelled", 1);
+    expect(Object.prototype.hasOwnProperty.call(result.summary.compile, "error")).to.equal(false);
+    expect(Object.prototype.hasOwnProperty.call(result.summary.runReactive, "cancellationError")).to.equal(false);
+    expect(Object.prototype.hasOwnProperty.call(result.summary.opCancel, "error")).to.equal(false);
 
     const inputsLog = await readFile(join(runRoot, PLAN_JSONL_FILES.inputs), "utf8");
     const outputsLog = await readFile(join(runRoot, PLAN_JSONL_FILES.outputs), "utf8");

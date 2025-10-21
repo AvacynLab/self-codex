@@ -92,7 +92,8 @@ describe("monitor replay helpers", () => {
     expect(promptEvent?.lessonsPrompt?.operation).to.equal("plan_fanout");
     expect(promptEvent?.lessonsPrompt?.payload.diff.added).to.have.length(1);
 
-    const secondPage = buildReplayPage(store, "job-replay", { cursor: firstPage.nextCursor ?? undefined });
+    const cursorValue = firstPage.nextCursor === null ? undefined : firstPage.nextCursor;
+    const secondPage = buildReplayPage(store, "job-replay", { cursor: cursorValue });
     expect(secondPage.events).to.have.length(1);
     expect(secondPage.events[0]?.kind).to.equal("REPLY");
     expect(secondPage.nextCursor).to.equal(null);

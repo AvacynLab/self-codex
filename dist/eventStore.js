@@ -6,6 +6,42 @@ import { normaliseProvenanceList } from "./types/provenance.js";
  * orchestrator logs when callers attach verbose artefacts to an event.
  */
 const MAX_LOGGED_PAYLOAD_LENGTH = 4_096;
+/**
+ * Recursively sorts the keys of plain object payloads so JSON serialisation
+ * becomes deterministic. Stable ordering keeps diffs readable when
+ * EventStore-backed artefacts are inspected or committed to disk. Complex
+ * structures (maps, dates, sets) fall back to their default JSON
+ * representation. Circular references intentionally mirror the behaviour of
+ * {@link JSON.stringify} by throwing so the caller can surface a summary.
+ */
+function stabiliseForStableJson(value, stack = new Set()) {
+    if (value === null || typeof value !== "object") {
+        return value;
+    }
+    const objectValue = value;
+    if (stack.has(objectValue)) {
+        throw new TypeError("Converting circular structure to JSON");
+    }
+    stack.add(objectValue);
+    try {
+        if (Array.isArray(objectValue)) {
+            return objectValue.map((entry) => stabiliseForStableJson(entry, stack));
+        }
+        const prototype = Object.getPrototypeOf(objectValue);
+        if (prototype === Object.prototype || prototype === null) {
+            const sortedKeys = Object.keys(objectValue).sort();
+            const clone = {};
+            for (const key of sortedKeys) {
+                clone[key] = stabiliseForStableJson(objectValue[key], stack);
+            }
+            return clone;
+        }
+        return value;
+    }
+    finally {
+        stack.delete(objectValue);
+    }
+}
 /** Builds a set from the user supplied kinds while ignoring duplicates or garbage values. */
 function normaliseKindFilter(kinds) {
     if (!kinds || kinds.length === 0) {
@@ -59,6 +95,7 @@ export class EventStore {
     maxHistory;
     events = [];
     perJob = new Map();
+    perKind = new Map();
     logger;
     constructor(options) {
         this.maxHistory = Math.max(1, options.maxHistory);
@@ -101,6 +138,23 @@ export class EventStore {
             else {
                 this.perJob.set(event.jobId, existing);
             }
+        }
+        const kindBucket = this.perKind.get(event.kind) ?? [];
+        kindBucket.push(event);
+        if (kindBucket.length > this.maxHistory) {
+            const evicted = kindBucket.shift();
+            if (evicted) {
+                this.logEventEviction("kind", evicted, {
+                    kind: event.kind,
+                    remaining: kindBucket.length,
+                });
+            }
+        }
+        if (kindBucket.length === 0) {
+            this.perKind.delete(event.kind);
+        }
+        else {
+            this.perKind.set(event.kind, kindBucket);
         }
         this.logEventEmission(event);
         return event;
@@ -180,7 +234,8 @@ export class EventStore {
         return this.events.length;
     }
     getEventsByKind(kind) {
-        return this.events.filter((event) => event.kind === kind);
+        const bucket = this.perKind.get(kind);
+        return bucket ? [...bucket] : [];
     }
     /**
      * Trims the global and per-job buffers so they do not exceed the configured
@@ -207,6 +262,20 @@ export class EventStore {
             }
             else {
                 this.perJob.set(jobId, events);
+            }
+        }
+        for (const [kind, events] of this.perKind.entries()) {
+            while (events.length > this.maxHistory) {
+                const evicted = events.shift();
+                if (evicted) {
+                    this.logEventEviction("kind", evicted, { kind, remaining: events.length });
+                }
+            }
+            if (events.length === 0) {
+                this.perKind.delete(kind);
+            }
+            else {
+                this.perKind.set(kind, events);
             }
         }
     }
@@ -253,6 +322,9 @@ export class EventStore {
             remaining: details.remaining,
             reason: "history_limit",
         };
+        if (details.kind) {
+            payload.kind = details.kind;
+        }
         this.logger.info("event_evicted", payload);
     }
     /**
@@ -281,7 +353,7 @@ export class EventStore {
      */
     serialisePayloadForLogging(payload) {
         try {
-            const json = JSON.stringify(payload);
+            const json = JSON.stringify(stabiliseForStableJson(payload));
             if (json === undefined) {
                 return { status: "success", value: null };
             }

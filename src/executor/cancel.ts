@@ -1,6 +1,8 @@
 import { EventEmitter } from "node:events";
 // NOTE: Node built-in modules are imported with the explicit `node:` prefix to guarantee ESM resolution in Node.js.
 
+import { coerceNullToUndefined } from "../utils/object.js";
+
 /**
  * Outcome returned when requesting the cancellation of an operation. The enum
  * allows callers to differentiate between successful requests and idempotent
@@ -280,7 +282,7 @@ export function registerCancellation(
 /** Retrieve a handle previously registered with {@link registerCancellation}. */
 export function getCancellation(opId: string): CancellationHandle | undefined {
   const handle = operations.get(opId)?.handle;
-  return handle ?? undefined;
+  return coerceNullToUndefined(handle);
 }
 
 /** Remove the bookkeeping for an operation once it settles. */

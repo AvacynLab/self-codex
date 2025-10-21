@@ -1,6 +1,6 @@
 import { describe, it, beforeEach, afterEach } from "mocha";
 import { expect } from "chai";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -8,7 +8,12 @@ import {
   executeKnowledgeCli,
   parseKnowledgeCliOptions,
 } from "../../src/validation/knowledgeCli.js";
-import { KNOWLEDGE_JSONL_FILES } from "../../src/validation/knowledge.js";
+import {
+  KNOWLEDGE_JSONL_FILES,
+  type KnowledgePhaseOptions,
+  type KnowledgePhaseResult,
+  type KnowledgeSummary,
+} from "../../src/validation/knowledge.js";
 
 /** CLI-level tests ensuring the Stage 8 workflow remains ergonomic. */
 describe("knowledge validation CLI", () => {
@@ -115,5 +120,62 @@ describe("knowledge validation CLI", () => {
     expect(flattenedLogs).to.contain("Knowledge validation summary");
     expect(flattenedLogs).to.contain("assist citations");
     expect(flattenedLogs).to.contain("subgraph:");
+  });
+
+  it("merges CLI overrides without leaking undefined knowledge fields", async () => {
+    const logger = { log: () => undefined };
+    const capturedPhaseOptions: KnowledgePhaseOptions[] = [];
+
+    const runner = async (
+      runRoot: string,
+      _environment: unknown,
+      options: KnowledgePhaseOptions,
+    ): Promise<KnowledgePhaseResult> => {
+      capturedPhaseOptions.push(structuredClone(options));
+      const summary: KnowledgeSummary = {
+        artefacts: {
+          inputsJsonl: "inputs.jsonl",
+          outputsJsonl: "outputs.jsonl",
+          eventsJsonl: "events.jsonl",
+          httpSnapshotLog: "http.json",
+        },
+        knowledge: {},
+        values: { explanationConsistent: false },
+      };
+      const summaryPath = join(runRoot, "report", "knowledge_summary.json");
+      await writeFile(summaryPath, JSON.stringify(summary, null, 2));
+      return {
+        outcomes: [],
+        summary,
+        summaryPath,
+        valuesGraphExportPath: null,
+        causalExportPath: null,
+      };
+    };
+
+    // The CLI returns both the execution root and the nested phase result; retain
+    // both so assertions target the actual phase payload rather than the wrapper.
+    const { runRoot, result: knowledgeResult } = await executeKnowledgeCli(
+      { baseDir: workingDir, runId: "cli-options" },
+      {
+        MCP_HTTP_HOST: "127.0.0.1",
+        MCP_HTTP_PORT: "9000",
+        MCP_HTTP_PATH: "/mcp",
+      } as NodeJS.ProcessEnv,
+      logger,
+      {
+        phaseOptions: { knowledge: { planGoal: "cover" } },
+        runner,
+      },
+    );
+
+    expect(knowledgeResult.summaryPath).to.equal(
+      join(runRoot, "report", "knowledge_summary.json"),
+    );
+
+    const [options] = capturedPhaseOptions;
+    expect(options.knowledge).to.deep.equal({ planGoal: "cover" });
+    expect(Object.prototype.hasOwnProperty.call(options.knowledge ?? {}, "assistQuery")).to.equal(false);
+    expect(Object.prototype.hasOwnProperty.call(options.knowledge ?? {}, "valuesTopic")).to.equal(false);
   });
 });

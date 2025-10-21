@@ -1,4 +1,5 @@
 import { mergeProvenance, normaliseProvenanceList } from "../types/provenance.js";
+import { coerceNullToUndefined } from "../utils/object.js";
 /**
  * Error raised when a caller attempts to persist a triple with blank fields.
  * The orchestration server relies on the `code` and `details` payload to emit
@@ -234,8 +235,8 @@ export class KnowledgeGraph {
                 id: taskId,
                 label,
                 dependsOn: dedupe(dependsOn),
-                duration: duration ?? undefined,
-                weight: weight ?? undefined,
+                duration: coerceNullToUndefined(duration),
+                weight: coerceNullToUndefined(weight),
                 source,
                 confidence,
                 provenance,

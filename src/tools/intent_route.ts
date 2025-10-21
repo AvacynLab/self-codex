@@ -401,7 +401,7 @@ function buildRoutingContext(
   const preferred = new Set<string>();
 
   // Preserve the caller metadata reference so it can be forwarded verbatim in structured responses.
-  const metadataRecord = metadata ?? undefined;
+  const metadataRecord = metadata;
   // Upstream planners can embed a nested `router_context` block. When present, it overrides generic
   // hints so we treat it as the most precise source of routing directives.
   const routerContext = metadataRecord && typeof metadataRecord.router_context === "object"
@@ -639,7 +639,7 @@ export function createIntentRouteHandler(
         idempotency_key: idempotencyKey,
         recommendations,
         diagnostics,
-        metadata: parsed.metadata ?? undefined,
+        ...(parsed.metadata ? { metadata: parsed.metadata } : {}),
       },
     };
 

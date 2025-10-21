@@ -17,6 +17,7 @@ import {
 import { StructuredLogger } from "../logger.js";
 import type { HybridRetriever } from "../memory/retriever.js";
 import { PROVENANCE_TYPES, type Provenance } from "../types/provenance.js";
+import { coerceNullToUndefined } from "../utils/object.js";
 
 /** Context injected by the server when invoking knowledge graph tools. */
 export interface KnowledgeToolContext {
@@ -396,7 +397,7 @@ export async function handleKgAssist(
     query: input.query,
     context: input.context,
     limit: input.limit,
-    ragRetriever: retriever ?? undefined,
+    ragRetriever: coerceNullToUndefined(retriever),
     ragLimit: Math.max(input.limit, 3),
     ragMinScore: resolvedMinScore,
     domainTags: combinedTags,

@@ -803,11 +803,11 @@ function handleLogsRequest(
 
   const tail = logJournal.tail({
     stream,
-    bucketId: bucketId ?? undefined,
-    fromSeq: fromSeq ?? undefined,
-    limit: limit ?? undefined,
-    levels: levels ?? undefined,
-    filters: filters ?? undefined,
+    ...(bucketId !== null ? { bucketId } : {}),
+    ...(fromSeq !== null ? { fromSeq } : {}),
+    ...(limit !== null ? { limit } : {}),
+    ...(levels !== null ? { levels } : {}),
+    ...(filters ? { filters } : {}),
   });
 
   const responsePayload = {

@@ -37,7 +37,7 @@ describe("graph export - hyper-edge annotations", () => {
       edges: projected.edges.map((edge) => ({
         from: edge.from,
         to: edge.to,
-        label: edge.label ?? undefined,
+        label: edge.label,
         weight: edge.weight,
         attributes: edge.attributes,
       })),
@@ -80,7 +80,7 @@ describe("graph export - hyper-edge annotations", () => {
       edges: projected.edges.map((edge) => ({
         from: edge.from,
         to: edge.to,
-        label: edge.label ?? undefined,
+        label: edge.label,
         weight: edge.weight,
         attributes: edge.attributes,
       })),

@@ -20,6 +20,7 @@ import {
   type HttpEnvironmentSummary,
   type HttpCheckArtefactTargets,
 } from "./runSetup.js";
+import { omitUndefinedEntries } from "../utils/object.js";
 
 /** JSONL artefacts dedicated to the Behaviour Tree planning validation phase. */
 export const PLAN_JSONL_FILES = {
@@ -609,7 +610,7 @@ export function buildPlanSummary(
     graphId,
     compile: {
       success: !compileError,
-      error: compileError,
+      ...omitUndefinedEntries({ error: compileError }),
     },
     runBt: {
       status: btRunStatus,
@@ -623,7 +624,7 @@ export function buildPlanSummary(
       runId: reactiveRunId,
       opId: reactiveOpId,
       cancelled: reactiveCancelled,
-      cancellationError: reactiveCancellationError,
+      ...omitUndefinedEntries({ cancellationError: reactiveCancellationError }),
     },
     lifecycle: {
       statusSnapshot: statusSnapshot ?? null,
@@ -638,7 +639,7 @@ export function buildPlanSummary(
       runId: opCancelRunId,
       opId: opCancelOpId,
       progress: opCancelProgress,
-      error: opCancelError,
+      ...omitUndefinedEntries({ error: opCancelError }),
     },
     events: {
       total: totalEvents,

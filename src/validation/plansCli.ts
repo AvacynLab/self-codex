@@ -13,6 +13,7 @@ import {
   type PlanPhaseOptions,
   type PlanPhaseResult,
 } from "./plans.js";
+import { omitUndefinedEntries } from "../utils/object.js";
 
 /** CLI flags recognised by the Behaviour Tree planning validation workflow. */
 export interface PlanCliOptions {
@@ -101,24 +102,36 @@ export async function executePlanCli(
   logger.log(`   Target: ${environment.baseUrl}`);
 
   const basePhaseOptions = overrides.phaseOptions ?? {};
-  const planOverrides = { ...(basePhaseOptions.plan ?? {}) };
-  const reactiveOverrides: Record<string, unknown> = {
-    ...(planOverrides.reactive ?? {}),
-  };
+  const { plan: basePlanOption, ...restBaseOptions } = basePhaseOptions;
+  const planOverrides = { ...(basePlanOption ?? {}) };
+  const baseReactive = planOverrides.reactive ?? {};
+  const cliReactiveOverrides = omitUndefinedEntries({
+    tickMs:
+      typeof options.tickMs === "number" && Number.isFinite(options.tickMs)
+        ? options.tickMs
+        : undefined,
+    timeoutMs:
+      typeof options.timeoutMs === "number" && Number.isFinite(options.timeoutMs)
+        ? options.timeoutMs
+        : undefined,
+  });
 
-  if (typeof options.tickMs === "number" && Number.isFinite(options.tickMs)) {
-    reactiveOverrides.tickMs = options.tickMs;
+  const mergedReactive = omitUndefinedEntries({
+    ...baseReactive,
+    ...cliReactiveOverrides,
+  }) as { tickMs?: number; timeoutMs?: number };
+
+  if (Object.keys(mergedReactive).length > 0) {
+    planOverrides.reactive = mergedReactive;
+  } else if (planOverrides.reactive !== undefined) {
+    delete planOverrides.reactive;
   }
-  if (typeof options.timeoutMs === "number" && Number.isFinite(options.timeoutMs)) {
-    reactiveOverrides.timeoutMs = options.timeoutMs;
-  }
+
+  const sanitisedPlan = omitUndefinedEntries(planOverrides as Record<string, unknown>);
 
   const phaseOptions: PlanPhaseOptions = {
-    ...basePhaseOptions,
-    plan: {
-      ...planOverrides,
-      reactive: Object.keys(reactiveOverrides).length ? (reactiveOverrides as { tickMs?: number; timeoutMs?: number }) : planOverrides.reactive,
-    },
+    ...restBaseOptions,
+    ...(Object.keys(sanitisedPlan).length > 0 ? { plan: sanitisedPlan as PlanPhaseOptions["plan"] } : {}),
   };
 
   const runner = overrides.runner ?? runPlanPhase;

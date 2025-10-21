@@ -38,6 +38,7 @@ import {
   normaliseJsonRpcRequest,
   toJsonRpc,
 } from "../rpc/middleware.js";
+import { coerceNullToUndefined } from "../utils/object.js";
 import { JsonRpcTimeoutError, resolveRpcTimeoutBudget } from "../rpc/timeouts.js";
 import {
   BudgetExceededError,
@@ -598,7 +599,7 @@ export function createOrchestratorController(
         jobId: input.correlation.jobId ?? null,
         component: "jsonrpc",
         stage: jsonRpcMessage,
-        elapsedMs: payload.elapsed_ms ?? undefined,
+        elapsedMs: coerceNullToUndefined(payload.elapsed_ms),
         kind: `JSONRPC_${input.stage.toUpperCase()}`,
         msg: payload.msg,
         data: payload,

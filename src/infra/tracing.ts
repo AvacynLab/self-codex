@@ -3,6 +3,7 @@ import { randomBytes } from "node:crypto";
 import process from "node:process";
 
 import { readOptionalString } from "../config/env.js";
+import { coerceNullToUndefined } from "../utils/object.js";
 
 import type { BudgetUsageMetadata } from "./budget.js";
 
@@ -675,7 +676,7 @@ function scheduleOtlpExport(
               {
                 traceId: context.traceId,
                 spanId: context.spanId,
-                parentSpanId: context.parentSpanId ?? undefined,
+                parentSpanId: coerceNullToUndefined(context.parentSpanId),
                 name: context.method || "unknown",
                 kind: 3, // SPAN_KIND_SERVER
                 startTimeUnixNano: startTime.toString(),

@@ -10,6 +10,7 @@ import type {
   TickRuntime,
   ToolInvoker,
 } from "./bt/types.js";
+import { coerceNullToUndefined } from "../utils/object.js";
 
 /** Structured bounds describing pheromone intensity limits. */
 export interface PheromoneBounds {
@@ -377,11 +378,13 @@ export class ReactiveScheduler {
       payload,
       enqueuedAt: this.now(),
       basePriority: this.computeBasePriority(event, payload),
-      causalEventId: this.recordCausalEvent(
-        `scheduler.event.${event}`,
-        this.serialiseEventPayload(event, payload),
-        this.buildCauses(this.lastTickResultEventId),
-      ) ?? undefined,
+      causalEventId: coerceNullToUndefined(
+        this.recordCausalEvent(
+          `scheduler.event.${event}`,
+          this.serialiseEventPayload(event, payload),
+          this.buildCauses(this.lastTickResultEventId),
+        ),
+      ),
     };
     this.sequence += 1;
     const pendingBefore = this.queue.length;
