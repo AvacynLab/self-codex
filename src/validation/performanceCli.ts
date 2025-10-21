@@ -14,6 +14,7 @@ import {
   type PerformancePhaseOptions,
   type PerformancePhaseResult,
 } from "./performance.js";
+import { omitUndefinedEntries } from "../utils/object.js";
 
 /** CLI flags recognised by the Stage 10 performance validation workflow. */
 export interface PerformanceCliOptions {
@@ -117,8 +118,9 @@ export async function executePerformanceCli(
   logger.log(`   Target: ${environment.baseUrl}`);
 
   const basePhaseOptions: PerformancePhaseOptions = overrides.phaseOptions ?? {};
+  const { performance: basePerformanceOption, ...restBaseOptions } = basePhaseOptions;
   type MutablePerformanceOptions = { -readonly [K in keyof DefaultPerformanceOptions]?: DefaultPerformanceOptions[K] };
-  const overrideAccumulator: MutablePerformanceOptions = { ...(basePhaseOptions.performance ?? {}) };
+  const overrideAccumulator: MutablePerformanceOptions = { ...(basePerformanceOption ?? {}) };
 
   if (typeof options.sampleSize === "number" && Number.isFinite(options.sampleSize)) {
     overrideAccumulator.sampleSize = options.sampleSize;
@@ -136,13 +138,11 @@ export async function executePerformanceCli(
     overrideAccumulator.logPath = options.logPath;
   }
 
-  const performanceOverrides = Object.keys(overrideAccumulator).length
-    ? (overrideAccumulator as DefaultPerformanceOptions)
-    : basePhaseOptions.performance;
+  const mergedPerformance = omitUndefinedEntries(overrideAccumulator) as DefaultPerformanceOptions;
 
   const phaseOptions: PerformancePhaseOptions = {
-    ...basePhaseOptions,
-    performance: performanceOverrides,
+    ...restBaseOptions,
+    ...(Object.keys(mergedPerformance).length > 0 ? { performance: mergedPerformance } : {}),
   };
 
   const runner = overrides.runner ?? runPerformancePhase;

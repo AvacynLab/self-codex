@@ -432,9 +432,11 @@ function buildSpawnOptions(
   const sandbox = parsed.sandbox
     ? {
         profile: parsed.sandbox.profile,
-        allowEnv: parsed.sandbox.allow_env ?? undefined,
-        env: parsed.sandbox.env ?? undefined,
-        inheritDefaultEnv: parsed.sandbox.inherit_default_env ?? undefined,
+        ...(parsed.sandbox.allow_env !== undefined ? { allowEnv: parsed.sandbox.allow_env } : {}),
+        ...(parsed.sandbox.env !== undefined ? { env: parsed.sandbox.env } : {}),
+        ...(parsed.sandbox.inherit_default_env !== undefined
+          ? { inheritDefaultEnv: parsed.sandbox.inherit_default_env }
+          : {}),
       }
     : null;
 

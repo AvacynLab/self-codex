@@ -1,4 +1,5 @@
 import { mergeProvenance, normaliseProvenanceList, type Provenance } from "../types/provenance.js";
+import { coerceNullToUndefined } from "../utils/object.js";
 
 /**
  * Options accepted by {@link KnowledgeGraph.exportForRag}. They control the
@@ -413,8 +414,8 @@ export class KnowledgeGraph {
         id: taskId,
         label,
         dependsOn: dedupe(dependsOn),
-        duration: duration ?? undefined,
-        weight: weight ?? undefined,
+        duration: coerceNullToUndefined(duration),
+        weight: coerceNullToUndefined(weight),
         source,
         confidence,
         provenance,

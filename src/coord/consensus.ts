@@ -105,7 +105,7 @@ export function publishConsensusEvent(input: ConsensusEventInput): ConsensusEven
     jobId: input.jobId ?? null,
     runId: input.runId ?? null,
     opId: input.opId ?? null,
-    metadata: input.metadata ?? undefined,
+    metadata: input.metadata,
   };
   consensusEmitter.emit("event", event);
   return event;

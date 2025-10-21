@@ -1,13 +1,18 @@
 import { describe, it, beforeEach, afterEach } from "mocha";
 import { expect } from "chai";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import sinon from "sinon";
 
 import { executePlanCli, parsePlanCliOptions } from "../../src/validation/plansCli.js";
 import { createCliStructuredLogger } from "../../src/validation/cliLogger.js";
-import { PLAN_JSONL_FILES } from "../../src/validation/plans.js";
+import {
+  PLAN_JSONL_FILES,
+  type PlanPhaseOptions,
+  type PlanPhaseResult,
+  type PlanPhaseSummaryDocument,
+} from "../../src/validation/plans.js";
 
 /** CLI-level tests ensuring the Stage 6 workflow remains ergonomic. */
 describe("planning validation CLI", () => {
@@ -115,5 +120,78 @@ describe("planning validation CLI", () => {
     } finally {
       stdoutStub.restore();
     }
+  });
+
+  it("sanitises plan overrides by omitting undefined reactive fields", async () => {
+    const logger = { log: () => undefined };
+    const captured: PlanPhaseOptions[] = [];
+
+    const runner = async (
+      runRoot: string,
+      _environment: unknown,
+      options: PlanPhaseOptions,
+    ): Promise<PlanPhaseResult> => {
+      captured.push(structuredClone(options));
+      const summary: PlanPhaseSummaryDocument = {
+        capturedAt: new Date().toISOString(),
+        graphId: null,
+        compile: { success: true },
+        runBt: { status: null, ticks: null, runId: null, opId: null },
+        runReactive: {
+          status: null,
+          loopTicks: null,
+          runId: null,
+          opId: null,
+          cancelled: false,
+        },
+        lifecycle: {
+          statusSnapshot: null,
+          pauseResult: null,
+          resumeResult: null,
+          cancelResult: null,
+        },
+        opCancel: {
+          ok: true,
+          outcome: null,
+          reason: null,
+          runId: null,
+          opId: null,
+          progress: null,
+        },
+        events: { total: 0, types: {} },
+        artefacts: {
+          requestsJsonl: "inputs.jsonl",
+          responsesJsonl: "outputs.jsonl",
+          eventsJsonl: "events.jsonl",
+          httpLog: "log.json",
+        },
+      };
+      const summaryPath = join(runRoot, "report", "plans_summary.json");
+      await writeFile(summaryPath, JSON.stringify(summary, null, 2));
+      return { outcomes: [], summary, summaryPath };
+    };
+
+    // Capture both the run root and the nested phase result emitted by the CLI
+    // so the expectations track the actual phase metadata rather than the wrapper.
+    const { runRoot, result: planResult } = await executePlanCli(
+      { baseDir: workingDir, runId: "cli-options", tickMs: 150 },
+      {
+        MCP_HTTP_HOST: "127.0.0.1",
+        MCP_HTTP_PORT: "9000",
+        MCP_HTTP_PATH: "/mcp",
+      } as NodeJS.ProcessEnv,
+      logger,
+      {
+        phaseOptions: { plan: { variables: { payload: { objective: "test" } } } },
+        runner,
+      },
+    );
+
+    expect(planResult.summaryPath).to.equal(join(runRoot, "report", "plans_summary.json"));
+
+    const [options] = captured;
+    expect(options.plan?.variables).to.deep.equal({ payload: { objective: "test" } });
+    expect(options.plan?.reactive).to.deep.equal({ tickMs: 150 });
+    expect(Object.prototype.hasOwnProperty.call(options.plan?.reactive ?? {}, "timeoutMs")).to.equal(false);
   });
 });

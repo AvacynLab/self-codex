@@ -119,6 +119,8 @@ describe("graph forge validation runner", () => {
     expect(summaryDocument.autosave.observation.completed).to.equal(true);
     expect(summaryDocument.autosave.observation.observedTicks).to.equal(2);
     expect(summaryDocument.autosave.quiescence.verified).to.equal(true);
+    expect(Object.prototype.hasOwnProperty.call(summaryDocument.autosave.observation, "lastError")).to.equal(false);
+    expect(Object.prototype.hasOwnProperty.call(summaryDocument.autosave.quiescence, "lastError")).to.equal(false);
 
     const inputsLog = await readFile(join(runRoot, GRAPH_FORGE_JSONL_FILES.inputs), "utf8");
     const outputsLog = await readFile(join(runRoot, GRAPH_FORGE_JSONL_FILES.outputs), "utf8");
@@ -288,5 +290,18 @@ describe("graph forge validation runner", () => {
     expect(result.verified).to.equal(true);
     expect(result.fileMissing).to.equal(true);
     expect(result.observedSavedAt).to.equal(null);
+  });
+
+  it("exposes quiescence errors without retaining undefined placeholders", async () => {
+    const missingPath = join(runRoot, "artifacts", "forge", "missing_autosave.json");
+    const result = await verifyAutosaveQuiescence(missingPath, null, {
+      pollIntervalMs: 10,
+      durationMs: 25,
+    });
+
+    expect(result.fileMissing).to.equal(true);
+    expect(result.verified).to.equal(true);
+    expect(result.lastError).to.equal("ENOENT");
+    expect(Object.prototype.hasOwnProperty.call(result, "lastError")).to.equal(true);
   });
 });

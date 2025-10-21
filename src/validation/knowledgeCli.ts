@@ -14,6 +14,7 @@ import {
   type KnowledgePhaseOptions,
   type KnowledgePhaseResult,
 } from "./knowledge.js";
+import { omitUndefinedEntries } from "../utils/object.js";
 
 /** CLI flags recognised by the knowledge & values validation workflow. */
 export interface KnowledgeCliOptions {
@@ -102,25 +103,28 @@ export async function executeKnowledgeCli(
   logger.log(`   Target: ${environment.baseUrl}`);
 
   const basePhaseOptions = overrides.phaseOptions ?? {};
-  const mergedKnowledge: Record<string, unknown> = {
-    ...(basePhaseOptions.knowledge ?? {}),
-  };
+  const { knowledge: baseKnowledgeOption, ...restBaseOptions } = basePhaseOptions;
 
-  if (typeof options.assistQuery === "string" && options.assistQuery.length > 0) {
-    mergedKnowledge.assistQuery = options.assistQuery;
-  }
-  if (typeof options.valuesTopic === "string" && options.valuesTopic.length > 0) {
-    mergedKnowledge.valuesTopic = options.valuesTopic;
-  }
+  const baseKnowledge = baseKnowledgeOption ?? {};
+  const overridesFromCli = omitUndefinedEntries({
+    assistQuery:
+      typeof options.assistQuery === "string" && options.assistQuery.length > 0
+        ? options.assistQuery
+        : undefined,
+    valuesTopic:
+      typeof options.valuesTopic === "string" && options.valuesTopic.length > 0
+        ? options.valuesTopic
+        : undefined,
+  });
 
-  const knowledgeOption =
-    Object.keys(mergedKnowledge).length > 0
-      ? (mergedKnowledge as DefaultKnowledgeOptions)
-      : basePhaseOptions.knowledge;
+  const mergedKnowledge = omitUndefinedEntries({
+    ...baseKnowledge,
+    ...overridesFromCli,
+  }) as DefaultKnowledgeOptions;
 
   const phaseOptions: KnowledgePhaseOptions = {
-    ...basePhaseOptions,
-    knowledge: knowledgeOption,
+    ...restBaseOptions,
+    ...(Object.keys(mergedKnowledge).length > 0 ? { knowledge: mergedKnowledge } : {}),
   };
 
   const runner = overrides.runner ?? runKnowledgePhase;

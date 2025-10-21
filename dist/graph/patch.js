@@ -1,3 +1,4 @@
+import { coerceNullToUndefined } from "../utils/object.js";
 /** Error thrown when a JSON Patch cannot be applied to the graph document. */
 export class GraphPatchApplyError extends Error {
     path;
@@ -47,14 +48,14 @@ function fromDocument(document, base) {
         metadata: cloneRecord(document.metadata),
         nodes: document.nodes.map((node) => ({
             id: node.id,
-            label: node.label ?? undefined,
+            label: coerceNullToUndefined(node.label),
             attributes: cloneRecord(node.attributes),
         })),
         edges: document.edges.map((edge) => ({
             from: edge.from,
             to: edge.to,
-            label: edge.label ?? undefined,
-            weight: edge.weight ?? undefined,
+            label: coerceNullToUndefined(edge.label),
+            weight: coerceNullToUndefined(edge.weight),
             attributes: cloneRecord(edge.attributes),
         })),
     };

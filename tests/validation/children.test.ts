@@ -184,6 +184,15 @@ describe("children validation runner", () => {
     expect(summary.goal).to.equal("Hello child");
     expect(summary.artefacts.requestsJsonl).to.equal(join(runRoot, CHILDREN_JSONL_FILES.inputs));
     expect(summary.events.limitEvents).to.be.a("number").that.is.at.least(0);
+
+    const summaryWithoutTranscript = buildChildrenSummary(runRoot, phaseResult.outcomes, {
+      prompt: "Hello child",
+    });
+    // With strict optional properties we avoid serialising the conversation key
+    // when no transcript exists on disk.
+    expect(
+      Object.prototype.hasOwnProperty.call(summaryWithoutTranscript.artefacts, "conversation"),
+    ).to.equal(false);
   });
 
   it("fails fast when no limit-related events are captured", async () => {

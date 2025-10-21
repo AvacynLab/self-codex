@@ -38,6 +38,7 @@ import {
   PlanSchedulingError,
   type PlanSchedule,
 } from "../planner/schedule.js";
+import { coerceNullToUndefined } from "../utils/object.js";
 import {
   handlePlanCompileExecute,
   type PlanCompileExecuteInput,
@@ -512,12 +513,12 @@ export function createPlanCompileExecuteHandler(
     const fingerprint: PlanCompileExecuteFingerprint = {
       plan_hash: hashPlanPayload(parsed.plan),
       dry_run: primitiveInput.dry_run ?? true,
-      run_id: primitiveInput.run_id ?? undefined,
-      op_id: primitiveInput.op_id ?? undefined,
-      job_id: primitiveInput.job_id ?? undefined,
-      graph_id: primitiveInput.graph_id ?? undefined,
-      node_id: primitiveInput.node_id ?? undefined,
-      child_id: primitiveInput.child_id ?? undefined,
+      run_id: coerceNullToUndefined(primitiveInput.run_id),
+      op_id: coerceNullToUndefined(primitiveInput.op_id),
+      job_id: coerceNullToUndefined(primitiveInput.job_id),
+      graph_id: coerceNullToUndefined(primitiveInput.graph_id),
+      node_id: coerceNullToUndefined(primitiveInput.node_id),
+      child_id: coerceNullToUndefined(primitiveInput.child_id),
     };
 
     const execute = async (): Promise<PlanCompileExecuteSnapshot> => {

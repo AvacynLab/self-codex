@@ -13,6 +13,7 @@ import {
   type GraphForgePhaseOptions,
   type GraphForgePhaseResult,
 } from "./graphForge.js";
+import { omitUndefinedEntries } from "../utils/object.js";
 
 /**
  * CLI flags recognised by the Graph Forge validation workflow. The options keep
@@ -138,16 +139,31 @@ export async function executeGraphForgeCli(
   logger.log(`   Target: ${environment.baseUrl}`);
 
   const basePhaseOptions = overrides.phaseOptions ?? {};
+  const {
+    autosaveObservation: baseObservationOption,
+    autosaveIntervalMs: baseInterval,
+    workspaceRoot: baseWorkspace,
+    ...restBaseOptions
+  } = basePhaseOptions;
+
+  const resolvedWorkspaceRoot = baseWorkspace ?? process.cwd();
+  const resolvedInterval = options.autosaveIntervalMs ?? baseInterval;
+  const baseObservation = baseObservationOption ?? {};
+  const cliObservationOverrides = omitUndefinedEntries({
+    requiredTicks: options.autosaveTicks,
+    pollIntervalMs: options.autosavePollMs,
+    timeoutMs: options.autosaveTimeoutMs,
+  });
+  const mergedObservation = omitUndefinedEntries({
+    ...baseObservation,
+    ...cliObservationOverrides,
+  });
+
   const phaseOptions: GraphForgePhaseOptions = {
-    ...basePhaseOptions,
-    workspaceRoot: basePhaseOptions.workspaceRoot ?? process.cwd(),
-    autosaveIntervalMs: options.autosaveIntervalMs ?? basePhaseOptions.autosaveIntervalMs,
-    autosaveObservation: {
-      ...basePhaseOptions.autosaveObservation,
-      requiredTicks: options.autosaveTicks ?? basePhaseOptions.autosaveObservation?.requiredTicks,
-      pollIntervalMs: options.autosavePollMs ?? basePhaseOptions.autosaveObservation?.pollIntervalMs,
-      timeoutMs: options.autosaveTimeoutMs ?? basePhaseOptions.autosaveObservation?.timeoutMs,
-    },
+    ...restBaseOptions,
+    workspaceRoot: resolvedWorkspaceRoot,
+    ...(resolvedInterval !== undefined ? { autosaveIntervalMs: resolvedInterval } : {}),
+    ...(Object.keys(mergedObservation).length > 0 ? { autosaveObservation: mergedObservation } : {}),
   };
 
   const runner = overrides.runner ?? runGraphForgePhase;

@@ -122,6 +122,8 @@ describe("graph_apply_change_set facade", () => {
     expect(structured.details.committed_version).to.equal(2);
     expect(structured.details.diff.summary.nodes_changed).to.equal(true);
     expect(structured.details.diff.summary.metadata_changed).to.equal(true);
+    expect(structured.details).to.not.have.property("metadata");
+    expect(structured.details).to.have.property("rationale", "Annoter le graphe");
 
     const committed = transactions.getCommittedState(graphId);
     expect(committed?.version).to.equal(2);
@@ -160,6 +162,8 @@ describe("graph_apply_change_set facade", () => {
     );
 
     expect(result.isError).to.not.equal(true);
+    const structured = result.structuredContent as Record<string, any>;
+    expect(structured.details).to.not.have.property("rationale");
     const stats = workerPool.getStatistics();
     expect(stats.executed).to.equal(1);
     expect(stats.threshold).to.equal(1);

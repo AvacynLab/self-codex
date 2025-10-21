@@ -319,7 +319,9 @@ export function bridgeCancellationEvents(options: CancellationBridgeOptions): ()
       childId: event.childId,
     };
     const resolved = resolveCorrelation?.(event);
-    mergeCorrelationHints(hints, resolved ?? undefined);
+    if (resolved !== undefined) {
+      mergeCorrelationHints(hints, resolved);
+    }
 
     const level: EventInput["level"] = event.outcome === "requested" ? "info" : "warn";
     const message: CancellationEventMessage =
@@ -393,7 +395,9 @@ export function bridgeChildRuntimeEvents(options: ChildRuntimeBridgeOptions): ()
     }
 
     const resolved = resolveCorrelation?.(context);
-    mergeCorrelationHints(hints, resolved ?? undefined);
+    if (resolved !== undefined) {
+      mergeCorrelationHints(hints, resolved);
+    }
     if (hints.childId === undefined) {
       hints.childId = runtime.childId;
     }
@@ -675,7 +679,9 @@ export function bridgeConsensusEvents(options: ConsensusBridgeOptions): () => vo
       opId: event.opId ?? null,
     };
     const resolved = resolveCorrelation?.(event);
-    mergeCorrelationHints(correlation, resolved ?? undefined);
+    if (resolved !== undefined) {
+      mergeCorrelationHints(correlation, resolved);
+    }
 
     const msg: ConsensusEventMessage = event.tie && !event.outcome
       ? "consensus_tie_unresolved"
@@ -737,7 +743,9 @@ export function bridgeValueEvents(options: ValueGuardBridgeOptions): () => void 
     const hints: EventCorrelationHints = {};
     mergeCorrelationHints(hints, event.correlation);
     const resolved = resolveCorrelation?.(event);
-    mergeCorrelationHints(hints, resolved ?? undefined);
+    if (resolved !== undefined) {
+      mergeCorrelationHints(hints, resolved);
+    }
     const base = {
       cat: "values" as const,
       jobId: hints.jobId ?? null,

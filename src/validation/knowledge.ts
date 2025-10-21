@@ -11,6 +11,7 @@ import {
   type HttpCheckSnapshot,
   type HttpEnvironmentSummary,
 } from "./runSetup.js";
+import { omitUndefinedEntries } from "../utils/object.js";
 
 /** JSONL artefacts dedicated to the knowledge & values validation phase. */
 export const KNOWLEDGE_JSONL_FILES = {
@@ -614,6 +615,25 @@ export function buildKnowledgeSummary(
     ? (valuesPrimary!.citations as unknown[]).length
     : undefined;
 
+  const knowledgeSummary = omitUndefinedEntries({
+    assistQuery: typeof assistParams?.query === "string" ? assistParams.query : undefined,
+    answerPreview,
+    citationCount: assistCitations,
+    planTitle: typeof planTitle === "string" ? planTitle : undefined,
+    planSteps,
+    subgraphNodes: nodeCount,
+    subgraphEdges: edgeCount,
+  });
+
+  const valuesSummary = {
+    explanationConsistent,
+    ...omitUndefinedEntries({
+      topic,
+      explanationPreview: explanationA,
+      citationCount: valuesCitations,
+    }),
+  };
+
   return {
     artefacts: {
       inputsJsonl: join(runRoot, KNOWLEDGE_JSONL_FILES.inputs),
@@ -623,20 +643,7 @@ export function buildKnowledgeSummary(
       valuesGraphExport: state.valuesGraphExportPath,
       causalExport: state.causalExportPath,
     },
-    knowledge: {
-      assistQuery: typeof assistParams?.query === "string" ? assistParams.query : undefined,
-      answerPreview,
-      citationCount: assistCitations,
-      planTitle: typeof planTitle === "string" ? planTitle : undefined,
-      planSteps,
-      subgraphNodes: nodeCount,
-      subgraphEdges: edgeCount,
-    },
-    values: {
-      topic,
-      explanationPreview: explanationA,
-      explanationConsistent,
-      citationCount: valuesCitations,
-    },
+    knowledge: knowledgeSummary,
+    values: valuesSummary,
   };
 }

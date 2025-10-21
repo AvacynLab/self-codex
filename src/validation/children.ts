@@ -554,7 +554,7 @@ export function buildChildrenSummary(
     durationMs: outcome.check.durationMs,
   }));
 
-  const conversationAbsolute = context.conversationPath ?? undefined;
+  const conversationAbsolute = context.conversationPath;
 
   return {
     capturedAt: new Date().toISOString(),
@@ -576,7 +576,10 @@ export function buildChildrenSummary(
       responsesJsonl: join(runRoot, CHILDREN_JSONL_FILES.outputs),
       eventsJsonl: join(runRoot, CHILDREN_JSONL_FILES.events),
       httpLog: join(runRoot, CHILDREN_JSONL_FILES.log),
-      conversation: conversationAbsolute,
+      // NOTE: Optional transcript paths are only attached when the conversation
+      // file exists; omitting the key avoids leaking `undefined` once
+      // `exactOptionalPropertyTypes` is enforced.
+      ...(typeof conversationAbsolute === "string" ? { conversation: conversationAbsolute } : {}),
     },
   };
 }

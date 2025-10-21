@@ -333,7 +333,7 @@ export class EventBus {
       elapsedMs: normaliseElapsed(input.elapsedMs ?? null),
       // Preserve semantic PROMPT/PENDING/... identifiers whenever publishers
       // provide them while gracefully falling back to legacy category tokens.
-      kind: normaliseKind(input.kind ?? undefined),
+      kind: normaliseKind(input.kind ?? null),
       msg: message,
       data: input.data,
     };

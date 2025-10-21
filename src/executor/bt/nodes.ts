@@ -601,7 +601,11 @@ export class TimeoutNode implements BehaviorNode {
   private resolveBudget(runtime: TickRuntime): number {
     const { category, complexityScore } = this.options;
     if (category && runtime.recommendTimeout) {
-      const recommended = runtime.recommendTimeout(category, complexityScore ?? undefined, this.fallbackTimeoutMs ?? undefined);
+      const complexitySource = complexityScore;
+      const complexityArg = complexitySource === null || complexitySource === undefined ? undefined : complexitySource;
+      const fallbackSource = this.fallbackTimeoutMs;
+      const fallbackArg: number | undefined = fallbackSource === null ? undefined : fallbackSource;
+      const recommended = runtime.recommendTimeout(category, complexityArg, fallbackArg);
       if (recommended !== undefined && Number.isFinite(recommended) && recommended > 0) {
         return Math.round(recommended);
       }

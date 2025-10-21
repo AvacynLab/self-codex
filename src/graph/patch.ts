@@ -1,5 +1,6 @@
 import type { NormalisedGraph, GraphAttributeValue } from "./types.js";
 import type { JsonPatchOperation } from "./diff.js";
+import { coerceNullToUndefined } from "../utils/object.js";
 
 /** Error thrown when a JSON Patch cannot be applied to the graph document. */
 export class GraphPatchApplyError extends Error {
@@ -69,14 +70,14 @@ function fromDocument(document: GraphDocument, base: NormalisedGraph): Normalise
     metadata: cloneRecord(document.metadata),
     nodes: document.nodes.map((node) => ({
       id: node.id,
-      label: node.label ?? undefined,
+      label: coerceNullToUndefined(node.label),
       attributes: cloneRecord(node.attributes),
     })),
     edges: document.edges.map((edge) => ({
       from: edge.from,
       to: edge.to,
-      label: edge.label ?? undefined,
-      weight: edge.weight ?? undefined,
+      label: coerceNullToUndefined(edge.label),
+      weight: coerceNullToUndefined(edge.weight),
       attributes: cloneRecord(edge.attributes),
     })),
   };

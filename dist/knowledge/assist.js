@@ -1,3 +1,4 @@
+import { coerceNullToUndefined } from "../utils/object.js";
 import { mergeProvenance, normaliseProvenanceList, } from "../types/provenance.js";
 /** Maximum number of fragment descriptions included in rationale details. */
 const RATIONALE_LIST_LIMIT = 5;
@@ -195,7 +196,7 @@ function buildFragment(goal, fragmentId, groupLabel, seeds, includedTaskMap) {
         return {
             id: task.id,
             kind: "task",
-            label: task.label ?? undefined,
+            label: coerceNullToUndefined(task.label),
             attributes,
         };
     });

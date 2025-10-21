@@ -91,7 +91,7 @@ import {
 import { BehaviorTreeCancellationError } from "../executor/bt/nodes.js";
 import { GraphDescriptorSchema, normaliseDescriptor } from "./graphTools.js";
 import { ThoughtGraphCoordinator, type ThoughtBranchGuardSnapshot } from "../reasoning/thoughtCoordinator.js";
-import { omitUndefinedEntries } from "../utils/object.js";
+import { coerceNullToUndefined, omitUndefinedEntries } from "../utils/object.js";
 
 /**
  * Type used when emitting orchestration events. The server injects a concrete
@@ -1812,7 +1812,7 @@ export async function handlePlanFanout(
     context.graphState.createJob(jobId, {
       createdAt,
       state: "running",
-      ...omitUndefinedEntries({ goal: input.goal ?? undefined }),
+      ...omitUndefinedEntries({ goal: input.goal }),
     });
   } else {
     context.graphState.patchJob(jobId, {
@@ -1850,7 +1850,7 @@ export async function handlePlanFanout(
     correlation: eventCorrelation,
     ...omitUndefinedEntries({
       jobId,
-      childId: parentChildId ?? undefined,
+      childId: coerceNullToUndefined(parentChildId),
     }),
   });
 
@@ -2279,8 +2279,8 @@ export async function handlePlanJoin(
     },
     correlation: correlationHints,
     ...omitUndefinedEntries({
-      jobId: correlationHints.jobId ?? undefined,
-      childId: correlationHints.childId ?? undefined,
+      jobId: coerceNullToUndefined(correlationHints.jobId ?? null),
+      childId: coerceNullToUndefined(correlationHints.childId ?? null),
     }),
   });
 
@@ -2440,8 +2440,8 @@ export async function handlePlanReduce(
     },
     correlation: correlationHints,
     ...omitUndefinedEntries({
-      jobId: correlationHints.jobId ?? undefined,
-      childId: correlationHints.childId ?? undefined,
+      jobId: coerceNullToUndefined(correlationHints.jobId ?? null),
+      childId: coerceNullToUndefined(correlationHints.childId ?? null),
     }),
   });
 
@@ -2805,8 +2805,8 @@ async function executePlanRunBT(
     context.emitEvent({
       kind: "BT_RUN",
       level: phase === "error" ? "error" : "info",
-      jobId: jobId ?? undefined,
-      childId: childId ?? undefined,
+      jobId: coerceNullToUndefined(jobId ?? null),
+      childId: coerceNullToUndefined(childId ?? null),
       payload: eventPayload,
       correlation: eventCorrelation,
     });
@@ -3171,8 +3171,8 @@ async function executePlanRunReactive(
     context.emitEvent({
       kind: "BT_RUN",
       level: phase === "error" ? "error" : "info",
-      jobId: jobId ?? undefined,
-      childId: childId ?? undefined,
+      jobId: coerceNullToUndefined(jobId ?? null),
+      childId: coerceNullToUndefined(childId ?? null),
       payload: eventPayload,
       correlation: eventCorrelation,
     });
@@ -3191,8 +3191,8 @@ async function executePlanRunReactive(
   ) => {
     context.emitEvent({
       kind: "SCHEDULER",
-      jobId: jobId ?? undefined,
-      childId: childId ?? undefined,
+      jobId: coerceNullToUndefined(jobId ?? null),
+      childId: coerceNullToUndefined(childId ?? null),
       payload: {
         msg: message,
         ...correlationLogFields,
@@ -3970,7 +3970,7 @@ function normalisePlanImpact(
     severity: impact.severity,
     rationale: impact.rationale,
     source: impact.source,
-    nodeId: nodeId ?? undefined,
+    nodeId: coerceNullToUndefined(nodeId ?? null),
   };
 }
 

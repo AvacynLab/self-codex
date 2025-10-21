@@ -494,8 +494,7 @@ export class ChildSupervisor implements ChildSupervisorContract {
         : 2;
 
     const policies = supervision.policies ?? {};
-    const rawMaxRestarts =
-      policies.maxRestartsPerMinute ?? policies["max_restarts_per_min"] ?? undefined;
+    const rawMaxRestarts = policies.maxRestartsPerMinute ?? policies["max_restarts_per_min"];
     let maxRestartsPerMinute: number | null = 6;
     if (rawMaxRestarts === null) {
       maxRestartsPerMinute = null;

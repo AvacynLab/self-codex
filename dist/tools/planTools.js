@@ -23,7 +23,8 @@ import { resolveOperationId } from "./operationIds.js";
 import { flatten } from "../graph/hierarchy.js";
 import { registerCancellation, unregisterCancellation, OperationCancelledError, } from "../executor/cancel.js";
 import { BehaviorTreeCancellationError } from "../executor/bt/nodes.js";
-import { GraphDescriptorSchema, normaliseGraphDescriptor } from "./graphTools.js";
+import { GraphDescriptorSchema, normaliseDescriptor } from "./graphTools.js";
+import { coerceNullToUndefined, omitUndefinedEntries } from "../utils/object.js";
 /** Error raised when Behaviour Tree tasks require a disabled blackboard module. */
 class BlackboardFeatureDisabledError extends Error {
     code = "E-BB-DISABLED";
@@ -746,16 +747,20 @@ function resolveChildrenPlans(input, defaultRuntime) {
             return input.children_spec.list.map((child) => ({
                 name: child.name,
                 runtime: child.runtime ?? defaultRuntime,
-                system: child.system,
-                goals: child.goals,
-                command: child.command,
-                args: child.args,
-                env: child.env,
-                metadata: child.metadata,
-                manifestExtras: child.manifest_extras,
                 promptVariables: { ...(child.prompt_variables ?? {}) },
-                ttlSeconds: child.ttl_s,
-                valueImpacts: child.value_impacts?.map((impact) => ({ ...impact })),
+                // NOTE: keep optional fields absent rather than `undefined` so the
+                // object remains compatible with `exactOptionalPropertyTypes`.
+                ...omitUndefinedEntries({
+                    system: child.system,
+                    goals: child.goals,
+                    command: child.command,
+                    args: child.args,
+                    env: child.env,
+                    metadata: child.metadata,
+                    manifestExtras: child.manifest_extras,
+                    ttlSeconds: child.ttl_s,
+                    valueImpacts: child.value_impacts?.map((impact) => ({ ...impact })),
+                }),
             }));
         }
         const plans = [];
@@ -764,15 +769,17 @@ function resolveChildrenPlans(input, defaultRuntime) {
             plans.push({
                 name: `${base.name_prefix}-${index + 1}`,
                 runtime: base.runtime ?? defaultRuntime,
-                system: base.system,
-                goals: base.goals,
-                metadata: base.metadata,
-                manifestExtras: base.manifest_extras,
                 promptVariables: {
                     ...(base.prompt_variables ?? {}),
                     child_index: index + 1,
                 },
-                valueImpacts: base.value_impacts?.map((impact) => ({ ...impact })),
+                ...omitUndefinedEntries({
+                    system: base.system,
+                    goals: base.goals,
+                    metadata: base.metadata,
+                    manifestExtras: base.manifest_extras,
+                    valueImpacts: base.value_impacts?.map((impact) => ({ ...impact })),
+                }),
             });
         }
         return plans;
@@ -781,16 +788,18 @@ function resolveChildrenPlans(input, defaultRuntime) {
         return input.children.map((child) => ({
             name: child.name,
             runtime: child.runtime ?? defaultRuntime,
-            system: child.system,
-            goals: child.goals,
-            command: child.command,
-            args: child.args,
-            env: child.env,
-            metadata: child.metadata,
-            manifestExtras: child.manifest_extras,
             promptVariables: { ...(child.prompt_variables ?? {}) },
-            ttlSeconds: child.ttl_s,
-            valueImpacts: child.value_impacts?.map((impact) => ({ ...impact })),
+            ...omitUndefinedEntries({
+                system: child.system,
+                goals: child.goals,
+                command: child.command,
+                args: child.args,
+                env: child.env,
+                metadata: child.metadata,
+                manifestExtras: child.manifest_extras,
+                ttlSeconds: child.ttl_s,
+                valueImpacts: child.value_impacts?.map((impact) => ({ ...impact })),
+            }),
         }));
     }
     throw new Error("plan_fanout requires either children_spec or children to describe the clones");
@@ -861,9 +870,11 @@ async function spawnChildWithRetry(context, jobId, plan, template, sharedVariabl
     };
     context.graphState.createChild(jobId, childId, {
         name: plan.name,
-        system: plan.system,
-        goals: plan.goals,
         runtime: plan.runtime,
+        ...omitUndefinedEntries({
+            system: plan.system,
+            goals: plan.goals,
+        }),
     }, {
         createdAt,
         ttlAt: plan.ttlSeconds ? createdAt + plan.ttlSeconds * 1000 : null,
@@ -879,10 +890,12 @@ async function spawnChildWithRetry(context, jobId, plan, template, sharedVariabl
     const lessonStore = context.lessonsStore ?? null;
     const lessonRecall = lessonStore !== null
         ? recallLessons(lessonStore, {
-            metadata: plan.metadata,
-            goals: plan.goals ?? [],
             variables,
             additionalTags: ["plan", plan.runtime ?? ""],
+            ...omitUndefinedEntries({
+                metadata: plan.metadata,
+                goals: plan.goals,
+            }),
         })
         : { matches: [], tags: [] };
     const lessonManifest = lessonStore && lessonRecall.matches.length > 0
@@ -929,9 +942,11 @@ async function spawnChildWithRetry(context, jobId, plan, template, sharedVariabl
             }
             const created = await context.supervisor.createChild({
                 childId,
-                command: plan.command,
-                args: plan.args,
-                env: plan.env,
+                ...omitUndefinedEntries({
+                    command: plan.command,
+                    args: plan.args,
+                    env: plan.env,
+                }),
                 metadata: buildFanoutChildMetadata(plan, variables, guardSnapshot, correlation),
                 manifestExtras,
                 waitForReady: true,
@@ -944,13 +959,15 @@ async function spawnChildWithRetry(context, jobId, plan, template, sharedVariabl
             if (lessonsPromptPayload) {
                 context.emitEvent({
                     kind: "PROMPT",
-                    jobId,
-                    childId,
                     payload: {
                         operation: "plan_fanout",
                         lessons_prompt: lessonsPromptPayload,
                     },
                     correlation: eventCorrelation,
+                    ...omitUndefinedEntries({
+                        jobId,
+                        childId,
+                    }),
                 });
             }
             await context.supervisor.send(childId, {
@@ -1154,9 +1171,9 @@ export async function handlePlanFanout(context, input) {
     const existingJob = context.graphState.getJob(jobId);
     if (!existingJob) {
         context.graphState.createJob(jobId, {
-            goal: input.goal,
             createdAt,
             state: "running",
+            ...omitUndefinedEntries({ goal: input.goal }),
         });
     }
     else {
@@ -1184,14 +1201,16 @@ export async function handlePlanFanout(context, input) {
     };
     context.emitEvent({
         kind: "PLAN",
-        jobId,
-        childId: parentChildId ?? undefined,
         payload: {
             ...correlationPayload,
             children: plans.map((plan) => ({ name: plan.name, runtime: plan.runtime })),
             rejected: rejectedPlans.map((entry) => entry.name),
         },
         correlation: eventCorrelation,
+        ...omitUndefinedEntries({
+            jobId,
+            childId: coerceNullToUndefined(parentChildId),
+        }),
     });
     const sharedVariables = {
         job_id: jobId,
@@ -1550,8 +1569,6 @@ export async function handlePlanJoin(context, input) {
     }
     context.emitEvent({
         kind: "STATUS",
-        jobId: correlationHints.jobId ?? undefined,
-        childId: correlationHints.childId ?? undefined,
         payload: {
             ...correlationPayload,
             policy: input.join_policy,
@@ -1561,6 +1578,10 @@ export async function handlePlanJoin(context, input) {
             consensus: consensusPayload,
         },
         correlation: correlationHints,
+        ...omitUndefinedEntries({
+            jobId: coerceNullToUndefined(correlationHints.jobId ?? null),
+            childId: coerceNullToUndefined(correlationHints.childId ?? null),
+        }),
     });
     context.logger.info("plan_join_completed", {
         policy: input.join_policy,
@@ -1695,14 +1716,16 @@ export async function handlePlanReduce(context, input) {
     });
     context.emitEvent({
         kind: "AGGREGATE",
-        jobId: correlationHints.jobId ?? undefined,
-        childId: correlationHints.childId ?? undefined,
         payload: {
             ...correlationPayload,
             reducer: input.reducer,
             children: summaries.map((item) => item.child_id),
         },
         correlation: correlationHints,
+        ...omitUndefinedEntries({
+            jobId: coerceNullToUndefined(correlationHints.jobId ?? null),
+            childId: coerceNullToUndefined(correlationHints.childId ?? null),
+        }),
     });
     let result;
     switch (input.reducer) {
@@ -2034,8 +2057,8 @@ async function executePlanRunBT(context, input) {
         context.emitEvent({
             kind: "BT_RUN",
             level: phase === "error" ? "error" : "info",
-            jobId: jobId ?? undefined,
-            childId: childId ?? undefined,
+            jobId: coerceNullToUndefined(jobId ?? null),
+            childId: coerceNullToUndefined(childId ?? null),
             payload: eventPayload,
             correlation: eventCorrelation,
         });
@@ -2363,8 +2386,8 @@ async function executePlanRunReactive(context, input) {
         context.emitEvent({
             kind: "BT_RUN",
             level: phase === "error" ? "error" : "info",
-            jobId: jobId ?? undefined,
-            childId: childId ?? undefined,
+            jobId: coerceNullToUndefined(jobId ?? null),
+            childId: coerceNullToUndefined(childId ?? null),
             payload: eventPayload,
             correlation: eventCorrelation,
         });
@@ -2379,8 +2402,8 @@ async function executePlanRunReactive(context, input) {
     const emitSchedulerTelemetry = (message, payload) => {
         context.emitEvent({
             kind: "SCHEDULER",
-            jobId: jobId ?? undefined,
-            childId: childId ?? undefined,
+            jobId: coerceNullToUndefined(jobId ?? null),
+            childId: coerceNullToUndefined(childId ?? null),
             payload: {
                 msg: message,
                 ...correlationLogFields,
@@ -2850,7 +2873,7 @@ function normalisePlanDryRunGraph(graph) {
     if (!parsed.success) {
         throw new Error("invalid graph payload supplied to plan dry-run");
     }
-    return normaliseGraphDescriptor(parsed.data);
+    return normaliseDescriptor(parsed.data);
 }
 /**
  * Build reroute hints by combining explicit rewrite options with heuristic signals
@@ -3056,7 +3079,7 @@ function normalisePlanImpact(impact, fallbackNodeId) {
         severity: impact.severity,
         rationale: impact.rationale,
         source: impact.source,
-        nodeId: nodeId ?? undefined,
+        nodeId: coerceNullToUndefined(nodeId ?? null),
     };
 }
 /**

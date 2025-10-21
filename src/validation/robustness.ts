@@ -430,7 +430,7 @@ function buildRobustnessSummary(
       typeof (result as { idempotent?: unknown })?.idempotent === "boolean"
         ? ((result as { idempotent?: boolean }).idempotent as boolean)
         : undefined;
-    const idempotencyKey = extractIdempotencyKey(outcome.check.response.body) ?? undefined;
+    const idempotencyKey = extractIdempotencyKey(outcome.check.response.body);
     return {
       scenario: outcome.call.scenario,
       name: outcome.call.name,
@@ -441,8 +441,8 @@ function buildRobustnessSummary(
         errorCode: error?.code,
         errorMessage: error?.message,
         idempotent: idempotentValue,
-        idempotencyKey,
       }),
+      ...(idempotencyKey !== null ? { idempotencyKey } : {}),
     };
   });
 
@@ -450,6 +450,10 @@ function buildRobustnessSummary(
   const crashSimulation = computeCrashSummary(outcomes);
   const timeout = computeTimeoutSummary(outcomes);
 
+  // NOTE: Optional summary sections are only attached when the corresponding
+  // scenarios are executed successfully; omitting unused keys keeps the payload
+  // compliant once `exactOptionalPropertyTypes` enforces strict undefined
+  // handling.
   return {
     artefacts: {
       inputsJsonl: join(runRoot, ROBUSTNESS_JSONL_FILES.inputs),
@@ -458,11 +462,9 @@ function buildRobustnessSummary(
       httpSnapshotLog: join(runRoot, ROBUSTNESS_JSONL_FILES.log),
     },
     checks,
-    ...omitUndefinedEntries({
-      idempotency: idempotency ?? undefined,
-      crashSimulation: crashSimulation ?? undefined,
-      timeout: timeout ?? undefined,
-    }),
+    ...(idempotency !== null ? { idempotency } : {}),
+    ...(crashSimulation !== null ? { crashSimulation } : {}),
+    ...(timeout !== null ? { timeout } : {}),
   };
 }
 
@@ -487,15 +489,17 @@ function computeIdempotencySummary(
     mismatchReason = "Response mismatch across idempotent calls";
   }
 
+  const idempotencyKey = extractIdempotencyKey(first.check.response.body);
+  // NOTE: Idempotency metadata is absent when the backend does not surface the
+  // diagnostic key; we avoid serialising `undefined` so the future strict flag
+  // can distinguish between missing and null values.
   return {
     group: IDEMPOTENCY_GROUP,
     consistent,
     firstStatus: first.check.response.status,
     secondStatus: second.check.response.status,
-    ...omitUndefinedEntries({
-      idempotencyKey: extractIdempotencyKey(first.check.response.body) ?? undefined,
-      mismatchReason,
-    }),
+    ...(idempotencyKey !== null ? { idempotencyKey } : {}),
+    ...(mismatchReason ? { mismatchReason } : {}),
   };
 }
 

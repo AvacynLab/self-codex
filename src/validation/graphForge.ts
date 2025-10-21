@@ -21,6 +21,7 @@ import {
 } from "./runSetup.js";
 import { ensureDirectory } from "../paths.js";
 import { safePath } from "../gateways/fsArtifacts.js";
+import { omitUndefinedEntries } from "../utils/object.js";
 
 /** Relative JSONL targets dedicated to the Graph Forge validation workflow. */
 export const GRAPH_FORGE_JSONL_FILES = {
@@ -367,7 +368,7 @@ export async function observeAutosaveTicks(
     observedTicks: samples.length,
     durationMs: Date.now() - startedAt,
     completed: samples.length >= requiredTicks,
-    lastError,
+    ...omitUndefinedEntries({ lastError }),
     samples,
   };
 }
@@ -493,7 +494,7 @@ export async function verifyAutosaveQuiescence(
     pollIntervalMs,
     verified,
     fileMissing,
-    lastError,
+    ...omitUndefinedEntries({ lastError }),
   };
 }
 

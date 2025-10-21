@@ -38,6 +38,7 @@ import {
 } from "../rpc/schemas.js";
 import { serialiseNormalisedGraph } from "./graphTools.js";
 import { resolveOperationId } from "./operationIds.js";
+import { coerceNullToUndefined } from "../utils/object.js";
 import { ERROR_CODES } from "../types.js";
 
 /** Canonical façade name surfaced through the MCP registry. */
@@ -417,8 +418,10 @@ async function executeChangeSet(
           ok: true,
         },
         invariants,
-        rationale: parsed.rationale ?? undefined,
-        metadata: metadata ?? undefined,
+        ...(parsed.rationale !== undefined
+          ? { rationale: coerceNullToUndefined(parsed.rationale) }
+          : {}),
+        ...(metadata ? { metadata } : {}),
         idempotent: false,
       }),
     });

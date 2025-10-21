@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import { assertValidEventMessage } from "./types.js";
+import { assertValidEventMessage, } from "./types.js";
 const BUS_EVENT = "event";
 const DEFAULT_HISTORY_LIMIT = 1_000;
 const DEFAULT_STREAM_BUFFER = 256;
@@ -83,6 +83,15 @@ class EventStream {
     buffer = [];
     resolve;
     closed = false;
+    /**
+     * Precomputed iterator result returned whenever the stream completes. The
+     * object is immutable to guarantee that awaiting consumers observe a stable
+     * reference that cannot be mutated by publishers.
+     */
+    static DONE = Object.freeze({
+        value: undefined,
+        done: true,
+    });
     constructor(emitter, matcher, seed, maxBuffer) {
         this.emitter = emitter;
         this.matcher = matcher;
@@ -100,7 +109,7 @@ class EventStream {
             return { value: this.buffer.shift(), done: false };
         }
         if (this.closed) {
-            return { value: undefined, done: true };
+            return EventStream.DONE;
         }
         return new Promise((resolve) => {
             this.resolve = resolve;
@@ -108,7 +117,7 @@ class EventStream {
     }
     async return() {
         this.close();
-        return { value: undefined, done: true };
+        return EventStream.DONE;
     }
     close() {
         if (this.closed) {
@@ -117,7 +126,7 @@ class EventStream {
         this.closed = true;
         this.emitter.removeListener(BUS_EVENT, this.handleEvent);
         if (this.resolve) {
-            this.resolve({ value: undefined, done: true });
+            this.resolve(EventStream.DONE);
             this.resolve = undefined;
         }
         this.buffer.length = 0;
@@ -167,6 +176,8 @@ export class EventBus {
         this.trimHistory();
     }
     publish(input) {
+        // The normaliser trims whitespace but preserves the semantic token, hence the
+        // cast back to the caller-provided subtype remains safe.
         const message = normaliseMessage(input.msg);
         const component = normaliseTag(input.component ?? input.cat);
         const stage = normaliseTag(input.stage ?? message);
@@ -186,7 +197,7 @@ export class EventBus {
             elapsedMs: normaliseElapsed(input.elapsedMs ?? null),
             // Preserve semantic PROMPT/PENDING/... identifiers whenever publishers
             // provide them while gracefully falling back to legacy category tokens.
-            kind: normaliseKind(input.kind ?? undefined),
+            kind: normaliseKind(input.kind ?? null),
             msg: message,
             data: input.data,
         };

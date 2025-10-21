@@ -113,6 +113,7 @@ import { renderResourceWatchSseMessages, serialiseResourceWatchResultForSse } fr
 import { IdempotencyRegistry, buildIdempotencyCacheKey } from "../infra/idempotency.js";
 import { runWithJsonRpcContext } from "../infra/jsonRpcContext.js";
 import { assembleJsonRpcRuntime, type JsonRpcRouteContext } from "../infra/runtime.js";
+import { coerceNullToUndefined, omitUndefinedEntries } from "../utils/object.js";
 import {
   runWithRpcTrace,
   annotateTraceContext,
@@ -1246,7 +1247,9 @@ const childProcessSupervisor = new ChildSupervisor({
     cpuPercent: runtimeChildSafety.cpuPercent,
   },
   sandbox: {
-    defaultProfile: sandboxDefaultProfile ?? undefined,
+    // Removing undefined ensures the supervisor can fall back to its internal
+    // default profile while still accepting explicit nulls for "no sandbox".
+    ...omitUndefinedEntries({ defaultProfile: sandboxDefaultProfile }),
     allowEnv: sandboxAllowEnv,
   },
   eventBus,
@@ -1304,7 +1307,7 @@ const autoscaler = new Autoscaler({
       level: event.level,
       childId: event.childId,
       payload: event.payload,
-      correlation: event.correlation ?? undefined,
+      correlation: event.correlation,
     });
   },
 });
@@ -1836,7 +1839,7 @@ function getPlanToolContext(): PlanToolContext {
         jobId: event.jobId,
         childId: event.childId,
         payload: event.payload,
-        correlation: event.correlation ?? undefined,
+        correlation: event.correlation,
       });
     },
     stigmergy,
@@ -2653,8 +2656,13 @@ function pushEvent(event: PushEventInput): OrchestratorEvent {
     kind: event.kind,
     level: event.level,
     source: event.source,
-    jobId: event.jobId ?? undefined,
-    childId: event.childId ?? undefined,
+    ...omitUndefinedEntries({
+      // Null identifiers are intentionally omitted because the event store
+      // only tracks concrete string IDs while the public payload still exposes
+      // explicit `null` values via the correlation hints below.
+      jobId: coerceNullToUndefined(event.jobId),
+      childId: coerceNullToUndefined(event.childId),
+    }),
     payload: event.payload,
     provenance: event.provenance,
   });
@@ -2669,7 +2677,7 @@ function pushEvent(event: PushEventInput): OrchestratorEvent {
   });
 
   const hints: EventCorrelationHints = {};
-  mergeCorrelationHints(hints, event.correlation ?? undefined);
+  mergeCorrelationHints(hints, event.correlation);
   if (event.jobId !== undefined) {
     mergeCorrelationHints(hints, { jobId: event.jobId ?? null });
   }
@@ -2769,6 +2777,14 @@ function pushEvent(event: PushEventInput): OrchestratorEvent {
   }
   return emitted;
 }
+
+/**
+ * @internal Exposes event emission helpers so tests can assert the
+ * `exactOptionalPropertyTypes` contract without relying on private imports.
+ */
+export const __eventRuntimeInternals = {
+  pushEvent,
+};
 
 function buildLiveEvents(input: { job_id?: string; child_id?: string; limit?: number; order?: "asc" | "desc"; min_seq?: number }) {
   const limit = input.limit && input.limit > 0 ? Math.min(input.limit, 500) : 100;
@@ -2955,7 +2971,7 @@ function pruneExpired() {
       graphState.clearPendingForChild(child.id);
       graphState.patchChild(child.id, { state: "killed", waitingFor: null, pendingId: null, ttlAt: null });
       const correlation = resolveChildEventCorrelation(child.id, { child });
-      const jobId = correlation.jobId ?? undefined;
+      const jobId = correlation.jobId ?? null;
       pushEvent({
         kind: "KILL",
         jobId,
@@ -3577,7 +3593,7 @@ const graphApplyManifest = await registerGraphApplyChangeSetTool(toolRegistry, {
   locks: graphLocks,
   resources,
   idempotency: runtimeFeatures.enableIdempotency ? idempotencyRegistry : undefined,
-  workerPool: graphWorkerPool ?? undefined,
+  workerPool: coerceNullToUndefined(graphWorkerPool),
 });
 toolRouter.register(graphApplyManifest);
 const graphSnapshotManifest = await registerGraphSnapshotTimeTravelTool(toolRegistry, {
@@ -3781,8 +3797,10 @@ server.registerTool(
         steps: parsed.steps.map((step) => ({
           id: step.id,
           tool: step.tool,
-          arguments: step.arguments ?? undefined,
-          capture: step.capture ?? undefined,
+          ...omitUndefinedEntries({
+            arguments: step.arguments,
+            capture: step.capture,
+          }),
         })),
       };
       const manifest = await toolRegistry.registerComposite(request);
@@ -4620,7 +4638,11 @@ server.registerTool(
         content: [{ type: "text", text: j({ error: "BAD_REQUEST", message: "max_events > 0 requis" }) }]
       };
     }
-    graphState.pruneEvents(max, input.job_id ?? undefined, input.child_id ?? undefined);
+    graphState.pruneEvents(
+      max,
+      coerceNullToUndefined(input.job_id),
+      coerceNullToUndefined(input.child_id),
+    );
     return {
       content: [
         {
@@ -4967,7 +4989,9 @@ server.registerTool(
       };
     } catch (error) {
       const providedOpId = extractStringProperty(input as Record<string, unknown>, "op_id");
-      return graphToolError(logger, "graph_generate", error, { op_id: providedOpId ?? undefined });
+      return graphToolError(logger, "graph_generate", error, {
+        op_id: coerceNullToUndefined(providedOpId),
+      });
     }
   },
 );
@@ -5092,13 +5116,13 @@ server.registerTool(
         return graphToolError(logger, "graph_mutate", error, {
           graph_id: graphIdForError,
           version: graphVersionForError,
-          op_id: extractStringProperty(input as Record<string, unknown>, "op_id") ?? undefined,
+          op_id: coerceNullToUndefined(extractStringProperty(input as Record<string, unknown>, "op_id")),
         });
       }
       return graphToolError(logger, "graph_mutate", error, {
         graph_id: graphIdForError,
-        version: graphVersionForError ?? undefined,
-        op_id: extractStringProperty(input as Record<string, unknown>, "op_id") ?? undefined,
+        version: coerceNullToUndefined(graphVersionForError),
+        op_id: coerceNullToUndefined(extractStringProperty(input as Record<string, unknown>, "op_id")),
       });
     }
   },
@@ -5174,18 +5198,24 @@ server.registerTool(
       if (error instanceof GraphVersionConflictError) {
         return graphToolError(logger, "graph_batch_mutate", error, {
           graph_id: graphIdForError,
-          op_id: opIdForError ?? extractStringProperty(input as Record<string, unknown>, "op_id") ?? undefined,
+          op_id: coerceNullToUndefined(
+            opIdForError ?? extractStringProperty(input as Record<string, unknown>, "op_id"),
+          ),
         });
       }
       if (error instanceof GraphTransactionError) {
         return graphToolError(logger, "graph_batch_mutate", error, {
           graph_id: graphIdForError,
-          op_id: opIdForError ?? extractStringProperty(input as Record<string, unknown>, "op_id") ?? undefined,
+          op_id: coerceNullToUndefined(
+            opIdForError ?? extractStringProperty(input as Record<string, unknown>, "op_id"),
+          ),
         });
       }
       return graphToolError(logger, "graph_batch_mutate", error, {
-        graph_id: graphIdForError ?? undefined,
-        op_id: opIdForError ?? extractStringProperty(input as Record<string, unknown>, "op_id") ?? undefined,
+        graph_id: coerceNullToUndefined(graphIdForError),
+        op_id: coerceNullToUndefined(
+          opIdForError ?? extractStringProperty(input as Record<string, unknown>, "op_id"),
+        ),
       });
     }
   },
@@ -5221,10 +5251,16 @@ server.registerTool(
       };
     } catch (error) {
       const providedOpId = extractStringProperty(input as Record<string, unknown>, "op_id");
-      return graphToolError(logger, "graph_diff", error, { op_id: providedOpId ?? undefined }, {
-        defaultCode: "E-PATCH-DIFF",
-        invalidInputCode: "E-PATCH-INVALID",
-      });
+      return graphToolError(
+        logger,
+        "graph_diff",
+        error,
+        { op_id: coerceNullToUndefined(providedOpId) },
+        {
+          defaultCode: "E-PATCH-DIFF",
+          invalidInputCode: "E-PATCH-INVALID",
+        },
+      );
     }
   },
 );
@@ -5266,7 +5302,7 @@ server.registerTool(
     } catch (error) {
       return graphToolError(logger, "graph_patch", error, {
         graph_id: graphIdForError,
-        op_id: extractStringProperty(input as Record<string, unknown>, "op_id") ?? undefined,
+        op_id: coerceNullToUndefined(extractStringProperty(input as Record<string, unknown>, "op_id")),
       }, {
         defaultCode: "E-PATCH-APPLY",
         invalidInputCode: "E-PATCH-INVALID",
@@ -5310,7 +5346,7 @@ server.registerTool(
       };
     } catch (error) {
       return graphToolError(logger, "graph_lock", error, {
-        op_id: extractStringProperty(input as Record<string, unknown>, "op_id") ?? undefined,
+        op_id: coerceNullToUndefined(extractStringProperty(input as Record<string, unknown>, "op_id")),
       }, {
         defaultCode: "E-LOCK-ACQUIRE",
         invalidInputCode: "E-LOCK-INVALID-INPUT",
@@ -5354,7 +5390,7 @@ server.registerTool(
     } catch (error) {
       return graphToolError(logger, "graph_unlock", error, {
         lock_id: lockIdForError,
-        op_id: extractStringProperty(input as Record<string, unknown>, "op_id") ?? undefined,
+        op_id: coerceNullToUndefined(extractStringProperty(input as Record<string, unknown>, "op_id")),
       }, {
         defaultCode: "E-LOCK-RELEASE",
         invalidInputCode: "E-LOCK-INVALID-INPUT",
@@ -5423,7 +5459,7 @@ server.registerTool(
       return graphToolError(logger, "graph_subgraph_extract", error, {
         node_id: parsed?.node_id,
         run_id: parsed?.run_id,
-        op_id: parsed ? parsed.op_id ?? undefined : undefined,
+        op_id: parsed ? coerceNullToUndefined(parsed.op_id) : undefined,
       });
     }
   },
@@ -5462,7 +5498,7 @@ server.registerTool(
       };
     } catch (error) {
       return graphToolError(logger, "graph_hyper_export", error, {
-        op_id: extractStringProperty(input as Record<string, unknown>, "op_id") ?? undefined,
+        op_id: coerceNullToUndefined(extractStringProperty(input as Record<string, unknown>, "op_id")),
       });
     }
   },
@@ -5984,17 +6020,17 @@ server.registerTool(
     } catch (error) {
       if (error instanceof GraphVersionConflictError) {
         return graphToolError(logger, "graph_rewrite_apply", error, {
-          graph_id: graphIdForError ?? undefined,
-          version: graphVersionForError ?? undefined,
+          graph_id: coerceNullToUndefined(graphIdForError),
+          version: coerceNullToUndefined(graphVersionForError),
           mode: parsed?.mode,
-          op_id: extractStringProperty(input as Record<string, unknown>, "op_id") ?? undefined,
+          op_id: coerceNullToUndefined(extractStringProperty(input as Record<string, unknown>, "op_id")),
         });
       }
       return graphToolError(logger, "graph_rewrite_apply", error, {
-        graph_id: graphIdForError ?? undefined,
-        version: graphVersionForError ?? undefined,
+        graph_id: coerceNullToUndefined(graphIdForError),
+        version: coerceNullToUndefined(graphVersionForError),
         mode: parsed?.mode,
-        op_id: extractStringProperty(input as Record<string, unknown>, "op_id") ?? undefined,
+        op_id: coerceNullToUndefined(extractStringProperty(input as Record<string, unknown>, "op_id")),
       });
     }
   },
@@ -6017,7 +6053,7 @@ server.registerTool(
     try {
       const parsed = TxBeginInputSchema.parse(input ?? {});
       graphIdForError = parsed.graph_id;
-      opIdForError = parsed.op_id ?? undefined;
+      opIdForError = coerceNullToUndefined(parsed.op_id);
       const result = handleTxBegin(getTxToolContext(), parsed);
       opIdForError = result.op_id;
       logger.info("tx_begin_requested", {
@@ -6055,7 +6091,7 @@ server.registerTool(
       };
     } catch (error) {
       return transactionToolError(logger, "tx_begin", error, {
-        graph_id: graphIdForError ?? undefined,
+        graph_id: coerceNullToUndefined(graphIdForError),
         op_id: opIdForError,
       });
     }
@@ -6079,7 +6115,7 @@ server.registerTool(
     try {
       const parsed = TxApplyInputSchema.parse(input);
       txIdForError = parsed.tx_id;
-      opIdForError = parsed.op_id ?? undefined;
+      opIdForError = coerceNullToUndefined(parsed.op_id);
       const result = handleTxApply(getTxToolContext(), parsed);
       opIdForError = result.op_id;
       logger.info("tx_apply_requested", {
@@ -6101,7 +6137,7 @@ server.registerTool(
       };
     } catch (error) {
       return transactionToolError(logger, "tx_apply", error, {
-        tx_id: txIdForError ?? undefined,
+        tx_id: coerceNullToUndefined(txIdForError),
         op_id: opIdForError,
       });
     }
@@ -6125,7 +6161,7 @@ server.registerTool(
     try {
       const parsed = TxCommitInputSchema.parse(input);
       txIdForError = parsed.tx_id;
-      opIdForError = parsed.op_id ?? undefined;
+      opIdForError = coerceNullToUndefined(parsed.op_id);
       const result = handleTxCommit(getTxToolContext(), parsed);
       opIdForError = result.op_id;
       logger.info("tx_commit_requested", { tx_id: parsed.tx_id, op_id: result.op_id });
@@ -6142,7 +6178,7 @@ server.registerTool(
       };
     } catch (error) {
       return transactionToolError(logger, "tx_commit", error, {
-        tx_id: txIdForError ?? undefined,
+        tx_id: coerceNullToUndefined(txIdForError),
         op_id: opIdForError,
       });
     }
@@ -6166,7 +6202,7 @@ server.registerTool(
     try {
       const parsed = TxRollbackInputSchema.parse(input);
       txIdForError = parsed.tx_id;
-      opIdForError = parsed.op_id ?? undefined;
+      opIdForError = coerceNullToUndefined(parsed.op_id);
       const result = handleTxRollback(getTxToolContext(), parsed);
       opIdForError = result.op_id;
       logger.info("tx_rollback_requested", { tx_id: parsed.tx_id, op_id: result.op_id });
@@ -6183,7 +6219,7 @@ server.registerTool(
       };
     } catch (error) {
       return transactionToolError(logger, "tx_rollback", error, {
-        tx_id: txIdForError ?? undefined,
+        tx_id: coerceNullToUndefined(txIdForError),
         op_id: opIdForError,
       });
     }
@@ -6219,7 +6255,7 @@ server.registerTool(
       };
     } catch (error) {
       return graphToolError(logger, "graph_validate", error, {
-        op_id: extractStringProperty(input as Record<string, unknown>, "op_id") ?? undefined,
+        op_id: coerceNullToUndefined(extractStringProperty(input as Record<string, unknown>, "op_id")),
       });
     }
   },
@@ -6252,7 +6288,7 @@ server.registerTool(
       };
     } catch (error) {
       return graphToolError(logger, "graph_summarize", error, {
-        op_id: extractStringProperty(input as Record<string, unknown>, "op_id") ?? undefined,
+        op_id: coerceNullToUndefined(extractStringProperty(input as Record<string, unknown>, "op_id")),
       });
     }
   },
@@ -6288,7 +6324,7 @@ server.registerTool(
       };
     } catch (error) {
       return graphToolError(logger, "graph_paths_k_shortest", error, {
-        op_id: extractStringProperty(input as Record<string, unknown>, "op_id") ?? undefined,
+        op_id: coerceNullToUndefined(extractStringProperty(input as Record<string, unknown>, "op_id")),
       });
     }
   },
@@ -6328,8 +6364,9 @@ server.registerTool(
         structuredContent: result,
       };
     } catch (error) {
-      const providedOpId =
-        opIdForError ?? extractStringProperty(input as Record<string, unknown>, "op_id") ?? undefined;
+      const providedOpId = coerceNullToUndefined(
+        opIdForError ?? extractStringProperty(input as Record<string, unknown>, "op_id"),
+      );
       return graphToolError(logger, "graph_paths_constrained", error, { op_id: providedOpId });
     }
   },
@@ -6365,8 +6402,9 @@ server.registerTool(
         structuredContent: result,
       };
     } catch (error) {
-      const providedOpId =
-        opIdForError ?? extractStringProperty(input as Record<string, unknown>, "op_id") ?? undefined;
+      const providedOpId = coerceNullToUndefined(
+        opIdForError ?? extractStringProperty(input as Record<string, unknown>, "op_id"),
+      );
       return graphToolError(logger, "graph_centrality_betweenness", error, { op_id: providedOpId });
     }
   },
@@ -6403,8 +6441,9 @@ server.registerTool(
         structuredContent: result,
       };
     } catch (error) {
-      const providedOpId =
-        opIdForError ?? extractStringProperty(input as Record<string, unknown>, "op_id") ?? undefined;
+      const providedOpId = coerceNullToUndefined(
+        opIdForError ?? extractStringProperty(input as Record<string, unknown>, "op_id"),
+      );
       return graphToolError(logger, "graph_partition", error, { op_id: providedOpId });
     }
   },
@@ -6440,8 +6479,9 @@ server.registerTool(
         structuredContent: result,
       };
     } catch (error) {
-      const providedOpId =
-        opIdForError ?? extractStringProperty(input as Record<string, unknown>, "op_id") ?? undefined;
+      const providedOpId = coerceNullToUndefined(
+        opIdForError ?? extractStringProperty(input as Record<string, unknown>, "op_id"),
+      );
       return graphToolError(logger, "graph_critical_path", error, { op_id: providedOpId });
     }
   },
@@ -6477,8 +6517,9 @@ server.registerTool(
         structuredContent: result,
       };
     } catch (error) {
-      const providedOpId =
-        opIdForError ?? extractStringProperty(input as Record<string, unknown>, "op_id") ?? undefined;
+      const providedOpId = coerceNullToUndefined(
+        opIdForError ?? extractStringProperty(input as Record<string, unknown>, "op_id"),
+      );
       return graphToolError(logger, "graph_simulate", error, { op_id: providedOpId });
     }
   },
@@ -6519,8 +6560,9 @@ server.registerTool(
         structuredContent: result,
       };
     } catch (error) {
-      const providedOpId =
-        opIdForError ?? extractStringProperty(input as Record<string, unknown>, "op_id") ?? undefined;
+      const providedOpId = coerceNullToUndefined(
+        opIdForError ?? extractStringProperty(input as Record<string, unknown>, "op_id"),
+      );
       return graphToolError(logger, "graph_optimize", error, { op_id: providedOpId });
     }
   },
@@ -6556,8 +6598,9 @@ server.registerTool(
         structuredContent: result,
       };
     } catch (error) {
-      const providedOpId =
-        opIdForError ?? extractStringProperty(input as Record<string, unknown>, "op_id") ?? undefined;
+      const providedOpId = coerceNullToUndefined(
+        opIdForError ?? extractStringProperty(input as Record<string, unknown>, "op_id"),
+      );
       return graphToolError(logger, "graph_optimize_moo", error, { op_id: providedOpId });
     }
   },
@@ -6594,8 +6637,9 @@ server.registerTool(
         structuredContent: result,
       };
     } catch (error) {
-      const providedOpId =
-        opIdForError ?? extractStringProperty(input as Record<string, unknown>, "op_id") ?? undefined;
+      const providedOpId = coerceNullToUndefined(
+        opIdForError ?? extractStringProperty(input as Record<string, unknown>, "op_id"),
+      );
       return graphToolError(logger, "graph_causal_analyze", error, { op_id: providedOpId });
     }
   },
@@ -7393,7 +7437,7 @@ server.registerTool(
         const correlation = resolveChildEventCorrelation(child.id, { child });
         pushEvent({
           kind: "START",
-          jobId: correlation.jobId ?? undefined,
+          jobId: coerceNullToUndefined(correlation.jobId),
           childId: correlation.childId ?? child.id,
           payload: { name: child.name },
           correlation,
@@ -7633,7 +7677,7 @@ server.registerTool(
         logger.logCognitive({
           actor: "lessons",
           phase: "prompt",
-          childId: parsed.child_id ?? undefined,
+          childId: coerceNullToUndefined(parsed.child_id),
           content: lessonRecall.matches[0]?.summary ?? "lessons_injected",
           metadata: {
             topics: lessonRecall.matches.map((lesson) => lesson.topic),
@@ -7658,7 +7702,7 @@ server.registerTool(
         pushEvent({
           kind: "PROMPT",
           source: "orchestrator",
-          childId: parsed.child_id ?? undefined,
+          childId: coerceNullToUndefined(parsed.child_id),
           payload: {
             operation: "child_create",
             lessons_prompt: lessonsPromptPayload,
@@ -7803,7 +7847,7 @@ server.registerTool(
         logger.logCognitive({
           actor: "lessons",
           phase: "learn",
-          childId: parsed.child_id ?? undefined,
+          childId: coerceNullToUndefined(parsed.child_id),
           content: upsert.record.summary,
           metadata: {
             topic: upsert.record.topic,
@@ -7881,7 +7925,7 @@ server.registerTool(
       pushEvent({
         kind: cognitiveEvents.review.kind,
         level: cognitiveEvents.review.level,
-        jobId: cognitiveEvents.review.jobId ?? undefined,
+        jobId: coerceNullToUndefined(cognitiveEvents.review.jobId),
         childId: cognitiveEvents.review.childId,
         payload: cognitiveEvents.review.payload,
         correlation: cognitiveEvents.review.correlation,
@@ -7891,7 +7935,7 @@ server.registerTool(
         pushEvent({
           kind: cognitiveEvents.reflection.kind,
           level: cognitiveEvents.reflection.level,
-          jobId: cognitiveEvents.reflection.jobId ?? undefined,
+          jobId: coerceNullToUndefined(cognitiveEvents.reflection.jobId),
           childId: cognitiveEvents.reflection.childId,
           payload: cognitiveEvents.reflection.payload,
           correlation: cognitiveEvents.reflection.correlation,
@@ -8088,7 +8132,7 @@ server.registerTool(
 
 
     const correlation = resolveChildEventCorrelation(child_id, { child });
-    const jobId = correlation.jobId ?? undefined;
+    const jobId = coerceNullToUndefined(correlation.jobId);
 
     pushEvent({
       kind: "PROMPT",
@@ -8167,7 +8211,7 @@ server.registerTool(
     }
 
     const correlation = resolveChildEventCorrelation(child.id, { child });
-    const jobId = correlation.jobId ?? undefined;
+    const jobId = coerceNullToUndefined(correlation.jobId);
 
     pushEvent({
       kind: "REPLY_PART",
@@ -8249,7 +8293,7 @@ server.registerTool(
 
 
     const correlation = resolveChildEventCorrelation(child.id, { child });
-    const jobId = correlation.jobId ?? undefined;
+    const jobId = coerceNullToUndefined(correlation.jobId);
 
     const citations = collectFinalReplyCitations(jobId ?? null);
     const payload: Record<string, unknown> = { length: content.length, final: true };
@@ -8315,7 +8359,7 @@ server.registerTool(
 
 
     const correlation = resolveChildEventCorrelation(child_id, { child });
-    const jobId = correlation.jobId ?? undefined;
+    const jobId = coerceNullToUndefined(correlation.jobId);
 
     pushEvent({
       kind: "PROMPT",
@@ -8468,7 +8512,7 @@ server.registerTool(
     pushEvent({
       kind: "INFO",
       childId: correlation.childId ?? child.id,
-      jobId: correlation.jobId ?? undefined,
+      jobId: coerceNullToUndefined(correlation.jobId),
       payload: { rename: { from: oldName, to: input.name } },
       correlation,
     });
@@ -8503,7 +8547,7 @@ server.registerTool(
     pushEvent({
       kind: "INFO",
       childId: correlation.childId ?? child.id,
-      jobId: correlation.jobId ?? undefined,
+      jobId: coerceNullToUndefined(correlation.jobId),
       payload: { reset: { keep_system: !!input.keep_system } },
       correlation,
     });
@@ -8654,7 +8698,7 @@ server.registerTool(
           tasks.push({
             name: req.name,
             args: req.args ?? [],
-            weightKey: req.weight_key ?? undefined,
+            weightKey: coerceNullToUndefined(req.weight_key),
             source: "request"
           });
         }
@@ -8775,7 +8819,7 @@ server.registerTool(
 
       pushEvent({
         kind: "KILL",
-        jobId: correlation.jobId ?? undefined,
+        jobId: coerceNullToUndefined(correlation.jobId),
         childId: correlation.childId ?? child_id,
         level: "warn",
         payload: { scope: "child" },
@@ -9467,7 +9511,7 @@ function recordJsonRpcObservability(input: JsonRpcObservabilityInput): void {
       jobId: input.correlation.jobId ?? null,
       component: "jsonrpc",
       stage: jsonRpcMessage,
-      elapsedMs: payload.elapsed_ms ?? undefined,
+      elapsedMs: coerceNullToUndefined(payload.elapsed_ms),
       kind: `JSONRPC_${input.stage.toUpperCase()}`,
       msg: payload.msg,
       data: payload,

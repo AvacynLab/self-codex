@@ -196,7 +196,8 @@ export class StructuredLogger {
   private readonly redactionEnabled: boolean;
 
   constructor(options: LoggerOptions = {}) {
-    this.logFile = options.logFile ?? undefined;
+    const logFile = options.logFile;
+    this.logFile = logFile === null ? undefined : logFile;
     this.maxFileSizeBytes = options.maxFileSizeBytes ?? DEFAULT_MAX_FILE_SIZE;
     this.maxFileCount = Math.max(1, options.maxFileCount ?? DEFAULT_MAX_FILE_COUNT);
     const directives = parseRedactionDirectives(readOptionalString("MCP_LOG_REDACT", { allowEmpty: true }));
@@ -239,7 +240,7 @@ export class StructuredLogger {
       child_id: event.childId ?? null,
       phase: event.phase,
       score: event.score ?? null,
-      metadata: event.metadata ?? undefined,
+      metadata: event.metadata === undefined ? undefined : event.metadata,
       excerpt: event.content ? this.truncateAndRedact(String(event.content)) : undefined,
     };
 

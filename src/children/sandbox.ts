@@ -306,14 +306,8 @@ interface PrepareSandboxOptions {
  */
 export async function prepareChildSandbox(options: PrepareSandboxOptions): Promise<PreparedChildSandbox> {
   const defaults = options.defaults ?? {};
-  const defaultProfileName = normaliseSandboxProfile(
-    defaults.defaultProfile ?? undefined,
-    "standard",
-  );
-  const requestedProfile = normaliseSandboxProfile(
-    options.request?.profile ?? undefined,
-    defaultProfileName,
-  );
+  const defaultProfileName = normaliseSandboxProfile(defaults.defaultProfile ?? null, "standard");
+  const requestedProfile = normaliseSandboxProfile(options.request?.profile ?? null, defaultProfileName);
   const preset = PROFILE_PRESETS[requestedProfile];
 
   const allowList = new Set<string>();

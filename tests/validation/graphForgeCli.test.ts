@@ -8,7 +8,15 @@ import {
   executeGraphForgeCli,
   parseGraphForgeCliOptions,
 } from "../../src/validation/graphForgeCli.js";
-import { GRAPH_FORGE_JSONL_FILES, type AutosaveTickSample } from "../../src/validation/graphForge.js";
+import {
+  GRAPH_FORGE_JSONL_FILES,
+  type AutosaveTickSample,
+  type GraphForgePhaseOptions,
+  type GraphForgePhaseResult,
+  type AutosaveObservationResult,
+  type AutosaveQuiescenceResult,
+} from "../../src/validation/graphForge.js";
+import { type HttpCheckSnapshot } from "../../src/validation/runSetup.js";
 
 /** Captures CLI-level tests for the Graph Forge validation workflow. */
 describe("graph forge CLI helpers", () => {
@@ -122,5 +130,92 @@ describe("graph forge CLI helpers", () => {
     expect(flattenedLogs).to.contain(GRAPH_FORGE_JSONL_FILES.inputs);
     expect(flattenedLogs).to.contain("Autosave summary");
     expect(flattenedLogs).to.contain("Autosave quiescence");
+  });
+
+  it("merges CLI overrides without surfacing undefined autosave fields", async () => {
+    const logger = { log: () => undefined };
+    const collectedPhaseOptions: GraphForgePhaseOptions[] = [];
+
+    const stubSnapshot: HttpCheckSnapshot = {
+      name: "stub",
+      startedAt: new Date().toISOString(),
+      durationMs: 0,
+      request: { method: "POST", url: "http://localhost", headers: {}, body: {} },
+      response: { status: 200, statusText: "OK", headers: {}, body: {} },
+    };
+
+    const runnerOverride = async (
+      runRoot: string,
+      environment: unknown,
+      phaseOptions: GraphForgePhaseOptions,
+    ): Promise<GraphForgePhaseResult> => {
+      collectedPhaseOptions.push(structuredClone(phaseOptions));
+
+      const observation: AutosaveObservationResult = {
+        path: join(runRoot, "artifacts", "forge", "autosave.json"),
+        requiredTicks: phaseOptions.autosaveObservation?.requiredTicks ?? 2,
+        observedTicks: phaseOptions.autosaveObservation?.requiredTicks ?? 2,
+        durationMs: 0,
+        completed: true,
+        samples: [],
+      };
+
+      const quiescence: AutosaveQuiescenceResult = {
+        path: observation.path,
+        expectedSavedAt: null,
+        observedSavedAt: null,
+        observedFileSize: null,
+        durationMs: 0,
+        attempts: 1,
+        pollIntervalMs: 100,
+        verified: true,
+        fileMissing: false,
+      };
+
+      const result: GraphForgePhaseResult = {
+        analysis: {
+          check: structuredClone(stubSnapshot),
+          dslPath: join(runRoot, "artifacts", "forge", "dsl.gf"),
+          resultPath: join(runRoot, "artifacts", "forge", "analysis.json"),
+        },
+        autosave: {
+          start: structuredClone(stubSnapshot),
+          stop: structuredClone(stubSnapshot),
+          relativePath: "artifacts/forge/autosave.json",
+          absolutePath: observation.path,
+          observation,
+          quiescence,
+          summaryPath: join(runRoot, "artifacts", "forge", "summary.json"),
+        },
+      };
+
+      return result;
+    };
+
+    const { result } = await executeGraphForgeCli(
+      { baseDir: workingDir, runId: "cli_options", autosaveTicks: 5, autosavePollMs: 250 },
+      {
+        MCP_HTTP_HOST: "127.0.0.1",
+        MCP_HTTP_PORT: "9001",
+        MCP_HTTP_PATH: "/mcp",
+      } as NodeJS.ProcessEnv,
+      logger,
+      {
+        phaseOptions: { autosaveObservation: { timeoutMs: 5_000 } },
+        runner: runnerOverride,
+      },
+    );
+
+    expect(result.autosave.observation.requiredTicks).to.equal(5);
+    expect(result.autosave.observation.completed).to.equal(true);
+
+    const [options] = collectedPhaseOptions;
+    expect(options.workspaceRoot).to.be.a("string");
+    expect(options.autosaveObservation).to.deep.equal({
+      requiredTicks: 5,
+      pollIntervalMs: 250,
+      timeoutMs: 5_000,
+    });
+    expect("autosaveIntervalMs" in options).to.equal(false);
   });
 });

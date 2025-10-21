@@ -1701,7 +1701,7 @@ export async function runFinalReport(runRoot: string, options: FinalReportOption
         stageScenarios.add(scenario);
       }
 
-      const response = (output?.response as Record<string, unknown>) ?? undefined;
+      const response = output?.response as Record<string, unknown> | undefined;
       const status = typeof response?.status === "number" ? (response.status as number) : null;
       const duration = typeof output?.durationMs === "number" ? (output.durationMs as number) : null;
       const isError = isErrorResponse(response);

@@ -1,7 +1,7 @@
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { pathToFileURL } from "node:url";
 import process from "node:process";
-import { server, eventStore, logger, graphState, childSupervisor, contractNetWatcherTelemetry, orchestratorSupervisor, stigmergy, btStatusRegistry, logJournal, } from "./orchestrator/runtime.js";
+import { server, eventStore, logger, graphState, childProcessSupervisor, contractNetWatcherTelemetry, orchestratorSupervisor, stigmergy, btStatusRegistry, logJournal, } from "./orchestrator/runtime.js";
 import { parseOrchestratorRuntimeOptions } from "./serverOptions.js";
 import { startHttpServer } from "./httpServer.js";
 import { startDashboardServer } from "./monitor/dashboard.js";
@@ -57,7 +57,7 @@ async function main() {
                 port: options.dashboard.port,
                 streamIntervalMs: options.dashboard.streamIntervalMs,
                 graphState,
-                supervisor: childSupervisor,
+                supervisor: childProcessSupervisor,
                 eventStore,
                 stigmergy,
                 btStatusRegistry,

@@ -38,6 +38,8 @@ export const planReflectionFixture = {
 };
 export const minimalReflectionFixture = {
     kind: "text",
+    // The minimal fixture explicitly carries a null input to exercise the
+    // defensive checks that guard against missing prompts.
     input: null,
     output: "",
     meta: {},

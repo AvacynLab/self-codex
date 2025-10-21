@@ -3,6 +3,20 @@ Voici la **feuille de route détaillée** (à cocher) destinée à **l’agent I
 
 ---
 
+# Chantier en cours — `exactOptionalPropertyTypes`
+
+Suivi granulaire des tâches engagées pour préparer l'activation de `exactOptionalPropertyTypes`.
+
+- [x] Nettoyer les profils sandbox enfant via `omitUndefinedEntries` dans `src/orchestrator/runtime.ts`.
+- [x] Couvrir le comportement du superviseur enfant avec un test dédié `tests/child.supervisor.sandbox-config.test.ts`.
+- [x] Balayer les autres occurrences de `?? undefined` dans `src/orchestrator/runtime.ts` (`rg "\?\? undefined" src/orchestrator/runtime.ts`).
+- [x] Ajouter des tests ciblant `pushEvent` avec `jobId`/`childId` `null` ou omis.
+- [x] Étendre le nettoyage aux autres modules orchestrateur identifiés lors de la recherche.
+- [x] Corriger les assertions CLI `knowledge`/`plans` pour viser `result.summaryPath` via le résultat imbriqué.
+- [x] Omettre les identifiants de boucle indéfinis dans `handleChildSend` et couvrir le stub superviseur.
+- [x] Purger les résumés validation (`children`, `robustness`, `finalReport`) pour omettre les clés `undefined` et couvrir les cas sans transcript/idempotency.
+- [x] Balayer les `?? undefined` restants hors validation (executor, mcp registry, tools) avant d'activer `exactOptionalPropertyTypes`.
+
 # BRIEF À L’AGENT — objectifs & règles
 
 **Objectifs**
@@ -436,6 +450,18 @@ Exécute ces tâches **dans l’ordre**. À chaque étape, lance `npm run build 
 ----------
 
 -### Historique
+- 2025-10-21 · gpt-5-codex : confirmé la purge des `?? undefined` hors validation, relancé `npm run test` jusqu'au trailer TAP (1283/1283 verts) et mis à jour la checklist/historique `AGENTS.md`.
+- 2025-10-21 · gpt-5-codex : retiré les `?? undefined` des résumés validation (children, robustness, final report), ajouté les tests garantissant l'omission des transcripts/idempotency absents et mis à jour la checklist `exactOptionalPropertyTypes`. Commandes exécutées : `npm run build`, `npm run typecheck`, `npm run test`.
+- 2025-10-21 · gpt-5-codex : assaini `handleChildSend` pour retirer les `taskId` indéfinis, ajouté les tests de boucle sur un
+  superviseur simulé et confirmé `npm run build`, `npm run typecheck`, `npm run test`.
+- 2025-10-21 · gpt-5-codex : corrigé les tests `knowledgeCli`/`plansCli` pour viser `result.summaryPath` sur le résultat imbriqué et
+  relancé `npm run build`, `npm run typecheck`, `npm run test` (suite verte, 1280 tests). Commandes exécutées : `npm run build`,
+  `npm run typecheck`, `npm run test`.
+- 2025-10-21 · gpt-5-codex : aligné `createOrchestratorController` sur `coerceNullToUndefined`, ajouté le test
+  `tests/events/controller.optional-fields.test.ts` pour capturer l'observabilité JSON-RPC et confirmé la persistance
+  des journaux. Commandes exécutées : `npm run build`, `npm run typecheck`, `npm run test`.
+- 2025-10-21 · gpt-5-codex : remplacé chaque `?? undefined` du runtime par `coerceNullToUndefined`, exposé `__eventRuntimeInternals.pushEvent` et ajouté la suite `tests/events/pushEvent.optional-fields.test.ts` pour couvrir les identifiants optionnels. Commandes exécutées : `npm run build`, `npm run typecheck`, `npm run test`.
+- 2025-10-21 · gpt-5-codex : nettoyé les defaults sandbox du runtime avec `omitUndefinedEntries`, ajouté le test `tests/child.supervisor.sandbox-config.test.ts` et confirmé `npm run build`, `npm run typecheck`, `npm run test`. Commandes exécutées : `npm run build`, `npm run typecheck`, `npm run test`.
 - 2025-10-21 · gpt-5-codex : relancé `npm run test` jusqu'au trailer TAP après la passe optional-field interrompue ; 1266 tests verts confirmés. Commande exécutée : `npm run test`.
 - 2025-10-21 · gpt-5-codex : introduit `omitUndefinedEntries` pour préparer `exactOptionalPropertyTypes`, migré `planTools` et le résumé robustesse vers ce helper afin d’omettre les champs indéfinis, et ajouté `tests/utils/object.test.ts`. Commandes exécutées : `npm run build`, `npm run typecheck`, `npm run test`.
 - 2025-10-21 · gpt-5-codex : préparé les phases de validation (robustesse, sécurité, transactions) à l’option `exactOptionalPropertyTypes` en retirant les affectations `undefined`, en ajoutant des spreads conditionnels dans les runners/CLI et en couvrant les omissions attendues via `tests/validation/*`. Commandes exécutées : `npm run typecheck`, `npm run test:unit -- --grep "robustness validation"`, `npm run test:unit -- --grep "validation run setup"`, `npm run test:unit -- --grep "security validation"`, `npm run test:unit -- --grep "transactions phase runner"`.

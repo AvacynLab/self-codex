@@ -381,7 +381,10 @@ async function tryHandleJsonRpc(req, res, logger, requestIdOrDelegate, delegateP
     }
     catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        const status = typeof error?.status === "number" ? error.status : 400;
+        // Some body parsers expose a numeric `status` field to signal payload
+        // constraints (e.g. a 413 when the body exceeds the configured limit).
+        const statusCandidate = typeof error === "object" && error !== null ? error.status : undefined;
+        const status = typeof statusCandidate === "number" ? statusCandidate : 400;
         logger.warn(status === 413 ? "http_body_read_failed" : "http_json_invalid", {
             message,
             request_id: requestId,
@@ -493,7 +496,7 @@ async function tryHandleJsonRpc(req, res, logger, requestIdOrDelegate, delegateP
         try {
             await maybeRecordIdempotentWalEntry(parsed, context, { method: methodName });
             const response = await delegate(parsed, context);
-            const bytesOut = await sendJson(res, 200, response, cacheKey !== null, logger, requestId, cacheKey ?? undefined, idempotency);
+            const bytesOut = await sendJson(res, 200, response, cacheKey !== null, logger, requestId, cacheKey === null ? undefined : cacheKey, idempotency);
             logJsonRpcOutcome(logger, "info", {
                 httpRequestId: requestId,
                 startedAt,
@@ -510,18 +513,14 @@ async function tryHandleJsonRpc(req, res, logger, requestIdOrDelegate, delegateP
                 message: error instanceof Error ? error.message : String(error),
                 request_id: requestId,
             });
-            const failure = toJsonRpc(parsed?.id ?? null, createJsonRpcError("INTERNAL", "Internal error", { requestId: jsonrpcId }));
-            const bytesOut = await sendJson(res, 500, failure, cacheKey !== null, logger, requestId, cacheKey ?? undefined, idempotency);
-            logJsonRpcOutcome(logger, "error", {
-                httpRequestId: requestId,
+            await respondWithJsonRpcError(res, 500, "INTERNAL", "Internal error", logger, requestId, {
                 startedAt,
                 bytesIn: requestBytes,
-                bytesOut,
                 method: methodName,
                 jsonrpcId,
-                status: 500,
-                cacheStatus: cacheKey ? "miss" : "bypass",
-                errorCode: failure.error?.code,
+            }, {
+                cacheKey,
+                idempotency,
             });
         }
     });
@@ -586,23 +585,33 @@ export const __httpServerInternals = {
         noAuthBypassLogged = false;
     },
     publishHttpAccessEvent,
+    respondWithJsonRpcError,
 };
+/**
+ * Serialises a JSON-RPC error response while mirroring the outcome to the structured logger.
+ *
+ * The helper centralises the legacy guard behaviour and optionally persists responses when the
+ * idempotency layer is active, keeping HTTP error handling consistent across the server.
+ */
 async function respondWithJsonRpcError(res, status, category, message, logger, httpRequestId, meta = {}, options = {}) {
     const jsonId = typeof meta.jsonrpcId === "string" || typeof meta.jsonrpcId === "number" ? meta.jsonrpcId : null;
+    const { cacheKey, idempotency, ...errorOptions } = options;
     const enrichedOptions = {
-        ...options,
+        ...errorOptions,
         requestId: jsonId,
-        status: options.status ?? status,
+        status: errorOptions.status ?? status,
     };
     const error = createJsonRpcError(category, message, enrichedOptions);
     const payload = toJsonRpc(jsonId, error);
-    const bytesOut = await sendJson(res, status, payload, false, logger, httpRequestId, undefined, undefined);
+    const shouldPersist = cacheKey !== null && cacheKey !== undefined;
+    const bytesOut = await sendJson(res, status, payload, shouldPersist, logger, httpRequestId, shouldPersist ? (cacheKey === null ? undefined : cacheKey) : undefined, idempotency);
+    const cacheStatus = shouldPersist ? "miss" : "bypass";
     logJsonRpcOutcome(logger, status >= 500 ? "error" : "warn", {
         ...meta,
         httpRequestId,
         status,
         bytesOut,
-        cacheStatus: "bypass",
+        cacheStatus,
         errorCode: error.code,
     });
     return bytesOut;
