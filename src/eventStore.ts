@@ -1,4 +1,5 @@
 import { StructuredLogger } from "./logger.js";
+import { omitUndefinedEntries } from "./utils/object.js";
 import { normaliseProvenanceList, type Provenance } from "./types/provenance.js";
 
 /**
@@ -186,9 +187,11 @@ export class EventStore {
       kind: input.kind,
       level: input.level ?? "info",
       source: input.source ?? "orchestrator",
-      jobId: input.jobId,
-      childId: input.childId,
-      payload: input.payload,
+      ...omitUndefinedEntries({
+        jobId: input.jobId,
+        childId: input.childId,
+        payload: input.payload,
+      }),
       provenance: normaliseProvenanceList(input.provenance),
     };
 
@@ -264,7 +267,7 @@ export class EventStore {
       }
       return true;
     });
-    return applyWindow(filtered, { reverse: filters.reverse, limit: filters.limit });
+    return applyWindow(filtered, omitUndefinedEntries({ reverse: filters.reverse, limit: filters.limit }));
   }
 
   /**
@@ -298,7 +301,7 @@ export class EventStore {
       return true;
     });
 
-    return applyWindow(filtered, { reverse: filters.reverse, limit: filters.limit });
+    return applyWindow(filtered, omitUndefinedEntries({ reverse: filters.reverse, limit: filters.limit }));
   }
 
   getSnapshot(): OrchestratorEvent[] {

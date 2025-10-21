@@ -6,7 +6,10 @@ import type {
 } from "@modelcontextprotocol/sdk/shared/protocol.js";
 
 import { StructuredLogger } from "../../src/logger.js";
-import { createPlanCompileExecuteHandler } from "../../src/tools/plan_compile_execute.js";
+import {
+  createPlanCompileExecuteHandler,
+  createPlanCompileExecuteFingerprint,
+} from "../../src/tools/plan_compile_execute.js";
 import type { PlanToolContext } from "../../src/tools/planTools.js";
 import { GraphState } from "../../src/graph/state.js";
 import { StigmergyField } from "../../src/coord/stigmergy.js";
@@ -85,6 +88,43 @@ describe("plan_compile_execute dry-run preview", () => {
       tool_calls: 4,
       time_ms: 2500,
       bytes_out: 6144,
+    });
+  });
+});
+
+describe("plan_compile_execute fingerprint", () => {
+  type FingerprintInput = Parameters<typeof createPlanCompileExecuteFingerprint>[1];
+
+  it("omits optional identifiers when the façade input leaves them undefined", () => {
+    const fingerprint = createPlanCompileExecuteFingerprint("hash", {
+      plan: { id: "plan", tasks: [] },
+      dry_run: true,
+    } as FingerprintInput);
+
+    expect(fingerprint).to.deep.equal({ plan_hash: "hash", dry_run: true });
+  });
+
+  it("retains optional identifiers when provided by the façade input", () => {
+    const fingerprint = createPlanCompileExecuteFingerprint("hash", {
+      plan: { id: "plan", tasks: [] },
+      dry_run: false,
+      run_id: "run-123",
+      op_id: "op-123",
+      job_id: "job-123",
+      graph_id: "graph-123",
+      node_id: "node-123",
+      child_id: "child-123",
+    } as FingerprintInput);
+
+    expect(fingerprint).to.deep.equal({
+      plan_hash: "hash",
+      dry_run: false,
+      run_id: "run-123",
+      op_id: "op-123",
+      job_id: "job-123",
+      graph_id: "graph-123",
+      node_id: "node-123",
+      child_id: "child-123",
     });
   });
 });

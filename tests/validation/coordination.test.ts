@@ -134,6 +134,11 @@ describe("coordination validation runner", () => {
     const eventEntries = eventsLog.trim().split(/\n+/);
     expect(eventEntries).to.have.length(3);
 
+    const firstOutcomeCall = result.outcomes[0]?.call;
+    expect(
+      firstOutcomeCall && Object.prototype.hasOwnProperty.call(firstOutcomeCall, "captureEvents"),
+    ).to.equal(false);
+
     const inputsLog = await readFile(join(runRoot, COORDINATION_JSONL_FILES.inputs), "utf8");
     const outputsLog = await readFile(join(runRoot, COORDINATION_JSONL_FILES.outputs), "utf8");
     expect(inputsLog).to.contain("bb_set_initial_task");

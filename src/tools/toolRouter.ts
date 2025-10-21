@@ -377,10 +377,13 @@ export class ToolRouter extends EventEmitter {
     const payload: ToolRouterOutcomeEvent = {
       tool: outcome.tool,
       success: outcome.success,
-      latencyMs: outcome.latencyMs,
       reliability,
       successRate,
       failureStreak: stats.failureStreak,
+      // Preserve optional latency telemetry only when callers recorded a valid
+      // measurement. This prevents `latencyMs: undefined` from leaking once
+      // `exactOptionalPropertyTypes` is enforced.
+      ...(Number.isFinite(outcome.latencyMs) ? { latencyMs: outcome.latencyMs } : {}),
     };
     this.emit("outcome", payload);
   }

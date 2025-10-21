@@ -320,12 +320,14 @@ export async function runKnowledgePhase(
       body: requestBody,
     });
 
+    // Capture only the populated optional fields so strict optional typing does
+    // not surface artificial `undefined` entries in the recorded artefacts.
     const executedCall: ExecutedKnowledgeCall = {
       scenario: spec.scenario,
       name: spec.name,
       method: spec.method,
-      captureEvents: spec.captureEvents,
-      params,
+      ...(spec.captureEvents !== undefined ? { captureEvents: spec.captureEvents } : {}),
+      ...(params !== undefined ? { params } : {}),
     };
 
     await appendHttpCheckArtefactsToFiles(runRoot, KNOWLEDGE_TARGETS, check, KNOWLEDGE_JSONL_FILES.log);

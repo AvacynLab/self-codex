@@ -147,11 +147,13 @@ function analyseEventSequence(events: unknown[]): IntrospectionEventSummary["seq
     return { analysed: false, monotonic: null, violations };
   }
 
+  // Only surface boundary indices when monotonic tracking encountered numeric
+  // values. This keeps the structure compatible with `exactOptionalPropertyTypes`.
   return {
     analysed: true,
     monotonic,
-    first: firstSeq,
-    last: lastSeq,
+    ...(firstSeq !== undefined ? { first: firstSeq } : {}),
+    ...(lastSeq !== undefined ? { last: lastSeq } : {}),
     violations,
   };
 }

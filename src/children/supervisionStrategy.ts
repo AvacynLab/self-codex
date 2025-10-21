@@ -132,6 +132,7 @@ export class OneForOneSupervisor {
       maxRestartsPerMinute = maxRestartsRaw > 0 ? Math.trunc(maxRestartsRaw) : null;
     }
 
+    const onEvent = options.onEvent;
     this.options = {
       breaker: options.breaker,
       minBackoffMs: Math.trunc(options.minBackoffMs),
@@ -140,7 +141,7 @@ export class OneForOneSupervisor {
       maxRestartsPerMinute,
       now: options.now ?? (() => Date.now()),
       sleep: options.sleep ?? defaultSleep,
-      onEvent: options.onEvent,
+      ...(onEvent ? { onEvent } : {}),
     };
   }
 

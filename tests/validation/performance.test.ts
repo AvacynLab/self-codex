@@ -126,6 +126,15 @@ describe("performance validation", () => {
     expect(result.summary.concurrency.groups[0]?.success).to.equal(concurrencyBurst);
     expect(result.summary.concurrency.groups[0]?.failure).to.equal(0);
 
+    const latencyCall = result.outcomes.find((outcome) => outcome.call.scenario === "latency")?.call;
+    expect(
+      latencyCall && Object.prototype.hasOwnProperty.call(latencyCall, "concurrencyGroup"),
+    ).to.equal(false);
+    const concurrencyCall = result.outcomes.find(
+      (outcome) => outcome.call.scenario === "concurrency",
+    )?.call;
+    expect(concurrencyCall?.collectLatency).to.equal(false);
+
     const summaryDocument = JSON.parse(await readFile(result.summaryPath, "utf8"));
     expect(summaryDocument.latency.samples).to.equal(sampleSize);
 
@@ -211,6 +220,13 @@ describe("performance validation", () => {
 
     const eventsContent = await readFile(join(runRoot, PERFORMANCE_JSONL_FILES.events), "utf8");
     expect(eventsContent).to.contain("custom");
+
+    const concurrencyCall = result.outcomes.find(
+      (outcome) => outcome.call.name === "with_concurrency",
+    )?.call;
+    expect(
+      concurrencyCall && Object.prototype.hasOwnProperty.call(concurrencyCall, "latencyLabel"),
+    ).to.equal(false);
 
     const defaultPlan = buildDefaultPerformanceCalls({ sampleSize: 2, concurrencyBurst: 1 });
     expect(defaultPlan[0]?.repeat).to.equal(2);

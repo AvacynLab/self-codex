@@ -2,6 +2,7 @@ import { ZodError } from "zod";
 
 import type { JsonRpcRouteContext } from "../infra/runtime.js";
 import type { JsonRpcRequest, JsonRpcResponse } from "../server.js";
+import { omitUndefinedEntries } from "../utils/object.js";
 import { JsonRpcError, createJsonRpcError, toJsonRpc } from "./errors.js";
 import { RPC_METHOD_SCHEMAS, ToolsCallEnvelopeSchema, type RpcMethodSchemaRegistry } from "./schemas.js";
 
@@ -71,18 +72,25 @@ export function normaliseJsonRpcRequest(
   registry: RpcMethodSchemaRegistry = RPC_METHOD_SCHEMAS,
 ): NormalisedJsonRpcRequest {
   if (!raw || typeof raw !== "object") {
+    // NOTE: Optional request identifiers and hints are filtered so future
+    // `exactOptionalPropertyTypes` enforcement does not serialise
+    // `undefined`-valued fields into JSON-RPC error payloads.
     throw createJsonRpcError("VALIDATION_ERROR", "Invalid Request", {
       code: -32600,
-      requestId: options.requestId,
-      hint: "Body must be an object",
+      ...omitUndefinedEntries({
+        requestId: options.requestId,
+        hint: "Body must be an object",
+      }),
     });
   }
 
   if (raw.jsonrpc !== "2.0") {
     throw createJsonRpcError("VALIDATION_ERROR", "Invalid Request", {
       code: -32600,
-      requestId: options.requestId,
-      hint: "jsonrpc must equal '2.0'",
+      ...omitUndefinedEntries({
+        requestId: options.requestId,
+        hint: "jsonrpc must equal '2.0'",
+      }),
     });
   }
 
@@ -91,8 +99,10 @@ export function normaliseJsonRpcRequest(
   if (!method) {
     throw createJsonRpcError("VALIDATION_ERROR", "Invalid Request", {
       code: -32600,
-      requestId: options.requestId,
-      hint: "method must be a non-empty string",
+      ...omitUndefinedEntries({
+        requestId: options.requestId,
+        hint: "method must be a non-empty string",
+      }),
     });
   }
 
@@ -103,8 +113,10 @@ export function normaliseJsonRpcRequest(
     if (!schema) {
       throw createJsonRpcError("VALIDATION_ERROR", "Method not found", {
         code: -32601,
-        requestId: options.requestId,
-        hint: `Unknown tool '${toolName}'`,
+        ...omitUndefinedEntries({
+          requestId: options.requestId,
+          hint: `Unknown tool '${toolName}'`,
+        }),
       });
     }
 
@@ -120,9 +132,11 @@ export function normaliseJsonRpcRequest(
       if (error instanceof ZodError) {
         const details = formatZodIssues(error);
         throw createJsonRpcError("VALIDATION_ERROR", "Invalid params", {
-          requestId: options.requestId,
-          hint: details.hint,
-          issues: details.issues,
+          ...omitUndefinedEntries({
+            requestId: options.requestId,
+            hint: details.hint,
+            issues: details.issues,
+          }),
         });
       }
       throw error;
@@ -141,9 +155,11 @@ export function normaliseJsonRpcRequest(
     if (error instanceof ZodError) {
       const details = formatZodIssues(error);
       throw createJsonRpcError("VALIDATION_ERROR", "Invalid params", {
-        requestId: options.requestId,
-        hint: details.hint,
-        issues: details.issues,
+        ...omitUndefinedEntries({
+          requestId: options.requestId,
+          hint: details.hint,
+          issues: details.issues,
+        }),
       });
     }
     throw error;

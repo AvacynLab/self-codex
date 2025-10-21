@@ -140,26 +140,44 @@ export async function handleRagIngest(
       continue;
     }
 
-    const provenance = normaliseProvenanceList(document.provenance);
+    // Remove optional provenance properties when callers leave them undefined so the
+    // downstream vector memory never observes `{ span: undefined }` once exact optional
+    // property semantics are enforced.
+    const provenanceInput = document.provenance?.map((entry) => ({
+      sourceId: entry.sourceId,
+      type: entry.type,
+      ...(entry.span !== undefined ? { span: entry.span } : {}),
+      ...(entry.confidence !== undefined ? { confidence: entry.confidence } : {}),
+    }));
+    const provenance = normaliseProvenanceList(provenanceInput);
     const tags = normaliseTags([...(document.tags ?? []), ...defaultTags]);
     const metadata = document.metadata ? { ...document.metadata } : {};
 
-    const upserts = chunks.map((chunk, chunkIndex) => ({
-      id: document.id ? `${document.id}#${chunkIndex + 1}` : undefined,
-      text: chunk.text,
-      tags,
-      metadata: {
-        ...metadata,
-        chunk: {
-          index: chunkIndex,
-          start: chunk.start,
-          end: chunk.end,
-          source_id: document.id ?? null,
-          document_index: docIndex,
+    const upserts = chunks.map((chunk, chunkIndex) => {
+      const chunkId =
+        document.id && document.id.length > 0
+          ? `${document.id}#${chunkIndex + 1}`
+          : undefined;
+      return {
+        // Only persist the vector identifier when callers provided a base
+        // document id. Emitting `id: undefined` would break once
+        // `exactOptionalPropertyTypes` is enforced on the vector memory input.
+        ...(chunkId ? { id: chunkId } : {}),
+        text: chunk.text,
+        tags,
+        metadata: {
+          ...metadata,
+          chunk: {
+            index: chunkIndex,
+            start: chunk.start,
+            end: chunk.end,
+            source_id: document.id ?? null,
+            document_index: docIndex,
+          },
         },
-      },
-      provenance,
-    }));
+        provenance,
+      };
+    });
 
     const snapshots = await context.memory.upsert(upserts);
     totalChunks += snapshots.length;

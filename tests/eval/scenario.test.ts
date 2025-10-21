@@ -39,4 +39,50 @@ describe("evaluation scenarios", () => {
     expect(scenario.steps[0].expect?.success).to.equal(true);
     expect(scenario.tags).to.deep.equal([]);
   });
+
+  it("omits optional scenario fields when callers provide undefined placeholders", () => {
+    const scenario = parseScenario({
+      id: "inline-optional",
+      objective: "omit undefined",
+      tags: [],
+      featureOverrides: {},
+      constraints: { maxDurationMs: undefined },
+      steps: [
+        {
+          id: "step",
+          tool: "alpha",
+          arguments: {},
+          expect: {
+            success: true,
+            match: { pattern: "alpha" },
+            notMatch: { pattern: "beta", flags: undefined },
+          },
+        },
+      ],
+      oracles: [
+        { type: "regex", pattern: "ok" },
+        { type: "script", module: "./validate", exportName: undefined },
+      ],
+    });
+
+    expect(Object.prototype.hasOwnProperty.call(scenario, "featureOverrides")).to.equal(false);
+    expect(Object.prototype.hasOwnProperty.call(scenario.constraints, "maxDurationMs")).to.equal(false);
+
+    const step = scenario.steps[0];
+    expect(Object.prototype.hasOwnProperty.call(step, "arguments")).to.equal(false);
+    expect(step.expect).to.not.equal(undefined);
+    expect(step.expect?.notMatch).to.deep.equal({ pattern: "beta" });
+
+    const regexOracle = scenario.oracles[0];
+    if (regexOracle.type !== "regex") {
+      throw new Error("expected regex oracle");
+    }
+    expect(Object.prototype.hasOwnProperty.call(regexOracle, "flags")).to.equal(false);
+
+    const scriptOracle = scenario.oracles[1];
+    if (scriptOracle.type !== "script") {
+      throw new Error("expected script oracle");
+    }
+    expect(Object.prototype.hasOwnProperty.call(scriptOracle, "exportName")).to.equal(false);
+  });
 });

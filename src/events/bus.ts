@@ -204,7 +204,7 @@ class EventStream
   implements AsyncIterable<EventEnvelope<EventMessage>>, AsyncIterator<EventEnvelope<EventMessage>, void, void>
 {
   private readonly buffer: EventEnvelope<EventMessage>[] = [];
-  private resolve?: (result: IteratorResult<EventEnvelope<EventMessage>, void>) => void;
+  private resolve: ((result: IteratorResult<EventEnvelope<EventMessage>, void>) => void) | null = null;
   private closed = false;
 
   /**
@@ -258,7 +258,7 @@ class EventStream
     this.emitter.removeListener(BUS_EVENT, this.handleEvent);
     if (this.resolve) {
       this.resolve(EventStream.DONE);
-      this.resolve = undefined;
+      this.resolve = null;
     }
     this.buffer.length = 0;
   }
@@ -269,7 +269,7 @@ class EventStream
     }
     if (this.resolve) {
       this.resolve({ value: event, done: false });
-      this.resolve = undefined;
+      this.resolve = null;
       return;
     }
     this.enqueue(event);
@@ -317,6 +317,7 @@ export class EventBus {
     const message = normaliseMessage(input.msg) as M;
     const component = normaliseTag(input.component ?? input.cat);
     const stage = normaliseTag(input.stage ?? message);
+    const kind = normaliseKind(input.kind ?? null);
     const envelope: EventEnvelope<M> = {
       seq: ++this.seq,
       ts: input.ts ?? this.now(),
@@ -331,11 +332,9 @@ export class EventBus {
       component,
       stage,
       elapsedMs: normaliseElapsed(input.elapsedMs ?? null),
-      // Preserve semantic PROMPT/PENDING/... identifiers whenever publishers
-      // provide them while gracefully falling back to legacy category tokens.
-      kind: normaliseKind(input.kind ?? null),
       msg: message,
-      data: input.data,
+      ...(kind ? { kind } : {}),
+      ...(input.data !== undefined ? { data: input.data } : {}),
     };
 
     this.history.push(envelope);

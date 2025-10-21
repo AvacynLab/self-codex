@@ -39,6 +39,8 @@ interface RecordedEvent {
   jobId: string | null;
   childId: string | null;
   correlation: EventCorrelationHints | null;
+  jobIdPropertyPresent: boolean;
+  childIdPropertyPresent: boolean;
 }
 
 function createPlanContext(options: {
@@ -60,12 +62,16 @@ function createPlanContext(options: {
     childrenRoot: options.childrenRoot,
     defaultChildRuntime: options.defaultRuntime ?? "codex",
     emitEvent: (event) => {
+      const jobIdPresent = Object.hasOwn(event, "jobId");
+      const childIdPresent = Object.hasOwn(event, "childId");
       options.events.push({
         kind: event.kind,
         payload: event.payload,
-        jobId: event.jobId ?? null,
-        childId: event.childId ?? null,
+        jobId: jobIdPresent ? event.jobId ?? null : null,
+        childId: childIdPresent ? event.childId ?? null : null,
         correlation: event.correlation ?? null,
+        jobIdPropertyPresent: jobIdPresent,
+        childIdPropertyPresent: childIdPresent,
       });
     },
     stigmergy,
@@ -333,6 +339,8 @@ describe("plan tools", () => {
     expect(statusEvent?.correlation?.graphId).to.equal(hints.graph_id);
     expect(statusEvent?.correlation?.nodeId).to.equal(hints.node_id);
     expect(statusEvent?.correlation?.childId).to.equal(hints.child_id);
+    expect(statusEvent?.jobIdPropertyPresent).to.equal(true);
+    expect(statusEvent?.childIdPropertyPresent).to.equal(true);
     expect(statusEvent?.jobId).to.equal(hints.job_id);
     expect(statusEvent?.childId).to.equal(hints.child_id);
     const statusPayload = (statusEvent?.payload ?? {}) as Record<string, unknown>;
@@ -424,6 +432,9 @@ describe("plan tools", () => {
       expect(joinAll.op_id).to.match(/^plan_join_op_/);
       expect(joinAll.satisfied, JSON.stringify(joinAll)).to.equal(true);
       expect(joinAll.success_count).to.equal(3);
+      // The plan join result should omit the optional consensus payload when no
+      // decision was computed so strict optional property typing stays honest.
+      expect(Object.prototype.hasOwnProperty.call(joinAll, "consensus")).to.equal(false);
       for (const entry of joinAll.results) {
         expect(entry.status).to.equal("success");
         expect(entry.summary).to.be.a("string");
@@ -432,6 +443,18 @@ describe("plan tools", () => {
         ).to.equal(true);
       }
       expect(events.some((event) => event.kind === "STATUS")).to.equal(true);
+      const statusEvent = events.find((event) => event.kind === "STATUS");
+      expect(statusEvent, "plan_join STATUS emission should be recorded").to.not.equal(undefined);
+      if (!statusEvent || typeof statusEvent.payload !== "object" || statusEvent.payload === null) {
+        throw new Error("plan_join STATUS emission should include a structured payload");
+      }
+      expect(statusEvent.jobIdPropertyPresent).to.equal(false);
+      expect(statusEvent.childIdPropertyPresent).to.equal(false);
+      expect(statusEvent.jobId).to.equal(null);
+      expect(statusEvent.childId).to.equal(null);
+      // The STATUS event should mirror the omission to keep downstream
+      // subscribers free from explicit `undefined` consensus fields.
+      expect(Object.prototype.hasOwnProperty.call(statusEvent.payload, "consensus")).to.equal(false);
 
       // Trigger a new wave of prompts to test the first_success policy ordering.
       await supervisor.send(fanout.child_ids[1], { type: "prompt", content: "priorite" });

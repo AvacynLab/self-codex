@@ -22,6 +22,7 @@ import type { PromptTemplate } from "../prompts.js";
 import { LoopAlert, LoopDetector } from "../guard/loopDetector.js";
 import type { LoopInteractionSample } from "../guard/loopDetector.js";
 import type { OrchestratorSupervisorContract } from "../agents/supervisor.js";
+import { omitUndefinedEntries } from "../utils/object.js";
 import {
   ContractNetAwardDecision,
   ContractNetCoordinator,
@@ -993,17 +994,18 @@ export async function handleChildCreate(
 ): Promise<ChildCreateResult> {
   const opId = resolveOperationId(input.op_id, "child_create_op");
   const execute = async (): Promise<ChildCreateSnapshot> => {
+    const manifestExtras = buildManifestExtras(input);
     const options: CreateChildOptions = {
-      childId: input.child_id,
-      command: input.command,
-      args: input.args,
-      env: input.env,
-      metadata: input.metadata,
-      manifestExtras: buildManifestExtras(input),
-      toolsAllow: input.tools_allow ?? null,
-      waitForReady: input.wait_for_ready,
-      readyType: input.ready_type,
-      readyTimeoutMs: input.ready_timeout_ms,
+      ...(input.child_id !== undefined ? { childId: input.child_id } : {}),
+      ...(input.command !== undefined ? { command: input.command } : {}),
+      ...(input.args !== undefined ? { args: input.args } : {}),
+      ...(input.env !== undefined ? { env: input.env } : {}),
+      ...(input.metadata !== undefined ? { metadata: input.metadata } : {}),
+      ...(manifestExtras !== undefined ? { manifestExtras } : {}),
+      ...(input.tools_allow !== undefined ? { toolsAllow: input.tools_allow ?? null } : {}),
+      ...(input.wait_for_ready !== undefined ? { waitForReady: input.wait_for_ready } : {}),
+      ...(input.ready_type !== undefined ? { readyType: input.ready_type } : {}),
+      ...(input.ready_timeout_ms !== undefined ? { readyTimeoutMs: input.ready_timeout_ms } : {}),
     };
 
     context.logger.info("child_create_requested", {
@@ -1523,12 +1525,13 @@ export async function handleChildSend(
         });
       } else {
         const timeoutOverride = sandboxConfig?.timeout_ms;
-        sandboxResult = await registry.execute({
+        const sandboxRequest = {
           action: actionName,
           payload: requestPayload,
           metadata: sandboxMetadata,
-          timeoutMs: timeoutOverride,
-        });
+          ...(timeoutOverride !== undefined ? { timeoutMs: timeoutOverride } : {}),
+        };
+        sandboxResult = await registry.execute(sandboxRequest);
         context.logger.info("child_send_sandbox", {
           child_id: childId,
           action: actionName,
@@ -1773,11 +1776,12 @@ export function handleChildStream(
     streams: input.streams ?? null,
   });
 
-  const slice = context.supervisor.stream(input.child_id, {
+  const streamOptions = omitUndefinedEntries({
     afterSequence: input.after_sequence,
     limit: input.limit,
     streams: input.streams as ("stdout" | "stderr")[] | undefined,
   });
+  const slice = context.supervisor.stream(input.child_id, streamOptions);
 
   return {
     child_id: input.child_id,
@@ -1795,10 +1799,11 @@ export async function handleChildCancel(
     timeout_ms: input.timeout_ms ?? null,
   });
 
-  const shutdown = await context.supervisor.cancel(input.child_id, {
+  const cancelOptions = omitUndefinedEntries({
     signal: input.signal as Signal | undefined,
     timeoutMs: input.timeout_ms,
   });
+  const shutdown = await context.supervisor.cancel(input.child_id, cancelOptions);
 
   clearLoopSignature(input.child_id);
 
@@ -1810,7 +1815,8 @@ export async function handleChildKill(
   input: ChildKillRequest,
 ): Promise<ChildKillResult> {
   context.logger.warn("child_kill", { child_id: input.child_id, timeout_ms: input.timeout_ms ?? null });
-  const shutdown = await context.supervisor.kill(input.child_id, { timeoutMs: input.timeout_ms });
+  const killOptions = omitUndefinedEntries({ timeoutMs: input.timeout_ms });
+  const shutdown = await context.supervisor.kill(input.child_id, killOptions);
   clearLoopSignature(input.child_id);
   return { child_id: input.child_id, shutdown };
 }

@@ -12,12 +12,16 @@ import {
   suggestPlanFragments,
   type KnowledgeAssistResult,
   type KnowledgeAssistRagEvidence,
+  type PlanAssistContext,
   type PlanAssistSuggestion,
 } from "../knowledge/assist.js";
 import { StructuredLogger } from "../logger.js";
-import type { HybridRetriever } from "../memory/retriever.js";
-import { PROVENANCE_TYPES, type Provenance } from "../types/provenance.js";
-import { coerceNullToUndefined } from "../utils/object.js";
+import type { HybridRetriever, HybridRetrieverSearchOptions } from "../memory/retriever.js";
+import {
+  PROVENANCE_TYPES,
+  normaliseProvenanceList,
+  type Provenance,
+} from "../types/provenance.js";
 
 /** Context injected by the server when invoking knowledge graph tools. */
 export interface KnowledgeToolContext {
@@ -188,7 +192,12 @@ export function handleKgInsert(
       payload.confidence = triple.confidence;
     }
     if (triple.provenance !== undefined) {
-      payload.provenance = triple.provenance;
+      const provenance = normaliseProvenanceList(
+        triple.provenance as ReadonlyArray<Provenance | null | undefined>,
+      );
+      if (provenance.length > 0) {
+        payload.provenance = provenance;
+      }
     }
     const result = context.knowledgeGraph.insert(payload);
     if (result.created) created += 1;
@@ -298,13 +307,28 @@ export async function handleKgSuggestPlan(
   context: KnowledgeToolContext,
   input: z.infer<typeof KgSuggestPlanInputSchema>,
 ): Promise<KgSuggestPlanResult> {
+  // Normalise the optional context without leaking `undefined` properties so
+  // the assistant remains compatible with strict optional typing.
+  let planContext: PlanAssistContext | undefined;
+  if (input.context) {
+    const overrides: PlanAssistContext = {};
+    if (input.context.preferred_sources !== undefined) {
+      overrides.preferredSources = input.context.preferred_sources;
+    }
+    if (input.context.exclude_tasks !== undefined) {
+      overrides.excludeTasks = input.context.exclude_tasks;
+    }
+    if (input.context.max_fragments !== undefined) {
+      overrides.maxFragments = input.context.max_fragments;
+    }
+    if (Object.keys(overrides).length > 0) {
+      planContext = overrides;
+    }
+  }
+
   const suggestion = suggestPlanFragments(context.knowledgeGraph, {
     goal: input.goal,
-    context: {
-      preferredSources: input.context?.preferred_sources,
-      excludeTasks: input.context?.exclude_tasks,
-      maxFragments: input.context?.max_fragments,
-    },
+    ...(planContext ? { context: planContext } : {}),
   });
 
   const ragConfig = context.rag;
@@ -393,15 +417,21 @@ export async function handleKgAssist(
     Number.isFinite(input.min_score) ? input.min_score : 0,
   );
 
-  const result = await assistKnowledgeQuery(context.knowledgeGraph, {
+  // Assemble the assist options lazily so optional fields stay omitted when
+  // callers leave them blank, keeping strict optional property typing satisfied.
+  const assistOptions = {
     query: input.query,
-    context: input.context,
     limit: input.limit,
-    ragRetriever: coerceNullToUndefined(retriever),
     ragLimit: Math.max(input.limit, 3),
     ragMinScore: resolvedMinScore,
     domainTags: combinedTags,
-  });
+    ...(typeof input.context === "string" && input.context.trim().length > 0
+      ? { context: input.context }
+      : {}),
+    ...(retriever ? { ragRetriever: retriever } : {}),
+  } satisfies Parameters<typeof assistKnowledgeQuery>[1];
+
+  const result = await assistKnowledgeQuery(context.knowledgeGraph, assistOptions);
 
   context.logger.info("kg_assist", {
     query_length: input.query.length,
@@ -423,7 +453,7 @@ function serializeTriple(snapshot: KnowledgeTripleSnapshot): SerializedTriple {
     predicate: snapshot.predicate,
     object: snapshot.object,
     source: snapshot.source,
-    provenance: snapshot.provenance.map((entry) => ({ ...entry })),
+    provenance: normaliseProvenanceList(snapshot.provenance),
     confidence: snapshot.confidence,
     inserted_at: snapshot.insertedAt,
     updated_at: snapshot.updatedAt,
@@ -475,11 +505,14 @@ async function collectPlanRagFallback(context: PlanRagFallbackContext): Promise<
   const domainTags = normaliseDomainTags(context.domainTags);
   const minScore = clampScore(context.minScore);
   const query = buildPlanRagQuery(context.goal, context.suggestion, context.preferredSources, context.excludedTasks);
-  const hits = await context.retriever.search(query, {
+  // Avoid forwarding optional retriever hints when they are absent so strict
+  // optional property typing remains satisfied.
+  const searchOptions: HybridRetrieverSearchOptions = {
     limit: PLAN_RAG_LIMIT,
     minScore,
-    requiredTags: domainTags.length > 0 ? domainTags : undefined,
-  });
+    ...(domainTags.length > 0 ? { requiredTags: domainTags } : {}),
+  };
+  const hits = await context.retriever.search(query, searchOptions);
 
   if (hits.length === 0) {
     return { evidence: [], query, domainTags, minScore };
@@ -495,7 +528,7 @@ async function collectPlanRagFallback(context: PlanRagFallbackContext): Promise<
     tags: [...hit.tags],
     matched_tags: [...hit.matchedTags],
     matched_terms: computeMatchedTerms(queryTokens, hit.text),
-    provenance: hit.provenance.map((entry) => ({ ...entry })),
+    provenance: normaliseProvenanceList(hit.provenance),
   }));
 
   return { evidence, query, domainTags, minScore };

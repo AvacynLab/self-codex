@@ -110,7 +110,12 @@ export class OrchestratorSupervisor implements OrchestratorSupervisorContract {
 
   constructor(options: OrchestratorSupervisorOptions) {
     this.childManager = options.childManager;
-    this.logger = options.logger;
+    if (options.logger) {
+      // The optional logger is only persisted when explicitly provided so the
+      // instance never assigns an `undefined` placeholder under strict optional
+      // property typing.
+      this.logger = options.logger;
+    }
     this.now = options.now ?? Date.now;
     this.stagnationTickThreshold = Math.max(1, options.stagnationTickThreshold ?? 6);
     this.stagnationBacklogThreshold = Math.max(1, options.stagnationBacklogThreshold ?? 3);
@@ -130,9 +135,17 @@ export class OrchestratorSupervisor implements OrchestratorSupervisorContract {
       },
     };
 
+    const overridesEntries = Object.entries(options.actions ?? {}).filter(
+      (entry): entry is [keyof SupervisorActions, NonNullable<SupervisorActions[keyof SupervisorActions]>] =>
+        entry[1] !== undefined,
+    );
+    // Undefined overrides are filtered above so every entry in the merged
+    // structure is concrete, allowing the cast to `Required<>` without
+    // surfacing assignments to `undefined` when strict optional typing is
+    // enabled.
     this.actions = {
       ...defaultActions,
-      ...(options.actions ?? {}),
+      ...Object.fromEntries(overridesEntries),
     } as Required<SupervisorActions>;
   }
 

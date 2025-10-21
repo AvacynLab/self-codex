@@ -133,6 +133,15 @@ describe("knowledge validation runner", () => {
 
     const firstCall = capturedBodies[0] as { method?: string };
     expect(firstCall.method).to.equal("kg_assist");
+
+    const firstOutcomeCall = result.outcomes[0]?.call;
+    expect(
+      firstOutcomeCall && Object.prototype.hasOwnProperty.call(firstOutcomeCall, "captureEvents"),
+    ).to.equal(false);
+    const graphExportCall = result.outcomes.find(
+      (outcome) => outcome.call.name === "values_graph_export_snapshot",
+    );
+    expect(graphExportCall?.call.captureEvents).to.equal(false);
   });
 
   it("throws when values explanations diverge between runs", async () => {

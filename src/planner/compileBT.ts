@@ -91,13 +91,19 @@ function buildTaskNode(
     throw new Error(`task ${taskId} disappeared during compilation`);
   }
 
+  const inputBinding =
+    task.input !== undefined ? `${INPUT_VARIABLE_PREFIX}.${task.id}` : undefined;
+
   let node: BehaviorNodeDefinition = {
     type: "task",
     id: `task:${task.id}`,
     node_id: task.id,
     tool: task.tool,
-    input_key:
-      task.input !== undefined ? `${INPUT_VARIABLE_PREFIX}.${task.id}` : undefined,
+    // Propagate the behaviour-tree variable binding only when the planner task
+    // declares an input payload. This avoids materialising `input_key:
+    // undefined`, which would violate `exactOptionalPropertyTypes` once the
+    // compiler flag is enabled.
+    ...(inputBinding ? { input_key: inputBinding } : {}),
   } satisfies BehaviorNodeDefinition;
 
   if (task.timeout_ms) {

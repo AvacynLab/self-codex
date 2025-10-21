@@ -102,14 +102,25 @@ export class LocalVectorMemory implements VectorMemory {
 
     const snapshots: VectorMemoryDocument[] = [];
     for (const input of inputs) {
+      // Forward optional fields selectively so the underlying index never
+      // receives `undefined` entries once exact optional property typing is
+      // enabled.
       const payload: VectorDocumentInput = {
-        id: input.id,
         text: input.text,
-        tags: input.tags,
-        metadata: input.metadata,
         provenance: normaliseProvenanceList(input.provenance),
-        createdAt: input.createdAt,
       };
+      if (typeof input.id === "string") {
+        payload.id = input.id;
+      }
+      if (Array.isArray(input.tags)) {
+        payload.tags = input.tags;
+      }
+      if (input.metadata !== undefined) {
+        payload.metadata = input.metadata;
+      }
+      if (typeof input.createdAt === "number") {
+        payload.createdAt = input.createdAt;
+      }
       const stored = await this.index.upsert(payload);
       snapshots.push({
         ...stored,
@@ -126,9 +137,11 @@ export class LocalVectorMemory implements VectorMemory {
    * reason about coverage.
    */
   async search(query: string, options: VectorMemorySearchOptions = {}): Promise<VectorMemorySearchHit[]> {
+    // Clamp search options while omitting fields callers did not provide so the
+    // exact optional property typing check remains satisfied.
     const vectorOptions: VectorSearchOptions = {
-      limit: options.limit,
-      minScore: options.minScore,
+      ...(options.limit !== undefined ? { limit: options.limit } : {}),
+      ...(options.minScore !== undefined ? { minScore: options.minScore } : {}),
     };
     const hits: VectorSearchHit[] = this.index.search(query, vectorOptions);
     if (hits.length === 0) {

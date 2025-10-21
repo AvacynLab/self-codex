@@ -129,4 +129,30 @@ describe("ResourceRegistry type safety", () => {
     expect(result.payload.version).to.equal(1);
     expect(result.payload.graph.graphId).to.equal("demo");
   });
+
+  it("normalises filters and validation artefacts without undefined optionals", () => {
+    const registry = new ResourceRegistry();
+
+    registry.recordRunEvent("run-42", { seq: 1, ts: 100, kind: "PLAN", level: "info", payload: {} });
+    const runPage = registry.watch("sc://runs/run-42/events", { run: { jobIds: ["job-7"] } });
+    expect(runPage.filters?.run?.jobIds).to.deep.equal(["job-7"]);
+    expect(Object.prototype.hasOwnProperty.call(runPage.filters!.run!, "opIds")).to.equal(false);
+
+    registry.recordChildLogEntry("child-42", { ts: 110, stream: "stdout", message: "ready" });
+    const childPage = registry.watch("sc://children/child-42/logs", { child: { streams: ["stdout"] } });
+    expect(childPage.filters?.child?.streams).to.deep.equal(["stdout"]);
+    expect(Object.prototype.hasOwnProperty.call(childPage.filters!.child!, "jobIds")).to.equal(false);
+
+    const uri = registry.registerValidationArtifact({
+      sessionId: "sess-1",
+      artifactType: "logs",
+      name: "artifact.json",
+      data: { entries: [] },
+    });
+    const validationRead = registry.read(uri);
+    if (validationRead.kind !== "validation_logs") {
+      throw new Error(`unexpected kind: ${validationRead.kind}`);
+    }
+    expect(Object.prototype.hasOwnProperty.call(validationRead.payload, "metadata")).to.equal(false);
+  });
 });

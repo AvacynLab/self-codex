@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import { omitUndefinedEntries } from "../utils/object.js";
+
 /**
  * Descriptor of a task that needs to be routed to a specialist model.
  * The orchestrator extracts these attributes from the caller request
@@ -124,7 +126,16 @@ export class ModelRouter {
    */
   registerSpecialist(config: SpecialistConfig): void {
     const parsed = specialistConfigSchema.parse(config);
-    const merged: SpecialistConfig = { ...config, ...parsed, available: config.available ?? true };
+    // NOTE: Optional specialist knobs (priority, languages, tags…) surface as
+    // `undefined` when omitted by callers. We strip those keys to keep the
+    // stored configuration compliant with `exactOptionalPropertyTypes` while
+    // preserving the intent of the original payload.
+    const merged: SpecialistConfig = {
+      id: parsed.id,
+      ...omitUndefinedEntries({ ...config, id: undefined }),
+      ...omitUndefinedEntries({ ...parsed, id: undefined }),
+      available: config.available ?? parsed.available ?? true,
+    };
     this.specialists.set(merged.id, merged);
     if (!this.stats.has(merged.id)) {
       this.stats.set(merged.id, {

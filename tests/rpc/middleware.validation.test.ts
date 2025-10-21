@@ -30,7 +30,12 @@ describe("rpc middleware validation", () => {
     expect(routed, "router must not be invoked on malformed payload").to.equal(false);
     expect(response.error, "error payload must exist").to.exist;
     expect(response.error?.code, "invalid request must surface the schema code").to.equal(-32600);
-    expect((response.error?.data as { category?: string })?.category).to.equal("VALIDATION_ERROR");
+    const errorData = response.error?.data as { category?: string; issues?: unknown };
+    expect(errorData?.category).to.equal("VALIDATION_ERROR");
+    expect(
+      Object.prototype.hasOwnProperty.call(errorData ?? {}, "issues"),
+      "undefined validation issues must not be serialised",
+    ).to.equal(false);
   });
 
   it("rejects schema violations with VALIDATION_ERROR responses", async () => {

@@ -1,7 +1,7 @@
 import { describe, it } from "mocha";
 import { expect } from "chai";
 
-import { handlePlanDryRun, type PlanToolContext } from "../src/tools/planTools.js";
+import { handlePlanDryRun, type PlanDryRunInput, type PlanToolContext } from "../src/tools/planTools.js";
 import { ValueGraph } from "../src/values/valueGraph.js";
 import { createPlanToolContext, type PlanToolContextOverrides } from "./helpers/planContext.js";
 
@@ -179,6 +179,45 @@ describe("plan dry-run", () => {
     expect(result.reroute_avoid).to.not.equal(null);
     expect(result.reroute_avoid?.node_ids).to.deep.equal(["manual-risk"]);
     expect(result.reroute_avoid?.labels).to.deep.equal(["Risky"]);
+  });
+
+  it("sanitises hierarchical graphs and empty reroute hints before computing previews", () => {
+    const context = buildContext();
+    const result = handlePlanDryRun(context, {
+      plan_id: "plan-hierarchical-sanitise",
+      plan_label: "Hierarchical Sanitise",
+      graph: {
+        id: "hierarchical-root",
+        nodes: [
+          { id: "root", kind: "task", attributes: { bt_tool: "noop" } },
+          { id: "leaf", kind: "task", attributes: { bt_tool: "noop" } },
+        ],
+        edges: [
+          {
+            id: "edge-root-leaf",
+            from: { nodeId: "root" },
+            to: { nodeId: "leaf" },
+          },
+        ],
+      },
+      rewrite: {},
+      reroute_avoid: {},
+    } as PlanDryRunInput);
+
+    expect(result.compiled_tree).to.not.equal(null);
+    expect(result.compiled_tree?.id).to.equal("hierarchical-root");
+    const rootNode = result.compiled_tree?.root;
+    expect(rootNode).to.not.equal(undefined);
+    if (rootNode?.type === "sequence") {
+      for (const child of rootNode.children) {
+        expect(child.type).to.equal("task");
+      }
+    } else {
+      expect(rootNode?.type).to.equal("task");
+    }
+    expect(result.rewrite_preview).to.not.equal(null);
+    expect(result.rewrite_preview?.history).to.be.an("array");
+    expect(result.reroute_avoid).to.equal(null);
   });
 
   // Ensure aggregated impacts trigger the value guard so dry-run payloads include

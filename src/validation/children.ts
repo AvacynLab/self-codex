@@ -11,6 +11,7 @@ import {
   type HttpEnvironmentSummary,
   type HttpCheckArtefactTargets,
 } from "./runSetup.js";
+import { omitUndefinedEntries } from "../utils/object.js";
 
 /**
  * Stage 5 validation helpers covering the Codex child orchestration workflow.
@@ -439,7 +440,10 @@ export async function runChildrenPhase(
       scenario: spec.scenario,
       name: spec.name,
       method: spec.method,
-      captureEvents: spec.captureEvents,
+      // Optional telemetry toggles are only surfaced when explicitly configured to
+      // avoid leaking `undefined` into persisted artefacts once
+      // `exactOptionalPropertyTypes` is enabled.
+      ...(spec.captureEvents !== undefined ? { captureEvents: spec.captureEvents } : {}),
       params,
     };
 
@@ -461,10 +465,14 @@ export async function runChildrenPhase(
     outcomes.push(outcome);
   }
 
-  const summary = buildChildrenSummary(runRoot, outcomes, {
+  // Only inject the transcript path when a conversation was captured to keep the
+  // summary compatible with strict optional properties once `exactOptionalPropertyTypes`
+  // is enabled across the codebase.
+  const summaryContext = {
     prompt: options.plan?.prompt ?? DEFAULT_CHILD_PROMPT,
-    conversationPath,
-  });
+    ...(conversationPath !== undefined ? { conversationPath } : {}),
+  };
+  const summary = buildChildrenSummary(runRoot, outcomes, summaryContext);
   const summaryPath = join(runRoot, "report", CHILDREN_SUMMARY_FILENAME);
   await writeJsonFile(summaryPath, summary);
 
@@ -474,7 +482,15 @@ export async function runChildrenPhase(
     );
   }
 
-  return { outcomes, summary, summaryPath, conversationPath };
+  return {
+    outcomes,
+    summary,
+    summaryPath,
+    // NOTE: Conversations are only captured when `child_send` executes. We drop
+    // the key entirely when absent to stay compatible with exact optional
+    // property semantics.
+    ...omitUndefinedEntries({ conversationPath }),
+  };
 }
 
 /**

@@ -125,8 +125,8 @@ export function createChildProcessGateway({
       const args = normaliseArgs(options.args);
       const env = buildWhitelistedEnv({
         allowedKeys: options.allowedEnvKeys,
-        inheritEnv: options.inheritEnv,
-        extraEnv: options.extraEnv,
+        ...(options.inheritEnv ? { inheritEnv: options.inheritEnv } : {}),
+        ...(options.extraEnv ? { extraEnv: options.extraEnv } : {}),
       });
 
       const abortManagement = prepareAbortHandling(options.timeoutMs, options.signal);

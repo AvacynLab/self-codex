@@ -211,7 +211,9 @@ export class StigmergyField {
       throw new Error("maxIntensity must be greater than minIntensity");
     }
 
-    this.defaultHalfLifeMs = options.defaultHalfLifeMs;
+    if (options.defaultHalfLifeMs !== undefined) {
+      this.defaultHalfLifeMs = options.defaultHalfLifeMs;
+    }
     this.minIntensity = min;
     this.maxIntensity = max;
     this.evictionThreshold = EPSILON;

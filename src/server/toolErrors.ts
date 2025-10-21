@@ -2,6 +2,7 @@ import { z } from "zod";
 
 import type { StructuredLogger } from "../logger.js";
 import { normaliseErrorHint, normaliseErrorMessage } from "../types.js";
+import { omitUndefinedEntries } from "../utils/object.js";
 import { ResourceRegistryError } from "../resources/registry.js";
 import { UnknownChildError } from "../state/childrenIndex.js";
 
@@ -71,11 +72,18 @@ export function normaliseToolError(error: unknown, codes: ToolErrorCodes): Norma
     details = (error as { details?: unknown }).details;
   }
 
+  const normalisedMessage = normaliseErrorMessage(message);
+  const normalisedHint = normaliseErrorHint(hint);
+  // NOTE: Undefined hints/details are stripped so the resulting structure stays
+  // compliant once `exactOptionalPropertyTypes` enforces exactness on optional
+  // properties across the code base.
   return {
     code,
-    message: normaliseErrorMessage(message),
-    hint: normaliseErrorHint(hint),
-    details,
+    message: normalisedMessage,
+    ...omitUndefinedEntries({
+      hint: normalisedHint,
+      details,
+    }),
   };
 }
 
@@ -289,8 +297,10 @@ export function resourceToolError(
     const normalised: NormalisedToolError = {
       code: error.code,
       message: error.message,
-      hint: error.hint,
-      details: error.details,
+      ...omitUndefinedEntries({
+        hint: error.hint,
+        details: error.details,
+      }),
     };
     return logAndWrap(logger, toolName, normalised, context);
   }

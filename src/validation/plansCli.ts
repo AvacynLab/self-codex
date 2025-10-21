@@ -12,8 +12,8 @@ import {
   runPlanPhase,
   type PlanPhaseOptions,
   type PlanPhaseResult,
+  type DefaultPlanOptions,
 } from "./plans.js";
-import { omitUndefinedEntries } from "../utils/object.js";
 
 /** CLI flags recognised by the Behaviour Tree planning validation workflow. */
 export interface PlanCliOptions {
@@ -102,36 +102,18 @@ export async function executePlanCli(
   logger.log(`   Target: ${environment.baseUrl}`);
 
   const basePhaseOptions = overrides.phaseOptions ?? {};
-  const { plan: basePlanOption, ...restBaseOptions } = basePhaseOptions;
-  const planOverrides = { ...(basePlanOption ?? {}) };
-  const baseReactive = planOverrides.reactive ?? {};
-  const cliReactiveOverrides = omitUndefinedEntries({
-    tickMs:
-      typeof options.tickMs === "number" && Number.isFinite(options.tickMs)
-        ? options.tickMs
-        : undefined,
-    timeoutMs:
-      typeof options.timeoutMs === "number" && Number.isFinite(options.timeoutMs)
-        ? options.timeoutMs
-        : undefined,
-  });
+  const clonedPlan = clonePlanOptions(basePhaseOptions.plan);
+  const cliReactiveOverrides = buildReactiveOverridesFromCli(options);
+  const mergedReactive = mergeReactiveOptions(clonedPlan?.reactive, cliReactiveOverrides);
 
-  const mergedReactive = omitUndefinedEntries({
-    ...baseReactive,
-    ...cliReactiveOverrides,
-  }) as { tickMs?: number; timeoutMs?: number };
-
-  if (Object.keys(mergedReactive).length > 0) {
-    planOverrides.reactive = mergedReactive;
-  } else if (planOverrides.reactive !== undefined) {
-    delete planOverrides.reactive;
+  let mergedPlan = clonedPlan;
+  if (mergedReactive) {
+    mergedPlan = { ...(mergedPlan ?? {}), reactive: mergedReactive };
   }
 
-  const sanitisedPlan = omitUndefinedEntries(planOverrides as Record<string, unknown>);
-
   const phaseOptions: PlanPhaseOptions = {
-    ...restBaseOptions,
-    ...(Object.keys(sanitisedPlan).length > 0 ? { plan: sanitisedPlan as PlanPhaseOptions["plan"] } : {}),
+    ...(basePhaseOptions.calls ? { calls: basePhaseOptions.calls } : {}),
+    ...(mergedPlan && Object.keys(mergedPlan).length > 0 ? { plan: mergedPlan } : {}),
   };
 
   const runner = overrides.runner ?? runPlanPhase;
@@ -144,4 +126,69 @@ export async function executePlanCli(
   logger.log(`   Summary: ${result.summaryPath}`);
 
   return { runRoot, result };
+}
+
+/**
+ * Produces a sanitised clone of the provided plan options, omitting any fields
+ * set to `undefined` so subsequent spreads respect strict optional semantics.
+ */
+function clonePlanOptions(options: DefaultPlanOptions | undefined): DefaultPlanOptions | undefined {
+  if (!options) {
+    return undefined;
+  }
+
+  let clone: DefaultPlanOptions | undefined;
+  if (options.graph !== undefined) {
+    clone = { ...(clone ?? {}), graph: options.graph };
+  }
+  if (options.variables !== undefined) {
+    clone = { ...(clone ?? {}), variables: options.variables };
+  }
+  if (options.reactive) {
+    let reactive: DefaultPlanOptions["reactive"] | undefined;
+    if (options.reactive.tickMs !== undefined) {
+      reactive = { ...(reactive ?? {}), tickMs: options.reactive.tickMs };
+    }
+    if (options.reactive.timeoutMs !== undefined) {
+      reactive = { ...(reactive ?? {}), timeoutMs: options.reactive.timeoutMs };
+    }
+    if (reactive) {
+      clone = { ...(clone ?? {}), reactive };
+    }
+  }
+
+  return clone;
+}
+
+/**
+ * Extracts CLI-provided reactive overrides while filtering out invalid or
+ * non-finite values.
+ */
+function buildReactiveOverridesFromCli(
+  options: PlanCliOptions,
+): DefaultPlanOptions["reactive"] | undefined {
+  let overrides: DefaultPlanOptions["reactive"] | undefined;
+  if (typeof options.tickMs === "number" && Number.isFinite(options.tickMs)) {
+    overrides = { ...(overrides ?? {}), tickMs: options.tickMs };
+  }
+  if (typeof options.timeoutMs === "number" && Number.isFinite(options.timeoutMs)) {
+    overrides = { ...(overrides ?? {}), timeoutMs: options.timeoutMs };
+  }
+
+  return overrides;
+}
+
+/**
+ * Merges the base reactive configuration with CLI overrides, returning
+ * `undefined` when both sources are empty to avoid surfacing meaningless
+ * objects in the generated phase options.
+ */
+function mergeReactiveOptions(
+  base: DefaultPlanOptions["reactive"] | undefined,
+  overrides: DefaultPlanOptions["reactive"] | undefined,
+): DefaultPlanOptions["reactive"] | undefined {
+  if (!base && !overrides) {
+    return undefined;
+  }
+  return { ...(base ?? {}), ...(overrides ?? {}) };
 }

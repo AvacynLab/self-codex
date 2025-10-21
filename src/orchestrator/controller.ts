@@ -5,8 +5,8 @@ import { Buffer } from "node:buffer";
 import type { JsonRpcRouteContext } from "../infra/runtime.js";
 import type { ToolRegistry } from "../mcp/registry.js";
 import type { StructuredLogger } from "../logger.js";
-import type { LogJournal } from "../monitor/log.js";
-import type { EventBus } from "../events/bus.js";
+import type { LogJournal, LogRecordInput } from "../monitor/log.js";
+import type { EventBus, EventInput } from "../events/bus.js";
 import type {
   JsonRpcEventMessage,
   JsonRpcEventPayload,
@@ -38,7 +38,8 @@ import {
   normaliseJsonRpcRequest,
   toJsonRpc,
 } from "../rpc/middleware.js";
-import { coerceNullToUndefined } from "../utils/object.js";
+import { coerceNullToUndefined, omitUndefinedEntries } from "../utils/object.js";
+import { buildJsonRpcObservabilityInput } from "./runtime.js";
 import { JsonRpcTimeoutError, resolveRpcTimeoutBudget } from "../rpc/timeouts.js";
 import {
   BudgetExceededError,
@@ -216,7 +217,12 @@ function mergeCorrelationSnapshots(
   const merged: JsonRpcCorrelationSnapshot = { ...base };
   for (const key of ["runId", "opId", "childId", "jobId"] as const) {
     if (Object.prototype.hasOwnProperty.call(next, key)) {
-      merged[key] = next[key];
+      const value = next[key];
+      if (value === undefined) {
+        delete merged[key];
+        continue;
+      }
+      merged[key] = value;
     }
   }
   return merged;
@@ -590,7 +596,7 @@ export function createOrchestratorController(
     }
 
     try {
-      eventBus.publish<typeof payload.msg>({
+      const eventInput = {
         cat: "scheduler",
         level: input.stage === "error" ? "error" : "info",
         runId: input.correlation.runId ?? null,
@@ -599,11 +605,15 @@ export function createOrchestratorController(
         jobId: input.correlation.jobId ?? null,
         component: "jsonrpc",
         stage: jsonRpcMessage,
-        elapsedMs: coerceNullToUndefined(payload.elapsed_ms),
         kind: `JSONRPC_${input.stage.toUpperCase()}`,
         msg: payload.msg,
         data: payload,
-      });
+        ...omitUndefinedEntries({
+          elapsedMs: coerceNullToUndefined(payload.elapsed_ms),
+        }),
+      } satisfies EventInput<typeof payload.msg>;
+
+      eventBus.publish<typeof payload.msg>(eventInput);
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
       process.stderr.write(
@@ -632,9 +642,11 @@ export function createOrchestratorController(
         component: "jsonrpc",
         stage: payload.msg,
         elapsedMs: payload.elapsed_ms ?? null,
-        ts,
-        seq,
-      } as const;
+        ...omitUndefinedEntries({
+          ts,
+          seq,
+        }),
+      } satisfies Omit<LogRecordInput, "stream" | "bucketId">;
 
       logJournal.record({ stream: "server", bucketId: "jsonrpc", ...baseEntry });
       if (input.correlation.runId) {
@@ -769,12 +781,15 @@ export function createOrchestratorController(
 
     const executeInvocation = () =>
       runWithJsonRpcContext(context, async () => {
+        const requestInfo =
+          Object.keys(headersSnapshot).length > 0 ? { headers: headersSnapshot } : undefined;
+
         const rawResult = await handler(
           { jsonrpc: "2.0", id: requestId, method: invocation.method, params: invocation.params },
           {
             signal: abort.signal,
             requestId,
-            requestInfo: Object.keys(headersSnapshot).length > 0 ? { headers: headersSnapshot } : undefined,
+            ...(requestInfo ? { requestInfo } : {}),
             sendNotification: async () => {
               // Notifications are not routed through the in-process adapter. The promise simply
               // resolves to keep behaviour consistent with the legacy implementation.
@@ -843,18 +858,22 @@ export function createOrchestratorController(
       toolName = normalised.toolName ?? resolveJsonRpcToolName(normalised.request.method, normalised.request.params);
     } catch (error) {
       if (error instanceof JsonRpcError) {
-        recordJsonRpcObservability({
-          stage: "error",
+        const baseObservability = {
+          stage: "error" as const,
           method,
           toolName: resolveJsonRpcToolName(typeof req?.method === "string" ? req.method : "", req?.params),
           requestId: rawId,
-          transport: baseContext?.transport,
           idempotencyKey: baseContext?.idempotencyKey ?? null,
           correlation: collectCorrelationFromContext(baseContext),
-          status: "error",
+          status: "error" as const,
           errorMessage: error.data?.hint ?? error.message,
           errorCode: error.code,
-        });
+        } satisfies Omit<JsonRpcObservabilityInput, "transport">;
+        // Normalise the optional transport tag via the shared helper so the controller never
+        // forwards `{ transport: undefined }` when upstream contexts omit the field.
+        recordJsonRpcObservability(
+          buildJsonRpcObservabilityInput(baseObservability, coerceNullToUndefined(baseContext?.transport ?? null)),
+        );
         return toJsonRpc(rawId, error);
       }
       throw error;
@@ -892,19 +911,24 @@ export function createOrchestratorController(
           status: 410,
           meta: { tool: toolName, since: deprecation.metadata.since },
         });
-        recordJsonRpcObservability({
-          stage: "error",
+        const baseObservability = {
+          stage: "error" as const,
           method,
           toolName,
           requestId: id,
-          transport: runtimeContext?.transport,
           idempotencyKey: runtimeContext?.idempotencyKey ?? null,
           correlation,
-          status: "error",
+          status: "error" as const,
           timeoutMs: null,
           errorMessage: removalError.data?.hint ?? removalError.message,
           errorCode: removalError.code,
-        });
+        } satisfies Omit<JsonRpcObservabilityInput, "transport">;
+        recordJsonRpcObservability(
+          buildJsonRpcObservabilityInput(
+            baseObservability,
+            coerceNullToUndefined(runtimeContext?.transport ?? null),
+          ),
+        );
         return toJsonRpc(id, removalError);
       }
       logToolDeprecation(logger, "warn", "tool_deprecated_invoked", logPayload);
@@ -936,35 +960,45 @@ export function createOrchestratorController(
             },
             status: 429,
           });
-          recordJsonRpcObservability({
-            stage: "error",
+          const baseObservability = {
+            stage: "error" as const,
             method,
             toolName,
             requestId: id,
-            transport: runtimeContext?.transport,
             idempotencyKey: runtimeContext?.idempotencyKey ?? null,
             correlation,
-            status: "error",
+            status: "error" as const,
             timeoutMs,
             errorMessage: budgetError.data?.hint ?? budgetError.message,
             errorCode: budgetError.code,
-          });
+          } satisfies Omit<JsonRpcObservabilityInput, "transport">;
+          recordJsonRpcObservability(
+            buildJsonRpcObservabilityInput(
+              baseObservability,
+              coerceNullToUndefined(runtimeContext?.transport ?? null),
+            ),
+          );
           return toJsonRpc(id, budgetError);
         }
         throw error;
       }
 
-      recordJsonRpcObservability({
-        stage: "request",
+      const requestObservability = {
+        stage: "request" as const,
         method,
         toolName,
         requestId: id,
-        transport: runtimeContext?.transport,
         idempotencyKey: runtimeContext?.idempotencyKey ?? null,
         correlation,
-        status: "pending",
+        status: "pending" as const,
         timeoutMs,
-      });
+      } satisfies Omit<JsonRpcObservabilityInput, "transport">;
+      recordJsonRpcObservability(
+        buildJsonRpcObservabilityInput(
+          requestObservability,
+          coerceNullToUndefined(runtimeContext?.transport ?? null),
+        ),
+      );
 
       await maybeRecordIdempotentWalEntry(request, runtimeContext, { method, toolName });
 
@@ -986,33 +1020,43 @@ export function createOrchestratorController(
         if (errorSnapshot) {
           const normalisedErrorCode =
             typeof errorSnapshot.code === "number" ? errorSnapshot.code : null;
-          recordJsonRpcObservability({
-            stage: "error",
+          const errorObservability = {
+            stage: "error" as const,
             method,
             toolName,
             requestId: id,
-            transport: runtimeContext?.transport,
             idempotencyKey: runtimeContext?.idempotencyKey ?? null,
             correlation,
-            status: "error",
+            status: "error" as const,
             elapsedMs,
             errorMessage: errorSnapshot.message,
             errorCode: normalisedErrorCode,
             timeoutMs,
-          });
+          } satisfies Omit<JsonRpcObservabilityInput, "transport">;
+          recordJsonRpcObservability(
+            buildJsonRpcObservabilityInput(
+              errorObservability,
+              coerceNullToUndefined(runtimeContext?.transport ?? null),
+            ),
+          );
         } else {
-          recordJsonRpcObservability({
-            stage: "response",
+          const responseObservability = {
+            stage: "response" as const,
             method,
             toolName,
             requestId: id,
-            transport: runtimeContext?.transport,
             idempotencyKey: runtimeContext?.idempotencyKey ?? null,
             correlation,
-            status: "ok",
+            status: "ok" as const,
             elapsedMs,
             timeoutMs,
-          });
+          } satisfies Omit<JsonRpcObservabilityInput, "transport">;
+          recordJsonRpcObservability(
+            buildJsonRpcObservabilityInput(
+              responseObservability,
+              coerceNullToUndefined(runtimeContext?.transport ?? null),
+            ),
+          );
         }
 
         try {
@@ -1037,20 +1081,25 @@ export function createOrchestratorController(
               },
               status: 429,
             });
-            recordJsonRpcObservability({
-              stage: "error",
+            const budgetObservability = {
+              stage: "error" as const,
               method,
               toolName,
               requestId: id,
-              transport: runtimeContext?.transport,
               idempotencyKey: runtimeContext?.idempotencyKey ?? null,
               correlation,
-              status: "error",
+              status: "error" as const,
               elapsedMs,
               errorMessage: jsonRpcError.data?.hint ?? jsonRpcError.message,
               errorCode: jsonRpcError.code,
               timeoutMs,
-            });
+            } satisfies Omit<JsonRpcObservabilityInput, "transport">;
+            recordJsonRpcObservability(
+              buildJsonRpcObservabilityInput(
+                budgetObservability,
+                coerceNullToUndefined(runtimeContext?.transport ?? null),
+              ),
+            );
             return toJsonRpc(id, jsonRpcError);
           }
           throw budgetError;
@@ -1069,20 +1118,25 @@ export function createOrchestratorController(
         }
         correlation = mergeCorrelationSnapshots(correlation, collectCorrelationFromUnknown(error));
 
-        recordJsonRpcObservability({
-          stage: "error",
+        const errorObservability = {
+          stage: "error" as const,
           method,
           toolName,
           requestId: id,
-          transport: runtimeContext?.transport,
           idempotencyKey: runtimeContext?.idempotencyKey ?? null,
           correlation,
-          status: "error",
+          status: "error" as const,
           elapsedMs,
           errorMessage: message,
           errorCode,
           timeoutMs,
-        });
+        } satisfies Omit<JsonRpcObservabilityInput, "transport">;
+        recordJsonRpcObservability(
+          buildJsonRpcObservabilityInput(
+            errorObservability,
+            coerceNullToUndefined(runtimeContext?.transport ?? null),
+          ),
+        );
 
         const errorPayload = { code: errorCode, message, data: errorData };
         try {
@@ -1107,20 +1161,25 @@ export function createOrchestratorController(
               },
               status: 429,
             });
-            recordJsonRpcObservability({
-              stage: "error",
+            const budgetObservability = {
+              stage: "error" as const,
               method,
               toolName,
               requestId: id,
-              transport: runtimeContext?.transport,
               idempotencyKey: runtimeContext?.idempotencyKey ?? null,
               correlation,
-              status: "error",
+              status: "error" as const,
               elapsedMs,
               errorMessage: jsonRpcError.data?.hint ?? jsonRpcError.message,
               errorCode: jsonRpcError.code,
               timeoutMs,
-            });
+            } satisfies Omit<JsonRpcObservabilityInput, "transport">;
+            recordJsonRpcObservability(
+              buildJsonRpcObservabilityInput(
+                budgetObservability,
+                coerceNullToUndefined(runtimeContext?.transport ?? null),
+              ),
+            );
             return toJsonRpc(id, jsonRpcError);
           }
           throw budgetError;

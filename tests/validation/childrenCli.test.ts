@@ -7,7 +7,10 @@ import { join } from "node:path";
 import {
   executeChildrenCli,
   parseChildrenCliOptions,
+  type ChildPhaseOptions,
+  type ChildrenCliOverrides,
 } from "../../src/validation/childrenCli.js";
+import { type ChildrenPhaseResult } from "../../src/validation/children.js";
 import { CHILDREN_JSONL_FILES } from "../../src/validation/children.js";
 
 /** CLI-level tests ensuring the Stage 5 workflow remains ergonomic. */
@@ -112,5 +115,54 @@ describe("children validation CLI", () => {
     const flattenedLogs = logs.flat().join(" ");
     expect(flattenedLogs).to.contain(CHILDREN_JSONL_FILES.inputs);
     expect(flattenedLogs).to.contain("Conversation transcript");
+  });
+
+  it("omits undefined plan overrides when invoking the validation runner", async () => {
+    let capturedOptions: ChildPhaseOptions | null = null;
+    const runner: NonNullable<ChildrenCliOverrides["runner"]> = async (
+      runRoot,
+      environment,
+      options,
+    ) => {
+      capturedOptions = options;
+      return {
+        outcomes: [],
+        summary: {
+          capturedAt: new Date().toISOString(),
+          childId: null,
+          goal: null,
+          initialLimits: null,
+          updatedLimits: null,
+          prompt: null,
+          replyText: null,
+          calls: [],
+          events: { total: 0, types: {}, limitEvents: 0, samples: [] },
+          artefacts: {
+            requestsJsonl: join(runRoot, CHILDREN_JSONL_FILES.inputs),
+            responsesJsonl: join(runRoot, CHILDREN_JSONL_FILES.outputs),
+            eventsJsonl: join(runRoot, CHILDREN_JSONL_FILES.events),
+            httpLog: join(runRoot, CHILDREN_JSONL_FILES.log),
+          },
+        },
+        summaryPath: join(runRoot, "report", "children_summary.json"),
+      } satisfies ChildrenPhaseResult;
+    };
+
+    const logger = { log: () => {} };
+    await executeChildrenCli(
+      { baseDir: workingDir },
+      {
+        MCP_HTTP_HOST: "127.0.0.1",
+        MCP_HTTP_PORT: "9999",
+        MCP_HTTP_PATH: "/mcp",
+      } as NodeJS.ProcessEnv,
+      logger,
+      { runner },
+    );
+
+    expect(capturedOptions).to.not.equal(null);
+    expect(
+      Object.prototype.hasOwnProperty.call(capturedOptions as ChildPhaseOptions, "plan"),
+    ).to.equal(false);
   });
 });

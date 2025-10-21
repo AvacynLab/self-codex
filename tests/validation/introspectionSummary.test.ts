@@ -99,6 +99,23 @@ describe("introspection summary", () => {
     ]);
   });
 
+  it("omits monotonic boundaries when no numeric sequence is observed", () => {
+    const outcomes: JsonRpcCallOutcome[] = [
+      createOutcome("events_subscribe", "events_subscribe", {
+        jsonrpc: "2.0",
+        result: { events: [{ type: "ready" }, { type: "heartbeat" }] },
+      }),
+    ];
+
+    const summary = buildIntrospectionSummary(outcomes);
+
+    const sequence = summary.events?.sequence;
+    expect(sequence?.analysed).to.equal(false);
+    expect(sequence?.monotonic).to.equal(null);
+    expect(Object.prototype.hasOwnProperty.call(sequence ?? {}, "first")).to.equal(false);
+    expect(Object.prototype.hasOwnProperty.call(sequence ?? {}, "last")).to.equal(false);
+  });
+
   it("persists the summary to the report folder", async () => {
     workingDir = await mkdtemp(join(tmpdir(), "codex-summary-"));
     const outcomes: JsonRpcCallOutcome[] = [

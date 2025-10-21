@@ -9,7 +9,12 @@ import {
   type RewriteHistoryEntry,
   type RewriteRule,
 } from "../../graph/rewrite.js";
-import type { NormalisedGraph, GraphAttributeValue } from "../../graph/types.js";
+import type {
+  NormalisedGraph,
+  GraphAttributeValue,
+  GraphNodeRecord,
+  GraphEdgeRecord,
+} from "../../graph/types.js";
 import type { KnowledgeGraph } from "../../knowledge/knowledgeGraph.js";
 import { resolveOperationId } from "../operationIds.js";
 import {
@@ -100,6 +105,75 @@ interface TaskDefinition {
   synthetic?: boolean;
 }
 
+/**
+ * Normalise a task definition by cloning optional fields while omitting any
+ * `undefined` placeholder. The helper centralises the omission logic required
+ * for `exactOptionalPropertyTypes` and keeps every task copy independent.
+ */
+function createTaskDefinition(params: {
+  id: string;
+  dependsOn: Iterable<string>;
+  label?: string;
+  duration?: number;
+  weight?: number;
+  metadata?: Record<string, string | number | boolean> | undefined;
+  synthetic?: boolean | undefined;
+}): TaskDefinition {
+  const definition: TaskDefinition = { id: params.id, dependsOn: dedupeStrings(params.dependsOn) };
+  if (params.label !== undefined) {
+    definition.label = params.label;
+  }
+  if (params.duration !== undefined) {
+    definition.duration = params.duration;
+  }
+  if (params.weight !== undefined) {
+    definition.weight = params.weight;
+  }
+  if (params.metadata && Object.keys(params.metadata).length > 0) {
+    definition.metadata = { ...params.metadata };
+  }
+  if (params.synthetic) {
+    definition.synthetic = true;
+  }
+  return definition;
+}
+
+function cloneTaskDefinition(task: TaskDefinition): TaskDefinition {
+  return createTaskDefinition({
+    id: task.id,
+    dependsOn: [...task.dependsOn],
+    ...(task.label !== undefined ? { label: task.label } : {}),
+    ...(task.duration !== undefined ? { duration: task.duration } : {}),
+    ...(task.weight !== undefined ? { weight: task.weight } : {}),
+    ...(task.metadata ? { metadata: { ...task.metadata } } : {}),
+    ...(task.synthetic ? { synthetic: true } : {}),
+  });
+}
+
+/**
+ * Merge two task definitions while keeping optional fields absent when they
+ * are not explicitly provided by either side.
+ */
+function mergeTaskDefinitions(existing: TaskDefinition, incoming: TaskDefinition): TaskDefinition {
+  const metadata = { ...existing.metadata, ...incoming.metadata } as Record<
+    string,
+    string | number | boolean
+  >;
+  const mergedLabel = incoming.label ?? existing.label;
+  const mergedDuration = incoming.duration ?? existing.duration;
+  const mergedWeight = incoming.weight ?? existing.weight;
+  const synthetic = Boolean(existing.synthetic) && Boolean(incoming.synthetic);
+  return createTaskDefinition({
+    id: existing.id,
+    dependsOn: [...existing.dependsOn, ...incoming.dependsOn],
+    ...(mergedLabel !== undefined ? { label: mergedLabel } : {}),
+    ...(mergedDuration !== undefined ? { duration: mergedDuration } : {}),
+    ...(mergedWeight !== undefined ? { weight: mergedWeight } : {}),
+    ...(Object.keys(metadata).length > 0 ? { metadata } : {}),
+    ...(synthetic ? { synthetic: true } : {}),
+  });
+}
+
 const PRESET_LIBRARY: Record<string, TaskDefinition[]> = {
   lint_test_build_package: [
     { id: "lint", label: "Lint", dependsOn: [], duration: 3, weight: 1 },
@@ -145,28 +219,18 @@ export function handleGraphGenerate(
   for (const task of tasks) {
     const existing = nodes.get(task.id);
     if (existing) {
-      nodes.set(task.id, {
-        ...existing,
-        label: task.label ?? existing.label,
-        dependsOn: dedupeStrings([...existing.dependsOn, ...task.dependsOn]),
-        duration: task.duration ?? existing.duration,
-        weight: task.weight ?? existing.weight,
-        metadata: { ...existing.metadata, ...task.metadata },
-        synthetic: existing.synthetic && task.synthetic,
-      });
+      nodes.set(task.id, mergeTaskDefinitions(existing, task));
     } else {
-      nodes.set(task.id, task);
+      nodes.set(task.id, cloneTaskDefinition(task));
       order.push(task.id);
     }
 
     for (const dep of task.dependsOn) {
       if (!nodes.has(dep)) {
-        nodes.set(dep, {
-          id: dep,
-          label: dep,
-          dependsOn: [],
-          synthetic: true,
-        });
+        nodes.set(
+          dep,
+          createTaskDefinition({ id: dep, label: dep, dependsOn: [], synthetic: true }),
+        );
         order.push(dep);
       }
     }
@@ -210,7 +274,15 @@ export function handleGraphGenerate(
         }
       }
     }
-    descriptor.nodes.push({ id: task.id, label: task.label, attributes });
+    const graphNode = {
+      id: task.id,
+      ...(task.label !== undefined ? { label: task.label } : {}),
+      attributes,
+    } satisfies GraphNodeRecord;
+    // The spread above mirrors the runtime omission logic performed later in
+    // the mutation helpers so the generated graph never materialises
+    // `undefined` labels.
+    descriptor.nodes.push(graphNode);
   }
 
   const edgeSet = new Set<string>();
@@ -496,12 +568,14 @@ export function handleGraphRewriteApply(input: GraphRewriteApplyInput): GraphRew
     if (ruleSet.has("reroute_avoid")) {
       const avoidNodeIds = toTrimmedStringSet(manualOptions?.reroute_avoid_node_ids);
       const avoidLabels = toTrimmedStringSet(manualOptions?.reroute_avoid_labels);
-      rules.push(
-        createRerouteAvoidRule({
-          avoidNodeIds,
-          avoidLabels,
-        }),
-      );
+      // Preserve the ergonomics of optional manual parameters while avoiding
+      // explicit `undefined` assignments that would violate
+      // `exactOptionalPropertyTypes` once enabled.
+      const ruleOptions: Parameters<typeof createRerouteAvoidRule>[0] = {
+        ...(avoidNodeIds ? { avoidNodeIds } : {}),
+        ...(avoidLabels ? { avoidLabels } : {}),
+      };
+      rules.push(createRerouteAvoidRule(ruleOptions));
       rulesInvoked.push("reroute-avoid");
     }
 
@@ -582,14 +656,14 @@ function deriveTasks(input: GraphGenerateInput, context?: GraphGenerationContext
         if (Number.isFinite(task.confidence)) {
           metadata.knowledge_confidence = Number(task.confidence.toFixed(3));
         }
-        return {
+        return createTaskDefinition({
           id: task.id,
-          label: task.label,
           dependsOn: task.dependsOn,
-          duration: task.duration,
-          weight: task.weight,
-          metadata: Object.keys(metadata).length > 0 ? metadata : undefined,
-        } satisfies TaskDefinition;
+          ...(task.label !== undefined ? { label: task.label } : {}),
+          ...(task.duration !== undefined ? { duration: task.duration } : {}),
+          ...(task.weight !== undefined ? { weight: task.weight } : {}),
+          ...(Object.keys(metadata).length > 0 ? { metadata } : {}),
+        });
       });
       const avg = pattern.averageConfidence;
       const baseNote = `knowledge pattern '${pattern.plan}' applied (${pattern.tasks.length} tasks${
@@ -606,26 +680,31 @@ function deriveTasks(input: GraphGenerateInput, context?: GraphGenerationContext
 function normaliseTasksFromInput(input: GraphGenerateInput): TaskDefinition[] | null {
   const tasks: TaskDefinition[] = [];
   if (input.preset) {
-    tasks.push(...(PRESET_LIBRARY[input.preset] ?? []));
+    const preset = PRESET_LIBRARY[input.preset];
+    if (preset) {
+      tasks.push(...preset.map(cloneTaskDefinition));
+    }
   }
   if (!input.tasks) {
     return tasks.length > 0 ? tasks : null;
   }
   const parsed = parseTaskSource(input.tasks);
-  tasks.push(...parsed);
+  tasks.push(...parsed.map(cloneTaskDefinition));
   return tasks;
 }
 
 function parseTaskSource(source: z.infer<typeof TaskSourceSchema>): TaskDefinition[] {
   if (Array.isArray(source)) {
-    return source.map((task) => ({
-      id: task.id,
-      label: task.label,
-      dependsOn: dedupeStrings(task.depends_on ?? []),
-      duration: task.duration,
-      weight: task.weight,
-      metadata: task.metadata,
-    }));
+    return source.map((task) =>
+      createTaskDefinition({
+        id: task.id,
+        dependsOn: dedupeStrings(task.depends_on ?? []),
+        ...(task.label !== undefined ? { label: task.label } : {}),
+        ...(task.duration !== undefined ? { duration: task.duration } : {}),
+        ...(task.weight !== undefined ? { weight: task.weight } : {}),
+        ...(task.metadata ? { metadata: task.metadata } : {}),
+      }),
+    );
   }
   if (typeof source === "string") {
     return parseTextTasks(source);
@@ -664,14 +743,13 @@ function parseTextTasks(source: string): TaskDefinition[] {
     }
 
     const dependsOn = dependencies.length > 0 ? dependencies : previous ? [previous] : [];
-    const deduped = dedupeStrings(dependsOn);
-    tasks.push({
-      id,
-      label: label && label.length > 0 ? label : undefined,
-      dependsOn: deduped,
-      duration: undefined,
-      weight: undefined,
-    });
+    tasks.push(
+      createTaskDefinition({
+        id,
+        dependsOn,
+        ...(label && label.length > 0 ? { label } : {}),
+      }),
+    );
 
     if (!seen.has(id)) {
       seen.add(id);
@@ -758,15 +836,26 @@ function applyAddNode(descriptor: NormalisedGraph, node: z.infer<typeof GraphNod
     if (node.label) {
       mergedAttributes.label = node.label;
     }
-    existing.label = node.label ?? existing.label;
+    if (node.label !== undefined) {
+      existing.label = node.label;
+    }
     existing.attributes = mergedAttributes;
     return { op: "add_node", description: `node '${node.id}' already existed`, changed: false };
   }
-  descriptor.nodes.push({
-    id: node.id,
-    label: node.label,
-    attributes: filterAttributes({ ...node.attributes, ...(node.label ? { label: node.label } : {}) }),
+
+  const nodeAttributes = filterAttributes({
+    ...node.attributes,
+    ...(node.label ? { label: node.label } : {}),
   });
+  // Build the node using conditional spreads so optional properties remain
+  // absent instead of being serialised as `undefined`. This keeps the in-memory
+  // descriptor compatible with `exactOptionalPropertyTypes`.
+  const createdNode = {
+    id: node.id,
+    ...(node.label !== undefined ? { label: node.label } : {}),
+    attributes: nodeAttributes,
+  } satisfies GraphNodeRecord;
+  descriptor.nodes.push(createdNode);
   return { op: "add_node", description: `node '${node.id}' created`, changed: true };
 }
 
@@ -817,22 +906,31 @@ function applyAddEdge(descriptor: NormalisedGraph, edge: z.infer<typeof GraphEdg
     if (edge.label) {
       mergedAttributes.label = edge.label;
     }
-    existing.label = edge.label ?? existing.label;
-    existing.weight = edge.weight ?? existing.weight;
+    if (edge.label !== undefined) {
+      existing.label = edge.label;
+    }
+    if (typeof edge.weight === "number") {
+      existing.weight = edge.weight;
+    }
     existing.attributes = mergedAttributes;
     return { op: "add_edge", description: `edge '${edge.from}' -> '${edge.to}' already existed`, changed: false };
   }
-  descriptor.edges.push({
+
+  const edgeAttributes = filterAttributes({
+    ...edge.attributes,
+    ...(edge.label ? { label: edge.label } : {}),
+    ...(typeof edge.weight === "number" ? { weight: edge.weight } : {}),
+  });
+  // Ensure optional edge fields are omitted when not provided so future strict
+  // optional property checks do not observe lingering `undefined` assignments.
+  const createdEdge = {
     from: edge.from,
     to: edge.to,
-    label: edge.label,
-    weight: edge.weight,
-    attributes: filterAttributes({
-      ...edge.attributes,
-      ...(edge.label ? { label: edge.label } : {}),
-      ...(typeof edge.weight === "number" ? { weight: edge.weight } : {}),
-    }),
-  });
+    ...(edge.label !== undefined ? { label: edge.label } : {}),
+    ...(typeof edge.weight === "number" ? { weight: edge.weight } : {}),
+    attributes: edgeAttributes,
+  } satisfies GraphEdgeRecord;
+  descriptor.edges.push(createdEdge);
   return { op: "add_edge", description: `edge '${edge.from}' -> '${edge.to}' created`, changed: true };
 }
 
@@ -971,7 +1069,13 @@ function applyRewriteOperation(
     case "reroute_avoid": {
       const avoidNodeIds = toTrimmedStringSet(options.reroute_avoid_node_ids);
       const avoidLabels = toTrimmedStringSet(options.reroute_avoid_labels);
-      rule = createRerouteAvoidRule({ avoidNodeIds, avoidLabels });
+      // Build the rule parameters lazily so omitted entries do not leak
+      // `undefined` markers into the options record.
+      const ruleOptions: Parameters<typeof createRerouteAvoidRule>[0] = {
+        ...(avoidNodeIds ? { avoidNodeIds } : {}),
+        ...(avoidLabels ? { avoidLabels } : {}),
+      };
+      rule = createRerouteAvoidRule(ruleOptions);
       break;
     }
     default:

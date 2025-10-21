@@ -388,11 +388,15 @@ export function handleGraphPathsKShortest(
   return withCachedComputation(descriptor, "graph_paths_k_shortest", variant, () => {
     const graph = descriptorToGraphModel(descriptor);
     const costConfig = normaliseCostConfig(input.cost);
-    const results = kShortestPaths(graph, input.from, input.to, input.k, {
+    const pathOptions: Parameters<typeof kShortestPaths>[4] = {
       weightAttribute: input.weight_attribute,
-      costFunction: costConfig,
-      maxDeviation: input.max_deviation,
-    });
+      ...(costConfig ? { costFunction: costConfig } : {}),
+      ...(typeof input.max_deviation === "number" ? { maxDeviation: input.max_deviation } : {}),
+    };
+    // Assemble the options separately to avoid passing explicit `undefined`
+    // values to the graph-forge helpers. This keeps the calls compatible with
+    // `exactOptionalPropertyTypes` while preserving the previous semantics.
+    const results = kShortestPaths(graph, input.from, input.to, input.k, pathOptions);
 
     const formatted: GraphPathsKShortestEntry[] = results.map(
       (entry, index): GraphPathsKShortestEntry => ({
@@ -494,13 +498,17 @@ export function handleGraphPathsConstrained(
   return withCachedComputation(descriptor, "graph_paths_constrained", variant, () => {
     const graph = descriptorToGraphModel(descriptor);
     const costConfig = normaliseCostConfig(input.cost);
-    const constrained = constrainedShortestPath(graph, input.from, input.to, {
+    const constrainedOptions: Parameters<typeof constrainedShortestPath>[3] = {
       weightAttribute: input.weight_attribute,
-      costFunction: costConfig,
       avoidNodes: input.avoid_nodes,
       avoidEdges: input.avoid_edges,
-      maxCost: input.max_cost,
-    });
+      ...(costConfig ? { costFunction: costConfig } : {}),
+      ...(typeof input.max_cost === "number" ? { maxCost: input.max_cost } : {}),
+    };
+    // Avoid propagating undefined placeholders when optional knobs are not set;
+    // this keeps the constrained path helper aligned with stricter optional
+    // property semantics.
+    const constrained = constrainedShortestPath(graph, input.from, input.to, constrainedOptions);
 
     const removedNodeCount = constrained.filteredNodes.length;
     const removedEdgeCount = constrained.filteredEdges.length;
@@ -546,7 +554,7 @@ export function handleGraphPathsConstrained(
         path: [...constrained.path],
         cost: totalCost,
         visited: constrained.visitedOrder,
-        max_cost: input.max_cost,
+        ...(typeof input.max_cost === "number" ? { max_cost: input.max_cost } : {}),
         ...basePayload,
       };
     }
@@ -620,12 +628,15 @@ export function handleGraphCentralityBetweenness(
     () => {
       const graph = descriptorToGraphModel(descriptor);
       const costConfig = normaliseCostConfig(input.cost);
-      const scores = betweennessCentrality(graph, {
+      const centralityOptions: Parameters<typeof betweennessCentrality>[1] = {
         weighted: input.weighted,
         weightAttribute: input.weight_attribute,
-        costFunction: costConfig,
+        ...(costConfig ? { costFunction: costConfig } : {}),
         normalise: input.normalise,
-      });
+      };
+      // The centrality helper also respects optional knobs; only surface them
+      // when explicitly configured to sidestep `undefined` assignments.
+      const scores = betweennessCentrality(graph, centralityOptions);
 
       return scores
         .map((entry): { node: string; score: number } => ({

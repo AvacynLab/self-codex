@@ -447,9 +447,18 @@ export class ChildSupervisor implements ChildSupervisorContract {
     this.defaultArgs = options.defaultArgs ? [...options.defaultArgs] : [];
     this.defaultEnv = { ...(options.defaultEnv ?? {}) };
     this.index = options.index ?? new ChildrenIndex();
-    this.eventBus = options.eventBus;
-    this.resolveChildCorrelation = options.resolveChildCorrelation;
-    this.recordChildLogEntry = options.recordChildLogEntry;
+    if (options.eventBus) {
+      // Optional event bridges are only persisted when a concrete bus is
+      // supplied, keeping strict optional property typing from observing
+      // assignments to `undefined`.
+      this.eventBus = options.eventBus;
+    }
+    if (options.resolveChildCorrelation) {
+      this.resolveChildCorrelation = options.resolveChildCorrelation;
+    }
+    if (options.recordChildLogEntry) {
+      this.recordChildLogEntry = options.recordChildLogEntry;
+    }
     this.fileSystem = options.fileSystem ?? defaultFileSystemGateway;
 
     const configuredIdle = options.idleTimeoutMs ?? 120_000;
@@ -803,13 +812,14 @@ export class ChildSupervisor implements ChildSupervisorContract {
           durationMs: Math.max(0, event.at - runtime.getStatus().startedAt),
         };
         this.exitEvents.set(childId, result);
-        this.index.recordExit(childId, {
+        const exitDetails = {
           code: event.code,
           signal: event.signal,
           at: event.at,
           forced: event.forced,
-          reason: event.error ? event.error.message : undefined,
-        });
+          ...(event.error ? { reason: event.error.message } : {}),
+        };
+        this.index.recordExit(childId, exitDetails);
         const supervisionKey = this.supervisionKeyByChild.get(childId);
         if (supervisionKey) {
           if (
@@ -931,11 +941,11 @@ export class ChildSupervisor implements ChildSupervisorContract {
         args,
         env,
         metadata,
-        manifestExtras: options.manifestExtras,
+        ...(options.manifestExtras ? { manifestExtras: options.manifestExtras } : {}),
         limits: resolvedLimits,
         role: resolvedRole,
         toolsAllow: options.toolsAllow ?? null,
-        spawnRetry: options.spawnRetry,
+        ...(options.spawnRetry ? { spawnRetry: options.spawnRetry } : {}),
       });
 
       const snapshot = this.index.registerChild({

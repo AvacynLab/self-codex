@@ -163,6 +163,13 @@ describe("planning validation runner", () => {
 
     const compileRequest = capturedBodies[0] as { params?: { graph?: { id?: string } } };
     expect(compileRequest?.params?.graph?.id).to.equal("validation_plan_bt");
+
+    const firstCall = result.outcomes[0]?.call;
+    expect(firstCall && Object.prototype.hasOwnProperty.call(firstCall, "captureEvents")).to.equal(
+      false,
+    );
+    const opCancelCall = result.outcomes.find((outcome) => outcome.call.name === "op_cancel");
+    expect(opCancelCall?.call.captureEvents).to.equal(false);
   });
 
   it("aggregates event statistics from pre-recorded outcomes", async () => {

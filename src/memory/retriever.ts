@@ -135,10 +135,15 @@ export class HybridRetriever {
     const minScore = clampScore(options.minScore ?? this.config.minVectorScore);
     const overfetch = Math.min(Math.max(1, Math.ceil(limit * this.config.overfetchFactor)), MAX_OVERFETCH * limit);
 
+    // Only forward tag filters when they are explicitly provided to avoid
+    // leaking `undefined` into the vector memory options once strict optional
+    // property typing is enabled.
     const vectorOptions: VectorMemorySearchOptions = {
       limit: overfetch,
       minScore,
-      requiredTags: options.requiredTags,
+      ...(options.requiredTags && options.requiredTags.length > 0
+        ? { requiredTags: options.requiredTags }
+        : {}),
     };
 
     const started = Date.now();

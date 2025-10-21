@@ -94,8 +94,8 @@ function buildCorrelationHints(options: {
 export function buildChildCognitiveEvents(options: ChildCognitiveEventOptions): ChildCognitiveEvents {
   const baseCorrelation = buildCorrelationHints({
     childId: options.childId,
-    jobId: options.jobId,
-    sources: options.correlationSources,
+    ...(options.jobId !== undefined ? { jobId: options.jobId } : {}),
+    ...(options.correlationSources ? { sources: options.correlationSources } : {}),
   });
 
   const sharedEnvelope = {

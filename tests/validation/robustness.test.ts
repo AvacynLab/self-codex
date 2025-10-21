@@ -156,6 +156,13 @@ describe("robustness validation runner", () => {
     expect(eventsLog).to.contain("plan.timeout");
     expect(httpLog).to.contain("invalid-schema:graph_diff_invalid");
     expect(summaryDocument.checks).to.have.lengthOf(6);
+    // The summary must not retain `null` placeholders for optional sections so
+    // future `exactOptionalPropertyTypes` enforcement can distinguish between
+    // omitted and present values without ambiguity.
+    expect(summaryDocument.idempotency).to.be.an("object");
+    expect(summaryDocument.crashSimulation).to.be.an("object");
+    expect(summaryDocument.timeout).to.be.an("object");
+    expect(Object.values(summaryDocument).includes(null)).to.equal(false);
   });
 
   it("omits timeout summary fields when the backend does not provide them", async () => {
