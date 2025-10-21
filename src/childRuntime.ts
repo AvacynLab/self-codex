@@ -1029,7 +1029,7 @@ export async function startChildRuntime(options: StartChildRuntimeOptions): Prom
         inheritEnv: {},
         extraEnv: env,
         stdio: ["pipe", "pipe", "pipe"],
-        timeoutMs: options.spawnTimeoutMs,
+        ...(options.spawnTimeoutMs !== undefined ? { timeoutMs: options.spawnTimeoutMs } : {}),
       });
     } catch (error) {
       lastError = normaliseSpawnFailure(error);

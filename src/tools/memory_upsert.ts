@@ -179,13 +179,17 @@ export function createMemoryUpsertHandler(context: MemoryUpsertToolContext): Too
 
     const executeUpsert = async (): Promise<MemoryUpsertSnapshot> => {
       try {
-        const document = await context.vectorIndex.upsert({
-          id: parsed.document_id,
+        // Build the vector upsert payload without propagating undefined fields
+        // so the vector memory remains compatible with strict optional typing.
+        const upsertPayload = {
           text: parsed.text,
-          tags: parsed.tags,
-          metadata,
-          createdAt: parsed.created_at,
-        });
+          ...(typeof parsed.document_id === "string" ? { id: parsed.document_id } : {}),
+          ...(Array.isArray(parsed.tags) ? { tags: parsed.tags } : {}),
+          ...(metadata ? { metadata } : {}),
+          ...(typeof parsed.created_at === "number" ? { createdAt: parsed.created_at } : {}),
+        } satisfies Parameters<typeof context.vectorIndex.upsert>[0];
+
+        const document = await context.vectorIndex.upsert(upsertPayload);
         return {
           documentId: document.id,
           createdAt: document.createdAt,

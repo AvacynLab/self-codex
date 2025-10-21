@@ -293,4 +293,45 @@ describe("agents autoscaler correlation", () => {
     expect(correlation.graphId).to.equal("graph-template");
     expect(correlation.nodeId).to.equal("node-template");
   });
+
+  it("omits optional fields when a scale-up attempt fails without a known child", async () => {
+    const clock = new ManualClock();
+
+    /**
+     * Supervisor double that always fails to spawn a child, allowing the test to
+     * assert that the autoscaler does not forward placeholder identifiers when
+     * the downstream runtime never materialises.
+     */
+    class FailingSupervisor implements AutoscalerSupervisor {
+      public readonly childrenIndex = new ChildrenIndex();
+
+      async createChild(): Promise<never> {
+        throw new Error("spawn_failed");
+      }
+
+      async cancel(): Promise<unknown> {
+        throw new Error("cancel should not be invoked");
+      }
+    }
+
+    const events: AutoscalerEventInput[] = [];
+    const autoscaler = new Autoscaler({
+      supervisor: new FailingSupervisor(),
+      now: () => clock.now(),
+      config: { minChildren: 0, maxChildren: 1, cooldownMs: 0 },
+      emitEvent: (event) => {
+        events.push(event);
+      },
+    });
+
+    autoscaler.updateBacklog(10);
+    autoscaler.recordTaskResult({ durationMs: 1_500, success: true });
+    await autoscaler.reconcile(buildContext(clock, 5));
+
+    expect(events).to.have.lengthOf(1);
+    const [event] = events;
+    expect(event.payload.msg).to.equal("scale_up_failed");
+    expect("childId" in event).to.equal(false);
+    expect("correlation" in event).to.equal(false);
+  });
 });

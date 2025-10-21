@@ -50,7 +50,12 @@ let scanInFlight = false;
  */
 function serialiseError(error: unknown): { name: string; message: string; stack?: string } {
   if (error instanceof Error) {
-    return { name: error.name, message: error.message, stack: error.stack };
+    const stack = typeof error.stack === "string" ? error.stack : undefined;
+    return {
+      name: error.name,
+      message: error.message,
+      ...(stack !== undefined ? { stack } : {}),
+    };
   }
   const message = typeof error === "string" ? error : JSON.stringify(error);
   return { name: "Error", message };

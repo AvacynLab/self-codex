@@ -1,5 +1,4 @@
 import { mergeProvenance, normaliseProvenanceList, type Provenance } from "../types/provenance.js";
-import { coerceNullToUndefined } from "../utils/object.js";
 
 /**
  * Options accepted by {@link KnowledgeGraph.exportForRag}. They control the
@@ -410,16 +409,25 @@ export class KnowledgeGraph {
         sources.add(source);
       }
       confidenceSum += confidence;
-      tasks.push({
+      // Only materialise optional task metadata when present so downstream
+      // planners never receive properties explicitly set to `undefined`.
+      const taskRecord: KnowledgePlanTask = {
         id: taskId,
-        label,
         dependsOn: dedupe(dependsOn),
-        duration: coerceNullToUndefined(duration),
-        weight: coerceNullToUndefined(weight),
-        source,
+        source: source ?? null,
         confidence,
         provenance,
-      });
+      };
+      if (label !== undefined) {
+        taskRecord.label = label;
+      }
+      if (duration !== null) {
+        taskRecord.duration = duration;
+      }
+      if (weight !== null) {
+        taskRecord.weight = weight;
+      }
+      tasks.push(taskRecord);
     }
 
     const averageConfidence = tasks.length > 0 ? confidenceSum / tasks.length : null;

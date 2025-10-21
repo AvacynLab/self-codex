@@ -134,12 +134,13 @@ export async function runScenario(
     }
 
     const tokensConsumed = extractTokenUsage(response);
+    const message = stepMessages.length ? stepMessages.join("; ") : errorMessage;
     const result: ScenarioStepResult = {
       step,
       traceId,
       durationMs,
       success: stepSuccess,
-      message: stepMessages.length ? stepMessages.join("; ") : errorMessage,
+      ...(message !== undefined ? { message } : {}),
       textOutput,
       structuredOutput,
       tokensConsumed,
@@ -258,10 +259,11 @@ async function evaluateOracles(params: {
     if (oracle.type === "regex") {
       const regex = new RegExp(oracle.pattern, oracle.flags ?? "m");
       const success = regex.test(params.aggregatedText);
+      const message = success ? undefined : "motif absent du transcript";
       results.push({
         label,
         success,
-        message: success ? undefined : "motif absent du transcript",
+        ...(message !== undefined ? { message } : {}),
       });
       continue;
     }

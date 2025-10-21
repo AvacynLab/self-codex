@@ -95,7 +95,7 @@ export function compileHierGraphToBehaviorTree(graph: HierGraph): CompiledBehavi
       id: node.id,
       node_id: node.id,
       tool,
-      input_key: inputKey,
+      ...(inputKey !== undefined ? { input_key: inputKey } : {}),
     } satisfies BehaviorNodeDefinition;
   });
 

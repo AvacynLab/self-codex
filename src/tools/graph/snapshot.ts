@@ -10,6 +10,7 @@ import {
 } from "../../graph/hypergraph.js";
 import type { GraphEdgeRecord, GraphNodeRecord, NormalisedGraph } from "../../graph/types.js";
 import { resolveOperationId } from "../operationIds.js";
+import { omitUndefinedEntries } from "../../utils/object.js";
 
 /** Allowed attribute value stored on nodes/edges. */
 export const GraphAttributeValueSchema = z.union([
@@ -127,23 +128,31 @@ export function handleGraphHyperExport(input: GraphHyperExportInput): GraphHyper
     id: input.id,
     nodes: input.nodes.map((node) => ({
       id: node.id,
-      label: node.label,
       attributes: node.attributes ?? {},
+      // Preserve optional node metadata only when provided to stay compatible
+      // with `exactOptionalPropertyTypes`.
+      ...omitUndefinedEntries({ label: node.label }),
     })),
     hyperEdges: input.hyper_edges.map((edge) => ({
       id: edge.id,
       sources: [...edge.sources],
       targets: [...edge.targets],
-      label: edge.label,
-      weight: edge.weight,
       attributes: edge.attributes ?? {},
+      // Drop optional descriptors that callers leave undefined so projected
+      // edges never carry explicit `undefined` placeholders.
+      ...omitUndefinedEntries({ label: edge.label, weight: edge.weight }),
     } satisfies HyperEdge)),
-    metadata: input.metadata,
+    ...omitUndefinedEntries({ metadata: input.metadata }),
   } satisfies HyperGraph;
 
-  const projected = projectHyperGraph(hyperGraph, {
-    graphVersion: input.graph_version,
-  });
+  const projected = projectHyperGraph(
+    hyperGraph,
+    omitUndefinedEntries({
+      // The projection helper expects the caller to omit undefined versions, so
+      // we forward the field only when the client surfaced a concrete value.
+      graphVersion: input.graph_version,
+    }),
+  );
 
   return {
     op_id: opId,

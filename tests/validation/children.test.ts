@@ -136,6 +136,18 @@ describe("children validation runner", () => {
     expect(summaryDocument.artefacts.conversation).to.equal(result.conversationPath);
     expect(summaryDocument.events.limitEvents).to.equal(2);
 
+    const spawnCall = result.outcomes[0]?.call ?? {};
+    // Optional field normalisation should not strip the spawn parameters: verify the
+    // runtime still receives the configuration while optional telemetry flags remain absent.
+    expect(Object.prototype.hasOwnProperty.call(spawnCall, "captureEvents")).to.equal(false);
+    expect(spawnCall.method).to.equal("child_spawn_codex");
+    expect(spawnCall.params).to.deep.equal({
+      name: "validation-child",
+      goal: "Collect telemetry for validation stage 5",
+      metadata: { stage: "children-validation" },
+      limits: { cpu_ms: 4000, memory_mb: 128, wall_ms: 120000 },
+    });
+
     const headers = capturedRequests[0]?.init?.headers;
     expect(headers).to.satisfy((value: HeadersInit | undefined) => {
       if (!value) {
@@ -193,6 +205,23 @@ describe("children validation runner", () => {
     expect(
       Object.prototype.hasOwnProperty.call(summaryWithoutTranscript.artefacts, "conversation"),
     ).to.equal(false);
+  });
+
+  it("omits the conversationPath field when no transcript is captured", async () => {
+    globalThis.fetch = (async () => {
+      return new Response(JSON.stringify({ jsonrpc: "2.0", result: {} }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as typeof fetch;
+
+    const result = await runChildrenPhase(runRoot, environment, { calls: [], requireLimitEvent: false });
+    expect(Object.prototype.hasOwnProperty.call(result, "conversationPath")).to.equal(false);
+  });
+
+  it("builds summary contexts without conversation hints when transcripts are missing", () => {
+    const summary = buildChildrenSummary(runRoot, [], { prompt: "Hello" });
+    expect(Object.prototype.hasOwnProperty.call(summary.artefacts, "conversation")).to.equal(false);
   });
 
   it("fails fast when no limit-related events are captured", async () => {

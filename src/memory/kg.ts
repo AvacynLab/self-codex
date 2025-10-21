@@ -29,7 +29,10 @@ export class PersistentKnowledgeGraph {
   private readonly filePath: string;
 
   private constructor(options: PersistentKnowledgeGraphOptions) {
-    this.graph = new KnowledgeGraph({ now: options.now });
+    // Propagate the optional clock only when provided so the constructor stays
+    // compatible with `exactOptionalPropertyTypes`.
+    const graphOptions = options.now ? { now: options.now } : {};
+    this.graph = new KnowledgeGraph(graphOptions);
     // Persist snapshots inside the caller-provided directory while disallowing
     // traversal via the optional `fileName` override. `safePath` mirrors the
     // child workspace guarantees so knowledge artefacts cannot be written

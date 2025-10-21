@@ -7437,7 +7437,12 @@ server.registerTool(
         const correlation = resolveChildEventCorrelation(child.id, { child });
         pushEvent({
           kind: "START",
-          jobId: coerceNullToUndefined(correlation.jobId),
+          // Preserve deterministic event envelopes when optional identifiers are
+          // missing by forwarding explicit `null` values rather than
+          // `undefined`. This keeps the event bus compatible with
+          // `exactOptionalPropertyTypes` while ensuring storage continues to
+          // omit absent identifiers.
+          jobId: correlation.jobId ?? null,
           childId: correlation.childId ?? child.id,
           payload: { name: child.name },
           correlation,
@@ -8132,7 +8137,7 @@ server.registerTool(
 
 
     const correlation = resolveChildEventCorrelation(child_id, { child });
-    const jobId = coerceNullToUndefined(correlation.jobId);
+    const jobId = correlation.jobId ?? null;
 
     pushEvent({
       kind: "PROMPT",
@@ -8211,7 +8216,7 @@ server.registerTool(
     }
 
     const correlation = resolveChildEventCorrelation(child.id, { child });
-    const jobId = coerceNullToUndefined(correlation.jobId);
+    const jobId = correlation.jobId ?? null;
 
     pushEvent({
       kind: "REPLY_PART",
@@ -8230,7 +8235,7 @@ server.registerTool(
 
       graphState.patchChild(child.id, { state: "waiting", waitingFor: null, pendingId: null });
 
-      const citations = collectFinalReplyCitations(jobId ?? null);
+      const citations = collectFinalReplyCitations(jobId);
       const payload: Record<string, unknown> = { final: true };
       if (citations.length > 0) {
         payload.citations = citations.map((entry) => ({ ...entry }));
@@ -8293,9 +8298,9 @@ server.registerTool(
 
 
     const correlation = resolveChildEventCorrelation(child.id, { child });
-    const jobId = coerceNullToUndefined(correlation.jobId);
+    const jobId = correlation.jobId ?? null;
 
-    const citations = collectFinalReplyCitations(jobId ?? null);
+    const citations = collectFinalReplyCitations(jobId);
     const payload: Record<string, unknown> = { length: content.length, final: true };
     if (citations.length > 0) {
       payload.citations = citations.map((entry) => ({ ...entry }));
@@ -8359,7 +8364,7 @@ server.registerTool(
 
 
     const correlation = resolveChildEventCorrelation(child_id, { child });
-    const jobId = coerceNullToUndefined(correlation.jobId);
+    const jobId = correlation.jobId ?? null;
 
     pushEvent({
       kind: "PROMPT",
@@ -8512,7 +8517,7 @@ server.registerTool(
     pushEvent({
       kind: "INFO",
       childId: correlation.childId ?? child.id,
-      jobId: coerceNullToUndefined(correlation.jobId),
+      jobId: correlation.jobId ?? null,
       payload: { rename: { from: oldName, to: input.name } },
       correlation,
     });
@@ -8547,7 +8552,7 @@ server.registerTool(
     pushEvent({
       kind: "INFO",
       childId: correlation.childId ?? child.id,
-      jobId: coerceNullToUndefined(correlation.jobId),
+      jobId: correlation.jobId ?? null,
       payload: { reset: { keep_system: !!input.keep_system } },
       correlation,
     });
@@ -8819,7 +8824,7 @@ server.registerTool(
 
       pushEvent({
         kind: "KILL",
-        jobId: coerceNullToUndefined(correlation.jobId),
+        jobId: correlation.jobId ?? null,
         childId: correlation.childId ?? child_id,
         level: "warn",
         payload: { scope: "child" },
@@ -9330,6 +9335,21 @@ interface JsonRpcObservabilityInput {
   timeoutMs?: number | null;
 }
 
+/**
+ * Helper assembling the JSON-RPC observability payload while omitting the optional
+ * transport tag when the upstream context failed to provide one. Returning the
+ * base object unchanged avoids allocating a copy when no enrichment is needed.
+ */
+export function buildJsonRpcObservabilityInput(
+  base: Omit<JsonRpcObservabilityInput, "transport">,
+  transport: string | null | undefined,
+): JsonRpcObservabilityInput {
+  if (transport === undefined || transport === null) {
+    return base;
+  }
+  return { ...base, transport };
+}
+
 interface JsonRpcErrorSnapshot {
   readonly message: string | null;
   readonly code: string | null;
@@ -9740,18 +9760,22 @@ export async function handleJsonRpc(
     toolName = normalised.toolName ?? resolveJsonRpcToolName(normalised.request.method, normalised.request.params);
   } catch (error) {
     if (error instanceof JsonRpcError) {
-      recordJsonRpcObservability({
-        stage: "error",
-        method,
-        toolName: resolveJsonRpcToolName(typeof req?.method === "string" ? req.method : "", req?.params),
-        requestId: rawId,
-        transport: baseContext?.transport,
-        idempotencyKey: baseContext?.idempotencyKey ?? null,
-        correlation: collectCorrelationFromContext(baseContext),
-        status: "error",
-        errorMessage: error.data?.hint ?? error.message,
-        errorCode: error.code,
-      });
+      recordJsonRpcObservability(
+        buildJsonRpcObservabilityInput(
+          {
+            stage: "error",
+            method,
+            toolName: resolveJsonRpcToolName(typeof req?.method === "string" ? req.method : "", req?.params),
+            requestId: rawId,
+            idempotencyKey: baseContext?.idempotencyKey ?? null,
+            correlation: collectCorrelationFromContext(baseContext),
+            status: "error",
+            errorMessage: error.data?.hint ?? error.message,
+            errorCode: error.code,
+          },
+          baseContext?.transport,
+        ),
+      );
       return toJsonRpc(rawId, error);
     }
     throw error;
@@ -9789,30 +9813,40 @@ export async function handleJsonRpc(
         status: 410,
         meta: { tool: toolName, since: deprecation.metadata.since },
       });
-      recordJsonRpcObservability({
-        stage: "error",
-        method,
-        toolName,
-        requestId: id,
-        transport: runtimeContext?.transport,
-        idempotencyKey: runtimeContext?.idempotencyKey ?? null,
-        correlation,
-        status: "error",
-        timeoutMs: null,
-        errorMessage: removalError.data?.hint ?? removalError.message,
-        errorCode: removalError.code,
-      });
+      recordJsonRpcObservability(
+        buildJsonRpcObservabilityInput(
+          {
+            stage: "error",
+            method,
+            toolName,
+            requestId: id,
+            idempotencyKey: runtimeContext?.idempotencyKey ?? null,
+            correlation,
+            status: "error",
+            timeoutMs: null,
+            errorMessage: removalError.data?.hint ?? removalError.message,
+            errorCode: removalError.code,
+          },
+          runtimeContext?.transport,
+        ),
+      );
       return toJsonRpc(id, removalError);
     }
     logToolDeprecation(logger, "warn", "tool_deprecated_invoked", logPayload);
   }
-  const transport = runtimeContext?.transport ?? null;
+
+  const transport = runtimeContext?.transport;
   const childId = runtimeContext?.childId ?? null;
   const payloadBytes = runtimeContext?.payloadSizeBytes ?? 0;
   const timeoutMs = timeoutBudget.timeoutMs;
+  const recordRuntimeObservability = (
+    payload: Omit<JsonRpcObservabilityInput, "transport">,
+  ): void => {
+    recordJsonRpcObservability(buildJsonRpcObservabilityInput(payload, transport));
+  };
   const processRequest = async (): Promise<JsonRpcResponse> => {
-    try {
-      requestBudget.consume(
+      try {
+        requestBudget.consume(
         {
           toolCalls: 1,
           tokens: estimateTokenUsage(invocationArgs),
@@ -9833,12 +9867,11 @@ export async function handleJsonRpc(
           },
           status: 429,
         });
-        recordJsonRpcObservability({
+        recordRuntimeObservability({
           stage: "error",
           method,
           toolName,
           requestId: id,
-          transport: runtimeContext?.transport,
           idempotencyKey: runtimeContext?.idempotencyKey ?? null,
           correlation,
           status: "error",
@@ -9851,12 +9884,11 @@ export async function handleJsonRpc(
       throw error;
     }
 
-    recordJsonRpcObservability({
+    recordRuntimeObservability({
       stage: "request",
       method,
       toolName,
       requestId: id,
-      transport: runtimeContext?.transport,
       idempotencyKey: runtimeContext?.idempotencyKey ?? null,
       correlation,
       status: "pending",
@@ -9883,12 +9915,11 @@ export async function handleJsonRpc(
       if (errorSnapshot) {
         const normalisedErrorCode =
           typeof errorSnapshot.code === "number" ? errorSnapshot.code : null;
-        recordJsonRpcObservability({
+        recordRuntimeObservability({
           stage: "error",
           method,
           toolName,
           requestId: id,
-          transport: runtimeContext?.transport,
           idempotencyKey: runtimeContext?.idempotencyKey ?? null,
           correlation,
           status: "error",
@@ -9898,12 +9929,11 @@ export async function handleJsonRpc(
           timeoutMs,
         });
       } else {
-        recordJsonRpcObservability({
+        recordRuntimeObservability({
           stage: "response",
           method,
           toolName,
           requestId: id,
-          transport: runtimeContext?.transport,
           idempotencyKey: runtimeContext?.idempotencyKey ?? null,
           correlation,
           status: "ok",
@@ -9938,12 +9968,11 @@ export async function handleJsonRpc(
             },
             status: 429,
           });
-          recordJsonRpcObservability({
+          recordRuntimeObservability({
             stage: "error",
             method,
             toolName,
             requestId: id,
-            transport: runtimeContext?.transport,
             idempotencyKey: runtimeContext?.idempotencyKey ?? null,
             correlation,
             status: "error",
@@ -9970,12 +9999,11 @@ export async function handleJsonRpc(
       }
       correlation = mergeCorrelationSnapshots(correlation, collectCorrelationFromUnknown(error));
 
-      recordJsonRpcObservability({
+      recordRuntimeObservability({
         stage: "error",
         method,
         toolName,
         requestId: id,
-        transport: runtimeContext?.transport,
         idempotencyKey: runtimeContext?.idempotencyKey ?? null,
         correlation,
         status: "error",
@@ -10008,12 +10036,11 @@ export async function handleJsonRpc(
             },
             status: 429,
           });
-          recordJsonRpcObservability({
+          recordRuntimeObservability({
             stage: "error",
             method,
             toolName,
             requestId: id,
-            transport: runtimeContext?.transport,
             idempotencyKey: runtimeContext?.idempotencyKey ?? null,
             correlation,
             status: "error",

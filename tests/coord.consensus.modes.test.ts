@@ -3,8 +3,10 @@ import { expect } from "chai";
 
 import {
   majority,
+  normaliseConsensusOptions,
   quorum,
   weighted,
+  type ConsensusConfig,
   type ConsensusVote,
 } from "../src/coord/consensus.js";
 
@@ -102,5 +104,21 @@ describe("coordination consensus helpers", () => {
     expect(weightedDecision.mode).to.equal("weighted");
     expect(weightedDecision.threshold).to.equal(2);
     expect(weightedDecision.satisfied).to.equal(false);
+  });
+
+  it("normalises consensus configuration without preserving undefined fields", () => {
+    const config: ConsensusConfig = {
+      mode: "weighted",
+      weights: undefined,
+      prefer_value: undefined,
+      tie_breaker: "null",
+      quorum: undefined,
+    };
+
+    const options = normaliseConsensusOptions(config);
+    expect(Object.prototype.hasOwnProperty.call(options, "weights")).to.equal(false);
+    expect(Object.prototype.hasOwnProperty.call(options, "preferValue")).to.equal(false);
+    expect(options.tieBreaker).to.equal("null");
+    expect(Object.prototype.hasOwnProperty.call(options, "quorum")).to.equal(false);
   });
 });

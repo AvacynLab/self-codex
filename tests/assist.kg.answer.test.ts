@@ -3,6 +3,7 @@ import { expect } from "chai";
 import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import sinon from "sinon";
 
 import { KnowledgeGraph } from "../src/knowledge/knowledgeGraph.js";
 import {
@@ -16,6 +17,9 @@ import { HybridRetriever } from "../src/memory/retriever.js";
 
 /** Unit tests covering the knowledge assistant helper. */
 describe("knowledge assist answers", () => {
+  afterEach(() => {
+    sinon.restore();
+  });
   it("synthesises an answer grounded in the knowledge graph", async () => {
     const knowledgeGraph = new KnowledgeGraph({ now: () => 0 });
     const logger = new StructuredLogger({ onEntry: () => undefined });
@@ -45,6 +49,7 @@ describe("knowledge assist answers", () => {
     expect(result.rag_evidence).to.have.length(0);
     expect(result.citations.some((entry) => entry.type === "kg")).to.equal(true);
     expect(result.coverage.knowledge_hits).to.equal(result.knowledge_evidence.length);
+    expect(Object.prototype.hasOwnProperty.call(result, "context")).to.equal(false);
   });
 
   describe("with rag fallback", () => {
@@ -108,5 +113,28 @@ describe("knowledge assist answers", () => {
       expect(result.citations.some((entry) => entry.type === "rag")).to.equal(true);
       expect(result.answer).to.contain("alerte rollback");
     });
+  });
+
+  it("omits undefined retriever search options when domain tags are absent", async () => {
+    const knowledgeGraph = new KnowledgeGraph({ now: () => 0 });
+    const logger = new StructuredLogger({ onEntry: () => undefined });
+    const retriever = { search: sinon.stub().resolves([]) } as unknown as HybridRetriever;
+
+    const context: KnowledgeToolContext = {
+      knowledgeGraph,
+      logger,
+      rag: {
+        getRetriever: async () => retriever,
+        defaultDomainTags: [],
+        minScore: 0.2,
+      },
+    };
+
+    const parsed = KgAssistInputSchema.parse({ query: "Quelle est la politique de sauvegarde ?", limit: 2 });
+    await handleKgAssist(context, parsed);
+
+    sinon.assert.calledOnce(retriever.search as sinon.SinonStub);
+    const [, options] = (retriever.search as sinon.SinonStub).firstCall.args as [string, Record<string, unknown>];
+    expect(Object.prototype.hasOwnProperty.call(options, "requiredTags")).to.equal(false);
   });
 });

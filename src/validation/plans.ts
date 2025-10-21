@@ -258,12 +258,14 @@ export async function runPlanPhase(
       body: requestBody,
     });
 
+    // Avoid serialising `undefined` optional fields so future strict optional
+    // typing treats recorded artefacts as compliant.
     const executedCall: ExecutedPlanCall = {
       scenario: spec.scenario,
       name: spec.name,
       method: spec.method,
-      captureEvents: spec.captureEvents,
-      params,
+      ...(spec.captureEvents !== undefined ? { captureEvents: spec.captureEvents } : {}),
+      ...(params !== undefined ? { params } : {}),
     };
 
     await appendHttpCheckArtefactsToFiles(runRoot, PLAN_TARGETS, check, PLAN_JSONL_FILES.log);

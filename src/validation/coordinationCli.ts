@@ -13,6 +13,7 @@ import {
   runCoordinationPhase,
   type CoordinationPhaseOptions,
   type CoordinationPhaseResult,
+  type DefaultCoordinationOptions,
 } from "./coordination.js";
 
 /** CLI flags recognised by the coordination validation workflow. */
@@ -111,25 +112,27 @@ export async function executeCoordinationCli(
   logger.log(`→ Coordination validation run: ${runId} (${runRoot})`);
   logger.log(`   Target: ${environment.baseUrl}`);
 
-  const defaultCallsOverrides = {
-    blackboardKey: options.blackboardKey,
-    stigDomain: options.stigDomain,
-    contractTopic: options.contractTopic,
-    consensusTopic: options.consensusTopic,
+  const basePhaseOptions = overrides.phaseOptions ?? {};
+  const baseCoordination = normaliseCoordinationOptions(basePhaseOptions.coordination);
+  const cliOverrides = buildCliCoordinationOverrides(options);
+  const mergedCoordination = mergeCoordinationOptions(baseCoordination, cliOverrides);
+  const effectiveCoordination =
+    mergedCoordination && Object.keys(mergedCoordination).length > 0
+      ? mergedCoordination
+      : undefined;
+
+  const baseOptions: CoordinationPhaseOptions = {
+    ...(basePhaseOptions.calls ? { calls: basePhaseOptions.calls } : {}),
+    ...(effectiveCoordination ? { coordination: effectiveCoordination } : {}),
   };
 
-  const basePhaseOptions = overrides.phaseOptions ?? {};
-  const hasCliOverrides = Object.values(defaultCallsOverrides).some((value) => value);
   const phaseOptions: CoordinationPhaseOptions =
-    !basePhaseOptions.calls && hasCliOverrides
+    !basePhaseOptions.calls && effectiveCoordination && !baseOptions.calls
       ? {
-          ...basePhaseOptions,
-          calls: buildDefaultCoordinationCalls({
-            ...(basePhaseOptions.coordination ?? {}),
-            ...defaultCallsOverrides,
-          }),
+          ...baseOptions,
+          calls: buildDefaultCoordinationCalls(effectiveCoordination),
         }
-      : basePhaseOptions;
+      : baseOptions;
 
   const runner = overrides.runner ?? runCoordinationPhase;
   const result = await runner(runRoot, environment, phaseOptions);
@@ -157,4 +160,73 @@ export async function executeCoordinationCli(
   );
 
   return { runRoot, result };
+}
+
+/**
+ * Normalises coordination options by removing properties explicitly set to
+ * `undefined`. Returning `undefined` when no fields remain helps downstream
+ * spreads avoid leaking `undefined` once `exactOptionalPropertyTypes` is
+ * enabled.
+ */
+function normaliseCoordinationOptions(
+  options: DefaultCoordinationOptions | undefined,
+): DefaultCoordinationOptions | undefined {
+  if (!options) {
+    return undefined;
+  }
+
+  let cleaned: DefaultCoordinationOptions | undefined;
+  if (options.blackboardKey !== undefined) {
+    cleaned = { ...(cleaned ?? {}), blackboardKey: options.blackboardKey };
+  }
+  if (options.stigDomain !== undefined) {
+    cleaned = { ...(cleaned ?? {}), stigDomain: options.stigDomain };
+  }
+  if (options.contractTopic !== undefined) {
+    cleaned = { ...(cleaned ?? {}), contractTopic: options.contractTopic };
+  }
+  if (options.consensusTopic !== undefined) {
+    cleaned = { ...(cleaned ?? {}), consensusTopic: options.consensusTopic };
+  }
+
+  return cleaned;
+}
+
+/**
+ * Builds CLI overrides only when flags were provided, ensuring we do not
+ * forward placeholder `undefined` values to the coordination helpers.
+ */
+function buildCliCoordinationOverrides(
+  options: CoordinationCliOptions,
+): DefaultCoordinationOptions | undefined {
+  let overrides: DefaultCoordinationOptions | undefined;
+  if (options.blackboardKey !== undefined) {
+    overrides = { ...(overrides ?? {}), blackboardKey: options.blackboardKey };
+  }
+  if (options.stigDomain !== undefined) {
+    overrides = { ...(overrides ?? {}), stigDomain: options.stigDomain };
+  }
+  if (options.contractTopic !== undefined) {
+    overrides = { ...(overrides ?? {}), contractTopic: options.contractTopic };
+  }
+  if (options.consensusTopic !== undefined) {
+    overrides = { ...(overrides ?? {}), consensusTopic: options.consensusTopic };
+  }
+
+  return overrides;
+}
+
+/**
+ * Merges the base coordination options with CLI overrides while preserving the
+ * omission of unset properties. The helper keeps the behaviour stable even
+ * when both inputs are `undefined`.
+ */
+function mergeCoordinationOptions(
+  base: DefaultCoordinationOptions | undefined,
+  overrides: DefaultCoordinationOptions | undefined,
+): DefaultCoordinationOptions | undefined {
+  if (!base && !overrides) {
+    return undefined;
+  }
+  return { ...(base ?? {}), ...(overrides ?? {}) };
 }

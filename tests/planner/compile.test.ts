@@ -205,6 +205,31 @@ describe("planner compilation", () => {
     expect(guardKeys).to.include(`${GUARD_VARIABLE_PREFIX}.execute.prep_done`);
   });
 
+  it("omits behaviour-tree input bindings when the planner task has no payload", () => {
+    const plan = parsePlannerPlan({
+      id: "optional-input",
+      tasks: [
+        {
+          id: "noop-task",
+          tool: "noop",
+          // Intentionally omit `input` so the compiled node should not expose an
+          // `input_key` field once optional properties are enforced.
+        },
+      ],
+    });
+
+    const compilation = compilePlannerPlan(plan);
+    const rootNode = compilation.behaviorTree.root;
+
+    expect(rootNode.type).to.equal("task");
+    if (rootNode.type !== "task") {
+      throw new Error("expected a single task node when compiling a trivial plan");
+    }
+
+    expect(Object.prototype.hasOwnProperty.call(rootNode, "input_key"))
+      .to.equal(false, "input_key should be omitted when the planner task has no payload");
+  });
+
   it("compiles and registers plan lifecycle runs", () => {
     const { context, events } = buildContext();
     const input = createSamplePlan();

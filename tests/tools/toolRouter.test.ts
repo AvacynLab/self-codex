@@ -116,6 +116,30 @@ describe("ToolRouter", () => {
     expect(after.reason).to.include("fallback");
   });
 
+  it("omits latency telemetry when outcomes have no measurement", () => {
+    const router = new ToolRouter({ acceptanceThreshold: 0.2 });
+    router.register(
+      buildManifest({
+        name: "artifact_preview",
+        category: "artifact",
+        tags: ["lecture"],
+      }),
+    );
+
+    let observed: unknown;
+    router.on("outcome", (payload) => {
+      // Capture the structured telemetry forwarded to observers so we can check
+      // optional fields remain omitted when absent.
+      observed = payload;
+    });
+
+    router.recordOutcome({ tool: "artifact_preview", success: true });
+
+    expect(observed).to.not.equal(undefined);
+    expect(Object.prototype.hasOwnProperty.call(observed as Record<string, unknown>, "latencyMs"))
+      .to.equal(false, "latencyMs should be omitted when the caller does not provide a measurement");
+  });
+
   it("leverages embedding similarity when heuristics are ambiguous", () => {
     const router = new ToolRouter({ acceptanceThreshold: 0.3 });
     router.register(

@@ -1,0 +1,950 @@
+
+> mcp-self-fork-orchestrator@1.3.0 typecheck
+> tsc -p tsconfig.tests.json --noEmit --extendedDiagnostics --pretty false
+
+src/agents/autoscaler.ts(189,5): error TS2412: Type 'StructuredLogger | undefined' is not assignable to type 'StructuredLogger' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the type of the target.
+  Type 'undefined' is not assignable to type 'StructuredLogger'.
+src/agents/autoscaler.ts(193,5): error TS2412: Type 'CreateChildOptions | undefined' is not assignable to type 'CreateChildOptions' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the type of the target.
+  Type 'undefined' is not assignable to type 'CreateChildOptions'.
+src/agents/autoscaler.ts(195,5): error TS2412: Type '((event: AutoscalerEventInput) => void) | undefined' is not assignable to type '(event: AutoscalerEventInput) => void' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the type of the target.
+  Type 'undefined' is not assignable to type '(event: AutoscalerEventInput) => void'.
+src/agents/autoscaler.ts(293,20): error TS2379: Argument of type '{ level: AutoscalerEventLevel; childId: string | undefined; payload: AutoscalerEventPayload; correlation: EventCorrelationHints; }' is not assignable to parameter of type 'AutoscalerEventInput' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'childId' are incompatible.
+    Type 'string | undefined' is not assignable to type 'string'.
+      Type 'undefined' is not assignable to type 'string'.
+src/agents/autoscaler.ts(418,25): error TS2379: Argument of type '{ level: "info"; childId: string | undefined; payload: { msg: string; reason: string; backlog: number; samples: number; }; correlation: EventCorrelationHints; }' is not assignable to parameter of type '{ level: AutoscalerEventLevel; childId?: string; payload: AutoscalerEventPayload; correlation?: EventCorrelationHints | null; }' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'childId' are incompatible.
+    Type 'string | undefined' is not assignable to type 'string'.
+      Type 'undefined' is not assignable to type 'string'.
+src/agents/autoscaler.ts(435,25): error TS2379: Argument of type '{ level: "error"; childId: string | undefined; payload: { msg: string; reason: string; backlog: number; samples: number; message: string; }; correlation: EventCorrelationHints; }' is not assignable to parameter of type '{ level: AutoscalerEventLevel; childId?: string; payload: AutoscalerEventPayload; correlation?: EventCorrelationHints | null; }' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'childId' are incompatible.
+    Type 'string | undefined' is not assignable to type 'string'.
+      Type 'undefined' is not assignable to type 'string'.
+src/agents/supervisor.ts(113,5): error TS2412: Type 'StructuredLogger | undefined' is not assignable to type 'StructuredLogger' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the type of the target.
+  Type 'undefined' is not assignable to type 'StructuredLogger'.
+src/bridge/fsBridge.ts(53,5): error TS2375: Type '{ name: string; message: string; stack: string | undefined; }' is not assignable to type '{ name: string; message: string; stack?: string; }' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'stack' are incompatible.
+    Type 'string | undefined' is not assignable to type 'string'.
+      Type 'undefined' is not assignable to type 'string'.
+src/childRuntime.ts(1024,42): error TS2379: Argument of type '{ command: string; args: string[]; cwd: string; allowedEnvKeys: string[]; inheritEnv: {}; extraEnv: NodeJS.ProcessEnv; stdio: "pipe"[]; timeoutMs: number | undefined; }' is not assignable to parameter of type 'SpawnChildProcessOptions' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'timeoutMs' are incompatible.
+    Type 'number | undefined' is not assignable to type 'number'.
+      Type 'undefined' is not assignable to type 'number'.
+src/children/api.ts(996,11): error TS2375: Type '{ childId: string | undefined; command: string | undefined; args: string[] | undefined; env: Record<string, string> | undefined; metadata: Record<string, unknown> | undefined; ... 4 more ...; readyTimeoutMs: number | undefined; }' is not assignable to type 'CreateChildOptions' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'childId' are incompatible.
+    Type 'string | undefined' is not assignable to type 'string'.
+      Type 'undefined' is not assignable to type 'string'.
+src/children/api.ts(1526,48): error TS2379: Argument of type '{ action: string; payload: unknown; metadata: Record<string, unknown>; timeoutMs: number | undefined; }' is not assignable to parameter of type '{ action: string; payload: unknown; metadata?: Record<string, unknown>; timeoutMs?: number; }' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'timeoutMs' are incompatible.
+    Type 'number | undefined' is not assignable to type 'number'.
+      Type 'undefined' is not assignable to type 'number'.
+src/children/api.ts(1776,59): error TS2379: Argument of type '{ afterSequence: number | undefined; limit: number | undefined; streams: ("stdout" | "stderr")[] | undefined; }' is not assignable to parameter of type 'ChildMessageStreamOptions' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'afterSequence' are incompatible.
+    Type 'number | undefined' is not assignable to type 'number'.
+      Type 'undefined' is not assignable to type 'number'.
+src/children/api.ts(1798,68): error TS2379: Argument of type '{ signal: Signal | undefined; timeoutMs: number | undefined; }' is not assignable to parameter of type '{ signal?: Signal; timeoutMs?: number; }' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'timeoutMs' are incompatible.
+    Type 'number | undefined' is not assignable to type 'number'.
+      Type 'undefined' is not assignable to type 'number'.
+src/children/api.ts(1813,66): error TS2379: Argument of type '{ timeoutMs: number | undefined; }' is not assignable to parameter of type '{ timeoutMs?: number; }' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'timeoutMs' are incompatible.
+    Type 'number | undefined' is not assignable to type 'number'.
+      Type 'undefined' is not assignable to type 'number'.
+src/children/supervisionStrategy.ts(135,5): error TS2375: Type '{ breaker: CircuitBreakerOptions; minBackoffMs: number; maxBackoffMs: number; backoffFactor: number; maxRestartsPerMinute: number | null; now: () => number; sleep: (ms: number) => Promise<void>; onEvent: ((event: SupervisorEvent) => void) | undefined; }' is not assignable to type '{ breaker: CircuitBreakerOptions; minBackoffMs: number; maxBackoffMs: number; backoffFactor: number; maxRestartsPerMinute: number | null; now: () => number; sleep: (ms: number) => Promise<...>; onEvent?: (event: SupervisorEvent) => void; }' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'onEvent' are incompatible.
+    Type '((event: SupervisorEvent) => void) | undefined' is not assignable to type '(event: SupervisorEvent) => void'.
+      Type 'undefined' is not assignable to type '(event: SupervisorEvent) => void'.
+src/children/supervisor.ts(450,5): error TS2412: Type 'EventBus | undefined' is not assignable to type 'EventBus' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the type of the target.
+  Type 'undefined' is not assignable to type 'EventBus'.
+src/children/supervisor.ts(451,5): error TS2412: Type '((context: ChildRuntimeBridgeContext) => void | EventCorrelationHints) | undefined' is not assignable to type '(context: ChildRuntimeBridgeContext) => void | EventCorrelationHints' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the type of the target.
+  Type 'undefined' is not assignable to type '(context: ChildRuntimeBridgeContext) => void | EventCorrelationHints'.
+src/children/supervisor.ts(452,5): error TS2412: Type '((childId: string, entry: ChildLogEventSnapshot) => void) | undefined' is not assignable to type '(childId: string, entry: ChildLogEventSnapshot) => void' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the type of the target.
+  Type 'undefined' is not assignable to type '(childId: string, entry: ChildLogEventSnapshot) => void'.
+src/children/supervisor.ts(806,40): error TS2379: Argument of type '{ code: number | null; signal: Signal | null; at: number; forced: boolean; reason: string | undefined; }' is not assignable to parameter of type 'ChildExitDetails' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'reason' are incompatible.
+    Type 'string | undefined' is not assignable to type 'string'.
+      Type 'undefined' is not assignable to type 'string'.
+src/children/supervisor.ts(927,41): error TS2379: Argument of type '{ childId: string; childrenRoot: string; command: string; args: string[]; env: NodeJS.ProcessEnv; metadata: Record<string, unknown>; manifestExtras: Record<string, unknown> | undefined; limits: ChildRuntimeLimits | null; role: string | null; toolsAllow: string[] | null; spawnRetry: ChildSpawnRetryOptions | undefined...' is not assignable to parameter of type 'StartChildRuntimeOptions' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'manifestExtras' are incompatible.
+    Type 'Record<string, unknown> | undefined' is not assignable to type 'Record<string, unknown>'.
+      Type 'undefined' is not assignable to type 'Record<string, unknown>'.
+src/coord/consensus.ts(315,3): error TS2375: Type '{ weights: Record<string, number>; preferValue: string | undefined; tieBreaker: "null" | "first" | "prefer"; quorum: number | undefined; }' is not assignable to type 'ConsensusOptions & { quorum?: number; }' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Type '{ weights: Record<string, number>; preferValue: string | undefined; tieBreaker: "null" | "first" | "prefer"; quorum: number | undefined; }' is not assignable to type '{ quorum?: number; }' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+    Types of property 'quorum' are incompatible.
+      Type 'number | undefined' is not assignable to type 'number'.
+        Type 'undefined' is not assignable to type 'number'.
+src/coord/stigmergy.ts(214,5): error TS2412: Type 'number | undefined' is not assignable to type 'number' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the type of the target.
+  Type 'undefined' is not assignable to type 'number'.
+src/eval/runner.ts(137,11): error TS2375: Type '{ step: ScenarioStep; traceId: string | null; durationMs: number; success: boolean; message: string | undefined; textOutput: string; structuredOutput: {} | null; tokensConsumed: number | null; }' is not assignable to type 'ScenarioStepResult' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'message' are incompatible.
+    Type 'string | undefined' is not assignable to type 'string'.
+      Type 'undefined' is not assignable to type 'string'.
+src/eval/runner.ts(261,20): error TS2379: Argument of type '{ label: string; success: boolean; message: string | undefined; }' is not assignable to parameter of type 'OracleEvaluationResult' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'message' are incompatible.
+    Type 'string | undefined' is not assignable to type 'string'.
+      Type 'undefined' is not assignable to type 'string'.
+src/eval/scenario.ts(188,3): error TS2375: Type '{ tags: string[]; id: string; steps: { id: string; tool: string; arguments: Record<string, unknown>; expect: { match?: string | { pattern: string; flags?: string | undefined; } | undefined; success?: boolean | undefined; notMatch?: string | ... 1 more ... | undefined; minItems?: number | undefined; maxItems?: number...' is not assignable to type 'EvaluationScenario' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'featureOverrides' are incompatible.
+    Type 'Record<string, unknown> | undefined' is not assignable to type 'Record<string, unknown>'.
+      Type 'undefined' is not assignable to type 'Record<string, unknown>'.
+src/eventStore.ts(183,11): error TS2375: Type '{ seq: number; ts: number; kind: EventKind; level: EventLevel; source: EventSource; jobId: string | undefined; childId: string | undefined; payload: unknown; provenance: Provenance[]; }' is not assignable to type 'OrchestratorEvent' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'jobId' are incompatible.
+    Type 'string | undefined' is not assignable to type 'string'.
+      Type 'undefined' is not assignable to type 'string'.
+src/eventStore.ts(267,34): error TS2379: Argument of type '{ reverse: boolean | undefined; limit: number | undefined; }' is not assignable to parameter of type '{ reverse?: boolean; limit?: number; }' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'reverse' are incompatible.
+    Type 'boolean | undefined' is not assignable to type 'boolean'.
+      Type 'undefined' is not assignable to type 'boolean'.
+src/eventStore.ts(301,34): error TS2379: Argument of type '{ reverse: boolean | undefined; limit: number | undefined; }' is not assignable to parameter of type '{ reverse?: boolean; limit?: number; }' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'reverse' are incompatible.
+    Type 'boolean | undefined' is not assignable to type 'boolean'.
+      Type 'undefined' is not assignable to type 'boolean'.
+src/events/bus.ts(261,7): error TS2412: Type 'undefined' is not assignable to type '(result: IteratorResult<EventEnvelope<EventMessage>, void>) => void' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the type of the target.
+src/events/bus.ts(272,7): error TS2412: Type 'undefined' is not assignable to type '(result: IteratorResult<EventEnvelope<EventMessage>, void>) => void' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the type of the target.
+src/events/bus.ts(320,11): error TS2375: Type '{ seq: number; ts: number; cat: EventCategory; level: EventLevel; jobId: string | null; runId: string | null; opId: string | null; graphId: string | null; nodeId: string | null; ... 6 more ...; data: EventPayload<...> | undefined; }' is not assignable to type 'EventEnvelope<M>' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'kind' are incompatible.
+    Type 'string | undefined' is not assignable to type 'string'.
+      Type 'undefined' is not assignable to type 'string'.
+src/events/cognitive.ts(95,49): error TS2379: Argument of type '{ childId: string; jobId: string | null | undefined; sources: unknown[] | undefined; }' is not assignable to parameter of type '{ childId: string; jobId?: string | null; sources?: unknown[]; }' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'jobId' are incompatible.
+    Type 'string | null | undefined' is not assignable to type 'string | null'.
+      Type 'undefined' is not assignable to type 'string | null'.
+src/executor/bt/compiler.ts(86,9): error TS2322: Type '{ type: "task"; id: string; node_id: string; tool: string; input_key: string | undefined; }[]' is not assignable to type 'BehaviorNodeDefinition[]'.
+  Type '{ type: "task"; id: string; node_id: string; tool: string; input_key: string | undefined; }' is not assignable to type 'BehaviorNodeDefinition'.
+    Type '{ type: "task"; id: string; node_id: string; tool: string; input_key: string | undefined; }' is not assignable to type 'TaskDefinition' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+      Types of property 'input_key' are incompatible.
+        Type 'string | undefined' is not assignable to type 'string'.
+          Type 'undefined' is not assignable to type 'string'.
+src/executor/bt/compiler.ts(99,7): error TS1360: Type '{ type: "task"; id: string; node_id: string; tool: string; input_key: string | undefined; }' does not satisfy the expected type 'BehaviorNodeDefinition'.
+  Type '{ type: "task"; id: string; node_id: string; tool: string; input_key: string | undefined; }' is not assignable to type 'TaskDefinition' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+    Types of property 'input_key' are incompatible.
+      Type 'string | undefined' is not assignable to type 'string'.
+        Type 'undefined' is not assignable to type 'string'.
+src/executor/bt/interpreter.ts(45,11): error TS2375: Type '{ invokeTool: ToolInvoker; now: () => number; wait: (ms: number) => Promise<void>; variables: Record<string, unknown>; cancellationSignal: AbortSignal | undefined; isCancelled: (() => boolean) | undefined; throwIfCancelled: (() => void) | undefined; recommendTimeout: ((category: string, complexityScore?: number, fal...' is not assignable to type 'TickRuntime' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'cancellationSignal' are incompatible.
+    Type 'AbortSignal | undefined' is not assignable to type 'AbortSignal'.
+      Type 'undefined' is not assignable to type 'AbortSignal'.
+src/executor/bt/interpreter.ts(162,50): error TS2379: Argument of type '{ inputKey: string | undefined; schema: z.ZodTypeAny; }' is not assignable to parameter of type '{ inputKey?: string; schema?: ZodTypeAny; }' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'inputKey' are incompatible.
+    Type 'string | undefined' is not assignable to type 'string'.
+      Type 'undefined' is not assignable to type 'string'.
+src/executor/bt/nodes.ts(711,5): error TS2412: Type 'string | undefined' is not assignable to type 'string' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the type of the target.
+  Type 'undefined' is not assignable to type 'string'.
+src/executor/bt/nodes.ts(712,5): error TS2412: Type 'ZodTypeAny | undefined' is not assignable to type 'ZodTypeAny' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the type of the target.
+  Type 'undefined' is not assignable to type 'ZodType<any, any, any>'.
+src/executor/bt/types.ts(181,14): error TS2322: Type 'ZodLazy<ZodEffects<ZodDiscriminatedUnion<"type", [ZodObject<{ type: ZodLiteral<"sequence">; id: ZodOptional<ZodString>; children: ZodArray<ZodType<BehaviorNodeDefinition, ZodTypeDef, BehaviorNodeDefinition>, "many">; }, "strip", ZodTypeAny, { ...; }, { ...; }>, ... 6 more ..., ZodObject<...>]>, { ...; } | ... 6 more...' is not assignable to type 'ZodType<BehaviorNodeDefinition, ZodTypeDef, BehaviorNodeDefinition>'.
+  Types of property '_type' are incompatible.
+    Type '{ children: BehaviorNodeDefinition[]; type: "sequence"; id?: string | undefined; } | { children: BehaviorNodeDefinition[]; type: "selector"; id?: string | undefined; } | ... 5 more ... | { ...; }' is not assignable to type 'BehaviorNodeDefinition' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+      Type '{ children: BehaviorNodeDefinition[]; type: "sequence"; id?: string | undefined; }' is not assignable to type 'BehaviorNodeDefinition' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+        Type '{ children: BehaviorNodeDefinition[]; type: "sequence"; id?: string | undefined; }' is not assignable to type 'SequenceDefinition' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+          Types of property 'id' are incompatible.
+            Type 'string | undefined' is not assignable to type 'string'.
+              Type 'undefined' is not assignable to type 'string'.
+src/executor/loop.ts(206,5): error TS2412: Type 'number | undefined' is not assignable to type 'number' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the type of the target.
+  Type 'undefined' is not assignable to type 'number'.
+src/executor/loop.ts(207,5): error TS2412: Type '((error: unknown) => void) | undefined' is not assignable to type '(error: unknown) => void' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the type of the target.
+  Type 'undefined' is not assignable to type '(error: unknown) => void'.
+src/executor/loop.ts(214,5): error TS2412: Type '((details: LoopAfterTickDetails) => void) | undefined' is not assignable to type '(details: LoopAfterTickDetails) => void' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the type of the target.
+  Type 'undefined' is not assignable to type '(details: LoopAfterTickDetails) => void'.
+src/executor/loop.ts(328,11): error TS2375: Type '{ startedAt: number; now: () => number; tickIndex: number; signal: AbortSignal; budget: CooperativeBudget | undefined; }' is not assignable to type 'LoopTickContext' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'budget' are incompatible.
+    Type 'CooperativeBudget | undefined' is not assignable to type 'CooperativeBudget'.
+      Type 'undefined' is not assignable to type 'CooperativeBudget'.
+src/executor/loop.ts(360,33): error TS2379: Argument of type '{ id: string; status: "error"; durationMs: number; errorMessage: string | undefined; }' is not assignable to parameter of type 'LoopReconcilerRun' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'errorMessage' are incompatible.
+    Type 'string | undefined' is not assignable to type 'string'.
+      Type 'undefined' is not assignable to type 'string'.
+src/executor/planLifecycle.ts(97,5): error TS2412: Type 'string | undefined' is not assignable to type 'string' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the type of the target.
+  Type 'undefined' is not assignable to type 'string'.
+src/executor/reactiveScheduler.ts(260,5): error TS2412: Type '((trace: SchedulerTickTrace<keyof SchedulerEventMap>) => void) | undefined' is not assignable to type '(trace: SchedulerTickTrace<keyof SchedulerEventMap>) => void' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the type of the target.
+  Type 'undefined' is not assignable to type '(trace: SchedulerTickTrace<keyof SchedulerEventMap>) => void'.
+src/executor/reactiveScheduler.ts(261,5): error TS2412: Type '(<E extends SchedulerEventName>(telemetry: SchedulerEnqueueTelemetry<E>) => void) | undefined' is not assignable to type '<E extends SchedulerEventName>(telemetry: SchedulerEnqueueTelemetry<E>) => void' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the type of the target.
+  Type 'undefined' is not assignable to type '<E extends SchedulerEventName>(telemetry: SchedulerEnqueueTelemetry<E>) => void'.
+src/executor/reactiveScheduler.ts(262,5): error TS2412: Type '((nodeId: string) => number) | undefined' is not assignable to type '(nodeId: string) => number' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the type of the target.
+  Type 'undefined' is not assignable to type '(nodeId: string) => number'.
+src/executor/reactiveScheduler.ts(263,5): error TS2412: Type '(() => PheromoneBounds | null | undefined) | undefined' is not assignable to type '() => PheromoneBounds | null | undefined' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the type of the target.
+  Type 'undefined' is not assignable to type '() => PheromoneBounds | null | undefined'.
+src/executor/reactiveScheduler.ts(264,5): error TS2412: Type 'CausalMemory | undefined' is not assignable to type 'CausalMemory' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the type of the target.
+  Type 'undefined' is not assignable to type 'CausalMemory'.
+src/executor/reactiveScheduler.ts(265,5): error TS2412: Type 'CancellationHandle | undefined' is not assignable to type 'CancellationHandle' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the type of the target.
+  Type 'undefined' is not assignable to type 'CancellationHandle'.
+src/executor/reactiveScheduler.ts(375,11): error TS2375: Type '{ id: number; event: E; payload: SchedulerEventMap[E]; enqueuedAt: number; basePriority: number; causalEventId: string | undefined; }' is not assignable to type 'ScheduledTick<E>' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'causalEventId' are incompatible.
+    Type 'string | undefined' is not assignable to type 'string'.
+      Type 'undefined' is not assignable to type 'string'.
+src/gateways/childProcess.ts(126,39): error TS2379: Argument of type '{ allowedKeys: readonly string[]; inheritEnv: NodeJS.ProcessEnv | undefined; extraEnv: Record<string, string | undefined> | undefined; }' is not assignable to parameter of type 'BuildEnvOptions' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'inheritEnv' are incompatible.
+    Type 'ProcessEnv | undefined' is not assignable to type 'ProcessEnv'.
+      Type 'undefined' is not assignable to type 'ProcessEnv'.
+src/graph/adaptive.ts(355,28): error TS2379: Argument of type '{ avoidNodeIds: Set<string> | undefined; avoidLabels: Set<string> | undefined; }' is not assignable to parameter of type '{ avoidNodeIds?: Set<string>; avoidLabels?: Set<string>; }' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'avoidNodeIds' are incompatible.
+    Type 'Set<string> | undefined' is not assignable to type 'Set<string>'.
+      Type 'undefined' is not assignable to type 'Set<string>'.
+src/graph/hierarchy.ts(338,15): error TS2375: Type '{ id: string; label: string | undefined; attributes: Record<string, GraphAttributeValue>; }' is not assignable to type 'GraphNodeRecord' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'label' are incompatible.
+    Type 'string | undefined' is not assignable to type 'string'.
+      Type 'undefined' is not assignable to type 'string'.
+src/graph/hierarchy.ts(395,13): error TS2375: Type '{ from: string; to: string; label: string | undefined; attributes: Record<string, GraphAttributeValue>; }' is not assignable to type 'GraphEdgeRecord' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'label' are incompatible.
+    Type 'string | undefined' is not assignable to type 'string'.
+      Type 'undefined' is not assignable to type 'string'.
+src/graph/hypergraph.ts(96,22): error TS2379: Argument of type '{ from: string; to: string; label: string | undefined; weight: number | undefined; attributes: Record<string, GraphAttributeValue>; }' is not assignable to parameter of type 'GraphEdgeRecord' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'label' are incompatible.
+    Type 'string | undefined' is not assignable to type 'string'.
+      Type 'undefined' is not assignable to type 'string'.
+src/graph/invariants.ts(135,3): error TS2375: Type '{ enforceDag: boolean; requireNodeLabels: boolean; requireEdgeLabels: boolean; requirePortAttributes: boolean; defaultMaxInDegree: number | undefined; defaultMaxOutDegree: number | undefined; }' is not assignable to type 'GraphInvariantOptions' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'defaultMaxInDegree' are incompatible.
+    Type 'number | undefined' is not assignable to type 'number'.
+      Type 'undefined' is not assignable to type 'number'.
+src/graph/invariants.ts(143,5): error TS1360: Type '{ enforceDag: boolean; requireNodeLabels: boolean; requireEdgeLabels: boolean; requirePortAttributes: boolean; defaultMaxInDegree: number | undefined; defaultMaxOutDegree: number | undefined; }' does not satisfy the expected type 'GraphInvariantOptions'.
+  Types of property 'defaultMaxInDegree' are incompatible.
+    Type 'number | undefined' is not assignable to type 'number'.
+      Type 'undefined' is not assignable to type 'number'.
+src/graph/patch.ts(71,5): error TS2322: Type '{ id: string; label: string | undefined; attributes: Record<string, GraphAttributeValue>; }[]' is not assignable to type 'GraphNodeRecord[]'.
+  Type '{ id: string; label: string | undefined; attributes: Record<string, GraphAttributeValue>; }' is not assignable to type 'GraphNodeRecord' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+    Types of property 'label' are incompatible.
+      Type 'string | undefined' is not assignable to type 'string'.
+        Type 'undefined' is not assignable to type 'string'.
+src/graph/patch.ts(76,5): error TS2322: Type '{ from: string; to: string; label: string | undefined; weight: number | undefined; attributes: Record<string, GraphAttributeValue>; }[]' is not assignable to type 'GraphEdgeRecord[]'.
+  Type '{ from: string; to: string; label: string | undefined; weight: number | undefined; attributes: Record<string, GraphAttributeValue>; }' is not assignable to type 'GraphEdgeRecord' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+    Types of property 'label' are incompatible.
+      Type 'string | undefined' is not assignable to type 'string'.
+        Type 'undefined' is not assignable to type 'string'.
+src/graph/rewrite.ts(131,13): error TS2375: Type '{ from: string; to: string; label: string | undefined; weight: number | undefined; attributes: { rewritten_split_parallel: true; role: string; }; }' is not assignable to type 'GraphEdgeRecord' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'label' are incompatible.
+    Type 'string | undefined' is not assignable to type 'string'.
+      Type 'undefined' is not assignable to type 'string'.
+src/graph/rewrite.ts(142,13): error TS2375: Type '{ from: string; to: string; label: string | undefined; weight: number | undefined; attributes: { rewritten_split_parallel: true; role: string; }; }' is not assignable to type 'GraphEdgeRecord' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'label' are incompatible.
+    Type 'string | undefined' is not assignable to type 'string'.
+      Type 'undefined' is not assignable to type 'string'.
+src/graph/rewrite.ts(236,29): error TS2379: Argument of type '{ from: string; to: string; label: string | undefined; weight: number | undefined; attributes: { rewritten_inline_subgraph: true; via: string; }; }' is not assignable to parameter of type 'GraphEdgeRecord' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'label' are incompatible.
+    Type 'string | undefined' is not assignable to type 'string'.
+      Type 'undefined' is not assignable to type 'string'.
+src/graph/rewrite.ts(254,29): error TS2379: Argument of type '{ from: string; to: string; label: string | undefined; weight: number | undefined; attributes: { rewritten_inline_subgraph: true; via: string; }; }' is not assignable to parameter of type 'GraphEdgeRecord' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'label' are incompatible.
+    Type 'string | undefined' is not assignable to type 'string'.
+      Type 'undefined' is not assignable to type 'string'.
+src/graph/rewrite.ts(334,28): error TS2379: Argument of type '{ from: string; to: string; label: string | undefined; weight: number | undefined; attributes: { rewritten_reroute_avoid: true; avoided: string; }; }' is not assignable to parameter of type 'GraphEdgeRecord' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'label' are incompatible.
+    Type 'string | undefined' is not assignable to type 'string'.
+      Type 'undefined' is not assignable to type 'string'.
+src/graph/rewrite.ts(423,5): error TS2322: Type '{ id: string; label: string | undefined; attributes: { [x: string]: GraphAttributeValue; }; }[]' is not assignable to type 'GraphNodeRecord[]'.
+  Type '{ id: string; label: string | undefined; attributes: { [x: string]: GraphAttributeValue; }; }' is not assignable to type 'GraphNodeRecord' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+    Types of property 'label' are incompatible.
+      Type 'string | undefined' is not assignable to type 'string'.
+        Type 'undefined' is not assignable to type 'string'.
+src/graph/rewrite.ts(428,5): error TS2322: Type '{ from: string; to: string; label: string | undefined; weight: number | undefined; attributes: { [x: string]: GraphAttributeValue; }; }[]' is not assignable to type 'GraphEdgeRecord[]'.
+  Type '{ from: string; to: string; label: string | undefined; weight: number | undefined; attributes: { [x: string]: GraphAttributeValue; }; }' is not assignable to type 'GraphEdgeRecord' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+    Types of property 'label' are incompatible.
+      Type 'string | undefined' is not assignable to type 'string'.
+        Type 'undefined' is not assignable to type 'string'.
+src/graph/rewrite.ts(501,60): error TS2375: Type '{ id: string; label: string | undefined; attributes: { parent_subgraph: string; }; }' is not assignable to type 'GraphNodeRecord' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'label' are incompatible.
+    Type 'string | undefined' is not assignable to type 'string'.
+      Type 'undefined' is not assignable to type 'string'.
+src/graph/rewrite.ts(509,60): error TS2375: Type '{ from: string; to: string; label: string | undefined; weight: number | undefined; attributes: { parent_subgraph: string; }; }' is not assignable to type 'GraphEdgeRecord' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'label' are incompatible.
+    Type 'string | undefined' is not assignable to type 'string'.
+      Type 'undefined' is not assignable to type 'string'.
+src/graph/rewrite.ts(540,17): error TS2379: Argument of type '{ id: string; label: string | undefined; attributes: { host: string; }; }' is not assignable to parameter of type 'GraphNodeRecord' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'label' are incompatible.
+    Type 'string | undefined' is not assignable to type 'string'.
+      Type 'undefined' is not assignable to type 'string'.
+src/graph/state.ts(408,17): error TS2379: Argument of type '{ sourceId: string; type: "kg" | "url" | "file" | "db" | "rag"; span: [number, number] | undefined; confidence: number | undefined; }' is not assignable to parameter of type 'Provenance' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'span' are incompatible.
+    Type '[number, number] | undefined' is not assignable to type '[number, number]'.
+      Type 'undefined' is not assignable to type '[number, number]'.
+src/graph/state.ts(766,39): error TS2379: Argument of type '{ pid: number; workdir: string; startedAt: number; lastHeartbeatAt: number | null; retries: number; endedAt: number | null; exitCode: number | null; exitSignal: Signal | null; ... 4 more ...; attachedAt: number | null; }' is not assignable to parameter of type 'Partial<{ state: string; waitingFor: string | null; pendingId: string | null; ttlAt: number | null; name: string; systemMessage: string | null; runtime: string; lastTs: number | null; lastHeartbeatAt: number | null; ... 12 more ...; attachedAt: number | null; }>' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'exitSignal' are incompatible.
+    Type 'Signal | null' is not assignable to type 'string | number | null'.
+      Type 'undefined' is not assignable to type 'string | number | null'.
+src/graph/state.ts(1220,40): error TS2379: Argument of type '{ id: string; jobId: string | undefined; childId: string | undefined; lastSeq: number; createdAt: number; waitMs: number; }' is not assignable to parameter of type 'SubscriptionSnapshot' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'jobId' are incompatible.
+    Type 'string | undefined' is not assignable to type 'string'.
+      Type 'undefined' is not assignable to type 'string'.
+src/graph/tx.ts(40,5): error TS2412: Type 'string | undefined' is not assignable to type 'string' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the type of the target.
+  Type 'undefined' is not assignable to type 'string'.
+src/graph/validate.ts(249,3): error TS2375: Type '{ enforceInvariants: boolean; allowSelfLoops: boolean; allowIsolatedNodes: boolean; maxNodes: number | undefined; maxEdges: number | undefined; enforceDag: boolean; requireNodeLabels: boolean; requireEdgeLabels: boolean; requirePortAttributes: boolean; defaultMaxInDegree: number | undefined; defaultMaxOutDegree: num...' is not assignable to type 'DerivedValidationOptions' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Type '{ enforceInvariants: boolean; allowSelfLoops: boolean; allowIsolatedNodes: boolean; maxNodes: number | undefined; maxEdges: number | undefined; enforceDag: boolean; requireNodeLabels: boolean; requireEdgeLabels: boolean; requirePortAttributes: boolean; defaultMaxInDegree: number | undefined; defaultMaxOutDegree: num...' is not assignable to type 'GraphInvariantOptions' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+    Types of property 'defaultMaxInDegree' are incompatible.
+      Type 'number | undefined' is not assignable to type 'number'.
+        Type 'undefined' is not assignable to type 'number'.
+src/graph/validate.ts(262,5): error TS1360: Type '{ enforceInvariants: boolean; allowSelfLoops: boolean; allowIsolatedNodes: boolean; maxNodes: number | undefined; maxEdges: number | undefined; enforceDag: boolean; requireNodeLabels: boolean; requireEdgeLabels: boolean; requirePortAttributes: boolean; defaultMaxInDegree: number | undefined; defaultMaxOutDegree: num...' does not satisfy the expected type 'DerivedValidationOptions'.
+  Type '{ enforceInvariants: boolean; allowSelfLoops: boolean; allowIsolatedNodes: boolean; maxNodes: number | undefined; maxEdges: number | undefined; enforceDag: boolean; requireNodeLabels: boolean; requireEdgeLabels: boolean; requirePortAttributes: boolean; defaultMaxInDegree: number | undefined; defaultMaxOutDegree: num...' is not assignable to type 'GraphInvariantOptions' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+    Types of property 'defaultMaxInDegree' are incompatible.
+      Type 'number | undefined' is not assignable to type 'number'.
+        Type 'undefined' is not assignable to type 'number'.
+src/httpServer.ts(145,31): error TS2379: Argument of type '{ disabled: boolean | undefined; rps: number; burst: number; }' is not assignable to parameter of type 'Partial<RateLimiterConfig>' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'disabled' are incompatible.
+    Type 'boolean | undefined' is not assignable to type 'boolean'.
+      Type 'undefined' is not assignable to type 'boolean'.
+src/httpServer.ts(591,39): error TS2379: Argument of type '{ httpRequestId: string | undefined; startedAt: bigint; bytesIn: number; bytesOut: number; method: string; jsonrpcId: string | number | null; status: number; cacheStatus: "bypass"; errorCode: number | undefined; }' is not assignable to parameter of type 'JsonRpcOutcomeDetails' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'errorCode' are incompatible.
+    Type 'number | undefined' is not assignable to type 'number | null'.
+      Type 'undefined' is not assignable to type 'number | null'.
+src/httpServer.ts(737,11): error TS2379: Argument of type '{ cacheKey: string | null; idempotency: HttpIdempotencyConfig | undefined; }' is not assignable to parameter of type 'JsonRpcErrorResponseOptions' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'idempotency' are incompatible.
+    Type 'HttpIdempotencyConfig | undefined' is not assignable to type 'HttpIdempotencyConfig'.
+      Type 'undefined' is not assignable to type 'HttpIdempotencyConfig'.
+src/httpServer.ts(777,3): error TS2375: Type '{ headers: Record<string, string>; transport: string; requestId: string | number | null; childId: string | undefined; childLimits: { cpuMs?: number; memMb?: number; wallMs?: number; } | undefined; idempotencyKey: string | undefined; }' is not assignable to type 'JsonRpcRouteContext' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'childId' are incompatible.
+    Type 'string | undefined' is not assignable to type 'string'.
+      Type 'undefined' is not assignable to type 'string'.
+src/infra/budget.ts(218,5): error TS2375: Type '{ charge: { timeMs: number; tokens: number; toolCalls: number; bytesIn: number; bytesOut: number; }; metadata: BudgetUsageMetadata | undefined; }' is not assignable to type 'BudgetUsageRecord' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'metadata' are incompatible.
+    Type 'BudgetUsageMetadata | undefined' is not assignable to type 'BudgetUsageMetadata'.
+      Type 'undefined' is not assignable to type 'BudgetUsageMetadata'.
+src/infra/budget.ts(268,7): error TS2322: Type '{ charge: { timeMs: number; tokens: number; toolCalls: number; bytesIn: number; bytesOut: number; }; metadata: BudgetUsageMetadata | undefined; } | null' is not assignable to type 'BudgetUsageRecord | null'.
+  Type '{ charge: { timeMs: number; tokens: number; toolCalls: number; bytesIn: number; bytesOut: number; }; metadata: BudgetUsageMetadata | undefined; }' is not assignable to type 'BudgetUsageRecord' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+    Types of property 'metadata' are incompatible.
+      Type 'BudgetUsageMetadata | undefined' is not assignable to type 'BudgetUsageMetadata'.
+        Type 'undefined' is not assignable to type 'BudgetUsageMetadata'.
+src/infra/graphWorkerThread.ts(30,5): error TS2375: Type '{ name: string; message: string; stack: string | undefined; }' is not assignable to type '{ readonly name: string; readonly message: string; readonly stack?: string; }' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'stack' are incompatible.
+    Type 'string | undefined' is not assignable to type 'string'.
+      Type 'undefined' is not assignable to type 'string'.
+src/infra/runtime.ts(148,3): error TS2412: Type 'undefined' is not assignable to type 'BudgetTracker' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the type of the target.
+src/knowledge/assist.ts(299,9): error TS2322: Type '{ id: string; kind: "task"; label: string | undefined; attributes: Record<string, string | number | boolean>; }[]' is not assignable to type 'HierNode[]'.
+  Type '{ id: string; kind: "task"; label: string | undefined; attributes: Record<string, string | number | boolean>; }' is not assignable to type 'HierNode'.
+    Type '{ id: string; kind: "task"; label: string | undefined; attributes: Record<string, string | number | boolean>; }' is not assignable to type 'TaskNode' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+      Types of property 'label' are incompatible.
+        Type 'string | undefined' is not assignable to type 'string'.
+          Type 'undefined' is not assignable to type 'string'.
+src/knowledge/assist.ts(701,3): error TS2375: Type '{ query: string; context: string | undefined; answer: string; citations: Provenance[]; rationale: string[]; coverage: { knowledge_hits: number; rag_hits: number; query_terms: number; matched_terms: number; }; knowledge_evidence: KnowledgeAssistEvidence[]; rag_evidence: KnowledgeAssistRagEvidence[]; }' is not assignable to type 'KnowledgeAssistResult' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'context' are incompatible.
+    Type 'string | undefined' is not assignable to type 'string'.
+      Type 'undefined' is not assignable to type 'string'.
+src/knowledge/assist.ts(856,71): error TS2379: Argument of type '{ limit: number; minScore: number; requiredTags: string[] | undefined; }' is not assignable to parameter of type 'HybridRetrieverSearchOptions' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'requiredTags' are incompatible.
+    Type 'string[] | undefined' is not assignable to type 'string[]'.
+      Type 'undefined' is not assignable to type 'string[]'.
+src/knowledge/knowledgeGraph.ts(413,18): error TS2379: Argument of type '{ id: string; label: string | undefined; dependsOn: string[]; duration: number | undefined; weight: number | undefined; source: string | null; confidence: number; provenance: Provenance[]; }' is not assignable to parameter of type 'KnowledgePlanTask' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'label' are incompatible.
+    Type 'string | undefined' is not assignable to type 'string'.
+      Type 'undefined' is not assignable to type 'string'.
+src/learning/lessons.ts(176,13): error TS2375: Type '{ id: string; topic: string; summary: string; tags: string[]; importance: number; confidence: number; evidence: string | undefined; tone: LessonTone; createdAt: number; updatedAt: number; ... 4 more ...; lastRegressionReason: null; }' is not assignable to type 'LessonRecord' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'evidence' are incompatible.
+    Type 'string | undefined' is not assignable to type 'string'.
+      Type 'undefined' is not assignable to type 'string'.
+src/logger.ts(200,5): error TS2412: Type 'string | undefined' is not assignable to type 'string' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the type of the target.
+  Type 'undefined' is not assignable to type 'string'.
+src/logger.ts(211,5): error TS2412: Type '((entry: LogEntry) => void) | undefined' is not assignable to type '(entry: LogEntry) => void' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the type of the target.
+  Type 'undefined' is not assignable to type '(entry: LogEntry) => void'.
+src/mcp/deprecations.ts(122,3): error TS2375: Type '{ metadata: { since: string; replace_with?: string; } | undefined; ageDays: number | null; forceHidden: boolean; forceRemoval: boolean; }' is not assignable to type 'ToolDeprecationEvaluation' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'metadata' are incompatible.
+    Type '{ since: string; replace_with?: string; } | undefined' is not assignable to type 'ToolDeprecationMetadata'.
+      Type 'undefined' is not assignable to type 'ToolDeprecationMetadata'.
+src/mcp/registry.ts(402,20): error TS2379: Argument of type '{ dimension: keyof ToolBudgets; value: number; previous: number | undefined; }' is not assignable to parameter of type 'BudgetOverrideSnapshot' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'previous' are incompatible.
+    Type 'number | undefined' is not assignable to type 'number'.
+      Type 'undefined' is not assignable to type 'number'.
+src/mcp/registry.ts(569,5): error TS2375: Type '{ manifest: ToolManifest; inputSchema: z.ZodObject<z.ZodRawShape, z.UnknownKeysParam, z.ZodTypeAny, { [x: string]: any; }, { [x: string]: any; }> | undefined; }' is not assignable to type '{ manifest: ToolManifest; inputSchema?: ZodObject<ZodRawShape, UnknownKeysParam, ZodTypeAny, { [x: string]: any; }, { [x: string]: any; }>; }' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'inputSchema' are incompatible.
+    Type 'ZodObject<ZodRawShape, UnknownKeysParam, ZodTypeAny, { [x: string]: any; }, { [x: string]: any; }> | undefined' is not assignable to type 'ZodObject<ZodRawShape, UnknownKeysParam, ZodTypeAny, { [x: string]: any; }, { [x: string]: any; }>'.
+      Type 'undefined' is not assignable to type 'ZodObject<ZodRawShape, UnknownKeysParam, ZodTypeAny, { [x: string]: any; }, { [x: string]: any; }>'.
+src/mcp/registry.ts(634,11): error TS2375: Type '{ name: string; title: string; description: string | undefined; kind: ToolKind; version: number; createdAt: string; updatedAt: string; category: ToolManifestCategory; ... 6 more ...; source: "runtime" | "persisted"; }' is not assignable to type 'ToolManifest' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'description' are incompatible.
+    Type 'string | undefined' is not assignable to type 'string'.
+      Type 'undefined' is not assignable to type 'string'.
+src/mcp/registry.ts(663,9): error TS1360: Type '{ title: string; description: string | undefined; outputSchema: z.ZodRawShape | undefined; annotations: { [x: string]: unknown; title?: string | undefined; readOnlyHint?: boolean | undefined; destructiveHint?: boolean | undefined; idempotentHint?: boolean | undefined; openWorldHint?: boolean | undefined; } | undefin...' does not satisfy the expected type '{ title?: string; description?: string; outputSchema?: ZodRawShape; annotations?: { [x: string]: unknown; title?: string | undefined; readOnlyHint?: boolean | undefined; destructiveHint?: boolean | undefined; idempotentHint?: boolean | undefined; openWorldHint?: boolean | undefined; }; _meta?: Record<...>; }'.
+  Types of property 'description' are incompatible.
+    Type 'string | undefined' is not assignable to type 'string'.
+      Type 'undefined' is not assignable to type 'string'.
+src/mcp/registry.ts(674,54): error TS2379: Argument of type '{ inputSchema: z.ZodRawShape; title: string; description: string | undefined; outputSchema: z.ZodRawShape | undefined; annotations: { [x: string]: unknown; title?: string | undefined; readOnlyHint?: boolean | undefined; destructiveHint?: boolean | undefined; idempotentHint?: boolean | undefined; openWorldHint?: bool...' is not assignable to parameter of type '{ title?: string; description?: string; inputSchema?: ZodRawShape; outputSchema?: ZodRawShape; annotations?: { [x: string]: unknown; title?: string | undefined; readOnlyHint?: boolean | undefined; destructiveHint?: boolean | undefined; idempotentHint?: boolean | undefined; openWorldHint?: boolean | undefined; }; _me...' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'description' are incompatible.
+    Type 'string | undefined' is not assignable to type 'string'.
+      Type 'undefined' is not assignable to type 'string'.
+src/mcp/registry.ts(687,11): error TS2375: Type '{ manifest: ToolManifest; handler: ToolImplementation; registeredTool: RegisteredTool; inputSchema: z.ZodObject<z.ZodRawShape, "strict", z.ZodTypeAny, { ...; }, { ...; }> | undefined; manifestPath: string | undefined; }' is not assignable to type 'ToolRegistrationRecord' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'inputSchema' are incompatible.
+    Type 'ZodObject<ZodRawShape, "strict", ZodTypeAny, { [x: string]: any; }, { [x: string]: any; }> | undefined' is not assignable to type 'ZodObject<ZodRawShape, UnknownKeysParam, ZodTypeAny, { [x: string]: any; }, { [x: string]: any; }>'.
+      Type 'undefined' is not assignable to type 'ZodObject<ZodRawShape, UnknownKeysParam, ZodTypeAny, { [x: string]: any; }, { [x: string]: any; }>'.
+src/mcp/registry.ts(747,11): error TS2375: Type '{ name: string; title: string; description: string | undefined; kind: "composite"; tags: string[] | undefined; steps: CompositeToolStep[]; inputs: string[]; version: number; source: "runtime"; }' is not assignable to type 'ToolManifestDraft' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'description' are incompatible.
+    Type 'string | undefined' is not assignable to type 'string'.
+      Type 'undefined' is not assignable to type 'string'.
+src/mcp/registry.ts(836,9): error TS2322: Type '{ id: string; tool: string; arguments?: Record<string, unknown> | undefined; capture?: boolean | undefined; }[]' is not assignable to type 'CompositeToolStep[]'.
+  Type '{ id: string; tool: string; arguments?: Record<string, unknown> | undefined; capture?: boolean | undefined; }' is not assignable to type 'CompositeToolStep' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+    Types of property 'arguments' are incompatible.
+      Type 'Record<string, unknown> | undefined' is not assignable to type 'Record<string, unknown>'.
+        Type 'undefined' is not assignable to type 'Record<string, unknown>'.
+src/mcp/registry.ts(841,80): error TS2345: Argument of type '{ id: string; tool: string; arguments?: Record<string, unknown> | undefined; capture?: boolean | undefined; }[]' is not assignable to parameter of type 'CompositeToolStep[]'.
+  Type '{ id: string; tool: string; arguments?: Record<string, unknown> | undefined; capture?: boolean | undefined; }' is not assignable to type 'CompositeToolStep' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+    Types of property 'arguments' are incompatible.
+      Type 'Record<string, unknown> | undefined' is not assignable to type 'Record<string, unknown>'.
+        Type 'undefined' is not assignable to type 'Record<string, unknown>'.
+src/mcp/registry.ts(929,5): error TS2375: Type '{ hidden: boolean; deprecated: ToolDeprecationMetadata | undefined; name: string; title: string; description?: string; kind: ToolKind; version: number; createdAt: string; ... 6 more ...; source?: "runtime" | "persisted"; }' is not assignable to type 'ToolManifest' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'deprecated' are incompatible.
+    Type 'ToolDeprecationMetadata | undefined' is not assignable to type 'ToolDeprecationMetadata'.
+      Type 'undefined' is not assignable to type 'ToolDeprecationMetadata'.
+src/memory/kg.ts(32,37): error TS2379: Argument of type '{ now: (() => number) | undefined; }' is not assignable to parameter of type 'KnowledgeGraphOptions' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'now' are incompatible.
+    Type '(() => number) | undefined' is not assignable to type '() => number'.
+      Type 'undefined' is not assignable to type '() => number'.
+src/memory/retriever.ts(138,11): error TS2375: Type '{ limit: number; minScore: number; requiredTags: string[] | undefined; }' is not assignable to type 'VectorMemorySearchOptions' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'requiredTags' are incompatible.
+    Type 'string[] | undefined' is not assignable to type 'string[]'.
+      Type 'undefined' is not assignable to type 'string[]'.
+src/memory/vectorMemory.ts(105,13): error TS2375: Type '{ id: string | undefined; text: string; tags: string[] | undefined; metadata: Record<string, unknown> | undefined; provenance: Provenance[]; createdAt: number | undefined; }' is not assignable to type 'VectorDocumentInput' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'id' are incompatible.
+    Type 'string | undefined' is not assignable to type 'string'.
+      Type 'undefined' is not assignable to type 'string'.
+src/memory/vectorMemory.ts(129,11): error TS2375: Type '{ limit: number | undefined; minScore: number | undefined; }' is not assignable to type 'VectorSearchOptions' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'limit' are incompatible.
+    Type 'number | undefined' is not assignable to type 'number'.
+      Type 'undefined' is not assignable to type 'number'.
+src/monitor/dashboard.ts(525,57): error TS2379: Argument of type '{ limit: number | undefined; cursor: number | undefined; }' is not assignable to parameter of type 'ReplayPageOptions' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'limit' are incompatible.
+    Type 'number | undefined' is not assignable to type 'number'.
+      Type 'undefined' is not assignable to type 'number'.
+src/monitor/dashboard.ts(655,40): error TS2379: Argument of type '{ graphState: GraphState; eventStore: EventStore; supervisor: Pick<ChildSupervisor, "cancel">; logger: StructuredLogger; ... 6 more ...; logJournal: LogJournal | undefined; }' is not assignable to parameter of type 'DashboardRouterOptions' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'streamIntervalMs' are incompatible.
+    Type 'number | undefined' is not assignable to type 'number'.
+      Type 'undefined' is not assignable to type 'number'.
+src/monitor/replay.ts(120,47): error TS2345: Argument of type '{ minSeq: number | undefined; limit: number; }' is not assignable to parameter of type 'number | JobEventFilters | undefined'.
+  Type '{ minSeq: number | undefined; limit: number; }' is not assignable to type 'JobEventFilters' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+    Types of property 'minSeq' are incompatible.
+      Type 'number | undefined' is not assignable to type 'number'.
+        Type 'undefined' is not assignable to type 'number'.
+src/orchestrator/controller.ts(220,7): error TS2322: Type 'string | null | undefined' is not assignable to type 'string | null'.
+  Type 'undefined' is not assignable to type 'string | null'.
+src/orchestrator/controller.ts(594,44): error TS2379: Argument of type '{ cat: "scheduler"; level: "error" | "info"; runId: string | null; opId: string | null; childId: string | null; jobId: string | null; component: string; stage: "jsonrpc_error" | "jsonrpc_request" | "jsonrpc_response"; elapsedMs: number | undefined; kind: string; msg: "jsonrpc_error" | ... 1 more ... | "jsonrpc_respo...' is not assignable to parameter of type 'EventInput<"jsonrpc_error" | "jsonrpc_request" | "jsonrpc_response">' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'elapsedMs' are incompatible.
+    Type 'number | undefined' is not assignable to type 'number | null'.
+      Type 'undefined' is not assignable to type 'number | null'.
+src/orchestrator/controller.ts(640,25): error TS2379: Argument of type '{ level: "error" | "info"; message: "jsonrpc_error" | "jsonrpc_request" | "jsonrpc_response"; data: JsonRpcEventPayload; jobId: string | null; runId: string | null; ... 8 more ...; bucketId: string; }' is not assignable to parameter of type 'LogRecordInput' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'ts' are incompatible.
+    Type 'number | undefined' is not assignable to type 'number'.
+      Type 'undefined' is not assignable to type 'number'.
+src/orchestrator/controller.ts(642,27): error TS2379: Argument of type '{ level: "error" | "info"; message: "jsonrpc_error" | "jsonrpc_request" | "jsonrpc_response"; data: JsonRpcEventPayload; jobId: string | null; runId: string | null; ... 8 more ...; bucketId: string; }' is not assignable to parameter of type 'LogRecordInput' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'ts' are incompatible.
+    Type 'number | undefined' is not assignable to type 'number'.
+      Type 'undefined' is not assignable to type 'number'.
+src/orchestrator/controller.ts(645,27): error TS2379: Argument of type '{ level: "error" | "info"; message: "jsonrpc_error" | "jsonrpc_request" | "jsonrpc_response"; data: JsonRpcEventPayload; jobId: string | null; runId: string | null; ... 8 more ...; bucketId: string; }' is not assignable to parameter of type 'LogRecordInput' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'ts' are incompatible.
+    Type 'number | undefined' is not assignable to type 'number'.
+      Type 'undefined' is not assignable to type 'number'.
+src/orchestrator/controller.ts(775,11): error TS2379: Argument of type '{ signal: AbortSignal; requestId: string | number; requestInfo: { headers: { [x: string]: string; }; } | undefined; sendNotification: () => Promise<void>; sendRequest: () => Promise<...>; }' is not assignable to parameter of type '{ signal: AbortSignal; sessionId?: string; sendNotification: (notification: unknown) => Promise<void>; sendRequest: (req: unknown, schema?: unknown, options?: unknown) => Promise<unknown>; authInfo?: unknown; requestId: string | ... 1 more ... | null; requestInfo?: { ...; }; }' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'requestInfo' are incompatible.
+    Type '{ headers: { [x: string]: string; }; } | undefined' is not assignable to type '{ headers?: Record<string, string>; }'.
+      Type 'undefined' is not assignable to type '{ headers?: Record<string, string>; }'.
+src/orchestrator/runtime.ts(670,53): error TS2379: Argument of type '{ defaultTtlMs: number | undefined; }' is not assignable to parameter of type 'IdempotencyRegistryOptions' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'defaultTtlMs' are incompatible.
+    Type 'number | undefined' is not assignable to type 'number'.
+      Type 'undefined' is not assignable to type 'number'.
+src/orchestrator/runtime.ts(895,7): error TS2375: Type '{ logFile: string | undefined; maxFileSizeBytes: number | undefined; maxFileCount: number | undefined; redactSecrets: string[]; redactionEnabled: boolean; }' is not assignable to type 'LoggerOptions' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'logFile' are incompatible.
+    Type 'string | undefined' is not assignable to type 'string | null'.
+      Type 'undefined' is not assignable to type 'string | null'.
+src/orchestrator/runtime.ts(1305,15): error TS2379: Argument of type '{ kind: "AUTOSCALER"; level: AutoscalerEventLevel; childId: string | undefined; payload: AutoscalerEventPayload; correlation: EventCorrelationHints | null | undefined; }' is not assignable to parameter of type 'PushEventInput' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'childId' are incompatible.
+    Type 'string | undefined' is not assignable to type 'string | null'.
+      Type 'undefined' is not assignable to type 'string | null'.
+src/orchestrator/runtime.ts(1647,9): error TS2375: Type '{ name: string; runtime: string; goals: string[] | undefined; system: string | undefined; }' is not assignable to type 'SpawnChildSpec' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'system' are incompatible.
+    Type 'string | undefined' is not assignable to type 'string'.
+      Type 'undefined' is not assignable to type 'string'.
+src/orchestrator/runtime.ts(1799,60): error TS2322: Type '{ testsPassed?: number | undefined; lintErrors?: number | undefined; complexity?: number | undefined; }' is not assignable to type 'Record<string, number>'.
+  Property 'testsPassed' is incompatible with index signature.
+    Type 'number | undefined' is not assignable to type 'number'.
+      Type 'undefined' is not assignable to type 'number'.
+src/orchestrator/runtime.ts(1804,60): error TS2322: Type '{ factsOK?: number | undefined; readability?: number | undefined; structure?: number | undefined; }' is not assignable to type 'Record<string, number>'.
+  Property 'factsOK' is incompatible with index signature.
+    Type 'number | undefined' is not assignable to type 'number'.
+      Type 'undefined' is not assignable to type 'number'.
+src/orchestrator/runtime.ts(1809,60): error TS2322: Type '{ risk?: number | undefined; coherence?: number | undefined; coverage?: number | undefined; }' is not assignable to type 'Record<string, number>'.
+  Property 'risk' is incompatible with index signature.
+    Type 'number | undefined' is not assignable to type 'number'.
+      Type 'undefined' is not assignable to type 'number'.
+src/orchestrator/runtime.ts(1817,3): error TS2375: Type '{ supervisor: ChildSupervisor; logger: StructuredLogger; loopDetector: LoopDetector; contractNet: ContractNetCoordinator; supervisorAgent: OrchestratorSupervisor; idempotency: IdempotencyRegistry | undefined; budget: ChildBudgetManager; }' is not assignable to type 'ChildToolContext' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'idempotency' are incompatible.
+    Type 'IdempotencyRegistry | undefined' is not assignable to type 'IdempotencyRegistry'.
+      Type 'undefined' is not assignable to type 'IdempotencyRegistry'.
+src/orchestrator/runtime.ts(1829,3): error TS2375: Type '{ supervisor: ChildSupervisor; graphState: GraphState; logger: StructuredLogger; childrenRoot: string; defaultChildRuntime: string; ... 13 more ...; thoughtManager: ThoughtGraphCoordinator | undefined; }' is not assignable to type 'PlanToolContext' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'blackboard' are incompatible.
+    Type 'BlackboardStore | undefined' is not assignable to type 'BlackboardStore'.
+      Type 'undefined' is not assignable to type 'BlackboardStore'.
+src/orchestrator/runtime.ts(1836,17): error TS2379: Argument of type '{ kind: EventKind; level: EventLevel | undefined; jobId: string | undefined; childId: string | undefined; payload: unknown; correlation: EventCorrelationHints | null | undefined; }' is not assignable to parameter of type 'PushEventInput' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'level' are incompatible.
+    Type 'EventLevel | undefined' is not assignable to type 'EventLevel'.
+      Type 'undefined' is not assignable to type 'EventLevel'.
+src/orchestrator/runtime.ts(1864,3): error TS2375: Type '{ transactions: GraphTransactionManager; resources: ResourceRegistry; locks: GraphLockManager; idempotency: IdempotencyRegistry | undefined; }' is not assignable to type 'TxToolContext' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'idempotency' are incompatible.
+    Type 'IdempotencyRegistry | undefined' is not assignable to type 'IdempotencyRegistry'.
+      Type 'undefined' is not assignable to type 'IdempotencyRegistry'.
+src/orchestrator/runtime.ts(1873,3): error TS2375: Type '{ transactions: GraphTransactionManager; resources: ResourceRegistry; locks: GraphLockManager; idempotency: IdempotencyRegistry | undefined; }' is not assignable to type 'GraphBatchToolContext' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'idempotency' are incompatible.
+    Type 'IdempotencyRegistry | undefined' is not assignable to type 'IdempotencyRegistry'.
+      Type 'undefined' is not assignable to type 'IdempotencyRegistry'.
+src/orchestrator/runtime.ts(1902,3): error TS2375: Type '{ blackboard: BlackboardStore; stigmergy: StigmergyField; contractNet: ContractNetCoordinator; logger: StructuredLogger; idempotency: IdempotencyRegistry | undefined; contractNetWatcherTelemetry: ContractNetWatcherTelemetryRecorder; }' is not assignable to type 'CoordinationToolContext' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'idempotency' are incompatible.
+    Type 'IdempotencyRegistry | undefined' is not assignable to type 'IdempotencyRegistry'.
+      Type 'undefined' is not assignable to type 'IdempotencyRegistry'.
+src/orchestrator/runtime.ts(1929,5): error TS2412: Type 'Record<string, unknown> | undefined' is not assignable to type 'Record<string, unknown>' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the type of the target.
+  Type 'undefined' is not assignable to type 'Record<string, unknown>'.
+src/orchestrator/runtime.ts(2653,35): error TS2379: Argument of type '{ payload: unknown; provenance: Provenance[] | undefined; jobId?: string; childId?: string; kind: EventKind; level: EventLevel | undefined; source: EventSource | undefined; }' is not assignable to parameter of type 'EmitEventInput' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'level' are incompatible.
+    Type 'EventLevel | undefined' is not assignable to type 'EventLevel'.
+      Type 'undefined' is not assignable to type 'EventLevel'.
+src/orchestrator/runtime.ts(2669,26): error TS2379: Argument of type '{ seq: number; ts: number; kind: EventKind; level: EventLevel; jobId: string | undefined; childId: string | undefined; provenance: Provenance[]; }' is not assignable to parameter of type 'EventSnapshot' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'jobId' are incompatible.
+    Type 'string | undefined' is not assignable to type 'string'.
+      Type 'undefined' is not assignable to type 'string'.
+src/orchestrator/runtime.ts(2792,34): error TS2379: Argument of type '{ jobId: string | undefined; childId: string | undefined; afterSeq: number | undefined; limit: number; }' is not assignable to parameter of type 'EventFilter' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'jobId' are incompatible.
+    Type 'string | undefined' is not assignable to type 'string'.
+      Type 'undefined' is not assignable to type 'string'.
+src/orchestrator/runtime.ts(3475,60): error TS2379: Argument of type '{ weightAttribute: string | undefined; }' is not assignable to parameter of type '{ weightAttribute?: string; }' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'weightAttribute' are incompatible.
+    Type 'string | undefined' is not assignable to type 'string'.
+      Type 'undefined' is not assignable to type 'string'.
+src/orchestrator/runtime.ts(3478,47): error TS2379: Argument of type '{ weightAttribute: string | undefined; }' is not assignable to parameter of type '{ weightAttribute?: string; }' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'weightAttribute' are incompatible.
+    Type 'string | undefined' is not assignable to type 'string'.
+      Type 'undefined' is not assignable to type 'string'.
+src/orchestrator/runtime.ts(3516,56): error TS2379: Argument of type '{ headers: Record<string, string> | undefined; transport: string; }' is not assignable to parameter of type 'JsonRpcRouteContext' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'headers' are incompatible.
+    Type 'Record<string, string> | undefined' is not assignable to type 'Record<string, string>'.
+      Type 'undefined' is not assignable to type 'Record<string, string>'.
+src/orchestrator/runtime.ts(3547,48): error TS2379: Argument of type '{ server: McpServer; logger: StructuredLogger; runsRoot: string | undefined; clock: () => Date; invokeTool: (tool: string, args: unknown, extra: RequestHandlerExtra<ServerRequest, ServerNotification>) => Promise<CallToolResult>; }' is not assignable to parameter of type 'ToolRegistryOptions' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'runsRoot' are incompatible.
+    Type 'string | undefined' is not assignable to type 'string'.
+      Type 'undefined' is not assignable to type 'string'.
+src/orchestrator/runtime.ts(3568,84): error TS2379: Argument of type '{ logger: StructuredLogger; workspaceRoot: string; idempotency: IdempotencyRegistry | undefined; }' is not assignable to parameter of type 'ProjectScaffoldRunToolContext' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'idempotency' are incompatible.
+    Type 'IdempotencyRegistry | undefined' is not assignable to type 'IdempotencyRegistry'.
+      Type 'undefined' is not assignable to type 'IdempotencyRegistry'.
+src/orchestrator/runtime.ts(3574,77): error TS2379: Argument of type '{ logger: StructuredLogger; childrenRoot: string; idempotency: IdempotencyRegistry | undefined; }' is not assignable to parameter of type 'ArtifactWriteToolContext' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'idempotency' are incompatible.
+    Type 'IdempotencyRegistry | undefined' is not assignable to type 'IdempotencyRegistry'.
+      Type 'undefined' is not assignable to type 'IdempotencyRegistry'.
+src/orchestrator/runtime.ts(3590,80): error TS2379: Argument of type '{ logger: StructuredLogger; transactions: GraphTransactionManager; locks: GraphLockManager; resources: ResourceRegistry; idempotency: IdempotencyRegistry | undefined; workerPool: GraphWorkerPool | undefined; }' is not assignable to parameter of type 'GraphApplyChangeSetToolContext' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'idempotency' are incompatible.
+    Type 'IdempotencyRegistry | undefined' is not assignable to type 'IdempotencyRegistry'.
+      Type 'undefined' is not assignable to type 'IdempotencyRegistry'.
+src/orchestrator/runtime.ts(3599,87): error TS2379: Argument of type '{ logger: StructuredLogger; transactions: GraphTransactionManager; locks: GraphLockManager; resources: ResourceRegistry; idempotency: IdempotencyRegistry | undefined; runsRoot: string | undefined; }' is not assignable to parameter of type 'GraphSnapshotTimeTravelToolContext' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'idempotency' are incompatible.
+    Type 'IdempotencyRegistry | undefined' is not assignable to type 'IdempotencyRegistry'.
+      Type 'undefined' is not assignable to type 'IdempotencyRegistry'.
+src/orchestrator/runtime.ts(3608,80): error TS2379: Argument of type '{ plan: PlanToolContext; logger: StructuredLogger; idempotency: IdempotencyRegistry | undefined; resolveBudget: (tool: string) => ToolBudgets | undefined; }' is not assignable to parameter of type 'PlanCompileExecuteToolContext' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'idempotency' are incompatible.
+    Type 'IdempotencyRegistry | undefined' is not assignable to type 'IdempotencyRegistry'.
+      Type 'undefined' is not assignable to type 'IdempotencyRegistry'.
+src/orchestrator/runtime.ts(3615,83): error TS2379: Argument of type '{ supervisor: ChildSupervisor; logger: StructuredLogger; idempotency: IdempotencyRegistry | undefined; }' is not assignable to parameter of type 'ChildOrchestrateToolContext' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'idempotency' are incompatible.
+    Type 'IdempotencyRegistry | undefined' is not assignable to type 'IdempotencyRegistry'.
+      Type 'undefined' is not assignable to type 'IdempotencyRegistry'.
+src/orchestrator/runtime.ts(3621,75): error TS2379: Argument of type '{ vectorIndex: VectorMemoryIndex; logger: StructuredLogger; idempotency: IdempotencyRegistry | undefined; }' is not assignable to parameter of type 'MemoryUpsertToolContext' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'idempotency' are incompatible.
+    Type 'IdempotencyRegistry | undefined' is not assignable to type 'IdempotencyRegistry'.
+      Type 'undefined' is not assignable to type 'IdempotencyRegistry'.
+src/orchestrator/runtime.ts(3636,31): error TS2345: Argument of type '() => { name: string; inputSchema: ZodTypeAny | undefined; enabled: boolean; }[]' is not assignable to parameter of type 'ToolIntrospectionProvider'.
+  Type '{ name: string; inputSchema: ZodTypeAny | undefined; enabled: boolean; }[]' is not assignable to type 'ToolIntrospectionEntry[]'.
+    Type '{ name: string; inputSchema: ZodTypeAny | undefined; enabled: boolean; }' is not assignable to type 'ToolIntrospectionEntry' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+      Types of property 'inputSchema' are incompatible.
+        Type 'ZodTypeAny | undefined' is not assignable to type 'ZodTypeAny'.
+          Type 'undefined' is not assignable to type 'ZodType<any, any, any>'.
+src/orchestrator/runtime.ts(3792,13): error TS2375: Type '{ name: string; title: string; description: string | undefined; tags: string[]; steps: { arguments?: Record<string, unknown>; capture?: boolean; id: string; tool: string; }[]; }' is not assignable to type 'CompositeRegistrationRequest' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'description' are incompatible.
+    Type 'string | undefined' is not assignable to type 'string'.
+      Type 'undefined' is not assignable to type 'string'.
+src/orchestrator/runtime.ts(3907,9): error TS2412: Type '{ keys: string[] | undefined; kinds: ("set" | "delete" | "expire")[] | undefined; tags: string[] | undefined; sinceTs: number | undefined; untilTs: number | undefined; } | undefined' is not assignable to type 'ResourceWatchBlackboardFilters | undefined' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the type of the target.
+src/orchestrator/runtime.ts(3916,9): error TS2412: Type '{ levels: ("error" | "warn" | "debug" | "info")[] | undefined; kinds: string[] | undefined; jobIds: string[] | undefined; opIds: string[] | undefined; graphIds: string[] | undefined; nodeIds: string[] | undefined; childIds: string[] | undefined; runIds: string[] | undefined; sinceTs: number | undefined; untilTs: num...' is not assignable to type 'ResourceWatchRunFilters | undefined' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the type of the target.
+src/orchestrator/runtime.ts(3930,9): error TS2412: Type '{ streams: ("stdout" | "stderr" | "meta")[] | undefined; jobIds: string[] | undefined; runIds: string[] | undefined; opIds: string[] | undefined; graphIds: string[] | undefined; nodeIds: string[] | undefined; sinceTs: number | undefined; untilTs: number | undefined; } | undefined' is not assignable to type 'ResourceWatchChildFilters | undefined' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the type of the target.
+src/orchestrator/runtime.ts(4007,13): error TS2375: Type '{ cats: EventCategory[] | undefined; levels: BusEventLevel[] | undefined; jobId: string | undefined; runId: string | undefined; opId: string | undefined; graphId: string | undefined; nodeId: string | undefined; childId: string | undefined; afterSeq: number | undefined; limit: number; }' is not assignable to type 'EventFilter' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'cats' are incompatible.
+    Type 'EventCategory[] | undefined' is not assignable to type 'EventCategory[]'.
+      Type 'undefined' is not assignable to type 'EventCategory[]'.
+src/orchestrator/runtime.ts(4182,9): error TS2412: Type '{ runIds: string[] | undefined; jobIds: string[] | undefined; opIds: string[] | undefined; graphIds: string[] | undefined; nodeIds: string[] | undefined; childIds: string[] | undefined; messageIncludes: string[] | undefined; sinceTs: number | undefined; untilTs: number | undefined; } | undefined' is not assignable to type 'LogTailFilters | null | undefined' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the type of the target.
+src/orchestrator/runtime.ts(4301,62): error TS2379: Argument of type '{ labelAttribute: string | undefined; }' is not assignable to parameter of type 'SnapshotProjectionOptions' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'labelAttribute' are incompatible.
+    Type 'string | undefined' is not assignable to type 'string'.
+      Type 'undefined' is not assignable to type 'string'.
+src/orchestrator/runtime.ts(4322,62): error TS2379: Argument of type '{ direction: "LR" | "TB"; labelAttribute: string | undefined; weightAttribute: string | undefined; maxLabelLength: number | undefined; }' is not assignable to parameter of type 'MermaidRenderOptions' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'labelAttribute' are incompatible.
+    Type 'string | undefined' is not assignable to type 'string'.
+      Type 'undefined' is not assignable to type 'string'.
+src/orchestrator/runtime.ts(4331,58): error TS2379: Argument of type '{ labelAttribute: string | undefined; weightAttribute: string | undefined; }' is not assignable to parameter of type 'DotRenderOptions' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'labelAttribute' are incompatible.
+    Type 'string | undefined' is not assignable to type 'string'.
+      Type 'undefined' is not assignable to type 'string'.
+src/orchestrator/runtime.ts(4338,62): error TS2379: Argument of type '{ labelAttribute: string | undefined; weightAttribute: string | undefined; }' is not assignable to parameter of type 'GraphMlRenderOptions' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'labelAttribute' are incompatible.
+    Type 'string | undefined' is not assignable to type 'string'.
+      Type 'undefined' is not assignable to type 'string'.
+src/orchestrator/runtime.ts(4457,3): error TS2345: Argument of type '(input: { child_id: string; since_index?: number; since_ts?: number; limit?: number; format?: "text" | "json"; include_system?: boolean; }) => Promise<{ isError: true; content: { ...; }[]; } | { ...; }>' is not assignable to parameter of type '(args: { child_id: string; limit?: number | undefined; format?: "json" | "text" | undefined; since_ts?: number | undefined; since_index?: number | undefined; include_system?: boolean | undefined; }, extra: RequestHandlerExtra<...>) => { ...; } | Promise<...>'.
+  Types of parameters 'input' and 'args' are incompatible.
+    Type '{ child_id: string; limit?: number | undefined; format?: "json" | "text" | undefined; since_ts?: number | undefined; since_index?: number | undefined; include_system?: boolean | undefined; }' is not assignable to type '{ child_id: string; since_index?: number; since_ts?: number; limit?: number; format?: "json" | "text"; include_system?: boolean; }' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+      Types of property 'since_index' are incompatible.
+        Type 'number | undefined' is not assignable to type 'number'.
+          Type 'undefined' is not assignable to type 'number'.
+src/orchestrator/runtime.ts(4460,54): error TS2379: Argument of type '{ sinceIndex: number | undefined; sinceTs: number | undefined; limit: number | undefined; }' is not assignable to parameter of type 'TranscriptSliceOptions' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'sinceIndex' are incompatible.
+    Type 'number | undefined' is not assignable to type 'number'.
+      Type 'undefined' is not assignable to type 'number'.
+src/orchestrator/runtime.ts(4479,3): error TS2345: Argument of type '(input: { mode?: "recent" | "pending" | "live"; job_id?: string; child_id?: string; limit?: number; order?: "asc" | "desc"; min_seq?: number; }) => Promise<{ content: { type: "text"; text: string; }[]; }>' is not assignable to parameter of type '(args: { child_id?: string | undefined; limit?: number | undefined; job_id?: string | undefined; order?: "asc" | "desc" | undefined; mode?: "pending" | "recent" | "live" | undefined; min_seq?: number | undefined; }, extra: RequestHandlerExtra<...>) => { ...; } | Promise<...>'.
+  Types of parameters 'input' and 'args' are incompatible.
+    Type '{ child_id?: string | undefined; limit?: number | undefined; job_id?: string | undefined; order?: "asc" | "desc" | undefined; mode?: "pending" | "recent" | "live" | undefined; min_seq?: number | undefined; }' is not assignable to type '{ mode?: "pending" | "recent" | "live"; job_id?: string; child_id?: string; limit?: number; order?: "asc" | "desc"; min_seq?: number; }' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+      Types of property 'mode' are incompatible.
+        Type '"pending" | "recent" | "live" | undefined' is not assignable to type '"pending" | "recent" | "live"'.
+          Type 'undefined' is not assignable to type '"pending" | "recent" | "live"'.
+src/orchestrator/runtime.ts(4494,38): error TS2379: Argument of type '{ job_id: string | undefined; child_id: string | undefined; limit: number | undefined; order: "asc" | "desc" | undefined; min_seq: number | undefined; }' is not assignable to parameter of type '{ job_id?: string; child_id?: string; limit?: number; order?: "asc" | "desc"; min_seq?: number; }' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'job_id' are incompatible.
+    Type 'string | undefined' is not assignable to type 'string'.
+      Type 'undefined' is not assignable to type 'string'.
+src/orchestrator/runtime.ts(4529,36): error TS2379: Argument of type '{ child_id?: string | undefined; limit?: number | undefined; job_id?: string | undefined; order?: "asc" | "desc" | undefined; min_seq?: number | undefined; }' is not assignable to parameter of type '{ job_id?: string; child_id?: string; limit?: number; order?: "asc" | "desc"; min_seq?: number; }' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'job_id' are incompatible.
+    Type 'string | undefined' is not assignable to type 'string'.
+      Type 'undefined' is not assignable to type 'string'.
+src/orchestrator/runtime.ts(4540,3): error TS2345: Argument of type '(input: { action: "start" | "stop"; path?: string; interval_ms?: number; }) => Promise<{ isError: boolean; content: { type: "text"; text: string; }[]; } | { content: { type: "text"; text: string; }[]; }>' is not assignable to parameter of type '(args: { action: "start" | "stop"; path?: string | undefined; interval_ms?: number | undefined; }, extra: RequestHandlerExtra<ServerRequest, ServerNotification>) => { ...; } | Promise<...>'.
+  Types of parameters 'input' and 'args' are incompatible.
+    Type '{ action: "start" | "stop"; path?: string | undefined; interval_ms?: number | undefined; }' is not assignable to type '{ action: "start" | "stop"; path?: string; interval_ms?: number; }' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+      Types of property 'path' are incompatible.
+        Type 'string | undefined' is not assignable to type 'string'.
+          Type 'undefined' is not assignable to type 'string'.
+src/orchestrator/runtime.ts(4609,3): error TS2345: Argument of type '(input: { max_transcript_per_child?: number; max_event_nodes?: number; }) => Promise<{ content: { type: "text"; text: string; }[]; }>' is not assignable to parameter of type '(args: { max_transcript_per_child?: number | undefined; max_event_nodes?: number | undefined; }, extra: RequestHandlerExtra<ServerRequest, ServerNotification>) => { ...; } | Promise<...>'.
+  Types of parameters 'input' and 'args' are incompatible.
+    Type '{ max_transcript_per_child?: number | undefined; max_event_nodes?: number | undefined; }' is not assignable to type '{ max_transcript_per_child?: number; max_event_nodes?: number; }' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+      Types of property 'max_transcript_per_child' are incompatible.
+        Type 'number | undefined' is not assignable to type 'number'.
+          Type 'undefined' is not assignable to type 'number'.
+src/orchestrator/runtime.ts(4610,35): error TS2379: Argument of type '{ maxTranscriptPerChild: number | undefined; maxEventNodes: number | undefined; }' is not assignable to parameter of type 'Partial<{ maxTranscriptPerChild: number; maxEventNodes: number; }>' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'maxTranscriptPerChild' are incompatible.
+    Type 'number | undefined' is not assignable to type 'number'.
+      Type 'undefined' is not assignable to type 'number'.
+src/orchestrator/runtime.ts(4911,3): error TS2345: Argument of type '(input: { kind: "neighbors" | "filter"; node_id?: string; direction?: "out" | "in" | "both"; edge_type?: string; select?: "nodes" | "edges" | "both"; where?: Record<string, string | number | boolean>; limit?: number; }) => Promise<...>' is not assignable to parameter of type '(args: { kind: "filter" | "neighbors"; limit?: number | undefined; direction?: "out" | "in" | "both" | undefined; node_id?: string | undefined; edge_type?: string | undefined; select?: "nodes" | ... 2 more ... | undefined; where?: Record<...> | undefined; }, extra: RequestHandlerExtra<...>) => { ...; } | Promise<...>'.
+  Types of parameters 'input' and 'args' are incompatible.
+    Type '{ kind: "filter" | "neighbors"; limit?: number | undefined; direction?: "out" | "in" | "both" | undefined; node_id?: string | undefined; edge_type?: string | undefined; select?: "nodes" | "both" | "edges" | undefined; where?: Record<...> | undefined; }' is not assignable to type '{ kind: "filter" | "neighbors"; node_id?: string; direction?: "out" | "in" | "both"; edge_type?: string; select?: "nodes" | "both" | "edges"; where?: Record<string, string | number | boolean>; limit?: number; }' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+      Types of property 'node_id' are incompatible.
+        Type 'string | undefined' is not assignable to type 'string'.
+          Type 'undefined' is not assignable to type 'string'.
+src/orchestrator/runtime.ts(4952,57): error TS2379: Argument of type '{ knowledgeGraph: KnowledgeGraph | undefined; knowledgeEnabled: boolean; }' is not assignable to parameter of type 'GraphGenerationContext' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'knowledgeGraph' are incompatible.
+    Type 'KnowledgeGraph | undefined' is not assignable to type 'KnowledgeGraph | null'.
+      Type 'undefined' is not assignable to type 'KnowledgeGraph | null'.
+src/orchestrator/runtime.ts(5419,54): error TS2379: Argument of type '{ graph: { name: string; nodes: { id: string; label?: string | undefined; attributes?: Record<string, string | number | boolean> | undefined; }[]; edges: { from: string; to: string; label?: string | undefined; attributes?: Record<...> | undefined; weight?: number | undefined; }[]; metadata?: Record<...> | undefined;...' is not assignable to parameter of type 'SubgraphExtractionOptions' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'directoryName' are incompatible.
+    Type 'string | undefined' is not assignable to type 'string'.
+      Type 'undefined' is not assignable to type 'string'.
+src/orchestrator/runtime.ts(7419,15): error TS2375: Type '{ runtime: string; name: string; system?: string | undefined; goals?: string[] | undefined; }' is not assignable to type 'SpawnChildSpec' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'system' are incompatible.
+    Type 'string | undefined' is not assignable to type 'string'.
+      Type 'undefined' is not assignable to type 'string'.
+src/orchestrator/runtime.ts(7481,74): error TS2345: Argument of type '{ entries: { prompt: { system?: string | string[] | undefined; user?: string | string[] | undefined; assistant?: string | string[] | undefined; }; role?: string | undefined; limits?: Record<string, string | ... 2 more ... | null> | undefined; ... 6 more ...; ready_timeout_ms?: number | undefined; }[]; }' is not assignable to parameter of type 'ChildBatchCreateRequest'.
+  Types of property 'entries' are incompatible.
+    Type '{ prompt: { system?: string | string[] | undefined; user?: string | string[] | undefined; assistant?: string | string[] | undefined; }; role?: string | undefined; limits?: Record<string, string | number | boolean | null> | undefined; ... 6 more ...; ready_timeout_ms?: number | undefined; }[]' is not assignable to type 'ChildSpawnCodexRequest[]'.
+      Type '{ prompt: { system?: string | string[] | undefined; user?: string | string[] | undefined; assistant?: string | string[] | undefined; }; role?: string | undefined; limits?: Record<string, string | number | boolean | null> | undefined; ... 6 more ...; ready_timeout_ms?: number | undefined; }' is not assignable to type 'ChildSpawnCodexRequest' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+        Types of property 'op_id' are incompatible.
+          Type 'string | undefined' is not assignable to type 'string'.
+            Type 'undefined' is not assignable to type 'string'.
+src/orchestrator/runtime.ts(7518,73): error TS2379: Argument of type '{ prompt: { system?: string | string[] | undefined; user?: string | string[] | undefined; assistant?: string | string[] | undefined; }; role?: string | undefined; limits?: Record<string, string | number | boolean | null> | undefined; ... 6 more ...; ready_timeout_ms?: number | undefined; }' is not assignable to parameter of type 'ChildSpawnCodexRequest' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'op_id' are incompatible.
+    Type 'string | undefined' is not assignable to type 'string'.
+      Type 'undefined' is not assignable to type 'string'.
+src/orchestrator/runtime.ts(7552,69): error TS2379: Argument of type '{ child_id: string; manifest_extras?: Record<string, unknown> | undefined; }' is not assignable to parameter of type 'ChildAttachRequest' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'manifest_extras' are incompatible.
+    Type 'Record<string, unknown> | undefined' is not assignable to type 'Record<string, unknown>'.
+      Type 'undefined' is not assignable to type 'Record<string, unknown>'.
+src/orchestrator/runtime.ts(7579,70): error TS2379: Argument of type '{ role: string; child_id: string; manifest_extras?: Record<string, unknown> | undefined; }' is not assignable to parameter of type 'ChildSetRoleRequest' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'manifest_extras' are incompatible.
+    Type 'Record<string, unknown> | undefined' is not assignable to type 'Record<string, unknown>'.
+      Type 'undefined' is not assignable to type 'Record<string, unknown>'.
+src/orchestrator/runtime.ts(7606,72): error TS2379: Argument of type '{ child_id: string; limits?: Record<string, string | number | boolean | null> | undefined; manifest_extras?: Record<string, unknown> | undefined; }' is not assignable to parameter of type 'ChildSetLimitsRequest' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'limits' are incompatible.
+    Type 'Record<string, string | number | boolean | null> | undefined' is not assignable to type 'ChildRuntimeLimits | null'.
+      Type 'undefined' is not assignable to type 'ChildRuntimeLimits | null'.
+src/orchestrator/runtime.ts(7642,9): error TS2412: Type '{ system?: string | string[] | undefined; user?: string | string[] | undefined; assistant?: string | string[] | undefined; } | undefined' is not assignable to type '{ system?: string | string[]; user?: string | string[]; assistant?: string | string[]; } | undefined' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the type of the target.
+src/orchestrator/runtime.ts(7682,29): error TS2379: Argument of type '{ actor: string; phase: "prompt"; childId: string | undefined; content: string; metadata: { topics: string[]; tags: string[]; count: number; source: string; }; }' is not assignable to parameter of type 'CognitiveLogEvent' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'childId' are incompatible.
+    Type 'string | undefined' is not assignable to type 'string'.
+      Type 'undefined' is not assignable to type 'string'.
+src/orchestrator/runtime.ts(7697,65): error TS2345: Argument of type '{ system?: string | string[] | undefined; user?: string | string[] | undefined; assistant?: string | string[] | undefined; } | undefined' is not assignable to parameter of type 'PromptBlueprint | null | undefined'.
+  Type '{ system?: string | string[] | undefined; user?: string | string[] | undefined; assistant?: string | string[] | undefined; }' is not assignable to type 'PromptBlueprint' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+    Types of property 'system' are incompatible.
+      Type 'string | string[] | undefined' is not assignable to type 'string | string[]'.
+        Type 'undefined' is not assignable to type 'string | string[]'.
+src/orchestrator/runtime.ts(7698,65): error TS2345: Argument of type '{ system?: string | string[] | undefined; user?: string | string[] | undefined; assistant?: string | string[] | undefined; } | undefined' is not assignable to parameter of type 'PromptBlueprint | null | undefined'.
+  Type '{ system?: string | string[] | undefined; user?: string | string[] | undefined; assistant?: string | string[] | undefined; }' is not assignable to type 'PromptBlueprint' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+    Types of property 'system' are incompatible.
+      Type 'string | string[] | undefined' is not assignable to type 'string | string[]'.
+        Type 'undefined' is not assignable to type 'string | string[]'.
+src/orchestrator/runtime.ts(7707,19): error TS2379: Argument of type '{ kind: "PROMPT"; source: "orchestrator"; childId: string | undefined; payload: { operation: string; lessons_prompt: { tags: string[]; source: "child_create" | "plan_fanout"; topics: string[]; total_lessons: number; before: { ...; }[]; after: { ...; }[]; diff: { ...; }; }; }; }' is not assignable to parameter of type 'PushEventInput' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'childId' are incompatible.
+    Type 'string | undefined' is not assignable to type 'string | null'.
+      Type 'undefined' is not assignable to type 'string | null'.
+src/orchestrator/runtime.ts(7718,69): error TS2379: Argument of type '{ args?: string[] | undefined; command?: string | undefined; metadata?: Record<string, unknown> | undefined; budget?: { messages?: number | undefined; tokens?: number | undefined; tool_calls?: number | undefined; bytes_out?: number | undefined; bytes_in?: number | undefined; wallclock_ms?: number | undefined; } | un...' is not assignable to parameter of type 'ChildCreateRequest' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'op_id' are incompatible.
+    Type 'string | undefined' is not assignable to type 'string'.
+      Type 'undefined' is not assignable to type 'string'.
+src/orchestrator/runtime.ts(7852,29): error TS2379: Argument of type '{ actor: string; phase: "learn"; childId: string | undefined; content: string; metadata: { topic: string; tags: string[]; status: "created" | "reinforced"; occurrences: number; score: number; }; }' is not assignable to parameter of type 'CognitiveLogEvent' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'childId' are incompatible.
+    Type 'string | undefined' is not assignable to type 'string'.
+      Type 'undefined' is not assignable to type 'string'.
+src/orchestrator/runtime.ts(7930,17): error TS2379: Argument of type '{ kind: "COGNITIVE"; level: EventLevel; jobId: string | undefined; childId: string; payload: ChildMetaReviewEventPayload; correlation: EventCorrelationHints; }' is not assignable to parameter of type 'PushEventInput' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'jobId' are incompatible.
+    Type 'string | undefined' is not assignable to type 'string | null'.
+      Type 'undefined' is not assignable to type 'string | null'.
+src/orchestrator/runtime.ts(7940,19): error TS2379: Argument of type '{ kind: "COGNITIVE"; level: EventLevel; jobId: string | undefined; childId: string; payload: ChildReflectionEventPayload; correlation: EventCorrelationHints; }' is not assignable to parameter of type 'PushEventInput' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'jobId' are incompatible.
+    Type 'string | undefined' is not assignable to type 'string | null'.
+      Type 'undefined' is not assignable to type 'string | null'.
+src/orchestrator/runtime.ts(8011,63): error TS2379: Argument of type '{ child_id: string; limit?: number | undefined; streams?: ("stdout" | "stderr")[] | undefined; after_sequence?: number | undefined; }' is not assignable to parameter of type 'ChildStreamRequest' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'after_sequence' are incompatible.
+    Type 'number | undefined' is not assignable to type 'number'.
+      Type 'undefined' is not assignable to type 'number'.
+src/orchestrator/runtime.ts(8035,69): error TS2379: Argument of type '{ child_id: string; signal?: string | undefined; timeout_ms?: number | undefined; }' is not assignable to parameter of type 'ChildCancelRequest' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'signal' are incompatible.
+    Type 'string | undefined' is not assignable to type 'string'.
+      Type 'undefined' is not assignable to type 'string'.
+src/orchestrator/runtime.ts(8056,67): error TS2379: Argument of type '{ child_id: string; timeout_ms?: number | undefined; }' is not assignable to parameter of type 'ChildKillRequest' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'timeout_ms' are incompatible.
+    Type 'number | undefined' is not assignable to type 'number'.
+      Type 'undefined' is not assignable to type 'number'.
+src/orchestrator/runtime.ts(8476,54): error TS2379: Argument of type '{ sinceIndex: number | undefined; sinceTs: number | undefined; limit: number | undefined; reverse: boolean | undefined; }' is not assignable to parameter of type 'TranscriptSliceOptions' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'sinceIndex' are incompatible.
+    Type 'number | undefined' is not assignable to type 'number'.
+      Type 'undefined' is not assignable to type 'number'.
+src/orchestrator/runtime.ts(8677,50): error TS2379: Argument of type '{ entryGraph: string | undefined; }' is not assignable to parameter of type '{ entryGraph?: string; }' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'entryGraph' are incompatible.
+    Type 'string | undefined' is not assignable to type 'string'.
+      Type 'undefined' is not assignable to type 'string'.
+src/orchestrator/runtime.ts(8703,22): error TS2379: Argument of type '{ name: string; args: string[]; weightKey: string | undefined; source: "request"; }' is not assignable to parameter of type 'GraphForgeTask' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'weightKey' are incompatible.
+    Type 'string | undefined' is not assignable to type 'string'.
+      Type 'undefined' is not assignable to type 'string'.
+src/orchestrator/runtime.ts(8772,45): error TS2379: Argument of type '{ includeSystem: boolean | undefined; includeGoals: boolean | undefined; }' is not assignable to parameter of type '{ includeSystem?: boolean; includeGoals?: boolean; }' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'includeSystem' are incompatible.
+    Type 'boolean | undefined' is not assignable to type 'boolean'.
+      Type 'undefined' is not assignable to type 'boolean'.
+src/orchestrator/runtime.ts(9037,9): error TS2379: Argument of type '{ signal: AbortSignal; sessionId: undefined; sendNotification: () => Promise<void>; sendRequest: () => Promise<never>; requestId: string | number; requestInfo: { ...; } | undefined; }' is not assignable to parameter of type '{ signal: AbortSignal; sessionId?: string; sendNotification: (notification: unknown) => Promise<void>; sendRequest: (req: unknown, schema?: unknown, options?: unknown) => Promise<unknown>; authInfo?: unknown; requestId: string | ... 1 more ... | null; requestInfo?: { ...; }; }' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'sessionId' are incompatible.
+    Type 'undefined' is not assignable to type 'string'.
+src/orchestrator/runtime.ts(9210,7): error TS2322: Type 'string | null | undefined' is not assignable to type 'string | null'.
+  Type 'undefined' is not assignable to type 'string | null'.
+src/orchestrator/runtime.ts(9525,42): error TS2379: Argument of type '{ cat: "scheduler"; level: "error" | "info"; runId: string | null; opId: string | null; childId: string | null; jobId: string | null; component: string; stage: "jsonrpc_error" | "jsonrpc_request" | "jsonrpc_response"; elapsedMs: number | undefined; kind: string; msg: "jsonrpc_error" | ... 1 more ... | "jsonrpc_respo...' is not assignable to parameter of type 'EventInput<"jsonrpc_error" | "jsonrpc_request" | "jsonrpc_response">' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'elapsedMs' are incompatible.
+    Type 'number | undefined' is not assignable to type 'number | null'.
+      Type 'undefined' is not assignable to type 'number | null'.
+src/orchestrator/runtime.ts(9571,23): error TS2379: Argument of type '{ level: "error" | "info"; message: "jsonrpc_error" | "jsonrpc_request" | "jsonrpc_response"; data: JsonRpcEventPayload; jobId: string | null; runId: string | null; ... 8 more ...; bucketId: string; }' is not assignable to parameter of type 'LogRecordInput' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'ts' are incompatible.
+    Type 'number | undefined' is not assignable to type 'number'.
+      Type 'undefined' is not assignable to type 'number'.
+src/orchestrator/runtime.ts(9573,25): error TS2379: Argument of type '{ level: "error" | "info"; message: "jsonrpc_error" | "jsonrpc_request" | "jsonrpc_response"; data: JsonRpcEventPayload; jobId: string | null; runId: string | null; ... 8 more ...; bucketId: string; }' is not assignable to parameter of type 'LogRecordInput' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'ts' are incompatible.
+    Type 'number | undefined' is not assignable to type 'number'.
+      Type 'undefined' is not assignable to type 'number'.
+src/orchestrator/runtime.ts(9576,25): error TS2379: Argument of type '{ level: "error" | "info"; message: "jsonrpc_error" | "jsonrpc_request" | "jsonrpc_response"; data: JsonRpcEventPayload; jobId: string | null; runId: string | null; ... 8 more ...; bucketId: string; }' is not assignable to parameter of type 'LogRecordInput' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'ts' are incompatible.
+    Type 'number | undefined' is not assignable to type 'number'.
+      Type 'undefined' is not assignable to type 'number'.
+src/orchestrator/runtime.ts(10064,26): error TS2379: Argument of type '{ method: string; requestId: string | number | null; childId: string | null; transport: string | undefined; }' is not assignable to parameter of type 'TraceAnnotation' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'transport' are incompatible.
+    Type 'string | undefined' is not assignable to type 'string | null'.
+      Type 'undefined' is not assignable to type 'string | null'.
+src/orchestrator/runtime.ts(10069,5): error TS2379: Argument of type '{ method: string; requestId: string | number | null; childId: string | null; transport: string | undefined; bytesIn: number; }' is not assignable to parameter of type 'RpcTraceOptions' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'transport' are incompatible.
+    Type 'string | undefined' is not assignable to type 'string | null'.
+      Type 'undefined' is not assignable to type 'string | null'.
+src/orchestrator/runtime.ts(10072,28): error TS2379: Argument of type '{ method: string; requestId: string | number | null; childId: string | null; transport: string | undefined; }' is not assignable to parameter of type 'TraceAnnotation' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'transport' are incompatible.
+    Type 'string | undefined' is not assignable to type 'string | null'.
+      Type 'undefined' is not assignable to type 'string | null'.
+src/planner/domain.ts(196,3): error TS2375: Type '{ id: string; tasks: { id: string; tool: string; resources: { name: string; quantity?: number | undefined; unit?: string | undefined; }[]; depends_on: string[]; preconditions: { description: string; kind: "pre" | ... 1 more ... | "invariant"; id?: string | undefined; expression?: string | undefined; }[]; ... 6 more ...' is not assignable to type 'PlannerPlan' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'version' are incompatible.
+    Type 'string | undefined' is not assignable to type 'string'.
+      Type 'undefined' is not assignable to type 'string'.
+src/planner/schedule.ts(141,26): error TS2379: Argument of type '{ id: string; name: string | undefined; description: string | undefined; dependsOn: string[]; estimatedDurationMs: number; earliestStartMs: number; earliestFinishMs: number; latestStartMs: number; latestFinishMs: number; slackMs: number; level: number; resources: PlannerResourceRequest[]; }' is not assignable to parameter of type 'PlanScheduleTask' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'name' are incompatible.
+    Type 'string | undefined' is not assignable to type 'string'.
+      Type 'undefined' is not assignable to type 'string'.
+src/reasoning/thoughtCoordinator.ts(123,5): error TS2412: Type 'StructuredLogger | undefined' is not assignable to type 'StructuredLogger' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the type of the target.
+  Type 'undefined' is not assignable to type 'StructuredLogger'.
+src/reasoning/thoughtCoordinator.ts(124,5): error TS2412: Type 'MetaCritic | undefined' is not assignable to type 'MetaCritic' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the type of the target.
+  Type 'undefined' is not assignable to type 'MetaCritic'.
+src/reasoning/thoughtCoordinator.ts(125,5): error TS2412: Type 'ValueGraph | undefined' is not assignable to type 'ValueGraph' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the type of the target.
+  Type 'undefined' is not assignable to type 'ValueGraph'.
+src/resources/registry.ts(697,3): error TS2375: Type '{ descriptor: ResourceWatchRunFilters; levelSet: Set<string> | undefined; kindSet: Set<string> | undefined; jobIdSet: Set<string> | undefined; ... 10 more ...; maxElapsedMs: number | null; }' is not assignable to type 'NormalisedRunEventFilter' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'levelSet' are incompatible.
+    Type 'Set<string> | undefined' is not assignable to type 'ReadonlySet<string>'.
+      Type 'undefined' is not assignable to type 'ReadonlySet<string>'.
+src/resources/registry.ts(772,3): error TS2375: Type '{ descriptor: ResourceWatchChildFilters; streamSet: Set<"stdout" | "stderr" | "meta"> | undefined; jobIdSet: Set<string> | undefined; ... 5 more ...; untilTs: number | null; }' is not assignable to type 'NormalisedChildLogFilter' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'streamSet' are incompatible.
+    Type 'Set<"stdout" | "stderr" | "meta"> | undefined' is not assignable to type 'ReadonlySet<"stdout" | "stderr" | "meta">'.
+      Type 'undefined' is not assignable to type 'ReadonlySet<"stdout" | "stderr" | "meta">'.
+src/resources/registry.ts(1270,3): error TS2375: Type '{ descriptor: ResourceWatchBlackboardFilters; keyMatcher: ((key: string) => boolean) | undefined; kindSet: Set<BlackboardEventKind> | undefined; tagSet: Set<...> | undefined; sinceTs: number | null; untilTs: number | null; }' is not assignable to type 'NormalisedBlackboardFilter' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'keyMatcher' are incompatible.
+    Type '((key: string) => boolean) | undefined' is not assignable to type '(candidate: string) => boolean'.
+      Type 'undefined' is not assignable to type '(candidate: string) => boolean'.
+src/resources/registry.ts(1675,11): error TS2375: Type '{ kind: ValidationResourceKind; sessionId: string; runId: string | null; phase: string | null; artifactType: "logs" | "events" | "inputs" | "outputs"; name: string; recordedAt: number; mime: string; data: unknown; metadata: Record<...> | undefined; }' is not assignable to type 'ValidationArtifactRecord' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'metadata' are incompatible.
+    Type 'Record<string, unknown> | undefined' is not assignable to type 'Record<string, unknown>'.
+      Type 'undefined' is not assignable to type 'Record<string, unknown>'.
+src/server/toolErrors.ts(180,5): error TS2412: Type 'string | undefined' is not assignable to type 'string' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the type of the target.
+  Type 'undefined' is not assignable to type 'string'.
+src/sim/sandbox.ts(136,7): error TS2375: Type '{ action: string; status: "skipped"; startedAt: number; finishedAt: number; durationMs: number; reason: string; metadata: Record<string, unknown> | undefined; }' is not assignable to type 'SandboxExecutionResult' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'metadata' are incompatible.
+    Type 'Record<string, unknown> | undefined' is not assignable to type 'Record<string, unknown>'.
+      Type 'undefined' is not assignable to type 'Record<string, unknown>'.
+src/sim/sandbox.ts(151,11): error TS2375: Type '{ action: string; payload: unknown; metadata: Record<string, unknown> | undefined; timeoutMs: number; signal: AbortSignal; }' is not assignable to type 'SandboxExecutionRequest' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'metadata' are incompatible.
+    Type 'Record<string, unknown> | undefined' is not assignable to type 'Record<string, unknown>'.
+      Type 'undefined' is not assignable to type 'Record<string, unknown>'.
+src/sim/sandbox.ts(195,7): error TS2375: Type '{ action: string; status: "timeout"; startedAt: number; finishedAt: number; durationMs: number; reason: string; metadata: Record<string, unknown> | undefined; }' is not assignable to type 'SandboxExecutionResult' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'metadata' are incompatible.
+    Type 'Record<string, unknown> | undefined' is not assignable to type 'Record<string, unknown>'.
+      Type 'undefined' is not assignable to type 'Record<string, unknown>'.
+src/sim/sandbox.ts(208,7): error TS2375: Type '{ action: string; status: "error"; startedAt: number; finishedAt: number; durationMs: number; error: { name: string; message: string; }; reason: string; metadata: Record<string, unknown> | undefined; }' is not assignable to type 'SandboxExecutionResult' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'metadata' are incompatible.
+    Type 'Record<string, unknown> | undefined' is not assignable to type 'Record<string, unknown>'.
+      Type 'undefined' is not assignable to type 'Record<string, unknown>'.
+src/sim/sandbox.ts(225,7): error TS2375: Type '{ action: string; status: "error"; startedAt: number; finishedAt: number; durationMs: number; preview: unknown; metrics: Record<string, number> | undefined; error: { name: string; message: string; }; reason: string; metadata: Record<...> | undefined; }' is not assignable to type 'SandboxExecutionResult' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'metrics' are incompatible.
+    Type 'Record<string, number> | undefined' is not assignable to type 'Record<string, number>'.
+      Type 'undefined' is not assignable to type 'Record<string, number>'.
+src/sim/sandbox.ts(239,5): error TS2375: Type '{ action: string; status: "ok"; startedAt: number; finishedAt: number; durationMs: number; preview: unknown; metrics: Record<string, number> | undefined; metadata: Record<string, unknown> | undefined; }' is not assignable to type 'SandboxExecutionResult' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'metrics' are incompatible.
+    Type 'Record<string, number> | undefined' is not assignable to type 'Record<string, number>'.
+      Type 'undefined' is not assignable to type 'Record<string, number>'.
+src/strategies/hypotheses.ts(176,29): error TS2375: Type '{ tags: string[] | undefined; id: string; summary: string; effort: number; risk: number; domain?: string; }' is not assignable to type 'PlanStep' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'tags' are incompatible.
+    Type 'string[] | undefined' is not assignable to type 'string[]'.
+      Type 'undefined' is not assignable to type 'string[]'.
+src/strategies/hypotheses.ts(262,3): error TS2322: Type '{ tags: string[] | undefined; id: string; summary: string; effort: number; risk: number; domain?: string; }[]' is not assignable to type 'PlanStep[]'.
+  Type '{ tags: string[] | undefined; id: string; summary: string; effort: number; risk: number; domain?: string; }' is not assignable to type 'PlanStep' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+    Types of property 'tags' are incompatible.
+      Type 'string[] | undefined' is not assignable to type 'string[]'.
+        Type 'undefined' is not assignable to type 'string[]'.
+src/tools/causalTools.ts(74,70): error TS2379: Argument of type '{ maxDepth: number | undefined; }' is not assignable to parameter of type '{ maxDepth?: number; }' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'maxDepth' are incompatible.
+    Type 'number | undefined' is not assignable to type 'number'.
+      Type 'undefined' is not assignable to type 'number'.
+src/tools/child_orchestrate.ts(164,5): error TS2322: Type '{ charge: SerialisedBudgetUsage; metadata: BudgetUsageMetadata | undefined; } | null' is not assignable to type '(BudgetUsageRecord & { charge: SerialisedBudgetUsage; }) | null'.
+  Type '{ charge: SerialisedBudgetUsage; metadata: BudgetUsageMetadata | undefined; }' is not assignable to type 'BudgetUsageRecord & { charge: SerialisedBudgetUsage; }' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+    Type '{ charge: SerialisedBudgetUsage; metadata: BudgetUsageMetadata | undefined; }' is not assignable to type 'BudgetUsageRecord' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+      Types of property 'metadata' are incompatible.
+        Type 'BudgetUsageMetadata | undefined' is not assignable to type 'BudgetUsageMetadata'.
+          Type 'undefined' is not assignable to type 'BudgetUsageMetadata'.
+src/tools/child_orchestrate.ts(547,60): error TS2379: Argument of type '{ manifestExtras: Record<string, unknown> | undefined; limits: Record<string, string | number | boolean | null> | null; role: string | null; toolsAllow: string[] | null; ... 9 more ...; env: Record<...> | undefined; }' is not assignable to parameter of type 'CreateChildOptions' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'childId' are incompatible.
+    Type 'string | undefined' is not assignable to type 'string'.
+      Type 'undefined' is not assignable to type 'string'.
+src/tools/child_orchestrate.ts(627,67): error TS2379: Argument of type '{ timeoutMs: number | undefined; }' is not assignable to parameter of type '{ timeoutMs?: number; }' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'timeoutMs' are incompatible.
+    Type 'number | undefined' is not assignable to type 'number'.
+      Type 'undefined' is not assignable to type 'number'.
+src/tools/child_orchestrate.ts(631,72): error TS2379: Argument of type '{ signal: Signal; timeoutMs: number | undefined; }' is not assignable to parameter of type '{ signal?: Signal; timeoutMs?: number; }' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'timeoutMs' are incompatible.
+    Type 'number | undefined' is not assignable to type 'number'.
+      Type 'undefined' is not assignable to type 'number'.
+src/tools/child_orchestrate.ts(655,67): error TS2379: Argument of type '{ timeoutMs: number | undefined; }' is not assignable to parameter of type '{ timeoutMs?: number; }' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'timeoutMs' are incompatible.
+    Type 'number | undefined' is not assignable to type 'number'.
+      Type 'undefined' is not assignable to type 'number'.
+src/tools/graph/query.ts(711,61): error TS2379: Argument of type '{ k: number; objective: "min-cut" | "community"; seed: number | undefined; maxIterations: number; }' is not assignable to parameter of type 'GraphPartitionOptions' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'seed' are incompatible.
+    Type 'number | undefined' is not assignable to type 'number'.
+      Type 'undefined' is not assignable to type 'number'.
+src/tools/graph/query.ts(899,3): error TS2322: Type '{ attribute: string; defaultValue: number | undefined; scale: number | undefined; }' is not assignable to type 'string | EdgeCostDescriptor | undefined'.
+  Type '{ attribute: string; defaultValue: number | undefined; scale: number | undefined; }' is not assignable to type 'EdgeCostDescriptor' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+    Types of property 'defaultValue' are incompatible.
+      Type 'number | undefined' is not assignable to type 'number'.
+        Type 'undefined' is not assignable to type 'number'.
+src/tools/graph/query.ts(903,5): error TS1360: Type '{ attribute: string; defaultValue: number | undefined; scale: number | undefined; }' does not satisfy the expected type 'EdgeCostDescriptor'.
+  Types of property 'defaultValue' are incompatible.
+    Type 'number | undefined' is not assignable to type 'number'.
+      Type 'undefined' is not assignable to type 'number'.
+src/tools/graph/query.ts(1372,64): error TS2379: Argument of type '{ durationAttribute: string; fallbackDurationAttribute: string | undefined; defaultDuration: number; }' is not assignable to parameter of type '{ durationAttribute: string; fallbackDurationAttribute?: string; defaultDuration: number; }' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'fallbackDurationAttribute' are incompatible.
+    Type 'string | undefined' is not assignable to type 'string'.
+      Type 'undefined' is not assignable to type 'string'.
+src/tools/graph/query.ts(2025,5): error TS2375: Type '{ type: "risk" | "cost" | "makespan"; label: string; attribute: string | undefined; }' is not assignable to type '{ type: "risk" | "cost" | "makespan"; label: string; attribute?: string; }' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'attribute' are incompatible.
+    Type 'string | undefined' is not assignable to type 'string'.
+      Type 'undefined' is not assignable to type 'string'.
+src/tools/graph/query.ts(2267,3): error TS2375: Type '{ op_id: string; objective_details: { key: string; type: "risk" | "cost" | "makespan"; label: string; }[]; candidates: GraphOptimizeMooCandidate[]; pareto_front: GraphOptimizeMooCandidate[]; scalarization: GraphOptimizeMooScalarization | undefined; notes: string[]; }' is not assignable to type 'GraphOptimizeMooResult' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'scalarization' are incompatible.
+    Type 'GraphOptimizeMooScalarization | undefined' is not assignable to type 'GraphOptimizeMooScalarization'.
+      Type 'undefined' is not assignable to type 'GraphOptimizeMooScalarization'.
+src/tools/graph/snapshot.ts(126,9): error TS2375: Type '{ id: string; nodes: { id: string; label: string | undefined; attributes: Record<string, string | number | boolean>; }[]; hyperEdges: { id: string; sources: string[]; targets: string[]; label: string | undefined; weight: number | undefined; attributes: Record<...>; }[]; metadata: Record<...> | undefined; }' is not assignable to type 'HyperGraph' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'nodes' are incompatible.
+    Type '{ id: string; label: string | undefined; attributes: Record<string, string | number | boolean>; }[]' is not assignable to type 'GraphNodeRecord[]'.
+      Type '{ id: string; label: string | undefined; attributes: Record<string, string | number | boolean>; }' is not assignable to type 'GraphNodeRecord' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+        Types of property 'label' are incompatible.
+          Type 'string | undefined' is not assignable to type 'string'.
+            Type 'undefined' is not assignable to type 'string'.
+src/tools/graph/snapshot.ts(128,5): error TS2322: Type '{ id: string; label: string | undefined; attributes: Record<string, string | number | boolean>; }[]' is not assignable to type 'GraphNodeRecord[]'.
+  Type '{ id: string; label: string | undefined; attributes: Record<string, string | number | boolean>; }' is not assignable to type 'GraphNodeRecord' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+    Types of property 'label' are incompatible.
+      Type 'string | undefined' is not assignable to type 'string'.
+        Type 'undefined' is not assignable to type 'string'.
+src/tools/graph/snapshot.ts(133,5): error TS2322: Type '{ id: string; sources: string[]; targets: string[]; label: string | undefined; weight: number | undefined; attributes: Record<string, string | number | boolean>; }[]' is not assignable to type 'HyperEdge[]'.
+  Type '{ id: string; sources: string[]; targets: string[]; label: string | undefined; weight: number | undefined; attributes: Record<string, string | number | boolean>; }' is not assignable to type 'HyperEdge' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+    Types of property 'label' are incompatible.
+      Type 'string | undefined' is not assignable to type 'string'.
+        Type 'undefined' is not assignable to type 'string'.
+src/tools/graph/snapshot.ts(140,7): error TS1360: Type '{ id: string; sources: string[]; targets: string[]; label: string | undefined; weight: number | undefined; attributes: Record<string, string | number | boolean>; }' does not satisfy the expected type 'HyperEdge'.
+  Types of property 'label' are incompatible.
+    Type 'string | undefined' is not assignable to type 'string'.
+      Type 'undefined' is not assignable to type 'string'.
+src/tools/graph/snapshot.ts(144,51): error TS2379: Argument of type '{ graphVersion: number | undefined; }' is not assignable to parameter of type 'HyperProjectionOptions' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'graphVersion' are incompatible.
+    Type 'number | undefined' is not assignable to type 'number'.
+      Type 'undefined' is not assignable to type 'number'.
+src/tools/knowledgeTools.ts(191,7): error TS2322: Type '{ type: "kg" | "url" | "file" | "db" | "rag"; sourceId: string; span?: [number, number] | undefined; confidence?: number | undefined; }[]' is not assignable to type 'Provenance[]'.
+  Type '{ type: "kg" | "url" | "file" | "db" | "rag"; sourceId: string; span?: [number, number] | undefined; confidence?: number | undefined; }' is not assignable to type 'Provenance' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+    Types of property 'span' are incompatible.
+      Type '[number, number] | undefined' is not assignable to type '[number, number]'.
+        Type 'undefined' is not assignable to type '[number, number]'.
+src/tools/knowledgeTools.ts(303,5): error TS2375: Type '{ preferredSources: string[] | undefined; excludeTasks: string[] | undefined; maxFragments: number | undefined; }' is not assignable to type 'PlanAssistContext' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'preferredSources' are incompatible.
+    Type 'string[] | undefined' is not assignable to type 'string[]'.
+      Type 'undefined' is not assignable to type 'string[]'.
+src/tools/knowledgeTools.ts(396,69): error TS2379: Argument of type '{ query: string; context: string | undefined; limit: number; ragRetriever: HybridRetriever | undefined; ragLimit: number; ragMinScore: number; domainTags: string[]; }' is not assignable to parameter of type 'KnowledgeAssistOptions' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'context' are incompatible.
+    Type 'string | undefined' is not assignable to type 'string'.
+      Type 'undefined' is not assignable to type 'string'.
+src/tools/knowledgeTools.ts(478,54): error TS2379: Argument of type '{ limit: number; minScore: number; requiredTags: string[] | undefined; }' is not assignable to parameter of type 'HybridRetrieverSearchOptions' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'requiredTags' are incompatible.
+    Type 'string[] | undefined' is not assignable to type 'string[]'.
+      Type 'undefined' is not assignable to type 'string[]'.
+src/tools/memory_upsert.ts(182,59): error TS2379: Argument of type '{ id: string | undefined; text: string; tags: string[] | undefined; metadata: { [k: string]: unknown; } | undefined; createdAt: number | undefined; }' is not assignable to parameter of type 'VectorDocumentInput' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+  Types of property 'id' are incompatible.
+    Type 'string | undefined' is not assignable to type 'string'.
+      Type 'undefined' is not assignable to type 'string'.
+src/tools/planTools.ts(2639,51): error TS2345: Argument of type '{ id: string; nodes: ({ kind: "task"; id: string; attributes: Record<string, string | number | boolean>; inputs?: string[] | undefined; label?: string | undefined; outputs?: string[] | undefined; } | { ...; })[]; edges: { ...; }[]; }' is not assignable to parameter of type 'HierGraph'.
+  Types of property 'nodes' are incompatible.
+    Type '({ kind: "task"; id: string; attributes: Record<string, string | number | boolean>; inputs?: string[] | undefined; label?: string | undefined; outputs?: string[] | undefined; } | { ...; })[]' is not assignable to type 'HierNode[]'.
+      Type '{ kind: "task"; id: string; attributes: Record<string, string | number | boolean>; inputs?: string[] | undefined; label?: string | undefined; outputs?: string[] | undefined; } | { ...; }' is not assignable to type 'HierNode'.
+        Type '{ kind: "task"; id: string; attributes: Record<string, string | number | boolean>; inputs?: string[] | undefined; label?: string | undefined; outputs?: string[] | undefined; }' is not assignable to type 'HierNode'.
+          Type '{ kind: "task"; id: string; attributes: Record<string, string | number | boolean>; inputs?: string[] | undefined; label?: string | undefined; outputs?: string[] | undefined; }' is not assignable to type 'TaskNode' with 'exactOptionalPropertyTypes: true'. Consider adding 'undefined' to the types of the target's properties.
+            Types of property 'label' are incompatible.
+              Type 'string | undefined' is not assignable to type 'string'.
+                Type 'undefined' is not assignable to type 'string'.
+Files:                         442
+Lines of Library:            10710
+Lines of Definitions:       127721
+Lines of TypeScript:         99861
+Lines of JavaScript:             0
+Lines of JSON:                   0
+Lines of Other:                  0
+Identifiers:                342763
+Symbols:                    443580
+Types:                      170323
+Instantiations:             581086
+Memory used:               525124K
+Assignability cache size:    64259
+Identity cache size:          2125
+Subtype cache size:           2228
+Strict subtype cache size:    3237
+I/O Read time:               0.22s
+Parse time:                  3.18s
+ResolveModule time:          0.16s
+ResolveTypeReference time:   0.01s
+ResolveLibrary time:         0.02s
+Program time:                3.77s
+Bind time:                   1.62s
+Check time:                 25.72s
+printTime time:              0.00s
+Emit time:                   0.00s
+Total time:                 31.12s

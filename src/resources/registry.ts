@@ -694,18 +694,24 @@ function normaliseRunEventFilter(
     return null;
   }
 
+  // Build the normalised filter lazily so optional set projections are omitted
+  // when callers do not provide matching criteria.
+  // Emit optional filter projections lazily so watchers never observe explicit
+  // `undefined` placeholders in the normalised descriptor.
+  // Normalise blackboard filters without introducing explicit `undefined`
+  // placeholders so strict optional typing remains satisfied.
   return {
     descriptor,
-    levelSet: levelValues.length > 0 ? new Set(levelValues) : undefined,
-    kindSet: kindValues.length > 0 ? new Set(kindValues) : undefined,
-    jobIdSet: jobValues.length > 0 ? new Set(jobValues) : undefined,
-    opIdSet: opValues.length > 0 ? new Set(opValues) : undefined,
-    graphIdSet: graphValues.length > 0 ? new Set(graphValues) : undefined,
-    nodeIdSet: nodeValues.length > 0 ? new Set(nodeValues) : undefined,
-    childIdSet: childValues.length > 0 ? new Set(childValues) : undefined,
-    runIdSet: runValues.length > 0 ? new Set(runValues) : undefined,
-    componentSet: componentValues.length > 0 ? new Set(componentValues) : undefined,
-    stageSet: stageValues.length > 0 ? new Set(stageValues) : undefined,
+    ...(levelValues.length > 0 ? { levelSet: new Set(levelValues) } : {}),
+    ...(kindValues.length > 0 ? { kindSet: new Set(kindValues) } : {}),
+    ...(jobValues.length > 0 ? { jobIdSet: new Set(jobValues) } : {}),
+    ...(opValues.length > 0 ? { opIdSet: new Set(opValues) } : {}),
+    ...(graphValues.length > 0 ? { graphIdSet: new Set(graphValues) } : {}),
+    ...(nodeValues.length > 0 ? { nodeIdSet: new Set(nodeValues) } : {}),
+    ...(childValues.length > 0 ? { childIdSet: new Set(childValues) } : {}),
+    ...(runValues.length > 0 ? { runIdSet: new Set(runValues) } : {}),
+    ...(componentValues.length > 0 ? { componentSet: new Set(componentValues) } : {}),
+    ...(stageValues.length > 0 ? { stageSet: new Set(stageValues) } : {}),
     sinceTs,
     untilTs,
     minElapsedMs,
@@ -771,12 +777,12 @@ function normaliseChildLogFilter(
 
   return {
     descriptor,
-    streamSet: uniqueStreams.length > 0 ? new Set(uniqueStreams) : undefined,
-    jobIdSet: jobValues.length > 0 ? new Set(jobValues) : undefined,
-    runIdSet: runValues.length > 0 ? new Set(runValues) : undefined,
-    opIdSet: opValues.length > 0 ? new Set(opValues) : undefined,
-    graphIdSet: graphValues.length > 0 ? new Set(graphValues) : undefined,
-    nodeIdSet: nodeValues.length > 0 ? new Set(nodeValues) : undefined,
+    ...(uniqueStreams.length > 0 ? { streamSet: new Set(uniqueStreams) } : {}),
+    ...(jobValues.length > 0 ? { jobIdSet: new Set(jobValues) } : {}),
+    ...(runValues.length > 0 ? { runIdSet: new Set(runValues) } : {}),
+    ...(opValues.length > 0 ? { opIdSet: new Set(opValues) } : {}),
+    ...(graphValues.length > 0 ? { graphIdSet: new Set(graphValues) } : {}),
+    ...(nodeValues.length > 0 ? { nodeIdSet: new Set(nodeValues) } : {}),
     sinceTs,
     untilTs,
   };
@@ -1269,9 +1275,9 @@ function normaliseBlackboardFilter(
 
   return {
     descriptor,
-    keyMatcher: keyFilter?.matcher,
-    kindSet: validKinds.length > 0 ? new Set(validKinds) : undefined,
-    tagSet: tagValues.length > 0 ? new Set(tagValues) : undefined,
+    ...(keyFilter?.matcher ? { keyMatcher: keyFilter.matcher } : {}),
+    ...(validKinds.length > 0 ? { kindSet: new Set(validKinds) } : {}),
+    ...(tagValues.length > 0 ? { tagSet: new Set(tagValues) } : {}),
     sinceTs,
     untilTs,
   };
@@ -1672,6 +1678,8 @@ export class ResourceRegistry {
     const kind = validationCategoryToKind(category);
     const uri = `sc://validation/${sessionId}/${category}/${name}`;
 
+    // Persist validation artefacts without emitting optional metadata fields
+    // when callers omit them so strict optional typing remains satisfied.
     const record: ValidationArtifactRecord = {
       kind,
       sessionId,
@@ -1682,7 +1690,7 @@ export class ResourceRegistry {
       recordedAt,
       mime,
       data: clone(input.data),
-      metadata,
+      ...(metadata ? { metadata } : {}),
     };
 
     this.validationArtifacts.set(uri, record);

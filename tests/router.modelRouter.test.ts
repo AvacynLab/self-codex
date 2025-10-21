@@ -119,4 +119,20 @@ describe("ModelRouter", () => {
     expect(decision.model).to.equal("codex-general");
     expect(decision.reason).to.equal("fallback");
   });
+
+  it("omits undefined optional specialist fields when registering configurations", () => {
+    const router = new ModelRouter({ fallbackModel: "codex", acceptanceThreshold: 0.5 });
+    router.registerSpecialist({
+      id: "sanitised",
+      priority: undefined,
+      description: undefined,
+      tags: undefined,
+    });
+
+    const [snapshot] = router.listSpecialists();
+    expect(Object.prototype.hasOwnProperty.call(snapshot, "priority")).to.equal(false);
+    expect(Object.prototype.hasOwnProperty.call(snapshot, "description")).to.equal(false);
+    expect(Object.prototype.hasOwnProperty.call(snapshot, "tags")).to.equal(false);
+    expect(snapshot.available).to.equal(true);
+  });
 });

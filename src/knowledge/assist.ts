@@ -313,11 +313,14 @@ function buildFragment(
     if (typeof task.weight === "number" && Number.isFinite(task.weight)) {
       attributes.kg_weight = round(task.weight);
     }
+    // Optional labels are only attached when present so the graph remains
+    // compatible with exact optional property typing.
+    const label = coerceNullToUndefined(task.label);
     return {
       id: task.id,
       kind: "task" as const,
-      label: coerceNullToUndefined(task.label),
       attributes,
+      ...(label !== undefined ? { label } : {}),
     };
   });
 
@@ -698,9 +701,10 @@ export async function assistKnowledgeQuery(
     Boolean(options.ragRetriever),
   );
 
-  return {
+  // Build the final payload while omitting optional fields when callers do not
+  // provide them, keeping the response compatible with strict optional types.
+  const response: KnowledgeAssistResult = {
     query,
-    context: context || undefined,
     answer,
     citations,
     rationale,
@@ -712,7 +716,10 @@ export async function assistKnowledgeQuery(
     },
     knowledge_evidence: knowledgeEvidence,
     rag_evidence: ragEvidence,
+    ...(context.length > 0 ? { context } : {}),
   };
+
+  return response;
 }
 
 /** Keeps the assist limit within defensive bounds. */
@@ -853,11 +860,14 @@ async function collectRagEvidence(
   domainTags: string[],
 ): Promise<KnowledgeAssistRagEvidence[]> {
   const ragQuery = context ? `${context}\n${query}` : query;
-  const hits: HybridRetrieverHit[] = await retriever.search(ragQuery, {
+  // Ensure the retriever only receives defined option overrides so
+  // `exactOptionalPropertyTypes` can enforce strict omission semantics.
+  const searchOptions: HybridRetrieverSearchOptions = {
     limit,
     minScore,
-    requiredTags: domainTags.length > 0 ? domainTags : undefined,
-  });
+    ...(domainTags.length > 0 ? { requiredTags: domainTags } : {}),
+  };
+  const hits: HybridRetrieverHit[] = await retriever.search(ragQuery, searchOptions);
   if (hits.length === 0) {
     return [];
   }

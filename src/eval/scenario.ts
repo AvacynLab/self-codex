@@ -4,6 +4,8 @@ import { basename, extname, join } from "node:path";
 import YAML from "yaml";
 import { z } from "zod";
 
+import { omitUndefinedEntries } from "../utils/object.js";
+
 /**
  * Definition describing the execution constraints enforced for a scenario. The
  * budget covers wall-clock latency, token usage, and number of tool calls to
@@ -174,6 +176,72 @@ const scenarioSchema = z.object({
   oracles: z.array(oracleSchema).min(1),
 });
 
+type ParsedScenario = z.infer<typeof scenarioSchema>;
+
+function normaliseRegexExpectation(
+  value: { pattern: string; flags?: string } | string | undefined,
+): ScenarioStepExpectation["match"] {
+  if (value === undefined || typeof value === "string") {
+    return value;
+  }
+  return {
+    pattern: value.pattern,
+    ...(value.flags ? { flags: value.flags } : {}),
+  } satisfies Exclude<ScenarioStepExpectation["match"], string | undefined>;
+}
+
+function sanitiseScenario(parsed: ParsedScenario): EvaluationScenario {
+  const featureOverrides =
+    parsed.featureOverrides && Object.keys(parsed.featureOverrides).length > 0
+      ? parsed.featureOverrides
+      : undefined;
+
+  const constraints = omitUndefinedEntries(parsed.constraints);
+
+  const steps: ScenarioStep[] = parsed.steps.map((step) => {
+    const normalisedExpect = omitUndefinedEntries({
+      ...step.expect,
+      match: normaliseRegexExpectation(step.expect.match),
+      notMatch: normaliseRegexExpectation(step.expect.notMatch),
+    });
+    const entries: ScenarioStep = {
+      id: step.id,
+      tool: step.tool,
+      ...(step.description ? { description: step.description } : {}),
+      ...(Object.keys(step.arguments).length > 0 ? { arguments: step.arguments } : {}),
+      ...(Object.keys(normalisedExpect).length > 0 ? { expect: normalisedExpect } : {}),
+    };
+    return entries;
+  });
+
+  const oracles: ScenarioOracle[] = parsed.oracles.map((oracle) => {
+    if (oracle.type === "regex") {
+      return {
+        type: "regex",
+        pattern: oracle.pattern,
+        ...(oracle.flags ? { flags: oracle.flags } : {}),
+        ...(oracle.description ? { description: oracle.description } : {}),
+      } satisfies ScenarioOracle;
+    }
+    return {
+      type: "script",
+      module: oracle.module,
+      ...(oracle.exportName ? { exportName: oracle.exportName } : {}),
+      ...(oracle.description ? { description: oracle.description } : {}),
+    } satisfies ScenarioOracle;
+  });
+
+  return {
+    id: parsed.id,
+    objective: parsed.objective,
+    tags: parsed.tags,
+    ...(featureOverrides ? { featureOverrides } : {}),
+    constraints,
+    steps,
+    oracles,
+  } satisfies EvaluationScenario;
+}
+
 /**
  * Parses raw JSON/YAML data into a validated {@link EvaluationScenario}. The
  * helper attaches default values so runtime code can avoid repetitive null
@@ -185,7 +253,7 @@ export function parseScenario(data: unknown, source = "<inline>"): EvaluationSce
     const message = parsed.error.issues.map((issue) => `${issue.path.join(".") || "<root>"}: ${issue.message}`).join("; ");
     throw new Error(`Failed to parse scenario from ${source}: ${message}`);
   }
-  return parsed.data;
+  return sanitiseScenario(parsed.data);
 }
 
 /**

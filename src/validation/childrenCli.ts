@@ -7,6 +7,7 @@ import {
   generateValidationRunId,
   type HttpEnvironmentSummary,
 } from "./runSetup.js";
+import { omitUndefinedEntries } from "../utils/object.js";
 import {
   CHILDREN_JSONL_FILES,
   runChildrenPhase,
@@ -115,9 +116,13 @@ export async function executeChildrenCli(
     planOverrides.prompt = options.prompt;
   }
 
+  const plan = Object.keys(planOverrides).length ? planOverrides : basePhaseOptions.plan;
+  // NOTE: The CLI only forwards optional overrides when explicitly provided. We
+  // filter out the remaining `undefined` placeholders so the eventual
+  // `ChildPhaseOptions` complies with `exactOptionalPropertyTypes`.
   const phaseOptions: ChildPhaseOptions = {
-    ...basePhaseOptions,
-    plan: Object.keys(planOverrides).length ? planOverrides : basePhaseOptions.plan,
+    ...omitUndefinedEntries({ ...basePhaseOptions }),
+    ...omitUndefinedEntries({ plan }),
   };
 
   const runner = overrides.runner ?? runChildrenPhase;

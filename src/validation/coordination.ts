@@ -230,12 +230,14 @@ export async function runCoordinationPhase(
       body: requestBody,
     });
 
+    // Serialise only defined optional attributes so strict optional typing can
+    // be enabled without surfacing `undefined` artefact fields.
     const executedCall: ExecutedCoordinationCall = {
       scenario: spec.scenario,
       name: spec.name,
       method: spec.method,
-      captureEvents: spec.captureEvents,
-      params,
+      ...(spec.captureEvents !== undefined ? { captureEvents: spec.captureEvents } : {}),
+      ...(params !== undefined ? { params } : {}),
     };
 
     await appendHttpCheckArtefactsToFiles(runRoot, COORDINATION_TARGETS, check, COORDINATION_JSONL_FILES.log);
@@ -711,6 +713,41 @@ export function buildCoordinationSummary(
     }
   }
 
+  // NOTE: The summary deliberately omits properties whose values remained
+  // `undefined` so the structure stays compatible once
+  // `exactOptionalPropertyTypes` enforces strict optional semantics.
+  const blackboardSummary: CoordinationSummary["blackboard"] = {
+    eventCount: watchEvents,
+    ...(blackboardKey !== undefined ? { key: blackboardKey } : {}),
+    ...(blackboardValue !== undefined ? { lastValue: blackboardValue } : {}),
+    ...(blackboardMatches !== undefined ? { queryMatches: blackboardMatches } : {}),
+    ...(watchId !== undefined ? { watchId } : {}),
+  };
+
+  const stigmergySummary: CoordinationSummary["stigmergy"] = {
+    marksApplied,
+    ...(stigDomain !== undefined ? { domain: stigDomain } : {}),
+    lastSnapshot: lastSnapshot ?? null,
+  };
+
+  const contractSummary: CoordinationSummary["contractNet"] = {
+    ...(announcementTopic !== undefined ? { topic: announcementTopic } : {}),
+    ...(announcementId !== undefined ? { announcementId } : {}),
+    ...(proposalCount !== undefined ? { proposalCount } : {}),
+    ...(awardedAgentId !== undefined ? { awardedAgentId } : {}),
+  };
+
+  const consensusSummary: CoordinationSummary["consensus"] = {
+    ...(consensusTopic !== undefined ? { topic: consensusTopic } : {}),
+    ...(consensusOutcome !== undefined ? { outcome: consensusOutcome } : {}),
+    ...(consensusVotes !== undefined ? { votes: consensusVotes } : {}),
+    ...(consensusTie !== undefined ? { tie: consensusTie } : {}),
+    tally: consensusTally ?? null,
+    preferredOutcome: consensusPreferred ?? null,
+    ...(consensusTieBreaker !== undefined ? { tieBreaker: consensusTieBreaker } : {}),
+    tieDetectedFromTally: detectTieFromTally(consensusTally),
+  };
+
   return {
     artefacts: {
       inputsJsonl: join(runRoot, COORDINATION_JSONL_FILES.inputs),
@@ -718,34 +755,10 @@ export function buildCoordinationSummary(
       eventsJsonl: join(runRoot, COORDINATION_JSONL_FILES.events),
       httpSnapshotLog: join(runRoot, COORDINATION_JSONL_FILES.log),
     },
-    blackboard: {
-      key: blackboardKey,
-      lastValue: blackboardValue,
-      queryMatches: blackboardMatches,
-      watchId,
-      eventCount: watchEvents,
-    },
-    stigmergy: {
-      domain: stigDomain,
-      marksApplied,
-      lastSnapshot: lastSnapshot ?? null,
-    },
-    contractNet: {
-      topic: announcementTopic,
-      announcementId,
-      proposalCount,
-      awardedAgentId,
-    },
-    consensus: {
-      topic: consensusTopic,
-      outcome: consensusOutcome,
-      votes: consensusVotes,
-      tie: consensusTie,
-      tally: consensusTally ?? null,
-      preferredOutcome: consensusPreferred ?? null,
-      tieBreaker: consensusTieBreaker,
-      tieDetectedFromTally: detectTieFromTally(consensusTally),
-    },
+    blackboard: blackboardSummary,
+    stigmergy: stigmergySummary,
+    contractNet: contractSummary,
+    consensus: consensusSummary,
   };
 }
 

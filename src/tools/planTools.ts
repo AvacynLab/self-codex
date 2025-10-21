@@ -73,9 +73,15 @@ import {
   buildLessonsPromptPayload,
   normalisePromptMessages,
 } from "../learning/lessonPromptDiff.js";
-import { applyAll, createInlineSubgraphRule, createRerouteAvoidRule, createSplitParallelRule, type RewriteHistoryEntry } from "../graph/rewrite.js";
+import {
+  applyAll,
+  createInlineSubgraphRule,
+  createRerouteAvoidRule,
+  createSplitParallelRule,
+  type RewriteHistoryEntry,
+} from "../graph/rewrite.js";
 import { resolveOperationId } from "./operationIds.js";
-import { flatten } from "../graph/hierarchy.js";
+import { flatten, type Edge as HierEdge, type HierGraph, type HierNode } from "../graph/hierarchy.js";
 import type { NormalisedGraph } from "../graph/types.js";
 import { EventKind, EventLevel } from "../eventStore.js";
 import type { EventCorrelationHints } from "../events/correlation.js";
@@ -91,7 +97,7 @@ import {
 import { BehaviorTreeCancellationError } from "../executor/bt/nodes.js";
 import { GraphDescriptorSchema, normaliseDescriptor } from "./graphTools.js";
 import { ThoughtGraphCoordinator, type ThoughtBranchGuardSnapshot } from "../reasoning/thoughtCoordinator.js";
-import { coerceNullToUndefined, omitUndefinedEntries } from "../utils/object.js";
+import { omitUndefinedEntries } from "../utils/object.js";
 
 /**
  * Type used when emitting orchestration events. The server injects a concrete
@@ -1849,8 +1855,8 @@ export async function handlePlanFanout(
     },
     correlation: eventCorrelation,
     ...omitUndefinedEntries({
-      jobId,
-      childId: coerceNullToUndefined(parentChildId),
+      jobId: jobId ?? undefined,
+      childId: parentChildId ?? undefined,
     }),
   });
 
@@ -2275,12 +2281,12 @@ export async function handlePlanJoin(
       satisfied,
       successes: successes.length,
       failures: failures.length,
-      consensus: consensusPayload,
+      ...(consensusPayload ? { consensus: consensusPayload } : {}),
     },
     correlation: correlationHints,
     ...omitUndefinedEntries({
-      jobId: coerceNullToUndefined(correlationHints.jobId ?? null),
-      childId: coerceNullToUndefined(correlationHints.childId ?? null),
+      jobId: correlationHints.jobId ?? undefined,
+      childId: correlationHints.childId ?? undefined,
     }),
   });
 
@@ -2312,7 +2318,10 @@ export async function handlePlanJoin(
       summary: obs.summary,
       artifacts: obs.outputs?.artifacts ?? [],
     })),
-    consensus: consensusPayload,
+    // Only surface consensus metadata when a decision was computed so JSON
+    // callers do not receive `"consensus": undefined` entries once strict
+    // optional property typing is enabled.
+    ...(consensusPayload ? { consensus: consensusPayload } : {}),
   };
 }
 
@@ -2440,8 +2449,8 @@ export async function handlePlanReduce(
     },
     correlation: correlationHints,
     ...omitUndefinedEntries({
-      jobId: coerceNullToUndefined(correlationHints.jobId ?? null),
-      childId: coerceNullToUndefined(correlationHints.childId ?? null),
+      jobId: correlationHints.jobId ?? undefined,
+      childId: correlationHints.childId ?? undefined,
     }),
   });
 
@@ -2485,7 +2494,7 @@ export async function handlePlanReduce(
         aggregate,
         trace: {
           per_child: summaries,
-          details: Object.keys(traceDetails).length ? traceDetails : undefined,
+          ...(Object.keys(traceDetails).length ? { details: traceDetails } : {}),
         },
       };
       break;
@@ -2805,8 +2814,10 @@ async function executePlanRunBT(
     context.emitEvent({
       kind: "BT_RUN",
       level: phase === "error" ? "error" : "info",
-      jobId: coerceNullToUndefined(jobId ?? null),
-      childId: coerceNullToUndefined(childId ?? null),
+      ...omitUndefinedEntries({
+        jobId: jobId ?? undefined,
+        childId: childId ?? undefined,
+      }),
       payload: eventPayload,
       correlation: eventCorrelation,
     });
@@ -2910,32 +2921,42 @@ async function executePlanRunBT(
     cancellationSignal: cancellation.signal,
     isCancelled: () => cancellation.isCancelled(),
     throwIfCancelled: () => cancellation.throwIfCancelled(),
-    recommendTimeout: loopDetector
-      ? (category: string, complexityScore?: number, fallbackMs?: number) => {
-          try {
-            return loopDetector.recommendTimeout(category, complexityScore ?? 1);
-          } catch (error) {
-            context.logger.warn("bt_timeout_recommendation_failed", {
-              category,
-              fallback_ms: fallbackMs ?? null,
-              message: error instanceof Error ? error.message : String(error),
+    // Inject runtime hints conditionally so `TickRuntime` consumers never receive
+    // explicit `undefined` placeholders when the loop detector feature is
+    // disabled. This keeps the object compatible with
+    // `exactOptionalPropertyTypes` by omitting optional callbacks entirely.
+    // Mirror the conditional injection above so reactive runs also avoid
+    // propagating undefined optional callbacks when the loop detector is not
+    // configured.
+    ...(loopDetector
+      ? {
+          recommendTimeout: (category: string, complexityScore?: number, fallbackMs?: number) => {
+            try {
+              return loopDetector.recommendTimeout(category, complexityScore ?? 1);
+            } catch (error) {
+              context.logger.warn("bt_timeout_recommendation_failed", {
+                category,
+                fallback_ms: fallbackMs ?? null,
+                message: error instanceof Error ? error.message : String(error),
+              });
+              return fallbackMs;
+            }
+          },
+          recordTimeoutOutcome: (
+            category: string,
+            outcome: { durationMs: number; success: boolean; budgetMs: number },
+          ) => {
+            if (!Number.isFinite(outcome.durationMs) || outcome.durationMs <= 0) {
+              return;
+            }
+            loopDetector.recordTaskObservation({
+              taskType: category,
+              durationMs: Math.max(1, Math.round(outcome.durationMs)),
+              success: outcome.success,
             });
-            return fallbackMs;
-          }
+          },
         }
-      : undefined,
-    recordTimeoutOutcome: loopDetector
-      ? (category, outcome) => {
-          if (!Number.isFinite(outcome.durationMs) || outcome.durationMs <= 0) {
-            return;
-          }
-          loopDetector.recordTaskObservation({
-            taskType: category,
-            durationMs: Math.max(1, Math.round(outcome.durationMs)),
-            success: outcome.success,
-          });
-        }
-      : undefined,
+      : {}),
   } satisfies Partial<TickRuntime> & { invokeTool: (tool: string, input: unknown) => Promise<unknown> };
 
   scheduler = new ReactiveScheduler({
@@ -2962,7 +2983,7 @@ async function executePlanRunBT(
     },
     getPheromoneIntensity: (nodeId) => context.stigmergy.getNodeIntensity(nodeId)?.intensity ?? 0,
     getPheromoneBounds: () => context.stigmergy.getIntensityBounds(),
-    causalMemory,
+    ...(causalMemory ? { causalMemory } : {}),
   });
 
   const schedulerRef = scheduler;
@@ -3171,8 +3192,10 @@ async function executePlanRunReactive(
     context.emitEvent({
       kind: "BT_RUN",
       level: phase === "error" ? "error" : "info",
-      jobId: coerceNullToUndefined(jobId ?? null),
-      childId: coerceNullToUndefined(childId ?? null),
+      ...omitUndefinedEntries({
+        jobId: jobId ?? undefined,
+        childId: childId ?? undefined,
+      }),
       payload: eventPayload,
       correlation: eventCorrelation,
     });
@@ -3191,8 +3214,10 @@ async function executePlanRunReactive(
   ) => {
     context.emitEvent({
       kind: "SCHEDULER",
-      jobId: coerceNullToUndefined(jobId ?? null),
-      childId: coerceNullToUndefined(childId ?? null),
+      ...omitUndefinedEntries({
+        jobId: jobId ?? undefined,
+        childId: childId ?? undefined,
+      }),
       payload: {
         msg: message,
         ...correlationLogFields,
@@ -3294,32 +3319,35 @@ async function executePlanRunReactive(
     cancellationSignal: cancellation.signal,
     isCancelled: () => cancellation.isCancelled(),
     throwIfCancelled: () => cancellation.throwIfCancelled(),
-    recommendTimeout: loopDetector
-      ? (category: string, complexityScore?: number, fallbackMs?: number) => {
-          try {
-            return loopDetector.recommendTimeout(category, complexityScore ?? 1);
-          } catch (error) {
-            context.logger.warn("bt_timeout_recommendation_failed", {
-              category,
-              fallback_ms: fallbackMs ?? null,
-              message: error instanceof Error ? error.message : String(error),
+    ...(loopDetector
+      ? {
+          recommendTimeout: (category: string, complexityScore?: number, fallbackMs?: number) => {
+            try {
+              return loopDetector.recommendTimeout(category, complexityScore ?? 1);
+            } catch (error) {
+              context.logger.warn("bt_timeout_recommendation_failed", {
+                category,
+                fallback_ms: fallbackMs ?? null,
+                message: error instanceof Error ? error.message : String(error),
+              });
+              return fallbackMs;
+            }
+          },
+          recordTimeoutOutcome: (
+            category: string,
+            outcome: { durationMs: number; success: boolean; budgetMs: number },
+          ) => {
+            if (!Number.isFinite(outcome.durationMs) || outcome.durationMs <= 0) {
+              return;
+            }
+            loopDetector.recordTaskObservation({
+              taskType: category,
+              durationMs: Math.max(1, Math.round(outcome.durationMs)),
+              success: outcome.success,
             });
-            return fallbackMs;
-          }
+          },
         }
-      : undefined,
-    recordTimeoutOutcome: loopDetector
-      ? (category, outcome) => {
-          if (!Number.isFinite(outcome.durationMs) || outcome.durationMs <= 0) {
-            return;
-          }
-          loopDetector.recordTaskObservation({
-            taskType: category,
-            durationMs: Math.max(1, Math.round(outcome.durationMs)),
-            success: outcome.success,
-          });
-        }
-      : undefined,
+      : {}),
   } satisfies Partial<TickRuntime> & { invokeTool: (tool: string, input: unknown) => Promise<unknown> };
 
   scheduler = new ReactiveScheduler({
@@ -3328,7 +3356,7 @@ async function executePlanRunReactive(
     now: runtime.now,
     getPheromoneIntensity: (nodeId) => context.stigmergy.getNodeIntensity(nodeId)?.intensity ?? 0,
     getPheromoneBounds: () => context.stigmergy.getIntensityBounds(),
-    causalMemory,
+    ...(causalMemory ? { causalMemory } : {}),
     cancellation,
     onEvent: (telemetry) => {
       const eventPayload = summariseSchedulerEvent(telemetry.event, telemetry.payload);
@@ -3468,7 +3496,9 @@ async function executePlanRunReactive(
   loop = new ExecutionLoop({
     intervalMs: input.tick_ms ?? 100,
     now: runtime.now,
-    budgetMs: input.budget_ms,
+    // Only forward the budget when callers explicitly configure it so the
+    // execution loop options remain free of `undefined` stubs.
+    ...(input.budget_ms !== undefined ? { budgetMs: input.budget_ms } : {}),
     reconcilers,
     afterTick: ({ reconcilers: executedReconcilers }) => {
       if (!pendingLoopEvent) {
@@ -3708,13 +3738,63 @@ function normalisePlanDryRunGraph(
   }
   const candidate = graph as PlanDryRunGraphInput;
   if (isHierarchicalDryRunGraph(candidate)) {
-    return flatten(candidate);
+    return flatten(sanitiseHierGraphInput(candidate));
   }
   const parsed = GraphDescriptorSchema.safeParse(candidate);
   if (!parsed.success) {
     throw new Error("invalid graph payload supplied to plan dry-run");
   }
   return normaliseDescriptor(parsed.data);
+}
+
+/**
+ * Convert hierarchical graph payloads validated by zod into the richer
+ * {@link HierGraph} contract consumed by the graph tooling. The helper removes
+ * optional fields that callers left undefined so downstream consumers never see
+ * explicit `undefined` markers when `exactOptionalPropertyTypes` is enabled.
+ */
+function sanitiseHierGraphInput(graph: z.infer<typeof HierGraphSchema>): HierGraph {
+  const sanitisedNodes: HierNode[] = graph.nodes.map((node) => {
+    if (node.kind === "task") {
+      const base: HierNode = {
+        id: node.id,
+        kind: "task",
+        attributes: node.attributes,
+        ...(node.label !== undefined ? { label: node.label } : {}),
+        ...(node.inputs ? { inputs: node.inputs } : {}),
+        ...(node.outputs ? { outputs: node.outputs } : {}),
+      };
+      return base;
+    }
+    return {
+      id: node.id,
+      kind: "subgraph",
+      ref: node.ref,
+      ...(node.params ? { params: node.params } : {}),
+    } satisfies HierNode;
+  });
+
+  const sanitisedEdges: HierEdge[] = graph.edges.map((edge) => ({
+    id: edge.id,
+    from: {
+      nodeId: edge.from.nodeId,
+      ...(edge.from.port ? { port: edge.from.port } : {}),
+    },
+    to: {
+      nodeId: edge.to.nodeId,
+      ...(edge.to.port ? { port: edge.to.port } : {}),
+    },
+    ...omitUndefinedEntries({
+      label: edge.label,
+      attributes: edge.attributes,
+    }),
+  }));
+
+  return {
+    id: graph.id,
+    nodes: sanitisedNodes,
+    edges: sanitisedEdges,
+  } satisfies HierGraph;
 }
 
 /**
@@ -3804,8 +3884,8 @@ function deriveRerouteAvoidHints(
   }
 
   return {
-    avoidNodeIds: avoidNodeIds.size > 0 ? avoidNodeIds : undefined,
-    avoidLabels: avoidLabels.size > 0 ? avoidLabels : undefined,
+    ...(avoidNodeIds.size > 0 ? { avoidNodeIds } : {}),
+    ...(avoidLabels.size > 0 ? { avoidLabels } : {}),
   };
 }
 
@@ -3815,7 +3895,7 @@ export function handlePlanDryRun(
 ): PlanDryRunResult {
   const hierarchicalGraph =
     input.graph && isHierarchicalDryRunGraph(input.graph as PlanDryRunGraphInput)
-      ? (input.graph as z.infer<typeof HierGraphSchema>)
+      ? sanitiseHierGraphInput(input.graph as z.infer<typeof HierGraphSchema>)
       : null;
 
   const compiledTree = input.tree
@@ -3827,11 +3907,34 @@ export function handlePlanDryRun(
   let rewritePreview: PlanDryRunResult["rewrite_preview"] = null;
   let rerouteAvoid: PlanDryRunResult["reroute_avoid"] = null;
   const normalisedGraph = normalisePlanDryRunGraph(input.graph);
+  // Sanitise rewrite hints eagerly so spread literals never forward `undefined`
+  // markers to `deriveRerouteAvoidHints`. This keeps the optional arrays fully
+  // compliant with `exactOptionalPropertyTypes` when the caller omits them.
+  const rewriteOptionsRecord = input.rewrite
+    ? omitUndefinedEntries({
+        avoid_node_ids: input.rewrite.avoid_node_ids,
+        avoid_labels: input.rewrite.avoid_labels,
+      })
+    : null;
+  const rewriteOptions =
+    rewriteOptionsRecord && Object.keys(rewriteOptionsRecord).length > 0
+      ? (rewriteOptionsRecord as PlanDryRunRewriteOptions)
+      : null;
+  const rerouteAvoidRecord = input.reroute_avoid
+    ? omitUndefinedEntries({
+        node_ids: input.reroute_avoid.node_ids,
+        labels: input.reroute_avoid.labels,
+      })
+    : null;
+  const explicitRerouteAvoid =
+    rerouteAvoidRecord && Object.keys(rerouteAvoidRecord).length > 0
+      ? (rerouteAvoidRecord as PlanDryRunRerouteAvoid)
+      : null;
   if (normalisedGraph) {
     const rerouteHints = deriveRerouteAvoidHints(
       normalisedGraph,
-      input.rewrite ?? null,
-      input.reroute_avoid ?? null,
+      rewriteOptions,
+      explicitRerouteAvoid,
     );
     rerouteAvoid =
       rerouteHints.avoidNodeIds || rerouteHints.avoidLabels
@@ -3970,7 +4073,7 @@ function normalisePlanImpact(
     severity: impact.severity,
     rationale: impact.rationale,
     source: impact.source,
-    nodeId: coerceNullToUndefined(nodeId ?? null),
+    nodeId: nodeId ?? undefined,
   };
 }
 

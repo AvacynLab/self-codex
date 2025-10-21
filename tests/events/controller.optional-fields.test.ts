@@ -89,6 +89,9 @@ describe("orchestrator controller optional telemetry fields", () => {
     const latest = schedulerEvents.at(-1);
     expect(latest?.msg).to.equal("jsonrpc_error");
     expect(latest?.elapsedMs, "elapsedMs should be omitted when undefined").to.equal(undefined);
+    expect(latest?.data && Object.prototype.hasOwnProperty.call(latest.data, "transport"))
+      .to.equal(true, "transport property exposed on scheduler payload");
+    expect(latest?.data?.transport, "transport defaults to null when omitted upstream").to.equal(null);
 
     const journalEntries = logJournal.tail({ stream: "server", bucketId: "jsonrpc" });
     expect(journalEntries.entries, "journal entries emitted").to.have.length.greaterThan(0);

@@ -65,4 +65,11 @@ describe("error normalisation helpers", () => {
     });
     expect(blankError.message).to.equal("unexpected error");
   });
+
+  it("omits undefined hint and details from normalised tool errors", () => {
+    const normalised = normaliseToolError(new Error("   trimmed message   "), { defaultCode: "E-CLEAN" });
+    expect(Object.prototype.hasOwnProperty.call(normalised, "hint")).to.equal(false);
+    expect(Object.prototype.hasOwnProperty.call(normalised, "details")).to.equal(false);
+    expect(normalised.message).to.equal("trimmed message");
+  });
 });

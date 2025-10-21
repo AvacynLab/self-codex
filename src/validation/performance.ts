@@ -290,17 +290,20 @@ export async function runPerformancePhase(
             body: requestBody,
           });
 
+          // Persist only defined optional metadata to keep artefacts compatible
+          // with the stricter optional property semantics enforced by the TypeScript
+          // compiler flag targeted by this refactor.
           const executedCall: ExecutedPerformanceCall = {
             scenario: spec.scenario,
             name: spec.name,
             method: spec.method,
-            params,
-            meta,
-            captureEvents: spec.captureEvents,
-            collectLatency: spec.collectLatency,
-            latencyLabel: spec.latencyLabel,
-            latencyToolName: spec.latencyToolName,
-            concurrencyGroup: spec.concurrencyGroup,
+            ...(params !== undefined ? { params } : {}),
+            ...(meta !== undefined ? { meta } : {}),
+            ...(spec.captureEvents !== undefined ? { captureEvents: spec.captureEvents } : {}),
+            ...(spec.collectLatency !== undefined ? { collectLatency: spec.collectLatency } : {}),
+            ...(spec.latencyLabel !== undefined ? { latencyLabel: spec.latencyLabel } : {}),
+            ...(spec.latencyToolName !== undefined ? { latencyToolName: spec.latencyToolName } : {}),
+            ...(spec.concurrencyGroup !== undefined ? { concurrencyGroup: spec.concurrencyGroup } : {}),
             batch,
             repeat,
             attempt: context.attempt,
@@ -514,11 +517,13 @@ function extractJsonRpcError(body: unknown): {
     return null;
   }
   const result: { code?: number; message?: string; data?: Record<string, unknown> } = {};
-  if (typeof (error as { code?: unknown }).code === "number") {
-    result.code = (error as { code?: number }).code;
+  const maybeCode = (error as { code?: unknown }).code;
+  if (typeof maybeCode === "number") {
+    result.code = maybeCode;
   }
-  if (typeof (error as { message?: unknown }).message === "string") {
-    result.message = (error as { message?: string }).message;
+  const maybeMessage = (error as { message?: unknown }).message;
+  if (typeof maybeMessage === "string") {
+    result.message = maybeMessage;
   }
   const data = (error as { data?: unknown }).data;
   if (data && typeof data === "object") {

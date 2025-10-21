@@ -102,6 +102,35 @@ interface PlanCompileExecuteFingerprint {
   readonly child_id?: string;
 }
 
+/**
+ * Builds the idempotency fingerprint while omitting optional identifiers when the
+ * façade input leaves them undefined. Returning a compact object keeps the
+ * computed hash stable once `exactOptionalPropertyTypes` enforces strict
+ * optional semantics.
+ */
+export function createPlanCompileExecuteFingerprint(
+  planHash: string,
+  input: PlanCompileExecuteInput,
+): PlanCompileExecuteFingerprint {
+  const runId = coerceNullToUndefined(input.run_id);
+  const opId = coerceNullToUndefined(input.op_id);
+  const jobId = coerceNullToUndefined(input.job_id);
+  const graphId = coerceNullToUndefined(input.graph_id);
+  const nodeId = coerceNullToUndefined(input.node_id);
+  const childId = coerceNullToUndefined(input.child_id);
+
+  return {
+    plan_hash: planHash,
+    dry_run: input.dry_run ?? true,
+    ...(runId !== undefined ? { run_id: runId } : {}),
+    ...(opId !== undefined ? { op_id: opId } : {}),
+    ...(jobId !== undefined ? { job_id: jobId } : {}),
+    ...(graphId !== undefined ? { graph_id: graphId } : {}),
+    ...(nodeId !== undefined ? { node_id: nodeId } : {}),
+    ...(childId !== undefined ? { child_id: childId } : {}),
+  };
+}
+
 /** Serialises the structured output for the textual MCP channel. */
 function asJsonPayload(output: PlanCompileExecuteFacadeOutput): string {
   return JSON.stringify({ tool: PLAN_COMPILE_EXECUTE_TOOL_NAME, result: output }, null, 2);
@@ -510,16 +539,10 @@ export function createPlanCompileExecuteHandler(
     }
 
     const primitiveInput = mapFacadeInputToPrimitive(parsed);
-    const fingerprint: PlanCompileExecuteFingerprint = {
-      plan_hash: hashPlanPayload(parsed.plan),
-      dry_run: primitiveInput.dry_run ?? true,
-      run_id: coerceNullToUndefined(primitiveInput.run_id),
-      op_id: coerceNullToUndefined(primitiveInput.op_id),
-      job_id: coerceNullToUndefined(primitiveInput.job_id),
-      graph_id: coerceNullToUndefined(primitiveInput.graph_id),
-      node_id: coerceNullToUndefined(primitiveInput.node_id),
-      child_id: coerceNullToUndefined(primitiveInput.child_id),
-    };
+    const fingerprint = createPlanCompileExecuteFingerprint(
+      hashPlanPayload(parsed.plan),
+      primitiveInput,
+    );
 
     const execute = async (): Promise<PlanCompileExecuteSnapshot> => {
       try {

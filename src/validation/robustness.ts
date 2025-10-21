@@ -11,7 +11,7 @@ import {
   type HttpCheckSnapshot,
   type HttpEnvironmentSummary,
 } from "./runSetup.js";
-import { omitUndefinedEntries } from "../utils/object.js";
+import { coerceNullToUndefined, omitUndefinedEntries } from "../utils/object.js";
 
 /** JSONL artefacts associated with the Stage 9 robustness validation workflow. */
 export const ROBUSTNESS_JSONL_FILES = {
@@ -453,8 +453,9 @@ function buildRobustnessSummary(
   // NOTE: Optional summary sections are only attached when the corresponding
   // scenarios are executed successfully; omitting unused keys keeps the payload
   // compliant once `exactOptionalPropertyTypes` enforces strict undefined
-  // handling.
-  return {
+  // handling. Converting potential `null` placeholders into `undefined`
+  // beforehand lets `omitUndefinedEntries` strip them deterministically.
+  const summary = {
     artefacts: {
       inputsJsonl: join(runRoot, ROBUSTNESS_JSONL_FILES.inputs),
       outputsJsonl: join(runRoot, ROBUSTNESS_JSONL_FILES.outputs),
@@ -462,10 +463,14 @@ function buildRobustnessSummary(
       httpSnapshotLog: join(runRoot, ROBUSTNESS_JSONL_FILES.log),
     },
     checks,
-    ...(idempotency !== null ? { idempotency } : {}),
-    ...(crashSimulation !== null ? { crashSimulation } : {}),
-    ...(timeout !== null ? { timeout } : {}),
-  };
+    ...omitUndefinedEntries({
+      idempotency: coerceNullToUndefined(idempotency),
+      crashSimulation: coerceNullToUndefined(crashSimulation),
+      timeout: coerceNullToUndefined(timeout),
+    }),
+  } satisfies RobustnessSummary;
+
+  return summary;
 }
 
 /** Computes the idempotency summary if the call plan executed the relevant group. */
