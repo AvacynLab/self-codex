@@ -37,7 +37,9 @@ export class GraphTransactionError extends Error {
     super(message);
     this.name = "GraphTransactionError";
     this.code = code;
-    this.hint = hint;
+    if (hint !== undefined) {
+      this.hint = hint;
+    }
   }
 }
 

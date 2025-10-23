@@ -59,13 +59,13 @@ export interface ConsensusEvent {
   /** Total number of ballots processed. */
   votes: number;
   /** Optional job identifier propagated when available. */
-  jobId?: string | null | undefined;
+  jobId?: string | null;
   /** Optional run identifier propagated when available. */
-  runId?: string | null | undefined;
+  runId?: string | null;
   /** Optional operation identifier propagated when available. */
-  opId?: string | null | undefined;
+  opId?: string | null;
   /** Additional metadata providing contextual hints (policy, winner, ...). */
-  metadata?: Record<string, unknown> | undefined;
+  metadata?: Record<string, unknown>;
 }
 
 /** Payload accepted when publishing consensus events. */
@@ -100,14 +100,13 @@ export function resetConsensusEventClock(): void {
  * populated.
  */
 export function publishConsensusEvent(input: ConsensusEventInput): ConsensusEvent {
-  const event: ConsensusEvent = {
+  const event = omitUndefinedEntries({
     ...input,
     at: input.at ?? consensusNow(),
     jobId: input.jobId ?? null,
     runId: input.runId ?? null,
     opId: input.opId ?? null,
-    metadata: input.metadata,
-  };
+  }) as ConsensusEvent;
   consensusEmitter.emit("event", event);
   return event;
 }
@@ -313,10 +312,21 @@ export function normaliseConsensusOptions(
   if (!config) {
     return {};
   }
-  return omitUndefinedEntries({
-    weights: config.weights,
-    preferValue: config.prefer_value,
-    tieBreaker: config.tie_breaker,
-    quorum: config.quorum,
-  });
-}
+    const options: ConsensusOptions & { quorum?: number } = {};
+    if (config.weights && Object.keys(config.weights).length > 0) {
+      options.weights = config.weights;
+    }
+    if (config.prefer_value !== undefined) {
+      options.preferValue = config.prefer_value;
+    }
+    // `tie_breaker` defaults to "null" through zod but callers relying on the
+    // type directly may still omit it. We always materialise the string value so
+    // downstream consumers never observe `undefined`.
+    if (config.tie_breaker !== undefined) {
+      options.tieBreaker = config.tie_breaker;
+    }
+    if (config.quorum !== undefined) {
+      options.quorum = config.quorum;
+    }
+    return options;
+  }

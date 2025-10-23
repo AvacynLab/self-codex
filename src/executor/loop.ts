@@ -186,10 +186,10 @@ export class ExecutionLoop {
   private readonly clearIntervalFn: (handle: IntervalHandle) => void;
   private readonly scheduleYield: (resume: () => void) => TimeoutHandle;
   private readonly cancelYield: (handle: TimeoutHandle) => void;
-  private readonly budgetMs?: number;
-  private readonly onError?: (error: unknown) => void;
+  private readonly budgetMs: number | null;
+  private readonly onError: ((error: unknown) => void) | null;
   private readonly reconcilers: LoopReconciler[];
-  private readonly afterTick?: (details: LoopAfterTickDetails) => void;
+  private readonly afterTick: ((details: LoopAfterTickDetails) => void) | null;
 
   private state: LoopState = "idle";
   private timer: IntervalHandle | null = null;
@@ -203,15 +203,15 @@ export class ExecutionLoop {
     this.intervalMs = Math.max(0, options.intervalMs);
     this.tick = options.tick;
     this.now = options.now ?? Date.now;
-    this.budgetMs = options.budgetMs;
-    this.onError = options.onError;
+    this.budgetMs = typeof options.budgetMs === "number" ? options.budgetMs : null;
+    this.onError = typeof options.onError === "function" ? options.onError : null;
     this.setIntervalFn =
       options.setIntervalFn ?? ((handler, interval) => runtimeTimers.setInterval(handler, interval));
     this.clearIntervalFn = options.clearIntervalFn ?? ((handle) => runtimeTimers.clearInterval(handle));
     this.scheduleYield = options.scheduleYield ?? ((resume) => runtimeTimers.setTimeout(resume, 0));
     this.cancelYield = options.cancelYield ?? ((handle) => runtimeTimers.clearTimeout(handle));
     this.reconcilers = options.reconcilers ? [...options.reconcilers] : [];
-    this.afterTick = options.afterTick;
+    this.afterTick = typeof options.afterTick === "function" ? options.afterTick : null;
   }
 
   /** Total number of ticks successfully executed so far. */
@@ -315,7 +315,7 @@ export class ExecutionLoop {
     const tickIndex = this.tickCountInternal;
     const startedAt = this.now();
     const budget =
-      this.budgetMs !== undefined
+      this.budgetMs !== null
         ? new CooperativeBudget(
             this.budgetMs,
             this.now,
@@ -325,13 +325,23 @@ export class ExecutionLoop {
           )
         : undefined;
 
-    const context: LoopTickContext = {
+    const baseContext: Omit<LoopTickContext, "budget"> = {
       startedAt,
       now: this.now,
       tickIndex,
       signal: this.abortController.signal,
-      budget,
     };
+    const context: LoopTickContext =
+      budget !== undefined
+        ? {
+            ...baseContext,
+            // The cooperative budget is only surfaced when callers explicitly
+            // configure a time allowance, preventing `budget: undefined` from
+            // leaking into lifecycle telemetry once `exactOptionalPropertyTypes`
+            // is enabled.
+            budget,
+          }
+        : baseContext;
 
     try {
       await this.tick(context);
@@ -351,23 +361,26 @@ export class ExecutionLoop {
           const before = this.now();
           try {
             await reconciler.reconcile(context);
+            const durationMs = Math.max(0, this.now() - before);
             reconcilersRun.push({
               id: this.describeReconciler(reconciler),
               status: "ok",
-              durationMs: Math.max(0, this.now() - before),
+              durationMs,
             });
           } catch (error) {
-            reconcilersRun.push({
+            const durationMs = Math.max(0, this.now() - before);
+            const reconcilerErrorMessage =
+              error instanceof Error ? error.message : typeof error === "string" ? error : null;
+            const reconcilerTelemetry: LoopReconcilerRun = {
               id: this.describeReconciler(reconciler),
               status: "error",
-              durationMs: Math.max(0, this.now() - before),
-              errorMessage:
-                error instanceof Error
-                  ? error.message
-                  : typeof error === "string"
-                    ? error
-                    : undefined,
-            });
+              durationMs,
+              // Avoid materialising `errorMessage: undefined` to keep optional
+              // fields absent from diagnostics when the thrown value cannot be
+              // serialised as a meaningful string.
+              ...(reconcilerErrorMessage !== null ? { errorMessage: reconcilerErrorMessage } : {}),
+            };
+            reconcilersRun.push(reconcilerTelemetry);
             if (this.onError) {
               this.onError(error);
             } else {

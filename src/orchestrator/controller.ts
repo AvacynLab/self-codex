@@ -39,7 +39,7 @@ import {
   toJsonRpc,
 } from "../rpc/middleware.js";
 import { coerceNullToUndefined, omitUndefinedEntries } from "../utils/object.js";
-import { buildJsonRpcObservabilityInput } from "./runtime.js";
+import { buildJsonRpcObservabilityInput, normaliseTransportTag } from "./runtime.js";
 import { JsonRpcTimeoutError, resolveRpcTimeoutBudget } from "../rpc/timeouts.js";
 import {
   BudgetExceededError,
@@ -180,7 +180,8 @@ function shouldHydrateMcpInfo(
   context: JsonRpcRouteContext | undefined,
   result: unknown,
 ): boolean {
-  if (!context || context.transport !== "http" || !isMcpInfoInvocation(request)) {
+  const transport = normaliseTransportTag(context?.transport);
+  if (!transport || transport !== "http" || !isMcpInfoInvocation(request)) {
     return false;
   }
 
@@ -519,8 +520,13 @@ export function createOrchestratorController(
       return Math.round(value);
     };
 
-    // Ensure the emitted payload status matches the JSON-RPC stage; unexpected values are coerced to the
-    // documented lifecycle token so dashboards keep a stable contract.
+    const elapsedMetric = normaliseOptionalMetric(input.elapsedMs ?? null);
+    const durationMetric = normaliseOptionalMetric(duration);
+    const inboundMetric = normaliseOptionalMetric(bytesIn);
+    const outboundMetric = normaliseOptionalMetric(bytesOut);
+    const timeoutMetric = normaliseOptionalMetric(input.timeoutMs ?? null);
+
+    // Ensure the emitted payload status matches the JSON-RPC stage; unexpected values sont normalisées.
     const resolveStatus = <M extends JsonRpcEventMessage>(
       message: M,
       status: JsonRpcObservabilityInput["status"],
@@ -531,24 +537,28 @@ export function createOrchestratorController(
       return (candidate === fallback ? candidate : fallback) as JsonRpcEventPayloadByMessage<M>["status"];
     };
 
+    // Les champs communs utilisent `omitUndefinedEntries` afin de supprimer les métriques manquantes et
+    // rester compatibles avec `exactOptionalPropertyTypes` tout en conservant des identifiants null explicites.
     const sharedFields: JsonRpcEventSharedFields = {
       method: input.method,
       metric_method: metricMethod,
       tool: input.toolName ?? null,
       request_id: input.requestId ?? null,
-      transport: input.transport ?? null,
-      elapsed_ms: normaliseOptionalMetric(input.elapsedMs ?? null),
-      trace_id: trace?.traceId ?? null,
-      span_id: trace?.spanId ?? null,
-      duration_ms: normaliseOptionalMetric(duration),
-      bytes_in: normaliseOptionalMetric(bytesIn),
-      bytes_out: normaliseOptionalMetric(bytesOut),
       run_id: input.correlation.runId ?? null,
       op_id: input.correlation.opId ?? null,
       child_id: input.correlation.childId ?? null,
       job_id: input.correlation.jobId ?? null,
-      idempotency_key: input.idempotencyKey ?? null,
-      timeout_ms: normaliseOptionalMetric(input.timeoutMs ?? null),
+      ...omitUndefinedEntries({
+        transport: coerceNullToUndefined(normaliseTransportTag(input.transport)),
+        elapsed_ms: coerceNullToUndefined(elapsedMetric),
+        trace_id: coerceNullToUndefined(trace?.traceId ?? null),
+        span_id: coerceNullToUndefined(trace?.spanId ?? null),
+        duration_ms: coerceNullToUndefined(durationMetric),
+        bytes_in: coerceNullToUndefined(inboundMetric),
+        bytes_out: coerceNullToUndefined(outboundMetric),
+        idempotency_key: coerceNullToUndefined(input.idempotencyKey ?? null),
+        timeout_ms: coerceNullToUndefined(timeoutMetric),
+      }),
     } satisfies JsonRpcEventSharedFields;
 
     let payload: JsonRpcEventPayload;
@@ -596,7 +606,8 @@ export function createOrchestratorController(
     }
 
     try {
-      const eventInput = {
+      const elapsedForEvent = coerceNullToUndefined(payload.elapsed_ms ?? null);
+      const eventInput: EventInput<typeof payload.msg> = {
         cat: "scheduler",
         level: input.stage === "error" ? "error" : "info",
         runId: input.correlation.runId ?? null,
@@ -608,10 +619,8 @@ export function createOrchestratorController(
         kind: `JSONRPC_${input.stage.toUpperCase()}`,
         msg: payload.msg,
         data: payload,
-        ...omitUndefinedEntries({
-          elapsedMs: coerceNullToUndefined(payload.elapsed_ms),
-        }),
-      } satisfies EventInput<typeof payload.msg>;
+        ...(elapsedForEvent !== undefined ? { elapsedMs: elapsedForEvent } : {}),
+      };
 
       eventBus.publish<typeof payload.msg>(eventInput);
     } catch (error) {
@@ -683,6 +692,7 @@ export function createOrchestratorController(
     const cacheKey = buildIdempotencyCacheKey(rawMethod, idempotencyKey, request.params);
 
     try {
+      const transportTag = normaliseTransportTag(context?.transport);
       await appendWalEntry(config.topic, config.event, {
         cache_key: cacheKey,
         method: rawMethod,
@@ -690,7 +700,7 @@ export function createOrchestratorController(
         idempotency_key: idempotencyKey,
         request_id: request.id ?? null,
         http_request_id: context?.requestId ?? null,
-        transport: context?.transport ?? null,
+        transport: transportTag,
         child_id: context?.childId ?? null,
         params: serialiseWalPayload(request.params ?? null),
       });
@@ -744,43 +754,60 @@ export function createOrchestratorController(
       });
     }
 
+    // Clone and sanitise the inbound context so whitespace-only transports never leak into
+    // downstream handlers or observability artefacts once `exactOptionalPropertyTypes` is enforced.
+    const resolvedContext: JsonRpcRouteContext = { ...context };
+    const contextTransport = normaliseTransportTag(context.transport);
+    if (contextTransport !== null) {
+      resolvedContext.transport = contextTransport;
+    } else if ("transport" in resolvedContext) {
+      delete resolvedContext.transport;
+    }
+
     let invocation = normaliseJsonRpcInvocation(method, params);
     const handler = handlers.get(invocation.method);
     if (!handler) {
       throw new Error(`Unknown method: ${invocation.method}`);
     }
 
-    const requestId = context.requestId ?? randomUUID();
+    const requestId = resolvedContext.requestId ?? randomUUID();
     const timeoutBudget =
-      typeof context.timeoutMs === "number" && Number.isFinite(context.timeoutMs)
-        ? Math.max(0, Math.trunc(context.timeoutMs))
+      typeof resolvedContext.timeoutMs === "number" && Number.isFinite(resolvedContext.timeoutMs)
+        ? Math.max(0, Math.trunc(resolvedContext.timeoutMs))
         : null;
     const abort = new AbortController();
 
-    const headersSnapshot = { ...(context.headers ?? {}) };
-    if (context.transport) {
-      headersSnapshot["x-mcp-transport"] = context.transport;
+    const headersSnapshot = { ...(resolvedContext.headers ?? {}) };
+    if (contextTransport) {
+      headersSnapshot["x-mcp-transport"] = contextTransport;
     }
-    if (context.childId) {
-      headersSnapshot["x-child-id"] = context.childId;
+    if (resolvedContext.childId) {
+      headersSnapshot["x-child-id"] = resolvedContext.childId;
     }
-    if (context.childLimits) {
-      headersSnapshot["x-child-limits"] = Buffer.from(JSON.stringify(context.childLimits), "utf8").toString("base64");
+    if (resolvedContext.childLimits) {
+      headersSnapshot["x-child-limits"] = Buffer.from(
+        JSON.stringify(resolvedContext.childLimits),
+        "utf8",
+      ).toString("base64");
     }
-    if (context.idempotencyKey) {
-      headersSnapshot["idempotency-key"] = context.idempotencyKey;
+    if (resolvedContext.idempotencyKey) {
+      headersSnapshot["idempotency-key"] = resolvedContext.idempotencyKey;
     }
-    if (context.transport === "http" && context.requestId) {
-      headersSnapshot["x-http-request-id"] = String(context.requestId);
+    if (contextTransport === "http" && resolvedContext.requestId) {
+      headersSnapshot["x-http-request-id"] = String(resolvedContext.requestId);
     }
 
     invocation = normaliseJsonRpcInvocation(invocation.method, invocation.params);
-    if (context.idempotencyKey) {
-      invocation.params = injectIdempotencyKey(invocation.method, invocation.params, context.idempotencyKey);
+    if (resolvedContext.idempotencyKey) {
+      invocation.params = injectIdempotencyKey(
+        invocation.method,
+        invocation.params,
+        resolvedContext.idempotencyKey,
+      );
     }
 
     const executeInvocation = () =>
-      runWithJsonRpcContext(context, async () => {
+      runWithJsonRpcContext(resolvedContext, async () => {
         const requestInfo =
           Object.keys(headersSnapshot).length > 0 ? { headers: headersSnapshot } : undefined;
 
@@ -846,6 +873,13 @@ export function createOrchestratorController(
   ): Promise<JsonRpcResponse> => {
     const rawId = req?.id ?? null;
     const baseContext: JsonRpcRouteContext = context ? { ...context } : {};
+    // Normalise the optional transport tag eagerly to keep downstream context clones consistent.
+    const baseTransport = normaliseTransportTag(baseContext.transport);
+    if (baseTransport !== null) {
+      baseContext.transport = baseTransport;
+    } else if ("transport" in baseContext) {
+      delete baseContext.transport;
+    }
     const requestIdHint = baseContext.requestId ?? rawId;
     let sanitizedRequest: JsonRpcRequest;
     let method = typeof req?.method === "string" ? req.method.trim() || "unknown" : "unknown";
@@ -871,9 +905,7 @@ export function createOrchestratorController(
         } satisfies Omit<JsonRpcObservabilityInput, "transport">;
         // Normalise the optional transport tag via the shared helper so the controller never
         // forwards `{ transport: undefined }` when upstream contexts omit the field.
-        recordJsonRpcObservability(
-          buildJsonRpcObservabilityInput(baseObservability, coerceNullToUndefined(baseContext?.transport ?? null)),
-        );
+        recordJsonRpcObservability(buildJsonRpcObservabilityInput(baseObservability, baseTransport));
         return toJsonRpc(rawId, error);
       }
       throw error;
@@ -888,6 +920,17 @@ export function createOrchestratorController(
       },
       { method, toolName, context: baseContext },
     );
+
+    // Ensure the assembled runtime context exposes a trimmed transport tag (or omits it entirely)
+    // so every consumer observes the same strict-optional semantics.
+    const runtimeTransport = normaliseTransportTag(runtimeContext?.transport);
+    if (runtimeContext) {
+      if (runtimeTransport !== null) {
+        runtimeContext.transport = runtimeTransport;
+      } else if ("transport" in runtimeContext) {
+        delete runtimeContext.transport;
+      }
+    }
 
     const id = sanitizedRequest.id ?? null;
     const request = sanitizedRequest;
@@ -923,17 +966,12 @@ export function createOrchestratorController(
           errorMessage: removalError.data?.hint ?? removalError.message,
           errorCode: removalError.code,
         } satisfies Omit<JsonRpcObservabilityInput, "transport">;
-        recordJsonRpcObservability(
-          buildJsonRpcObservabilityInput(
-            baseObservability,
-            coerceNullToUndefined(runtimeContext?.transport ?? null),
-          ),
-        );
+        recordJsonRpcObservability(buildJsonRpcObservabilityInput(baseObservability, runtimeTransport));
         return toJsonRpc(id, removalError);
       }
       logToolDeprecation(logger, "warn", "tool_deprecated_invoked", logPayload);
     }
-    const transport = runtimeContext?.transport ?? null;
+    const transport = runtimeTransport;
     const childId = runtimeContext?.childId ?? null;
     const payloadBytes = runtimeContext?.payloadSizeBytes ?? 0;
     const timeoutMs = timeoutBudget.timeoutMs;
@@ -972,12 +1010,7 @@ export function createOrchestratorController(
             errorMessage: budgetError.data?.hint ?? budgetError.message,
             errorCode: budgetError.code,
           } satisfies Omit<JsonRpcObservabilityInput, "transport">;
-          recordJsonRpcObservability(
-            buildJsonRpcObservabilityInput(
-              baseObservability,
-              coerceNullToUndefined(runtimeContext?.transport ?? null),
-            ),
-          );
+          recordJsonRpcObservability(buildJsonRpcObservabilityInput(baseObservability, runtimeTransport));
           return toJsonRpc(id, budgetError);
         }
         throw error;
@@ -993,12 +1026,7 @@ export function createOrchestratorController(
         status: "pending" as const,
         timeoutMs,
       } satisfies Omit<JsonRpcObservabilityInput, "transport">;
-      recordJsonRpcObservability(
-        buildJsonRpcObservabilityInput(
-          requestObservability,
-          coerceNullToUndefined(runtimeContext?.transport ?? null),
-        ),
-      );
+      recordJsonRpcObservability(buildJsonRpcObservabilityInput(requestObservability, runtimeTransport));
 
       await maybeRecordIdempotentWalEntry(request, runtimeContext, { method, toolName });
 
@@ -1033,12 +1061,7 @@ export function createOrchestratorController(
             errorCode: normalisedErrorCode,
             timeoutMs,
           } satisfies Omit<JsonRpcObservabilityInput, "transport">;
-          recordJsonRpcObservability(
-            buildJsonRpcObservabilityInput(
-              errorObservability,
-              coerceNullToUndefined(runtimeContext?.transport ?? null),
-            ),
-          );
+          recordJsonRpcObservability(buildJsonRpcObservabilityInput(errorObservability, runtimeTransport));
         } else {
           const responseObservability = {
             stage: "response" as const,
@@ -1051,12 +1074,7 @@ export function createOrchestratorController(
             elapsedMs,
             timeoutMs,
           } satisfies Omit<JsonRpcObservabilityInput, "transport">;
-          recordJsonRpcObservability(
-            buildJsonRpcObservabilityInput(
-              responseObservability,
-              coerceNullToUndefined(runtimeContext?.transport ?? null),
-            ),
-          );
+          recordJsonRpcObservability(buildJsonRpcObservabilityInput(responseObservability, runtimeTransport));
         }
 
         try {
@@ -1094,12 +1112,7 @@ export function createOrchestratorController(
               errorCode: jsonRpcError.code,
               timeoutMs,
             } satisfies Omit<JsonRpcObservabilityInput, "transport">;
-            recordJsonRpcObservability(
-              buildJsonRpcObservabilityInput(
-                budgetObservability,
-                coerceNullToUndefined(runtimeContext?.transport ?? null),
-              ),
-            );
+            recordJsonRpcObservability(buildJsonRpcObservabilityInput(budgetObservability, runtimeTransport));
             return toJsonRpc(id, jsonRpcError);
           }
           throw budgetError;
@@ -1131,12 +1144,7 @@ export function createOrchestratorController(
           errorCode,
           timeoutMs,
         } satisfies Omit<JsonRpcObservabilityInput, "transport">;
-        recordJsonRpcObservability(
-          buildJsonRpcObservabilityInput(
-            errorObservability,
-            coerceNullToUndefined(runtimeContext?.transport ?? null),
-          ),
-        );
+        recordJsonRpcObservability(buildJsonRpcObservabilityInput(errorObservability, runtimeTransport));
 
         const errorPayload = { code: errorCode, message, data: errorData };
         try {
@@ -1174,12 +1182,7 @@ export function createOrchestratorController(
               errorCode: jsonRpcError.code,
               timeoutMs,
             } satisfies Omit<JsonRpcObservabilityInput, "transport">;
-            recordJsonRpcObservability(
-              buildJsonRpcObservabilityInput(
-                budgetObservability,
-                coerceNullToUndefined(runtimeContext?.transport ?? null),
-              ),
-            );
+            recordJsonRpcObservability(buildJsonRpcObservabilityInput(budgetObservability, runtimeTransport));
             return toJsonRpc(id, jsonRpcError);
           }
           throw budgetError;

@@ -92,17 +92,27 @@ function buildCorrelationHints(options: {
  * actionable telemetry without reimplementing the orchestrator logic.
  */
 export function buildChildCognitiveEvents(options: ChildCognitiveEventOptions): ChildCognitiveEvents {
-  const baseCorrelation = buildCorrelationHints({
+  const correlationOptions: Parameters<typeof buildCorrelationHints>[0] = {
     childId: options.childId,
-    ...(options.jobId !== undefined ? { jobId: options.jobId } : {}),
-    ...(options.correlationSources ? { sources: options.correlationSources } : {}),
-  });
+  };
+  if (options.jobId !== undefined) {
+    // Only attach `jobId` when callers surfaced a concrete value. This prevents
+    // `undefined` from being materialised once `exactOptionalPropertyTypes`
+    // lands while still allowing explicit `null` sentinels.
+    correlationOptions.jobId = options.jobId ?? null;
+  }
+  if (options.correlationSources !== undefined) {
+    // Forward the correlation sources exactly as provided so downstream
+    // extractors keep merging the auxiliary hints without copying `undefined`.
+    correlationOptions.sources = options.correlationSources;
+  }
+  const baseCorrelation = buildCorrelationHints(correlationOptions);
 
   const sharedEnvelope = {
     kind: "COGNITIVE" as const,
     level: "info" as const satisfies EventLevel,
     childId: options.childId,
-    jobId: options.jobId ?? null,
+    jobId: baseCorrelation.jobId ?? null,
   } satisfies Pick<CognitiveEventRecord, "kind" | "level" | "childId" | "jobId">;
 
   type SharedCorrelationFields = Pick<
@@ -112,7 +122,7 @@ export function buildChildCognitiveEvents(options: ChildCognitiveEventOptions): 
 
   const basePayloadFields: SharedCorrelationFields = {
     child_id: options.childId,
-    job_id: options.jobId ?? null,
+    job_id: baseCorrelation.jobId ?? null,
     run_id: baseCorrelation.runId ?? null,
     op_id: baseCorrelation.opId ?? null,
     graph_id: baseCorrelation.graphId ?? null,

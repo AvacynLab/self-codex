@@ -133,6 +133,24 @@ describe("scenario runner", () => {
     expect(summary.metrics.totalTokens).to.equal(11);
     expect(summary.steps[0]?.tokensConsumed).to.equal(11);
   });
+
+  it("omits optional step messages when invocations succeed", async () => {
+    const scenario: EvaluationScenario = {
+      id: "message-omission",
+      objective: "ensure optional fields stay absent",
+      tags: [],
+      constraints: {},
+      steps: [{ id: "alpha", tool: "alpha", expect: { success: true } }],
+      oracles: [],
+    };
+    const client = new StubClient([{ toolName: "alpha", text: "ok", duration: 5 }]);
+
+    const summary = await runScenario(scenario, client, { workspaceRoot: resolve(".") });
+    const result = summary.steps[0]!;
+    expect(result.success).to.equal(true);
+    expect(Object.prototype.hasOwnProperty.call(result, "message")).to.equal(false);
+    expect(result.tokensConsumed).to.equal(null);
+  });
 });
 
 class StubClient implements EvaluationClient {
@@ -175,7 +193,7 @@ class StubClient implements EvaluationClient {
       response: {
         isError: result.isError ?? false,
         content: [{ type: "text", text: result.text ?? "" }],
-        metadata,
+        ...(metadata ? { metadata } : {}),
       },
     };
   }

@@ -51,7 +51,12 @@ describe("validation smoke script", function () {
 
     const resultPath = join(runRoot, "result.json");
 
-    await execFileAsync("node", ["--input-type=module", "-e", inlineRunner.trim()], {
+    // Run the harness under the tsx loader so source TypeScript modules
+    // (notably `src/server.ts`) resolve correctly when the validation runtime
+    // attempts to import them.  Without the additional `--import tsx` flag the
+    // smoke script would fallback to the compiled `dist/` artefacts, which are
+    // not present in this test environment.
+    await execFileAsync("node", ["--import", "tsx", "--input-type=module", "-e", inlineRunner.trim()], {
       env: {
         ...process.env,
         __SMOKE_RUN_MODULE__: pathToFileURL(smokeModulePath).href,
@@ -111,6 +116,22 @@ describe("validation smoke script", function () {
     // healthy orchestration pipeline.
     for (const operation of result.operations) {
       expect(["ok", "skipped"], `unexpected status for ${operation.label}`).to.include(operation.status);
+    }
+
+    // Optional telemetry must avoid `undefined` to stay compatible with
+    // `exactOptionalPropertyTypes` once it becomes mandatory.  The smoke script
+    // should therefore emit explicit `null` sentinels when trace identifiers or
+    // details are absent.
+    for (const operation of result.operations) {
+      for (const [key, value] of Object.entries(operation)) {
+        expect(value, `operation ${operation.label} has undefined ${key}`).to.not.equal(undefined);
+      }
+      expect(operation).to.have.property("durationMs");
+      expect(operation.durationMs === null || typeof operation.durationMs === "number").to.equal(true);
+      expect(operation).to.have.property("traceId");
+      expect(operation.traceId === null || typeof operation.traceId === "string").to.equal(true);
+      expect(operation).to.have.property("details");
+      expect(operation.details === null || typeof operation.details === "string").to.equal(true);
     }
 
     const outputEntries = await readdir(join(result.runRoot, "outputs"));

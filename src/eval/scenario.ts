@@ -204,6 +204,12 @@ function sanitiseScenario(parsed: ParsedScenario): EvaluationScenario {
       match: normaliseRegexExpectation(step.expect.match),
       notMatch: normaliseRegexExpectation(step.expect.notMatch),
     });
+    if ("success" in normalisedExpect && normalisedExpect.success === true) {
+      // Optional expectations default to success; avoid materialising the
+      // redundant flag so strict optional typing stays satisfied once
+      // `exactOptionalPropertyTypes` becomes mandatory.
+      delete normalisedExpect.success;
+    }
     const entries: ScenarioStep = {
       id: step.id,
       tool: step.tool,

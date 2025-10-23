@@ -355,6 +355,34 @@ const ClientLogRequestSchema = z.object({
   context: z.unknown().optional(),
 });
 
+/** Minimal subset of the HTTP request consumed when normalising client logs. */
+export type DashboardClientLogRequest = Pick<IncomingMessage, "headers" | "socket">;
+
+/**
+ * Normalises dashboard client log payloads by trimming optional metadata.
+ *
+ * Returning `null` for absent entries keeps the logged structure free of
+ * `undefined` placeholders so the payload remains compliant with
+ * `exactOptionalPropertyTypes` while still exposing the data operators need to
+ * triage UI issues.
+ */
+export function buildDashboardClientLogPayload(
+  req: DashboardClientLogRequest,
+  entry: { event: string; context?: unknown },
+): { event: string; context: unknown; userAgent: string | null; remoteAddress: string | null } {
+  const rawUserAgent = req.headers?.["user-agent"];
+  const userAgent =
+    typeof rawUserAgent === "string" && rawUserAgent.trim().length > 0 ? rawUserAgent : null;
+  const remoteAddress = req.socket?.remoteAddress ?? null;
+
+  return {
+    event: entry.event,
+    context: entry.context ?? null,
+    userAgent,
+    remoteAddress,
+  };
+}
+
 /** Zod schema validating the pause endpoint payload. */
 const PauseRequestSchema = z.object({
   childId: z.string().min(1, "childId is required"),
@@ -751,12 +779,7 @@ async function handleClientLogRequest(
   }
 
   const { level, event, context } = parsed.data;
-  const logPayload = {
-    event,
-    context: context ?? null,
-    userAgent: typeof req.headers["user-agent"] === "string" ? req.headers["user-agent"] : undefined,
-    remoteAddress: req.socket?.remoteAddress ?? null,
-  };
+  const logPayload = buildDashboardClientLogPayload(req, { event, context });
 
   switch (level) {
     case "info":

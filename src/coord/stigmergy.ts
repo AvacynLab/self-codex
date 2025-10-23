@@ -188,7 +188,12 @@ export class StigmergyField {
   private readonly totals = new Map<string, NodeTotal>();
   private readonly emitter = new EventEmitter();
   private readonly now: () => number;
-  private readonly defaultHalfLifeMs?: number;
+  /**
+   * Default half-life expressed in milliseconds. We store `null` explicitly so
+   * the rest of the class never has to juggle with `undefined`, keeping the
+   * upcoming `exactOptionalPropertyTypes` activation satisfied.
+   */
+  private readonly defaultHalfLifeMs: number | null;
   private readonly minIntensity: number;
   private readonly maxIntensity: number;
   private readonly evictionThreshold: number;
@@ -211,9 +216,10 @@ export class StigmergyField {
       throw new Error("maxIntensity must be greater than minIntensity");
     }
 
-    if (options.defaultHalfLifeMs !== undefined) {
-      this.defaultHalfLifeMs = options.defaultHalfLifeMs;
-    }
+    // Persist the optional half-life using an explicit `null` sentinel so
+    // downstream helpers only deal with concrete numbers or a single
+    // no-default branch when sanitising optional properties.
+    this.defaultHalfLifeMs = options.defaultHalfLifeMs ?? null;
     this.minIntensity = min;
     this.maxIntensity = max;
     this.evictionThreshold = EPSILON;
@@ -330,7 +336,7 @@ export class StigmergyField {
    */
   evaporate(halfLifeMs?: number): StigmergyChangeEvent[] {
     const effectiveHalfLife = halfLifeMs ?? this.defaultHalfLifeMs;
-    if (effectiveHalfLife === undefined) {
+    if (effectiveHalfLife === null) {
       throw new Error("halfLifeMs must be provided when no defaultHalfLifeMs is configured");
     }
     if (!Number.isFinite(effectiveHalfLife) || effectiveHalfLife <= 0) {

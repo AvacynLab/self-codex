@@ -196,6 +196,41 @@ describe("plan_run_reactive tool", () => {
     expect(result.last_output).to.equal(null);
   });
 
+  it("omits undefined fields from scheduler telemetry payloads", async () => {
+    const events: Array<{ kind: string; payload?: Record<string, unknown> }> = [];
+    const context = buildContext({ events });
+    const input = PlanRunReactiveInputSchema.parse({
+      tree: {
+        id: "telemetry-demo",
+        root: {
+          type: "task",
+          id: "noop-node",
+          node_id: "noop-node",
+          tool: "noop",
+          input_key: "payload",
+        },
+      },
+      variables: { payload: { ok: true } },
+      tick_ms: 30,
+    });
+
+    const execution = handlePlanRunReactive(context, input);
+    await clock.tickAsync(30);
+    await execution;
+
+    const schedulerEvents = events.filter((event) => event.kind === "SCHEDULER");
+    expect(schedulerEvents.length).to.be.greaterThan(0);
+    for (const event of schedulerEvents) {
+      // The sanitiser should drop optional fields so the payload never carries
+      // `undefined` values even when upstream correlation hints are absent.
+      expect(event.payload).to.not.equal(undefined);
+      if (!event.payload) {
+        throw new Error("scheduler payload unexpectedly missing");
+      }
+      expect(Object.values(event.payload)).to.not.include(undefined);
+    }
+  });
+
   it("aborts the reactive run when cancellation is requested", async () => {
     const events: Array<{ kind: string; payload?: unknown }> = [];
     const context = buildContext({ events });
@@ -354,6 +389,10 @@ describe("plan_run_reactive tool", () => {
     const schedulerSummary = tickPayload.event_payload as Record<string, unknown>;
     expect(schedulerSummary.node_id).to.equal("root");
     expect(tickPayload.tick_duration_ms).to.be.a("number");
+    expect(
+      Object.values(schedulerSummary).some((value) => value === undefined),
+      "scheduler summary should omit undefined optional fields",
+    ).to.equal(false);
     const bounds = schedulerSummary.pheromone_bounds as
       | { min_intensity?: number; max_intensity?: number | null; normalisation_ceiling?: number }
       | null
@@ -373,5 +412,19 @@ describe("plan_run_reactive tool", () => {
     expect(reconcilerIds).to.include("supervisor");
     expect(reconcilers.every((item) => typeof item.duration_ms === "number")).to.equal(true);
     expect(reconcilers.every((item) => item.status === "ok")).to.equal(true);
+    reconcilers
+      .filter((item) => item.status === "ok")
+      .forEach((item) => {
+        const undefinedKeys = Object.entries(item)
+          .filter(([, value]) => value === undefined)
+          .map(([key]) => key);
+        expect(
+          undefinedKeys,
+          `reconciler ${String(item.id)} should not expose undefined optional metrics`,
+        ).to.deep.equal([]);
+        if ("error" in item) {
+          expect(item.error, `reconciler ${String(item.id)} error field should be null when absent`).to.equal(null);
+        }
+      });
   });
 });

@@ -59,4 +59,20 @@ describe("behaviour tree compiler", () => {
       /contains cycles/i,
     );
   });
+
+  it("omits absent task input keys when compiling", () => {
+    const graph: HierGraph = {
+      id: "single-task",
+      nodes: [{ id: "only", kind: "task", attributes: { bt_tool: "noop" } }],
+      edges: [],
+    };
+
+    const compiled = compileHierGraphToBehaviorTree(graph);
+    expect(compiled.id).to.equal("single-task");
+    expect(compiled.root.type).to.equal("task");
+    if (compiled.root.type !== "task") {
+      return;
+    }
+    expect(Object.prototype.hasOwnProperty.call(compiled.root, "input_key")).to.equal(false);
+  });
 });

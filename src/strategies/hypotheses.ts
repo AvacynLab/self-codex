@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 // NOTE: Node built-in modules are imported with the explicit `node:` prefix to guarantee ESM resolution in Node.js.
+import { omitUndefinedEntries } from "../utils/object.js";
 
 /**
  * Descriptor for a single step in a plan hypothesis. Every step keeps basic
@@ -69,14 +70,20 @@ export interface HypothesisConvergenceResult {
   rationale: string[];
 }
 
-const DEFAULT_GENERATION_OPTIONS: Required<Pick<HypothesisGenerationOptions, "maxHypotheses" | "noveltyBoost">> = {
+type NormalisedGenerationOptions = Required<
+  Pick<HypothesisGenerationOptions, "maxHypotheses" | "noveltyBoost">
+>;
+
+const DEFAULT_GENERATION_OPTIONS: NormalisedGenerationOptions = {
   maxHypotheses: 5,
   noveltyBoost: 0.15,
 };
 
-const DEFAULT_EVALUATION_OPTIONS: Required<
+type NormalisedEvaluationOptions = Required<
   Pick<HypothesisEvaluationOptions, "noveltyWeight" | "riskWeight" | "effortWeight" | "coverageWeight">
-> = {
+>;
+
+const DEFAULT_EVALUATION_OPTIONS: NormalisedEvaluationOptions = {
   noveltyWeight: 0.35,
   riskWeight: 0.25,
   effortWeight: 0.2,
@@ -92,7 +99,7 @@ export function generateHypotheses(
   seed: HypothesisSeed,
   options: HypothesisGenerationOptions = {},
 ): PlanHypothesis[] {
-  const mergedOptions = { ...DEFAULT_GENERATION_OPTIONS, ...options };
+  const mergedOptions = mergeGenerationOptions(options);
   const hypotheses: PlanHypothesis[] = [];
   const fingerprints = new Set<string>();
 
@@ -136,7 +143,7 @@ export function evaluateHypotheses(
   basePlan: PlanStep[],
   options: HypothesisEvaluationOptions = {},
 ): PlanHypothesis[] {
-  const mergedOptions = { ...DEFAULT_EVALUATION_OPTIONS, ...options };
+  const mergedOptions = mergeEvaluationOptions(options);
   const baseStepIds = new Set(basePlan.map((step) => step.id));
 
   return hypotheses
@@ -172,8 +179,10 @@ export function convergeHypotheses(
       const score = hypothesisIndex * 1_000 + stepIndex;
       if (!existing || score < existing.score) {
         // Copy the step so subsequent reasoning phases can safely mutate the
-        // fused plan without altering historical hypotheses.
-        seen.set(step.id, { step: { ...step, tags: step.tags ? [...step.tags] : undefined }, score });
+        // fused plan without altering historical hypotheses. Optional fields
+        // are dropped when absent so downstream serialisation never surfaces
+        // `tags: undefined` under `exactOptionalPropertyTypes`.
+        seen.set(step.id, { step: clonePlanStep(step), score });
       }
     });
   });
@@ -216,10 +225,10 @@ function applyDivergence(
   const removed = new Set(divergence.removeStepIds ?? []);
   const steps = basePlan
     .filter((step) => !removed.has(step.id))
-    .map((step) => ({ ...step }));
+    .map((step) => clonePlanStep(step));
 
   for (const addition of divergence.addSteps ?? []) {
-    steps.push({ ...addition });
+    steps.push(clonePlanStep(addition));
   }
 
   const riskFactor = divergence.adjustRiskFactor ?? 1;
@@ -258,8 +267,39 @@ function applyDivergence(
   };
 }
 
+function clonePlanStep(step: PlanStep): PlanStep {
+  return omitUndefinedEntries({
+    id: step.id,
+    summary: step.summary,
+    effort: step.effort,
+    risk: step.risk,
+    domain: step.domain,
+    tags: step.tags ? [...step.tags] : undefined,
+  }) as PlanStep;
+}
+
+/**
+ * Merge helpers keep the default heuristic weights while dropping explicit
+ * `undefined` overrides so mathematical operations never receive `NaN`.
+ */
+function mergeGenerationOptions(options: HypothesisGenerationOptions): NormalisedGenerationOptions {
+  const sanitised = omitUndefinedEntries(options ?? {});
+  return {
+    ...DEFAULT_GENERATION_OPTIONS,
+    ...(sanitised as Partial<NormalisedGenerationOptions>),
+  };
+}
+
+function mergeEvaluationOptions(options: HypothesisEvaluationOptions): NormalisedEvaluationOptions {
+  const sanitised = omitUndefinedEntries(options ?? {});
+  return {
+    ...DEFAULT_EVALUATION_OPTIONS,
+    ...(sanitised as Partial<NormalisedEvaluationOptions>),
+  };
+}
+
 function cloneSteps(steps: PlanStep[]): PlanStep[] {
-  return steps.map((step) => ({ ...step, tags: step.tags ? [...step.tags] : undefined }));
+  return steps.map((step) => clonePlanStep(step));
 }
 
 function computeCoverage(steps: PlanStep[], baseIds: Set<string>): number {

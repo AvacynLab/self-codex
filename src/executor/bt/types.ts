@@ -12,7 +12,11 @@ export type BTStatus = "success" | "failure" | "running";
 export interface BehaviorTickResult {
   /** Final status produced by the node. */
   status: BTStatus;
-  /** Optional value propagated to parents for diagnostics or reducers. */
+  /**
+   * Optional value propagated to parents for diagnostics or reducers. Callers
+   * must omit the property rather than storing `undefined` to remain compatible
+   * with `exactOptionalPropertyTypes` once enforced globally.
+   */
   output?: unknown;
 }
 

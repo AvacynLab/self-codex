@@ -256,9 +256,13 @@ class EventStream
     }
     this.closed = true;
     this.emitter.removeListener(BUS_EVENT, this.handleEvent);
-    if (this.resolve) {
-      this.resolve(EventStream.DONE);
-      this.resolve = null;
+    const pendingResolve = this.resolve;
+    this.resolve = null;
+    if (pendingResolve) {
+      // Invoke the cached resolver after clearing the field to avoid retaining
+      // a dangling reference when `exactOptionalPropertyTypes` narrows the
+      // property type within the truthy branch.
+      pendingResolve(EventStream.DONE);
     }
     this.buffer.length = 0;
   }
@@ -267,9 +271,13 @@ class EventStream
     if (this.closed || !this.matcher(event)) {
       return;
     }
-    if (this.resolve) {
-      this.resolve({ value: event, done: false });
+    const pendingResolve = this.resolve;
+    if (pendingResolve) {
+      // Clearing the resolver before invoking it prevents the type guard from
+      // narrowing the property to the callable signature and therefore keeps
+      // the assignment to `null` valid once optional properties become exact.
       this.resolve = null;
+      pendingResolve({ value: event, done: false });
       return;
     }
     this.enqueue(event);
@@ -317,7 +325,6 @@ export class EventBus {
     const message = normaliseMessage(input.msg) as M;
     const component = normaliseTag(input.component ?? input.cat);
     const stage = normaliseTag(input.stage ?? message);
-    const kind = normaliseKind(input.kind ?? null);
     const envelope: EventEnvelope<M> = {
       seq: ++this.seq,
       ts: input.ts ?? this.now(),
@@ -333,9 +340,21 @@ export class EventBus {
       stage,
       elapsedMs: normaliseElapsed(input.elapsedMs ?? null),
       msg: message,
-      ...(kind ? { kind } : {}),
-      ...(input.data !== undefined ? { data: input.data } : {}),
     };
+
+    const kind = normaliseKind(input.kind ?? null);
+    if (kind !== undefined) {
+      // Preserve the semantic identifier only when publishers provided a
+      // meaningful token, keeping the envelope free of `undefined` placeholders
+      // under strict optional typing.
+      envelope.kind = kind;
+    }
+    if (input.data !== undefined) {
+      // Forward structured payloads verbatim while avoiding the explicit
+      // `data: undefined` pattern that breaks once optional properties become
+      // exact.
+      envelope.data = input.data;
+    }
 
     this.history.push(envelope);
     if (this.history.length > this.historyLimit) {

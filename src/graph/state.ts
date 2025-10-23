@@ -405,7 +405,14 @@ function parseThoughtGraphProvenance(entries: unknown): Provenance[] {
     const confidence = typeof confidenceRaw === "number" && Number.isFinite(confidenceRaw)
       ? confidenceRaw
       : undefined;
-    result.push({ sourceId, type, span, confidence });
+    const provenance: Provenance = { sourceId, type };
+    if (span) {
+      provenance.span = span;
+    }
+    if (confidence !== undefined) {
+      provenance.confidence = confidence;
+    }
+    result.push(provenance);
   }
   return result;
 }
@@ -771,10 +778,10 @@ export class GraphState {
       retries: snapshot.retries,
       endedAt: snapshot.endedAt,
       exitCode: snapshot.exitCode,
-      exitSignal: snapshot.exitSignal,
+      exitSignal: snapshot.exitSignal ?? null,
       forcedTermination: snapshot.forcedTermination,
-      stopReason: snapshot.stopReason,
-      role: snapshot.role,
+      stopReason: snapshot.stopReason ?? null,
+      role: snapshot.role ?? null,
       limits: snapshot.limits,
       attachedAt: snapshot.attachedAt,
     });
@@ -1101,37 +1108,40 @@ export class GraphState {
 
   createSubscription(snapshot: SubscriptionSnapshot): void {
     const nodeId = this.subscriptionNodeId(snapshot.id);
-    this.subscriptionIndex.set(snapshot.id, snapshot);
+    const normalised = this.normaliseSubscriptionSnapshot(snapshot);
+    this.subscriptionIndex.set(normalised.id, normalised);
     this.nodes.set(nodeId, {
       id: nodeId,
       attributes: {
         type: "subscription",
-        job_id: normalizeString(snapshot.jobId ?? null),
-        child_id: normalizeString(snapshot.childId ?? null),
-        last_seq: snapshot.lastSeq,
-        created_at: snapshot.createdAt,
-        wait_ms: snapshot.waitMs ?? 0
+        ...(normalised.jobId !== undefined ? { job_id: normalizeString(normalised.jobId) } : {}),
+        ...(normalised.childId !== undefined ? { child_id: normalizeString(normalised.childId) } : {}),
+        last_seq: normalised.lastSeq,
+        created_at: normalised.createdAt,
+        ...(normalised.waitMs !== undefined ? { wait_ms: normalised.waitMs } : {}),
       }
     });
-    if (snapshot.jobId) {
-      this.addEdge(this.jobNodeId(snapshot.jobId), nodeId, { type: "subscription" });
+    if (normalised.jobId) {
+      this.addEdge(this.jobNodeId(normalised.jobId), nodeId, { type: "subscription" });
     }
-    if (snapshot.childId) {
-      this.addEdge(this.childNodeId(snapshot.childId), nodeId, { type: "subscription" });
+    if (normalised.childId) {
+      this.addEdge(this.childNodeId(normalised.childId), nodeId, { type: "subscription" });
     }
   }
 
   updateSubscription(id: string, updates: Partial<{ lastSeq: number; waitMs: number }>): void {
     const snapshot = this.subscriptionIndex.get(id);
     if (!snapshot) return;
-    const merged: SubscriptionSnapshot = { ...snapshot, ...updates };
+    const merged = this.normaliseSubscriptionSnapshot({ ...snapshot, ...updates });
     this.subscriptionIndex.set(id, merged);
     const nodeId = this.subscriptionNodeId(id);
     const node = this.nodes.get(nodeId);
     if (!node) return;
     const attributes = { ...node.attributes };
     if (updates.lastSeq !== undefined) attributes.last_seq = updates.lastSeq;
-    if (updates.waitMs !== undefined) attributes.wait_ms = updates.waitMs;
+    if (updates.waitMs !== undefined) {
+      attributes.wait_ms = updates.waitMs;
+    }
     this.nodes.set(nodeId, { id: nodeId, attributes });
   }
 
@@ -1217,14 +1227,25 @@ export class GraphState {
       }
       if (node.attributes.type === "subscription") {
         const id = this.extractSubscriptionId(node.id);
-        this.subscriptionIndex.set(id, {
+        const jobAttr = node.attributes.job_id;
+        const childAttr = node.attributes.child_id;
+        const waitAttr = node.attributes.wait_ms;
+        const subscription: SubscriptionSnapshot = {
           id,
-          jobId: node.attributes.job_id ? String(node.attributes.job_id) : undefined,
-          childId: node.attributes.child_id ? String(node.attributes.child_id) : undefined,
           lastSeq: Number(node.attributes.last_seq ?? 0),
           createdAt: Number(node.attributes.created_at ?? Date.now()),
-          waitMs: Number(node.attributes.wait_ms ?? 0)
-        });
+        };
+        if (typeof jobAttr === "string") {
+          subscription.jobId = String(jobAttr);
+        }
+        if (typeof childAttr === "string") {
+          subscription.childId = String(childAttr);
+        }
+        if (typeof waitAttr === "number" && Number.isFinite(waitAttr)) {
+          subscription.waitMs = Number(waitAttr);
+        }
+        const record = this.normaliseSubscriptionSnapshot(subscription);
+        this.subscriptionIndex.set(id, record);
       }
     }
     for (const childId of childIds) {
@@ -1232,6 +1253,29 @@ export class GraphState {
       const maxOrder = edges.reduce((m, e) => Math.max(m, Number(e.attributes.order ?? 0)), -1);
       this.messageCounters.set(childId, maxOrder + 1);
     }
+  }
+
+  /**
+   * Produces a sanitised clone of a subscription snapshot so optional fields
+   * disappear when callers omit them. This keeps the in-memory index and the
+   * persisted node attributes compatible with `exactOptionalPropertyTypes`.
+   */
+  private normaliseSubscriptionSnapshot(snapshot: SubscriptionSnapshot): SubscriptionSnapshot {
+    const normalised: SubscriptionSnapshot = {
+      id: snapshot.id,
+      lastSeq: snapshot.lastSeq,
+      createdAt: snapshot.createdAt,
+    };
+    if (snapshot.jobId !== undefined) {
+      normalised.jobId = snapshot.jobId;
+    }
+    if (snapshot.childId !== undefined) {
+      normalised.childId = snapshot.childId;
+    }
+    if (snapshot.waitMs !== undefined) {
+      normalised.waitMs = snapshot.waitMs;
+    }
+    return normalised;
   }
 
   // --- Query helpers ---

@@ -191,6 +191,22 @@ describe("server tool error codes", () => {
     expect(payload).to.have.property("details");
   });
 
+  it("drops optional hint/details when plan errors provide no extras", () => {
+    // Exercise the fallback path that synthesises the invalid-input code so the
+    // response can be asserted to omit optional metadata entirely.
+    const response = formatPlanToolError(
+      createLogger(),
+      "plan_stub",
+      new Error("transient failure"),
+      {},
+      { defaultCode: "E-PLAN-CUSTOM" },
+    );
+    const payload = JSON.parse(response.content[0].text) as Record<string, unknown>;
+    expect(payload.error).to.equal("E-PLAN-CUSTOM");
+    expect(Object.prototype.hasOwnProperty.call(payload, "hint"), "hint should stay absent").to.equal(false);
+    expect(Object.prototype.hasOwnProperty.call(payload, "details"), "details should stay absent").to.equal(false);
+  });
+
   it("wraps missing child errors with E-CHILD-NOTFOUND", () => {
     const response = formatChildToolError(
       createLogger(),

@@ -14,6 +14,7 @@ import type {
   EvaluationOperation,
 } from "../../scripts/validation/run-eval.mjs";
 import {
+  normaliseRunInvocationOptions,
   parseCliArgs,
   run as runEvaluationValidation,
 } from "../../scripts/validation/run-eval.mjs";
@@ -115,6 +116,37 @@ describe("validation evaluation script", function () {
     expect(parsed.errors.some((message: string) => /Unknown option/.test(message))).to.equal(true);
   });
 
+  it("omits undefined CLI parameters before invoking the harness", () => {
+    const sanitized = normaliseRunInvocationOptions({
+      runId: "custom",
+      runRoot: "/tmp/custom",
+      workspaceRoot: undefined,
+      timestamp: undefined,
+      graphId: undefined,
+      traceSeed: undefined,
+      featureOverrides: {},
+    });
+
+    expect(sanitized).to.deep.equal({ runId: "custom", runRoot: "/tmp/custom" });
+  });
+
+  it("preserves explicit overrides when normalising CLI parameters", () => {
+    const sanitized = normaliseRunInvocationOptions({
+      runId: "custom",
+      runRoot: "/tmp/custom",
+      graphId: "graph-123",
+      featureOverrides: { enablePlanner: false },
+    });
+
+    expect(sanitized).to.deep.equal({
+      runId: "custom",
+      runRoot: "/tmp/custom",
+      graphId: "graph-123",
+      featureOverrides: { enablePlanner: false },
+    });
+    expect(sanitized.featureOverrides).to.not.equal(undefined);
+  });
+
   it("executes the harness via the CLI entrypoint", async () => {
     const tmpRoot = await mkdtemp(join(tmpdir(), "mcp-eval-cli-"));
     temporaryRoots.add(tmpRoot);
@@ -138,6 +170,17 @@ describe("validation evaluation script", function () {
       {
         cwd: repoRoot,
         encoding: "utf8",
+        /**
+         * Force the CLI to execute with the tsx loader so the validation server can
+         * be resolved from the TypeScript sources without relying on a compiled
+         * `dist/` tree.  The helper also forces the loader to prefer the source
+         * variant to keep the environment deterministic during tests.
+         */
+        env: {
+          ...process.env,
+          NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ""} --import tsx`.trim(),
+          CODEX_VALIDATION_FORCE_SRC: "1",
+        },
       },
     );
 

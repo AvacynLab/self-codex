@@ -93,13 +93,22 @@ function projectHyperEdge(
         }
       }
 
-      projected.push({
+      // Build the edge record lazily so optional fields disappear whenever
+      // callers omit them, keeping the normalised descriptor compliant with
+      // `exactOptionalPropertyTypes`.
+      const record: GraphEdgeRecord = {
         from: source,
         to: target,
-        label: edge.label,
-        weight: edge.weight,
         attributes,
-      });
+      };
+      if (edge.label !== undefined) {
+        record.label = edge.label;
+      }
+      if (edge.weight !== undefined) {
+        record.weight = edge.weight;
+      }
+
+      projected.push(record);
       pairIndex += 1;
     }
   }
@@ -124,10 +133,18 @@ function normaliseNodes(nodes: GraphNodeRecord[]): { ids: Set<string>; records: 
       throw new Error(`duplicate node identifier detected in hyper-graph: ${node.id}`);
     }
     nodeIds.add(node.id);
-    records.push({
-      ...node,
+    // Recreate the node object instead of spreading the original input so we
+    // can explicitly drop optional fields that were not provided. This keeps
+    // downstream serialisations free of `undefined` placeholders.
+    const record: GraphNodeRecord = {
+      id: node.id,
       attributes: node.attributes ?? {},
-    });
+    };
+    if (node.label !== undefined) {
+      record.label = node.label;
+    }
+
+    records.push(record);
   }
   return { ids: nodeIds, records };
 }

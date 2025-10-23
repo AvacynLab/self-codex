@@ -116,7 +116,7 @@ describe("infra/runtime", () => {
     });
 
     expect(toolBudget, "no manifest -> no tool tracker").to.equal(null);
-    expect(context.budget, "previous budget must be cleared").to.equal(undefined);
+    expect(Object.prototype.hasOwnProperty.call(context, "budget"), "budget key removed when absent").to.equal(false);
     expect(baseContext.budget, "original budget preserved on parent context").to.equal(inheritedBudget);
 
     const requestSnapshot = requestBudget.snapshot();
@@ -124,6 +124,32 @@ describe("infra/runtime", () => {
 
     expect(timeoutBudget.timeoutMs, "override clamped to minimum").to.equal(5_000);
     expect(context.timeoutMs).to.equal(5_000);
+  });
+
+  it("omits undefined entries when cloning inbound contexts", () => {
+    const registry = new StubRegistry(new Map());
+    const deps: RuntimeAssemblyDependencies = {
+      toolRegistry: registry,
+      requestLimits: { timeMs: 5_000 },
+      resolveTimeoutBudget: () => stubTimeoutBudget(2_000, 1_000, 3_000),
+      defaultTimeoutOverride: null,
+    };
+
+    const baseContext: JsonRpcRouteContext = {
+      transport: undefined,
+      childId: undefined,
+      requestId: 42,
+    };
+
+    const { context } = assembleJsonRpcRuntime(deps, {
+      method: "telemetry/emit",
+      toolName: null,
+      context: baseContext,
+    });
+
+    expect("transport" in context, "transport omitted when unspecified").to.equal(false);
+    expect("childId" in context, "childId omitted when unspecified").to.equal(false);
+    expect(context.requestId).to.equal(42);
   });
 });
 

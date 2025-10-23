@@ -48,6 +48,17 @@ describe("ModelRouter", () => {
     expect(decision.reason).to.include("tags:diagram");
   });
 
+  it("omits absent hints from routing reasons when inputs skip optional fields", () => {
+    const router = createRouter();
+    router.recordOutcome("code-smith", { success: true });
+    const decision = router.route({ kind: "code" });
+
+    expect(decision.model).to.equal("code-smith");
+    expect(decision.reason).to.include("kind:code");
+    expect(decision.reason.includes("tags:"), "tags should not appear without inputs").to.equal(false);
+    expect(decision.reason.includes("lang:"), "language should not appear without hints").to.equal(false);
+  });
+
   it("falls back to the default model when no specialist qualifies", () => {
     const router = createRouter();
     const decision = router.route({ kind: "audio" });
@@ -133,6 +144,22 @@ describe("ModelRouter", () => {
     expect(Object.prototype.hasOwnProperty.call(snapshot, "priority")).to.equal(false);
     expect(Object.prototype.hasOwnProperty.call(snapshot, "description")).to.equal(false);
     expect(Object.prototype.hasOwnProperty.call(snapshot, "tags")).to.equal(false);
-    expect(snapshot.available).to.equal(true);
+    expect(Object.prototype.hasOwnProperty.call(snapshot, "available")).to.equal(false);
+  });
+
+  it("only surfaces availability when a specialist is explicitly disabled", () => {
+    const router = new ModelRouter({ fallbackModel: "codex", acceptanceThreshold: 0.5 });
+    router.registerSpecialist({ id: "toggle" });
+
+    let [snapshot] = router.listSpecialists();
+    expect(Object.prototype.hasOwnProperty.call(snapshot, "available")).to.equal(false);
+
+    router.setAvailability("toggle", false);
+    [snapshot] = router.listSpecialists();
+    expect(snapshot.available).to.equal(false);
+
+    router.setAvailability("toggle", true);
+    [snapshot] = router.listSpecialists();
+    expect(Object.prototype.hasOwnProperty.call(snapshot, "available")).to.equal(false);
   });
 });

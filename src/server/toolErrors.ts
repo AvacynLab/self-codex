@@ -177,7 +177,12 @@ export function planToolError(
     ...overrides,
   };
   if (!codes.invalidInputCode) {
-    codes.invalidInputCode = codes.defaultCode === PLAN_ERROR_CODES.defaultCode ? PLAN_ERROR_CODES.invalidInputCode : codes.defaultCode;
+    const fallbackInvalidCode = PLAN_ERROR_CODES.invalidInputCode ?? PLAN_ERROR_CODES.defaultCode;
+    // NOTE: Choosing between the plan defaults and the override must yield a
+    // concrete string so the optional property never materialises an explicit
+    // `undefined` value under `exactOptionalPropertyTypes`.
+    codes.invalidInputCode =
+      codes.defaultCode === PLAN_ERROR_CODES.defaultCode ? fallbackInvalidCode : codes.defaultCode;
   }
   const normalised = normaliseToolError(error, codes);
   return logAndWrap(logger, toolName, normalised, context);

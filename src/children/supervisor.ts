@@ -33,6 +33,7 @@ import { childWorkspacePath, ensureDirectory } from "../paths.js";
 import {
   ChildCircuitOpenError,
   OneForOneSupervisor,
+  normaliseSupervisorEvent,
   type SupervisionTicket,
   type SupervisorEvent,
 } from "./supervisionStrategy.js";
@@ -1603,7 +1604,8 @@ export class ChildSupervisor implements ChildSupervisorContract {
    * transitions alongside restart attempts.
    */
   private handleSupervisionEvent(event: SupervisorEvent): void {
-    if (event.type === "child_restart") {
+    const normalisedEvent = normaliseSupervisorEvent(event);
+    if (normalisedEvent.type === "child_restart") {
       registerChildRestart();
     }
     if (!this.eventBus) {
@@ -1611,7 +1613,7 @@ export class ChildSupervisor implements ChildSupervisorContract {
     }
     const relatedChildren = [] as string[];
     for (const [childId, key] of this.supervisionKeyByChild.entries()) {
-      if (key === event.key) {
+      if (key === normalisedEvent.key) {
         relatedChildren.push(childId);
       }
     }
@@ -1622,12 +1624,12 @@ export class ChildSupervisor implements ChildSupervisorContract {
       childId: relatedChildren.length === 1 ? relatedChildren[0] : null,
     };
     const maxRestartsPerMinute = this.supervisionMaxRestartsPerMinute;
-    switch (event.type) {
+    switch (normalisedEvent.type) {
       case "child_restart": {
         const payload: ChildSupervisorEventPayload & {
           event: Extract<SupervisorEvent, { type: "child_restart" }>;
         } = {
-          event,
+          event: normalisedEvent,
           relatedChildren,
           maxRestartsPerMinute,
         };
@@ -1645,7 +1647,7 @@ export class ChildSupervisor implements ChildSupervisorContract {
         const payload: ChildSupervisorEventPayload & {
           event: Extract<SupervisorEvent, { type: "breaker_open" }>;
         } = {
-          event,
+          event: normalisedEvent,
           relatedChildren,
           maxRestartsPerMinute,
         };
@@ -1663,7 +1665,7 @@ export class ChildSupervisor implements ChildSupervisorContract {
         const payload: ChildSupervisorEventPayload & {
           event: Extract<SupervisorEvent, { type: "breaker_half_open" }>;
         } = {
-          event,
+          event: normalisedEvent,
           relatedChildren,
           maxRestartsPerMinute,
         };
@@ -1680,7 +1682,7 @@ export class ChildSupervisor implements ChildSupervisorContract {
         const payload: ChildSupervisorEventPayload & {
           event: Extract<SupervisorEvent, { type: "breaker_closed" }>;
         } = {
-          event,
+          event: normalisedEvent,
           relatedChildren,
           maxRestartsPerMinute,
         };

@@ -56,6 +56,37 @@ interface TopologyResult {
   predecessors: Map<string, Set<string>>;
 }
 
+/**
+ * Builds a mutable schedule entry for a task while omitting metadata left
+ * unspecified by the planner document. Returning a clean object here prevents
+ * downstream projections (`phases`, `tasks`) from leaking keys bound to the
+ * `undefined` sentinel when `exactOptionalPropertyTypes` is enabled.
+ */
+function createScheduleTask(task: PlannerTask): PlanScheduleTask {
+  const duration = task.estimated_duration_ms ?? 0;
+  const scheduleTask: PlanScheduleTask = {
+    id: task.id,
+    dependsOn: [...task.depends_on],
+    estimatedDurationMs: duration,
+    earliestStartMs: 0,
+    earliestFinishMs: duration,
+    latestStartMs: 0,
+    latestFinishMs: duration,
+    slackMs: 0,
+    level: 0,
+    resources: task.resources,
+  };
+
+  if (task.name !== undefined) {
+    scheduleTask.name = task.name;
+  }
+  if (task.description !== undefined) {
+    scheduleTask.description = task.description;
+  }
+
+  return scheduleTask;
+}
+
 /** Compute a deterministic topological ordering or throw when cycles exist. */
 function resolvePlanTopology(plan: PlannerPlan): TopologyResult {
   const tasksById = new Map<string, PlannerTask>();
@@ -137,21 +168,7 @@ export function buildPlanSchedule(plan: PlannerPlan): PlanSchedule {
   }
 
   for (const task of plan.tasks) {
-    const duration = task.estimated_duration_ms ?? 0;
-    metrics.set(task.id, {
-      id: task.id,
-      name: task.name,
-      description: task.description,
-      dependsOn: [...task.depends_on],
-      estimatedDurationMs: duration,
-      earliestStartMs: 0,
-      earliestFinishMs: duration,
-      latestStartMs: 0,
-      latestFinishMs: duration,
-      slackMs: 0,
-      level: 0,
-      resources: task.resources,
-    });
+    metrics.set(task.id, createScheduleTask(task));
   }
 
   for (const task of topology.order) {

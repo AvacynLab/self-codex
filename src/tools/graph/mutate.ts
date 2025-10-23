@@ -106,6 +106,47 @@ interface TaskDefinition {
 }
 
 /**
+ * Builds a {@link GraphNodeRecord} while omitting optional fields that were not explicitly provided.
+ *
+ * Centralising the conditional spread logic keeps the graph tooling resilient to
+ * `exactOptionalPropertyTypes` by guaranteeing generated descriptors never
+ * persist `undefined` placeholders for optional properties such as `label`.
+ */
+function buildGraphNodeRecord(params: {
+  id: string;
+  label?: string;
+  attributes: Record<string, GraphAttributeValue>;
+}): GraphNodeRecord {
+  const { id, label, attributes } = params;
+  return {
+    id,
+    ...(label !== undefined ? { label } : {}),
+    attributes,
+  };
+}
+
+/**
+ * Builds a {@link GraphEdgeRecord} that omits unset optional fields to prevent
+ * leaking `undefined` values in descriptors and runtime mutations.
+ */
+function buildGraphEdgeRecord(params: {
+  from: string;
+  to: string;
+  label?: string;
+  weight?: number;
+  attributes: Record<string, GraphAttributeValue>;
+}): GraphEdgeRecord {
+  const { from, to, label, weight, attributes } = params;
+  return {
+    from,
+    to,
+    ...(label !== undefined ? { label } : {}),
+    ...(weight !== undefined ? { weight } : {}),
+    attributes,
+  };
+}
+
+/**
  * Normalise a task definition by cloning optional fields while omitting any
  * `undefined` placeholder. The helper centralises the omission logic required
  * for `exactOptionalPropertyTypes` and keeps every task copy independent.
@@ -274,15 +315,9 @@ export function handleGraphGenerate(
         }
       }
     }
-    const graphNode = {
-      id: task.id,
-      ...(task.label !== undefined ? { label: task.label } : {}),
-      attributes,
-    } satisfies GraphNodeRecord;
-    // The spread above mirrors the runtime omission logic performed later in
-    // the mutation helpers so the generated graph never materialises
-    // `undefined` labels.
-    descriptor.nodes.push(graphNode);
+    // Centralise the omission of optional fields so generated nodes remain
+    // compliant with strict optional property checks.
+    descriptor.nodes.push(buildGraphNodeRecord({ id: task.id, label: task.label, attributes }));
   }
 
   const edgeSet = new Set<string>();
@@ -298,12 +333,9 @@ export function handleGraphGenerate(
         kind: "dependency",
         weight,
       };
-      descriptor.edges.push({
-        from: dependency,
-        to: task.id,
-        weight,
-        attributes,
-      });
+      descriptor.edges.push(
+        buildGraphEdgeRecord({ from: dependency, to: task.id, weight, attributes }),
+      );
     }
   }
 
@@ -850,11 +882,7 @@ function applyAddNode(descriptor: NormalisedGraph, node: z.infer<typeof GraphNod
   // Build the node using conditional spreads so optional properties remain
   // absent instead of being serialised as `undefined`. This keeps the in-memory
   // descriptor compatible with `exactOptionalPropertyTypes`.
-  const createdNode = {
-    id: node.id,
-    ...(node.label !== undefined ? { label: node.label } : {}),
-    attributes: nodeAttributes,
-  } satisfies GraphNodeRecord;
+  const createdNode = buildGraphNodeRecord({ id: node.id, label: node.label, attributes: nodeAttributes });
   descriptor.nodes.push(createdNode);
   return { op: "add_node", description: `node '${node.id}' created`, changed: true };
 }
@@ -923,13 +951,13 @@ function applyAddEdge(descriptor: NormalisedGraph, edge: z.infer<typeof GraphEdg
   });
   // Ensure optional edge fields are omitted when not provided so future strict
   // optional property checks do not observe lingering `undefined` assignments.
-  const createdEdge = {
+  const createdEdge = buildGraphEdgeRecord({
     from: edge.from,
     to: edge.to,
-    ...(edge.label !== undefined ? { label: edge.label } : {}),
-    ...(typeof edge.weight === "number" ? { weight: edge.weight } : {}),
+    label: edge.label,
+    weight: typeof edge.weight === "number" ? edge.weight : undefined,
     attributes: edgeAttributes,
-  } satisfies GraphEdgeRecord;
+  });
   descriptor.edges.push(createdEdge);
   return { op: "add_edge", description: `edge '${edge.from}' -> '${edge.to}' created`, changed: true };
 }

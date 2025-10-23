@@ -171,6 +171,29 @@ describe("rag tools", () => {
     expect(query.hits[0].tags).to.include.members(["security", "runbook"]);
   });
 
+  it("omits metadata when callers disable metadata inclusion", async () => {
+    await handleRagIngest(context, {
+      documents: [
+        {
+          id: "ir-handbook",
+          text: "Incident response handbook with containment guidance.",
+          tags: ["Security"],
+          provenance: [{ sourceId: "file://handbook.md", type: "file" }],
+        },
+      ],
+    });
+
+    const query = await handleRagQuery(context, {
+      query: "containment guidance",
+      limit: 1,
+      min_score: 0.05,
+      include_metadata: false,
+    });
+
+    expect(query.total).to.equal(1);
+    expect(query.hits[0].metadata).to.equal(null);
+  });
+
   it("drops undefined provenance fields before forwarding to the vector memory", async () => {
     const memory = new RecordingVectorMemory();
     const logger = new StructuredLogger({ onEntry: () => undefined });

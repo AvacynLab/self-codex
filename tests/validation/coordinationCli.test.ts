@@ -1,14 +1,19 @@
 import { describe, it, beforeEach, afterEach } from "mocha";
 import { expect } from "chai";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
   executeCoordinationCli,
   parseCoordinationCliOptions,
+  type CoordinationCliOverrides,
 } from "../../src/validation/coordinationCli.js";
-import { COORDINATION_JSONL_FILES } from "../../src/validation/coordination.js";
+import {
+  COORDINATION_JSONL_FILES,
+  type CoordinationPhaseOptions,
+  type CoordinationSummary,
+} from "../../src/validation/coordination.js";
 
 /** CLI-level tests ensuring the Stage 7 workflow remains ergonomic. */
 describe("coordination validation CLI", () => {
@@ -22,6 +27,63 @@ describe("coordination validation CLI", () => {
   afterEach(async () => {
     globalThis.fetch = originalFetch;
     await rm(workingDir, { recursive: true, force: true });
+  });
+
+  it("merges coordination overrides without leaking undefined fields", async () => {
+    let capturedOptions: CoordinationPhaseOptions | undefined;
+    const overrides: CoordinationCliOverrides = {
+      phaseOptions: { coordination: { blackboardKey: "base-key", consensusTopic: undefined } },
+      runner: async (runRoot, _environment, options) => {
+        capturedOptions = options;
+        const summary: CoordinationSummary = {
+          artefacts: {
+            inputsJsonl: join(runRoot, COORDINATION_JSONL_FILES.inputs),
+            outputsJsonl: join(runRoot, COORDINATION_JSONL_FILES.outputs),
+            eventsJsonl: join(runRoot, COORDINATION_JSONL_FILES.events),
+            httpSnapshotLog: join(runRoot, COORDINATION_JSONL_FILES.log),
+          },
+          blackboard: { eventCount: 0 },
+          stigmergy: { marksApplied: 0, lastSnapshot: null },
+          contractNet: {},
+          consensus: {
+            tally: null,
+            preferredOutcome: null,
+            tieDetectedFromTally: false,
+          },
+        };
+        const summaryPath = join(runRoot, "report", "coordination_summary.json");
+        await writeFile(summaryPath, JSON.stringify(summary), "utf8");
+        return { outcomes: [], summary, summaryPath };
+      },
+    };
+
+    const logger = { log: () => undefined };
+    const env = {
+      MCP_HTTP_HOST: "127.0.0.1",
+      MCP_HTTP_PORT: "9000",
+      MCP_HTTP_PATH: "/mcp",
+      MCP_HTTP_TOKEN: "",
+    } as NodeJS.ProcessEnv;
+
+    await executeCoordinationCli(
+      { baseDir: workingDir, runId: "validation_cli", stigDomain: "cli-domain" },
+      env,
+      logger,
+      overrides,
+    );
+
+    expect(capturedOptions?.coordination).to.deep.equal({
+      blackboardKey: "base-key",
+      stigDomain: "cli-domain",
+    });
+    expect(
+      capturedOptions?.coordination &&
+        Object.prototype.hasOwnProperty.call(capturedOptions.coordination, "consensusTopic"),
+    ).to.equal(false);
+    expect(
+      capturedOptions?.coordination &&
+        Object.prototype.hasOwnProperty.call(capturedOptions.coordination, "contractTopic"),
+    ).to.equal(false);
   });
 
   it("parses CLI flags with sensible defaults", () => {

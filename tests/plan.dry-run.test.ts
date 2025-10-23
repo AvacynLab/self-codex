@@ -220,6 +220,48 @@ describe("plan dry-run", () => {
     expect(result.reroute_avoid).to.equal(null);
   });
 
+  it("omits node identifiers on aggregated impacts when no correlation hint exists", () => {
+    const context = buildContext();
+    const result = handlePlanDryRun(context, {
+      plan_id: "plan-impact-sanitise",
+      nodes: [
+        {
+          id: "node-with-impact",
+          value_impacts: [
+            { value: "safety", impact: "risk" },
+            { value: "mission", impact: "support", node_id: "explicit-node" },
+          ],
+        },
+      ],
+      impacts: [
+        {
+          value: "global",
+          impact: "support",
+          rationale: "plan-level guidance",
+        },
+      ],
+    });
+
+    const nodeImpacts =
+      result.nodes.find((entry) => entry.id === "node-with-impact")?.impacts ?? [];
+    expect(nodeImpacts.length).to.equal(2);
+
+    const fallbackImpact = nodeImpacts.find((impact) => impact.value === "safety");
+    expect(fallbackImpact).to.not.equal(undefined);
+    // The fallback node identifier should be preserved to keep correlations deterministic.
+    expect(fallbackImpact).to.have.property("nodeId", "node-with-impact");
+
+    const explicitImpact = nodeImpacts.find((impact) => impact.value === "mission");
+    expect(explicitImpact).to.not.equal(undefined);
+    expect(explicitImpact).to.have.property("nodeId", "explicit-node");
+
+    const planImpact = result.impacts.find((impact) => impact.value === "global");
+    expect(planImpact).to.not.equal(undefined);
+    // Plan-level impacts without hints must omit the optional identifier entirely so
+    // the value guard payload remains compliant with `exactOptionalPropertyTypes`.
+    expect(planImpact).to.not.have.property("nodeId");
+  });
+
   // Ensure aggregated impacts trigger the value guard so dry-run payloads include
   // a structured explanation with actionable hints tied to the originating node.
   it("explains value guard violations with actionable hints", () => {

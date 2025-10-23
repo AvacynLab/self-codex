@@ -172,27 +172,32 @@ export class LessonsStore {
     const id = fingerprint(signal);
     const existing = this.entries.get(id);
 
-    if (!existing) {
-      const record: LessonRecord = {
-        id,
-        topic: signal.topic,
-        summary: signal.summary,
-        tags: [...signal.tags],
-        importance: clampScore(signal.importance),
-        confidence: clampScore(signal.confidence),
-        evidence: signal.evidence,
-        tone: signal.tone ?? "anti-pattern",
-        createdAt: now,
-        updatedAt: now,
-        occurrences: 1,
-        score: clampScore((signal.importance + signal.confidence) / 2),
-        regressions: 0,
-        lastRegressionAt: null,
-        lastRegressionReason: null,
-      };
-      this.entries.set(id, record);
-      return { record: structuredClone(record), status: "created" };
-    }
+      if (!existing) {
+        const record: LessonRecord = {
+          id,
+          topic: signal.topic,
+          summary: signal.summary,
+          tags: [...signal.tags],
+          importance: clampScore(signal.importance),
+          confidence: clampScore(signal.confidence),
+          tone: signal.tone ?? "anti-pattern",
+          createdAt: now,
+          updatedAt: now,
+          occurrences: 1,
+          score: clampScore((signal.importance + signal.confidence) / 2),
+          regressions: 0,
+          lastRegressionAt: null,
+          lastRegressionReason: null,
+        };
+        // Assign optional evidence after the initial literal so the record never
+        // materialises an `evidence: undefined` property when lessons are parsed
+        // under `exactOptionalPropertyTypes`.
+        if (signal.evidence !== undefined) {
+          record.evidence = signal.evidence;
+        }
+        this.entries.set(id, record);
+        return { record: structuredClone(record), status: "created" };
+      }
 
     // Reinforce an existing record by increasing occurrences and maxing out the
     // score with the new signal data. Keeping the best evidence improves audits.

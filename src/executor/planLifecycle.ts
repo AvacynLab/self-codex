@@ -168,8 +168,44 @@ function cloneSnapshot(snapshot: PlanLifecycleSnapshot): PlanLifecycleSnapshot {
   return structuredClone(snapshot);
 }
 
+/**
+ * Recursively strip `undefined` properties from structured payloads. The helper
+ * mutates the provided value in place which is safe because callers always pass
+ * a freshly cloned snapshot. Nested arrays retain their original length so test
+ * expectations relying on placeholder slots remain valid while objects lose the
+ * optional keys that would violate `exactOptionalPropertyTypes`.
+ */
+function scrubUndefinedEntries(value: unknown): void {
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      scrubUndefinedEntries(entry);
+    }
+    return;
+  }
+
+  if (!value || typeof value !== "object") {
+    return;
+  }
+
+  const record = value as Record<string, unknown>;
+  for (const [key, entry] of Object.entries(record)) {
+    if (entry === undefined) {
+      delete record[key];
+      continue;
+    }
+    scrubUndefinedEntries(entry);
+  }
+}
+
+/**
+ * Clone lifecycle payloads while removing undefined metadata. Persisted
+ * snapshots therefore remain stable once strict optional typing is enforced
+ * without mutating the caller-provided event structures.
+ */
 function clonePayload(payload: Record<string, unknown>): Record<string, unknown> {
-  return structuredClone(payload) as Record<string, unknown>;
+  const cloned = structuredClone(payload) as Record<string, unknown>;
+  scrubUndefinedEntries(cloned);
+  return cloned;
 }
 
 function sanitiseCorrelation(hints: EventCorrelationHints | null | undefined) {

@@ -33,6 +33,7 @@ import {
 // NOTE: Node built-in modules are imported with the explicit `node:` prefix to guarantee ESM resolution in Node.js.
   type EventBus,
   type EventFilter,
+  type EventInput,
   type EventLevel as BusEventLevel,
 } from "../events/bus.js";
 import {
@@ -211,16 +212,23 @@ import {
 } from "../children/api.js";
 import { registerIntentRouteTool } from "../tools/intent_route.js";
 import { registerArtifactWriteTool } from "../tools/artifact_write.js";
+import type { ArtifactWriteToolContext } from "../tools/artifact_write.js";
 import { registerArtifactReadTool } from "../tools/artifact_read.js";
 import { registerArtifactSearchTool } from "../tools/artifact_search.js";
 import { registerToolsHelpTool } from "../tools/tools_help.js";
 import { registerProjectScaffoldRunTool } from "../tools/project_scaffold_run.js";
+import type { ProjectScaffoldRunToolContext } from "../tools/project_scaffold_run.js";
 import { registerGraphApplyChangeSetTool } from "../tools/graph_apply_change_set.js";
+import type { GraphApplyChangeSetToolContext } from "../tools/graph_apply_change_set.js";
 import { registerGraphSnapshotTimeTravelTool } from "../tools/graph_snapshot_time_travel.js";
+import type { GraphSnapshotTimeTravelToolContext } from "../tools/graph_snapshot_time_travel.js";
 import { registerPlanCompileExecuteTool } from "../tools/plan_compile_execute.js";
+import type { PlanCompileExecuteToolContext } from "../tools/plan_compile_execute.js";
 import { registerMemoryUpsertTool } from "../tools/memory_upsert.js";
+import type { MemoryUpsertToolContext } from "../tools/memory_upsert.js";
 import { registerMemorySearchTool } from "../tools/memory_search.js";
 import { registerChildOrchestrateTool } from "../tools/child_orchestrate.js";
+import type { ChildOrchestrateToolContext } from "../tools/child_orchestrate.js";
 import { registerRuntimeObserveTool } from "../tools/runtime_observe.js";
 import {
   ToolRouter,
@@ -667,9 +675,13 @@ export const __envRuntimeInternals = {
 
 const IDEMPOTENCY_TTL_OVERRIDE = resolveIdempotencyTtlFromEnv();
 /** Registry replaying cached results for idempotent operations. */
-const idempotencyRegistry = new IdempotencyRegistry({
-  defaultTtlMs: IDEMPOTENCY_TTL_OVERRIDE,
-});
+const idempotencyRegistry = new IdempotencyRegistry(
+  omitUndefinedEntries({
+    // Propagate the override only when the environment explicitly surfaces a
+    // numeric TTL; passing `undefined` would violate `exactOptionalPropertyTypes`.
+    defaultTtlMs: IDEMPOTENCY_TTL_OVERRIDE,
+  }),
+);
 /** Root directory storing the layered memory artefacts (vector + knowledge). */
 const MEMORY_ROOT = resolvePath(process.cwd(), "runs", "memory");
 /** Persistent vector index capturing long form orchestrator artefacts. */
@@ -893,10 +905,14 @@ function normaliseQualityThreshold(value: number): number {
 const redactionDirectives = parseRedactionDirectives(readOptionalString("MCP_LOG_REDACT", { allowEmpty: true }));
 
 const baseLoggerOptions: LoggerOptions = {
-  // Keep file overrides consistent with the shared env helpers so CLI flags and env literals share the same trimming rules.
-  logFile: readOptionalString("MCP_LOG_FILE"),
-  maxFileSizeBytes: parseSizeEnv(readOptionalString("MCP_LOG_ROTATE_SIZE")),
-  maxFileCount: parseCountEnv(readOptionalString("MCP_LOG_ROTATE_KEEP")),
+  // Keep file overrides consistent with the shared env helpers so CLI flags and
+  // env literals share the same trimming rules while omitting unspecified
+  // values to satisfy `exactOptionalPropertyTypes`.
+  ...omitUndefinedEntries({
+    logFile: readOptionalString("MCP_LOG_FILE"),
+    maxFileSizeBytes: parseSizeEnv(readOptionalString("MCP_LOG_ROTATE_SIZE")),
+    maxFileCount: parseCountEnv(readOptionalString("MCP_LOG_ROTATE_KEEP")),
+  }),
   redactSecrets: redactionDirectives.tokens,
   redactionEnabled: redactionDirectives.enabled,
 };
@@ -957,6 +973,8 @@ function recordServerLogEntry(entry: LogEntry): void {
 /** @internal Expose logging helpers so tests can assert journal correlation without mocking the logger. */
 export const __serverLogInternals = {
   recordServerLogEntry,
+  /** @internal Allows tests to assert that optional logger options stay omitted. */
+  snapshotLoggerOptions: (): LoggerOptions => ({ ...activeLoggerOptions }),
 };
 
 function instantiateLogger(options: LoggerOptions): StructuredLogger {
@@ -1305,9 +1323,11 @@ const autoscaler = new Autoscaler({
     pushEvent({
       kind: "AUTOSCALER",
       level: event.level,
-      childId: event.childId,
       payload: event.payload,
-      correlation: event.correlation,
+      ...omitUndefinedEntries({
+        childId: event.childId,
+        correlation: coerceNullToUndefined(event.correlation ?? null),
+      }),
     });
   },
 });
@@ -1647,8 +1667,10 @@ function ensureChildVisibleInGraph(options: ManualChildGraphOptions): void {
   const spec: SpawnChildSpec = {
     name: deriveManualChildName(childId, metadata),
     runtime: runtimeLabel,
-    goals: goals.length > 0 ? goals.slice(0, 5) : undefined,
-    system: systemPrompt,
+    ...omitUndefinedEntries({
+      goals: goals.length > 0 ? goals.slice(0, 5) : undefined,
+      system: systemPrompt,
+    }),
   };
 
   graphState.createChild(jobId, childId, spec, { createdAt, ttlAt: null });
@@ -1787,6 +1809,18 @@ interface QualityAssessmentComputation {
   metrics: Record<string, number>;
 }
 
+/**
+ * Drops optional metrics so quality assessments expose dense records that stay
+ * compatible with `exactOptionalPropertyTypes`.
+ */
+function normaliseQualityMetrics<T extends Record<string, number | undefined>>(
+  metrics: T,
+): Record<string, number> {
+  return Object.fromEntries(
+    Object.entries(metrics).filter(([, value]) => typeof value === "number" && Number.isFinite(value)),
+  ) as Record<string, number>;
+}
+
 function computeQualityAssessment(
   kind: ReviewKind,
   summaryText: string,
@@ -1796,37 +1830,59 @@ function computeQualityAssessment(
     case "code": {
       const signals = deriveCodeQualitySignals(summaryText);
       const result = scoreCode(signals);
-      return { score: result.score, rubric: result.rubric, metrics: signals };
+      return {
+        score: result.score,
+        rubric: result.rubric,
+        metrics: normaliseQualityMetrics(signals),
+      };
     }
     case "text": {
       const signals = deriveTextQualitySignals(summaryText, review.overall);
       const result = scoreText(signals);
-      return { score: result.score, rubric: result.rubric, metrics: signals };
+      return {
+        score: result.score,
+        rubric: result.rubric,
+        metrics: normaliseQualityMetrics(signals),
+      };
     }
     case "plan": {
       const signals = derivePlanQualitySignals(summaryText, review.overall);
       const result = scorePlan(signals);
-      return { score: result.score, rubric: result.rubric, metrics: signals };
+      return {
+        score: result.score,
+        rubric: result.rubric,
+        metrics: normaliseQualityMetrics(signals),
+      };
     }
     default:
       return null;
   }
 }
 
+/** @internal Surface the quality gate helper for optional-field regression tests. */
+export const __qualityAssessmentInternals = {
+  computeQualityAssessment,
+};
+
 function getChildToolContext(): ChildToolContext {
-  return {
+  const base: ChildToolContext = {
     supervisor: childProcessSupervisor,
     logger,
     loopDetector,
     contractNet,
     supervisorAgent: orchestratorSupervisor,
-    idempotency: runtimeFeatures.enableIdempotency ? idempotencyRegistry : undefined,
     budget: childBudgetManager,
+  };
+  return {
+    ...base,
+    ...omitUndefinedEntries({
+      idempotency: runtimeFeatures.enableIdempotency ? idempotencyRegistry : undefined,
+    }),
   };
 }
 
 function getPlanToolContext(): PlanToolContext {
-  return {
+  const base: PlanToolContext = {
     supervisor: childProcessSupervisor,
     graphState,
     logger,
@@ -1836,27 +1892,34 @@ function getPlanToolContext(): PlanToolContext {
       pushEvent({
         kind: event.kind,
         level: event.level,
-        jobId: event.jobId,
-        childId: event.childId,
         payload: event.payload,
-        correlation: event.correlation,
+        ...omitUndefinedEntries({
+          jobId: event.jobId,
+          childId: event.childId,
+          correlation: coerceNullToUndefined(event.correlation ?? null),
+        }),
       });
     },
     stigmergy,
-    blackboard: runtimeFeatures.enableBlackboard ? blackboard : undefined,
     supervisorAgent: orchestratorSupervisor,
-    causalMemory: runtimeFeatures.enableCausalMemory ? causalMemory : undefined,
-    valueGuard: runtimeFeatures.enableValueGuard
-      ? { graph: valueGraph, registry: valueGuardRegistry }
-      : undefined,
     loopDetector,
-    autoscaler: runtimeFeatures.enableAutoscaler ? autoscaler : undefined,
     btStatusRegistry,
     planLifecycle,
     planLifecycleFeatureEnabled: runtimeFeatures.enablePlanLifecycle,
-    idempotency: runtimeFeatures.enableIdempotency ? idempotencyRegistry : undefined,
     lessonsStore,
-    thoughtManager: runtimeFeatures.enableThoughtGraph ? thoughtGraphCoordinator : undefined,
+  };
+  return {
+    ...base,
+    ...omitUndefinedEntries({
+      blackboard: runtimeFeatures.enableBlackboard ? blackboard : undefined,
+      causalMemory: runtimeFeatures.enableCausalMemory ? causalMemory : undefined,
+      valueGuard: runtimeFeatures.enableValueGuard
+        ? { graph: valueGraph, registry: valueGuardRegistry }
+        : undefined,
+      autoscaler: runtimeFeatures.enableAutoscaler ? autoscaler : undefined,
+      idempotency: runtimeFeatures.enableIdempotency ? idempotencyRegistry : undefined,
+      thoughtManager: runtimeFeatures.enableThoughtGraph ? thoughtGraphCoordinator : undefined,
+    }),
   };
 }
 
@@ -1865,7 +1928,9 @@ function getTxToolContext(): TxToolContext {
     transactions: graphTransactions,
     resources,
     locks: graphLocks,
-    idempotency: runtimeFeatures.enableIdempotency ? idempotencyRegistry : undefined,
+    ...omitUndefinedEntries({
+      idempotency: runtimeFeatures.enableIdempotency ? idempotencyRegistry : undefined,
+    }),
   };
 }
 
@@ -1874,7 +1939,9 @@ function getGraphBatchToolContext(): GraphBatchToolContext {
     transactions: graphTransactions,
     resources,
     locks: graphLocks,
-    idempotency: runtimeFeatures.enableIdempotency ? idempotencyRegistry : undefined,
+    ...omitUndefinedEntries({
+      idempotency: runtimeFeatures.enableIdempotency ? idempotencyRegistry : undefined,
+    }),
   };
 }
 
@@ -1904,14 +1971,155 @@ function getCoordinationToolContext(): CoordinationToolContext {
     stigmergy,
     contractNet,
     logger,
-    idempotency: runtimeFeatures.enableIdempotency ? idempotencyRegistry : undefined,
     contractNetWatcherTelemetry,
+    ...omitUndefinedEntries({
+      idempotency: runtimeFeatures.enableIdempotency ? idempotencyRegistry : undefined,
+    }),
   };
 }
 
 function getAgentToolContext(): AgentToolContext {
   return { autoscaler, logger };
 }
+
+/**
+ * Builds the context consumed by the project scaffold tool while omitting
+ * optional dependencies (idempotency registry) when the corresponding feature
+ * toggle is disabled. Returning a compact object keeps strict optional typing
+ * satisfied once `exactOptionalPropertyTypes` is enforced.
+ */
+function getProjectScaffoldRunToolContext(): ProjectScaffoldRunToolContext {
+  return {
+    logger,
+    workspaceRoot: process.cwd(),
+    ...omitUndefinedEntries({
+      idempotency: runtimeFeatures.enableIdempotency ? idempotencyRegistry : undefined,
+    }),
+  };
+}
+
+/**
+ * Derives the context for artifact writes, ensuring idempotency is only
+ * surfaced when configured so callers never observe `{ idempotency: undefined }`.
+ */
+function getArtifactWriteToolContext(): ArtifactWriteToolContext {
+  return {
+    logger,
+    childrenRoot: CHILDREN_ROOT,
+    ...omitUndefinedEntries({
+      idempotency: runtimeFeatures.enableIdempotency ? idempotencyRegistry : undefined,
+    }),
+  };
+}
+
+/**
+ * Builds the change-set tool context and drops worker pool/idempotency entries
+ * when the orchestrator has not enabled them, preventing undefined placeholders
+ * from leaking into downstream registries.
+ */
+function getGraphApplyChangeSetToolContext(): GraphApplyChangeSetToolContext {
+  return {
+    logger,
+    transactions: graphTransactions,
+    locks: graphLocks,
+    resources,
+    ...omitUndefinedEntries({
+      idempotency: runtimeFeatures.enableIdempotency ? idempotencyRegistry : undefined,
+      workerPool: coerceNullToUndefined(graphWorkerPool),
+    }),
+  };
+}
+
+/**
+ * Normalises the snapshot tool context, trimming blank run roots and only
+ * surfacing optional dependencies when configured so strict optional typing can
+ * be enabled safely.
+ */
+function getGraphSnapshotToolContext(): GraphSnapshotTimeTravelToolContext {
+  const rawRunsRoot = typeof process.env.MCP_RUNS_ROOT === "string" ? process.env.MCP_RUNS_ROOT.trim() : undefined;
+  const runsRoot = rawRunsRoot && rawRunsRoot.length > 0 ? rawRunsRoot : undefined;
+  return {
+    logger,
+    transactions: graphTransactions,
+    locks: graphLocks,
+    resources,
+    ...omitUndefinedEntries({
+      idempotency: runtimeFeatures.enableIdempotency ? idempotencyRegistry : undefined,
+      runsRoot,
+    }),
+  };
+}
+
+/**
+ * Provides the façade context for plan compilation while omitting optional
+ * registries unless the feature is enabled. The budget resolver is always
+ * exposed to maintain backwards compatibility.
+ */
+function getPlanCompileExecuteToolContext(): PlanCompileExecuteToolContext {
+  return {
+    plan: getPlanToolContext(),
+    logger,
+    resolveBudget: (tool) => toolRegistry.get(tool)?.budgets,
+    ...omitUndefinedEntries({
+      idempotency: runtimeFeatures.enableIdempotency ? idempotencyRegistry : undefined,
+    }),
+  };
+}
+
+/**
+ * Builds the child orchestration context so optional idempotency registries
+ * disappear when disabled, keeping the façade compliant with strict optional
+ * typing expectations.
+ */
+function getChildOrchestrateToolContext(): ChildOrchestrateToolContext {
+  return {
+    supervisor: childProcessSupervisor,
+    logger,
+    ...omitUndefinedEntries({
+      idempotency: runtimeFeatures.enableIdempotency ? idempotencyRegistry : undefined,
+    }),
+  };
+}
+
+/**
+ * Derives the memory upsert façade context and removes optional idempotency
+ * fields when disabled so registry snapshots remain compact.
+ */
+function getMemoryUpsertToolContext(): MemoryUpsertToolContext {
+  return {
+    vectorIndex: vectorMemoryIndex,
+    logger,
+    ...omitUndefinedEntries({
+      idempotency: runtimeFeatures.enableIdempotency ? idempotencyRegistry : undefined,
+    }),
+  };
+}
+
+/** @internal Expose context builders so tests can inspect optional field sanitisation. */
+export const __runtimeToolInternals = {
+  getChildToolContext,
+  getPlanToolContext,
+  getTxToolContext,
+  getGraphBatchToolContext,
+  getCoordinationToolContext,
+  getProjectScaffoldRunToolContext,
+  getArtifactWriteToolContext,
+  getGraphApplyChangeSetToolContext,
+  getGraphSnapshotToolContext,
+  getPlanCompileExecuteToolContext,
+  getChildOrchestrateToolContext,
+  getMemoryUpsertToolContext,
+};
+
+/** @internal Exposes Graph Forge sanitisation helpers for targeted tests. */
+export const __graphForgeInternals = {
+  buildGraphForgeTasks,
+};
+
+/** @internal Exposes transcript aggregation helpers for targeted tests. */
+export const __transcriptAggregationInternals = {
+  normaliseAggregateOptions,
+};
 
 /**
  * Error raised when the runtime cannot initialise the shared RAG context.
@@ -3127,6 +3335,15 @@ function aggregate(
   }
 }
 
+function normaliseAggregateOptions(
+  input: { include_system?: boolean | undefined; include_goals?: boolean | undefined },
+): { includeSystem?: boolean; includeGoals?: boolean } {
+  return omitUndefinedEntries({
+    includeSystem: input.include_system,
+    includeGoals: input.include_goals,
+  });
+}
+
 // ---------------------------
 // Zod shapes et types
 // ---------------------------
@@ -3487,6 +3704,31 @@ function runGraphForgeAnalysis(
   }
 }
 
+function buildGraphForgeTasks(compiled: GraphForgeCompiled, cfg: GraphForgeInput): GraphForgeTask[] {
+  const tasks: GraphForgeTask[] = [];
+  if (cfg.use_defined_analyses ?? true) {
+    for (const analysis of compiled.analyses) {
+      tasks.push({
+        name: analysis.name,
+        args: analysis.args.map((arg) => toStringArg(arg.value)),
+        source: "dsl",
+      });
+    }
+  }
+  if (cfg.analyses?.length) {
+    for (const req of cfg.analyses) {
+      const weightKey = coerceNullToUndefined(req.weight_key ?? null);
+      tasks.push({
+        name: req.name,
+        args: req.args ?? [],
+        ...(weightKey !== undefined ? { weightKey } : {}),
+        source: "request",
+      });
+    }
+  }
+  return tasks;
+}
+
 const SERVER_NAME = "mcp-self-fork-orchestrator";
 const SERVER_VERSION = "1.3.0";
 const MCP_PROTOCOL_VERSION = "1.0";
@@ -3565,17 +3807,15 @@ const intentRouteManifest = await registerIntentRouteTool(toolRegistry, {
 toolRouter.register(intentRouteManifest);
 const runtimeObserveManifest = await registerRuntimeObserveTool(toolRegistry, { logger });
 toolRouter.register(runtimeObserveManifest);
-const projectScaffoldManifest = await registerProjectScaffoldRunTool(toolRegistry, {
-  logger,
-  workspaceRoot: process.cwd(),
-  idempotency: runtimeFeatures.enableIdempotency ? idempotencyRegistry : undefined,
-});
+const projectScaffoldManifest = await registerProjectScaffoldRunTool(
+  toolRegistry,
+  getProjectScaffoldRunToolContext(),
+);
 toolRouter.register(projectScaffoldManifest);
-const artifactWriteManifest = await registerArtifactWriteTool(toolRegistry, {
-  logger,
-  childrenRoot: CHILDREN_ROOT,
-  idempotency: runtimeFeatures.enableIdempotency ? idempotencyRegistry : undefined,
-});
+const artifactWriteManifest = await registerArtifactWriteTool(
+  toolRegistry,
+  getArtifactWriteToolContext(),
+);
 toolRouter.register(artifactWriteManifest);
 const artifactReadManifest = await registerArtifactReadTool(toolRegistry, {
   logger,
@@ -3587,42 +3827,27 @@ const artifactSearchManifest = await registerArtifactSearchTool(toolRegistry, {
   childrenRoot: CHILDREN_ROOT,
 });
 toolRouter.register(artifactSearchManifest);
-const graphApplyManifest = await registerGraphApplyChangeSetTool(toolRegistry, {
-  logger,
-  transactions: graphTransactions,
-  locks: graphLocks,
-  resources,
-  idempotency: runtimeFeatures.enableIdempotency ? idempotencyRegistry : undefined,
-  workerPool: coerceNullToUndefined(graphWorkerPool),
-});
+const graphApplyManifest = await registerGraphApplyChangeSetTool(
+  toolRegistry,
+  getGraphApplyChangeSetToolContext(),
+);
 toolRouter.register(graphApplyManifest);
-const graphSnapshotManifest = await registerGraphSnapshotTimeTravelTool(toolRegistry, {
-  logger,
-  transactions: graphTransactions,
-  locks: graphLocks,
-  resources,
-  idempotency: runtimeFeatures.enableIdempotency ? idempotencyRegistry : undefined,
-  runsRoot: process.env.MCP_RUNS_ROOT,
-});
+const graphSnapshotManifest = await registerGraphSnapshotTimeTravelTool(
+  toolRegistry,
+  getGraphSnapshotToolContext(),
+);
 toolRouter.register(graphSnapshotManifest);
-const planCompileManifest = await registerPlanCompileExecuteTool(toolRegistry, {
-  plan: getPlanToolContext(),
-  logger,
-  idempotency: runtimeFeatures.enableIdempotency ? idempotencyRegistry : undefined,
-  resolveBudget: (tool) => toolRegistry.get(tool)?.budgets,
-});
+const planCompileManifest = await registerPlanCompileExecuteTool(
+  toolRegistry,
+  getPlanCompileExecuteToolContext(),
+);
 toolRouter.register(planCompileManifest);
-const childOrchestrateManifest = await registerChildOrchestrateTool(toolRegistry, {
-  supervisor: childProcessSupervisor,
-  logger,
-  idempotency: runtimeFeatures.enableIdempotency ? idempotencyRegistry : undefined,
-});
+const childOrchestrateManifest = await registerChildOrchestrateTool(
+  toolRegistry,
+  getChildOrchestrateToolContext(),
+);
 toolRouter.register(childOrchestrateManifest);
-const memoryUpsertManifest = await registerMemoryUpsertTool(toolRegistry, {
-  vectorIndex: vectorMemoryIndex,
-  logger,
-  idempotency: runtimeFeatures.enableIdempotency ? idempotencyRegistry : undefined,
-});
+const memoryUpsertManifest = await registerMemoryUpsertTool(toolRegistry, getMemoryUpsertToolContext());
 toolRouter.register(memoryUpsertManifest);
 const memorySearchManifest = await registerMemorySearchTool(toolRegistry, {
   vectorIndex: vectorMemoryIndex,
@@ -7930,7 +8155,10 @@ server.registerTool(
       pushEvent({
         kind: cognitiveEvents.review.kind,
         level: cognitiveEvents.review.level,
-        jobId: coerceNullToUndefined(cognitiveEvents.review.jobId),
+        // Propagate the explicit `null` sentinel produced by
+        // `buildChildCognitiveEvents` so the bus preserves the absence of a
+        // concrete job correlation instead of reintroducing `undefined`.
+        jobId: cognitiveEvents.review.jobId ?? null,
         childId: cognitiveEvents.review.childId,
         payload: cognitiveEvents.review.payload,
         correlation: cognitiveEvents.review.correlation,
@@ -7940,7 +8168,7 @@ server.registerTool(
         pushEvent({
           kind: cognitiveEvents.reflection.kind,
           level: cognitiveEvents.reflection.level,
-          jobId: coerceNullToUndefined(cognitiveEvents.reflection.jobId),
+          jobId: cognitiveEvents.reflection.jobId ?? null,
           childId: cognitiveEvents.reflection.childId,
           payload: cognitiveEvents.reflection.payload,
           correlation: cognitiveEvents.reflection.correlation,
@@ -8053,7 +8281,10 @@ server.registerTool(
   async (input) => {
     try {
       const parsed = ChildKillInputSchema.parse(input);
-      const result = await handleChildKill(getChildToolContext(), parsed);
+      const killRequest = parsed.timeout_ms !== undefined
+        ? { child_id: parsed.child_id, timeout_ms: parsed.timeout_ms }
+        : { child_id: parsed.child_id };
+      const result = await handleChildKill(getChildToolContext(), killRequest);
       return {
         content: [{ type: "text" as const, text: j({ tool: "child_kill", result }) }],
         structuredContent: result,
@@ -8473,17 +8704,14 @@ server.registerTool(
 
 
 
-    const slice = graphState.getTranscript(child.id, {
-
+    const sliceOptions = omitUndefinedEntries({
       sinceIndex: input.since_index,
-
       sinceTs: input.since_ts,
-
       limit: input.limit,
-
-      reverse: input.reverse
-
+      reverse: input.reverse,
     });
+
+    const slice = graphState.getTranscript(child.id, sliceOptions);
 
 
 
@@ -8674,7 +8902,8 @@ server.registerTool(
         throw new Error("No Graph Forge source provided");
       }
 
-      const compiled = mod.compileSource(source, { entryGraph: cfg.entry_graph });
+      const compileOptions = cfg.entry_graph ? { entryGraph: cfg.entry_graph } : {};
+      const compiled = mod.compileSource(source, compileOptions);
       const graphSummary = {
         name: compiled.graph.name,
         directives: Array.from(compiled.graph.directives.entries()).map(([key, value]) => ({ name: key, value })),
@@ -8688,26 +8917,7 @@ server.registerTool(
         location: { line: analysis.tokenLine, column: analysis.tokenColumn }
       }));
 
-      const tasks: GraphForgeTask[] = [];
-      if (cfg.use_defined_analyses ?? true) {
-        for (const analysis of compiled.analyses) {
-          tasks.push({
-            name: analysis.name,
-            args: analysis.args.map(arg => toStringArg(arg.value)),
-            source: "dsl"
-          });
-        }
-      }
-      if (cfg.analyses?.length) {
-        for (const req of cfg.analyses) {
-          tasks.push({
-            name: req.name,
-            args: req.args ?? [],
-            weightKey: coerceNullToUndefined(req.weight_key),
-            source: "request"
-          });
-        }
-      }
+      const tasks = buildGraphForgeTasks(compiled, cfg);
 
       const analysisReports = tasks.map(task => {
         try {
@@ -8769,7 +8979,7 @@ server.registerTool(
       strategy = undefined;
     }
 
-    const res = aggregate(job_id, strategy, { includeSystem: input.include_system, includeGoals: input.include_goals });
+    const res = aggregate(job_id, strategy, normaliseAggregateOptions(input));
 
     graphState.patchJob(job_id, { state: "done" });
 
@@ -9017,7 +9227,6 @@ export async function routeJsonRpcRequest(
 
   const extra = {
     signal: abort.signal,
-    sessionId: undefined,
     sendNotification: async () => {
       // Notifications are not routed when using the in-process adapter. They are
       // primarily used by streaming transports, therefore we simply swallow them
@@ -9027,7 +9236,7 @@ export async function routeJsonRpcRequest(
       throw new Error("Nested requests are not supported via handleJsonRpc");
     },
     requestId,
-    requestInfo: Object.keys(headersSnapshot).length > 0 ? { headers: headersSnapshot } : undefined,
+    ...(Object.keys(headersSnapshot).length > 0 ? { requestInfo: { headers: headersSnapshot } } : {}),
   };
 
   const executeInvocation = () =>
@@ -9207,11 +9416,21 @@ function mergeCorrelationSnapshots(
   const merged: JsonRpcCorrelationSnapshot = { ...base };
   for (const key of ["runId", "opId", "childId", "jobId"] as const) {
     if (Object.prototype.hasOwnProperty.call(next, key)) {
-      merged[key] = next[key];
+      const value = next[key];
+      if (value !== undefined) {
+        merged[key] = value;
+      } else {
+        delete merged[key];
+      }
     }
   }
   return merged;
 }
+
+/** @internal Surface correlation helpers so tests can verify sanitisation logic. */
+export const __jsonRpcCorrelationInternals = {
+  mergeCorrelationSnapshots,
+};
 
 function collectCorrelationFromContext(context?: JsonRpcRouteContext): JsonRpcCorrelationSnapshot {
   const snapshot: JsonRpcCorrelationSnapshot = {};
@@ -9340,14 +9559,36 @@ interface JsonRpcObservabilityInput {
  * transport tag when the upstream context failed to provide one. Returning the
  * base object unchanged avoids allocating a copy when no enrichment is needed.
  */
+/**
+ * Normalises the optional transport tag propagated through runtime telemetry
+ * and tracing helpers. Callers frequently pass `undefined` (or even blank
+ * strings) when a request is routed internally, so the helper defensively
+ * coerces the tag to `null` unless a non-empty string is supplied.
+ */
+export function normaliseTransportTag(tag: string | null | undefined): string | null {
+  if (typeof tag !== "string") {
+    return null;
+  }
+  const trimmed = tag.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
 export function buildJsonRpcObservabilityInput(
   base: Omit<JsonRpcObservabilityInput, "transport">,
   transport: string | null | undefined,
 ): JsonRpcObservabilityInput {
-  if (transport === undefined || transport === null) {
+  // Allow callers to omit the transport tag entirely when the runtime context
+  // does not surface one. Converting `null` placeholders to `undefined`
+  // guarantees the optional property disappears rather than being forwarded as
+  // `{ transport: null }`, keeping the payload compliant with
+  // `exactOptionalPropertyTypes`.
+  const enriched = omitUndefinedEntries({
+    transport: coerceNullToUndefined(normaliseTransportTag(transport)),
+  });
+  if (Object.keys(enriched).length === 0) {
     return base;
   }
-  return { ...base, transport };
+  return { ...base, ...enriched };
 }
 
 interface JsonRpcErrorSnapshot {
@@ -9445,6 +9686,12 @@ function recordJsonRpcObservability(input: JsonRpcObservabilityInput): void {
     return Math.round(value);
   };
 
+  const elapsedMetric = normaliseOptionalMetric(input.elapsedMs ?? null);
+  const durationMetric = normaliseOptionalMetric(duration);
+  const inboundMetric = normaliseOptionalMetric(bytesIn);
+  const outboundMetric = normaliseOptionalMetric(bytesOut);
+  const timeoutMetric = normaliseOptionalMetric(input.timeoutMs ?? null);
+
   // Ensure the emitted payload status matches the JSON-RPC stage; unexpected values are coerced to the
   // documented lifecycle token so dashboards keep a stable contract.
   const resolveStatus = <M extends JsonRpcEventMessage>(
@@ -9457,24 +9704,30 @@ function recordJsonRpcObservability(input: JsonRpcObservabilityInput): void {
     return (candidate === fallback ? candidate : fallback) as JsonRpcEventPayloadByMessage<M>["status"];
   };
 
+  // The shared payload uses `omitUndefinedEntries` so optional metrics vanish
+  // entirely when missing. This keeps the runtime compliant with
+  // `exactOptionalPropertyTypes` while preserving backwards compatible `null`
+  // hints for correlation identifiers that remain intentionally explicit.
   const sharedFields: JsonRpcEventSharedFields = {
     method: input.method,
     metric_method: metricMethod,
     tool: input.toolName ?? null,
     request_id: input.requestId ?? null,
-    transport: input.transport ?? null,
-    elapsed_ms: normaliseOptionalMetric(input.elapsedMs ?? null),
-    trace_id: trace?.traceId ?? null,
-    span_id: trace?.spanId ?? null,
-    duration_ms: normaliseOptionalMetric(duration),
-    bytes_in: normaliseOptionalMetric(bytesIn),
-    bytes_out: normaliseOptionalMetric(bytesOut),
     run_id: input.correlation.runId ?? null,
     op_id: input.correlation.opId ?? null,
     child_id: input.correlation.childId ?? null,
     job_id: input.correlation.jobId ?? null,
-    idempotency_key: input.idempotencyKey ?? null,
-    timeout_ms: normaliseOptionalMetric(input.timeoutMs ?? null),
+    ...omitUndefinedEntries({
+      transport: coerceNullToUndefined(input.transport ?? null),
+      elapsed_ms: coerceNullToUndefined(elapsedMetric),
+      trace_id: coerceNullToUndefined(trace?.traceId ?? null),
+      span_id: coerceNullToUndefined(trace?.spanId ?? null),
+      duration_ms: coerceNullToUndefined(durationMetric),
+      bytes_in: coerceNullToUndefined(inboundMetric),
+      bytes_out: coerceNullToUndefined(outboundMetric),
+      idempotency_key: coerceNullToUndefined(input.idempotencyKey ?? null),
+      timeout_ms: coerceNullToUndefined(timeoutMetric),
+    }),
   } satisfies JsonRpcEventSharedFields;
 
   let payload: JsonRpcEventPayload;
@@ -9522,7 +9775,8 @@ function recordJsonRpcObservability(input: JsonRpcObservabilityInput): void {
   }
 
   try {
-    eventBus.publish<typeof payload.msg>({
+    const elapsedForEvent = coerceNullToUndefined(payload.elapsed_ms ?? null);
+    const schedulerEvent: EventInput<typeof payload.msg> = {
       cat: "scheduler",
       level: input.stage === "error" ? "error" : "info",
       runId: input.correlation.runId ?? null,
@@ -9531,11 +9785,12 @@ function recordJsonRpcObservability(input: JsonRpcObservabilityInput): void {
       jobId: input.correlation.jobId ?? null,
       component: "jsonrpc",
       stage: jsonRpcMessage,
-      elapsedMs: coerceNullToUndefined(payload.elapsed_ms),
       kind: `JSONRPC_${input.stage.toUpperCase()}`,
       msg: payload.msg,
       data: payload,
-    });
+      ...(elapsedForEvent !== undefined ? { elapsedMs: elapsedForEvent } : {}),
+    };
+    eventBus.publish<typeof payload.msg>(schedulerEvent);
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
     process.stderr.write(
@@ -9564,8 +9819,7 @@ function recordJsonRpcObservability(input: JsonRpcObservabilityInput): void {
       component: "jsonrpc",
       stage: payload.msg,
       elapsedMs: payload.elapsed_ms ?? null,
-      ts,
-      seq,
+      ...omitUndefinedEntries({ ts, seq }),
     } as const;
 
     logJournal.record({ stream: "server", bucketId: "jsonrpc", ...baseEntry });
@@ -9748,6 +10002,7 @@ export async function handleJsonRpc(
 ): Promise<JsonRpcResponse> {
   const rawId = req?.id ?? null;
   const baseContext: JsonRpcRouteContext = context ? { ...context } : {};
+  const baseTransport = normaliseTransportTag(baseContext?.transport);
   const requestIdHint = baseContext.requestId ?? rawId;
   let sanitizedRequest: JsonRpcRequest;
   let method = typeof req?.method === "string" ? req.method.trim() || "unknown" : "unknown";
@@ -9773,7 +10028,7 @@ export async function handleJsonRpc(
             errorMessage: error.data?.hint ?? error.message,
             errorCode: error.code,
           },
-          baseContext?.transport,
+          baseTransport,
         ),
       );
       return toJsonRpc(rawId, error);
@@ -9799,6 +10054,7 @@ export async function handleJsonRpc(
     collectCorrelationFromContext(runtimeContext),
     collectCorrelationFromPayload(invocationArgs),
   );
+  const transport = normaliseTransportTag(runtimeContext?.transport);
   const deprecation = toolName ? evaluateToolDeprecation(toolName, undefined, new Date()) : null;
   if (deprecation?.metadata && toolName) {
     const logPayload = { name: toolName, metadata: deprecation.metadata, ageDays: deprecation.ageDays };
@@ -9813,29 +10069,28 @@ export async function handleJsonRpc(
         status: 410,
         meta: { tool: toolName, since: deprecation.metadata.since },
       });
-      recordJsonRpcObservability(
-        buildJsonRpcObservabilityInput(
-          {
-            stage: "error",
-            method,
-            toolName,
-            requestId: id,
-            idempotencyKey: runtimeContext?.idempotencyKey ?? null,
-            correlation,
-            status: "error",
-            timeoutMs: null,
-            errorMessage: removalError.data?.hint ?? removalError.message,
-            errorCode: removalError.code,
-          },
-          runtimeContext?.transport,
-        ),
-      );
-      return toJsonRpc(id, removalError);
-    }
-    logToolDeprecation(logger, "warn", "tool_deprecated_invoked", logPayload);
+        recordJsonRpcObservability(
+          buildJsonRpcObservabilityInput(
+            {
+              stage: "error",
+              method,
+              toolName,
+              requestId: id,
+              idempotencyKey: runtimeContext?.idempotencyKey ?? null,
+              correlation,
+              status: "error",
+              timeoutMs: null,
+              errorMessage: removalError.data?.hint ?? removalError.message,
+              errorCode: removalError.code,
+            },
+            transport,
+          ),
+        );
+        return toJsonRpc(id, removalError);
+      }
+      logToolDeprecation(logger, "warn", "tool_deprecated_invoked", logPayload);
   }
 
-  const transport = runtimeContext?.transport;
   const childId = runtimeContext?.childId ?? null;
   const payloadBytes = runtimeContext?.payloadSizeBytes ?? 0;
   const timeoutMs = timeoutBudget.timeoutMs;

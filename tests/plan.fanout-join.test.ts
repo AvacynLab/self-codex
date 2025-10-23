@@ -381,6 +381,150 @@ describe("plan tools", () => {
     expect(aggregatePayload.child_id).to.equal(hints.child_id);
   });
 
+  it("omits AGGREGATE event identifiers when correlation hints are absent", async () => {
+    const childrenRoot = await mkdtemp(path.join(tmpdir(), "plan-tools-reduce-scope-"));
+    const outputs = new Map<string, ChildCollectedOutputs>([
+      [
+        "child-a",
+        {
+          childId: "child-a",
+          manifestPath: path.join(childrenRoot, "child-a", "manifest.json"),
+          logPath: path.join(childrenRoot, "child-a", "logs", "child.log"),
+          messages: [],
+          artifacts: [],
+        },
+      ],
+      [
+        "child-b",
+        {
+          childId: "child-b",
+          manifestPath: path.join(childrenRoot, "child-b", "manifest.json"),
+          logPath: path.join(childrenRoot, "child-b", "logs", "child.log"),
+          messages: [],
+          artifacts: [],
+        },
+      ],
+    ]);
+
+    const supervisor: PlanChildSupervisor = {
+      async createChild() {
+        throw new Error("plan_reduce should not create children");
+      },
+      async send() {
+        throw new Error("plan_reduce should not send messages");
+      },
+      async collect(childId) {
+        const collected = outputs.get(childId);
+        if (!collected) {
+          throw new Error(`unexpected collect for ${childId}`);
+        }
+        return collected;
+      },
+      async waitForMessage() {
+        return null;
+      },
+    };
+
+    const graphState = new GraphState();
+    const logger = new RecordingLogger();
+    const events: RecordedEvent[] = [];
+    const context = createPlanContext({ childrenRoot, supervisor, graphState, logger, events });
+
+    try {
+      await handlePlanReduce(
+        context,
+        PlanReduceInputSchema.parse({
+          children: Array.from(outputs.keys()),
+          reducer: "concat",
+        }),
+      );
+
+      const aggregateEvent = events.find((event) => event.kind === "AGGREGATE");
+      expect(aggregateEvent, "aggregate event should be emitted").to.not.equal(undefined);
+      expect(aggregateEvent?.jobIdPropertyPresent).to.equal(false);
+      expect(aggregateEvent?.childIdPropertyPresent).to.equal(false);
+      const aggregatePayload = (aggregateEvent?.payload ?? {}) as Record<string, unknown>;
+      expect(aggregatePayload.job_id ?? null).to.equal(null);
+      expect(aggregatePayload.child_id ?? null).to.equal(null);
+    } finally {
+      await rm(childrenRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("surfaces job scope only when child correlation is missing", async () => {
+    const childrenRoot = await mkdtemp(path.join(tmpdir(), "plan-tools-reduce-job-scope-"));
+    const outputs = new Map<string, ChildCollectedOutputs>([
+      [
+        "child-a",
+        {
+          childId: "child-a",
+          manifestPath: path.join(childrenRoot, "child-a", "manifest.json"),
+          logPath: path.join(childrenRoot, "child-a", "logs", "child.log"),
+          messages: [],
+          artifacts: [],
+        },
+      ],
+      [
+        "child-b",
+        {
+          childId: "child-b",
+          manifestPath: path.join(childrenRoot, "child-b", "manifest.json"),
+          logPath: path.join(childrenRoot, "child-b", "logs", "child.log"),
+          messages: [],
+          artifacts: [],
+        },
+      ],
+    ]);
+
+    const supervisor: PlanChildSupervisor = {
+      async createChild() {
+        throw new Error("plan_reduce should not create children");
+      },
+      async send() {
+        throw new Error("plan_reduce should not send messages");
+      },
+      async collect(childId) {
+        const collected = outputs.get(childId);
+        if (!collected) {
+          throw new Error(`unexpected collect for ${childId}`);
+        }
+        return collected;
+      },
+      async waitForMessage() {
+        return null;
+      },
+    };
+
+    const graphState = new GraphState();
+    const logger = new RecordingLogger();
+    const events: RecordedEvent[] = [];
+    const context = createPlanContext({ childrenRoot, supervisor, graphState, logger, events });
+
+    try {
+      await handlePlanReduce(
+        context,
+        PlanReduceInputSchema.parse({
+          children: Array.from(outputs.keys()),
+          reducer: "concat",
+          job_id: "plan-reduce-job",
+        }),
+      );
+
+      const aggregateEvent = events.find((event) => event.kind === "AGGREGATE");
+      expect(aggregateEvent, "aggregate event should be emitted").to.not.equal(undefined);
+      expect(aggregateEvent?.jobIdPropertyPresent).to.equal(true);
+      expect(aggregateEvent?.childIdPropertyPresent).to.equal(false);
+      expect(aggregateEvent?.jobId).to.equal("plan-reduce-job");
+      expect(aggregateEvent?.childId).to.equal(null);
+
+      const aggregatePayload = (aggregateEvent?.payload ?? {}) as Record<string, unknown>;
+      expect(aggregatePayload.job_id).to.equal("plan-reduce-job");
+      expect(aggregatePayload.child_id ?? null).to.equal(null);
+    } finally {
+      await rm(childrenRoot, { recursive: true, force: true });
+    }
+  });
+
   it("joins child responses using different policies and aggregates outputs", async function () {
     this.timeout(10000);
     const childrenRoot = await mkdtemp(path.join(tmpdir(), "plan-tools-join-"));
@@ -452,6 +596,12 @@ describe("plan tools", () => {
       expect(statusEvent.childIdPropertyPresent).to.equal(false);
       expect(statusEvent.jobId).to.equal(null);
       expect(statusEvent.childId).to.equal(null);
+      // Ensure optional job/child identifiers surface as explicit nulls instead
+      // of lingering `undefined` placeholders when the orchestrator omits
+      // correlation hints.
+      const statusPayloadRecord = statusEvent.payload as Record<string, unknown>;
+      expect(statusPayloadRecord.job_id ?? null).to.equal(null);
+      expect(statusPayloadRecord.child_id ?? null).to.equal(null);
       // The STATUS event should mirror the omission to keep downstream
       // subscribers free from explicit `undefined` consensus fields.
       expect(Object.prototype.hasOwnProperty.call(statusEvent.payload, "consensus")).to.equal(false);

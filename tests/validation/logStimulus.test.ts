@@ -122,6 +122,36 @@ describe("stimulateHttpLogging", () => {
     expect(inputsContent).to.contain("custom/ping");
   });
 
+  it("sanitises the recorded call", async () => {
+    const environment = collectHttpEnvironment({
+      MCP_HTTP_HOST: "127.0.0.1",
+      MCP_HTTP_PORT: "8765",
+      MCP_HTTP_PATH: "/mcp",
+    } as NodeJS.ProcessEnv);
+
+    const observedBodies: string[] = [];
+
+    globalThis.fetch = (async (_url: RequestInfo | URL, init?: RequestInit) => {
+      if (typeof init?.body === "string") {
+        observedBodies.push(init.body);
+      }
+      await appendFile(logPath, '{"message":"normalised"}\n', "utf8");
+      return new Response(JSON.stringify({ jsonrpc: "2.0", result: { ok: true } }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as typeof fetch;
+
+    const result = await stimulateHttpLogging(runRoot, environment, {
+      logPath,
+      call: { name: "  padded_call  ", method: " tools/custom  ", params: undefined },
+    });
+
+    expect(result.call).to.deep.equal({ name: "padded_call", method: "tools/custom" });
+    const parsedBody = observedBodies[0] ? JSON.parse(observedBodies[0]) : undefined;
+    expect(parsedBody?.method).to.equal("tools/custom");
+  });
+
   it("supports multiple iterations and produces distinct artefacts", async () => {
     const environment = collectHttpEnvironment({
       MCP_HTTP_HOST: "127.0.0.1",

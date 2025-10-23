@@ -2,6 +2,7 @@ import { basename, dirname } from "node:path";
 // NOTE: Node built-in modules are imported with the explicit `node:` prefix to guarantee ESM resolution in Node.js.
 
 import { captureHttpLog, type CaptureHttpLogOptions, type HttpLogSummary } from "./logs.js";
+import { omitUndefinedEntries } from "../utils/object.js";
 import { ensureRunStructure, generateValidationRunId } from "./runSetup.js";
 
 /**
@@ -25,6 +26,19 @@ export interface LogCaptureCliOptions {
 /** Minimal logger abstraction so tests can capture human-readable output. */
 export interface LogCaptureCliLogger {
   log: (...args: unknown[]) => void;
+}
+
+/** Optional overrides consumed by {@link executeLogCaptureCli}. */
+export interface LogCaptureCliOverrides {
+  /**
+   * Replacement capture helper used to observe the sanitised options in tests.
+   * The override allows the suite to assert we never surface `undefined`
+   * placeholders once `exactOptionalPropertyTypes` becomes mandatory.
+   */
+  readonly capture?: (
+    runRoot: string,
+    options?: CaptureHttpLogOptions,
+  ) => Promise<{ logPath: string; summaryPath: string; summary: HttpLogSummary }>;
 }
 
 /**
@@ -72,18 +86,32 @@ export interface LogCaptureCliResult {
   summary: HttpLogSummary;
 }
 
-/**
- * Executes the log capture workflow end-to-end: ensure the run directory exists
- * and persist the copied log plus the structured summary in the expected
- * locations.
- */
+  /**
+   * Executes the log capture workflow end-to-end: ensure the run directory exists
+   * and persist the copied log plus the structured summary in the expected
+   * locations.
+   */
 export async function executeLogCaptureCli(
   options: LogCaptureCliOptions,
   logger: LogCaptureCliLogger,
+  overrides: LogCaptureCliOverrides = {},
 ): Promise<LogCaptureCliResult> {
-  const sourcePath = options.sourcePath ?? "/tmp/mcp_http.log";
-  const targetFileName = options.targetFileName;
-  const summaryFileName = options.summaryFileName;
+  // Trim optional CLI overrides so blank values do not materialise as
+  // meaningless strings and ensure they disappear entirely when absent.
+  const cliSourcePath =
+    typeof options.sourcePath === "string" && options.sourcePath.trim().length > 0
+      ? options.sourcePath.trim()
+      : undefined;
+  const targetFileName =
+    typeof options.targetFileName === "string" && options.targetFileName.trim().length > 0
+      ? options.targetFileName.trim()
+      : undefined;
+  const summaryFileName =
+    typeof options.summaryFileName === "string" && options.summaryFileName.trim().length > 0
+      ? options.summaryFileName.trim()
+      : undefined;
+
+  const resolvedSourcePath = cliSourcePath ?? "/tmp/mcp_http.log";
 
   let runRoot: string;
   let runId: string;
@@ -98,20 +126,17 @@ export async function executeLogCaptureCli(
   }
 
   logger.log(`→ Capturing HTTP log for run: ${runId} (${runRoot})`);
-  logger.log(`   Source file: ${sourcePath}`);
+  logger.log(`   Source file: ${resolvedSourcePath}`);
 
-  const captureOptions: CaptureHttpLogOptions = {};
-  if (sourcePath) {
-    captureOptions.sourcePath = sourcePath;
-  }
-  if (targetFileName) {
-    captureOptions.targetFileName = targetFileName;
-  }
-  if (summaryFileName) {
-    captureOptions.summaryFileName = summaryFileName;
-  }
+  const captureOptions = omitUndefinedEntries({
+    sourcePath: cliSourcePath,
+    targetFileName,
+    summaryFileName,
+  }) as CaptureHttpLogOptions;
 
-  const { logPath, summaryPath, summary } = await captureHttpLog(runRoot, captureOptions);
+  const capture = overrides.capture ?? captureHttpLog;
+
+  const { logPath, summaryPath, summary } = await capture(runRoot, captureOptions);
 
   logger.log(`   Copied log path: ${logPath}`);
   logger.log(`   Summary path: ${summaryPath}`);

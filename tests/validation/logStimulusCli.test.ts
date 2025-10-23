@@ -118,6 +118,35 @@ describe("log stimulus CLI", () => {
     expect(observedLogs.some((line) => line.includes("Iterations executed"))).to.equal(true);
   });
 
+  it("sanitises whitespace around CLI overrides", async () => {
+    const logger: LogStimulusCliLogger = { log: () => undefined };
+
+    globalThis.fetch = (async () => {
+      await appendFile(logPath, '{"message":"cli-trim"}\n', "utf8");
+      return new Response(JSON.stringify({ jsonrpc: "2.0", result: { ok: true } }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as typeof fetch;
+
+    const { result } = await executeLogStimulusCli(
+      {
+        runRoot,
+        callName: "  padded_cli  ",
+        method: " tools/cli  ",
+        logPath,
+      },
+      { MCP_HTTP_HOST: "127.0.0.1", MCP_HTTP_PORT: "9999", MCP_HTTP_PATH: "/mcp" } as NodeJS.ProcessEnv,
+      logger,
+    );
+
+    expect(result.call).to.deep.equal({
+      name: "padded_cli",
+      method: "tools/cli",
+      params: { name: "echo", arguments: { text: "log stimulus probe" } },
+    });
+  });
+
   it("fails when the HTTP log does not grow", async () => {
     const logger: LogStimulusCliLogger = { log: () => undefined };
 

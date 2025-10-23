@@ -166,7 +166,12 @@ export interface CoordinationSummary {
   readonly stigmergy: {
     readonly domain?: string;
     readonly marksApplied: number;
-    readonly lastSnapshot?: Record<string, unknown> | null;
+    /**
+     * Snapshot data is persisted as `null` when the stage never produced a
+     * structured result.  The property therefore always exists which keeps the
+     * JSON payload compatible with `exactOptionalPropertyTypes`.
+     */
+    readonly lastSnapshot: Record<string, unknown> | null;
   };
   readonly contractNet: {
     readonly topic?: string;
@@ -179,10 +184,15 @@ export interface CoordinationSummary {
     readonly outcome?: unknown;
     readonly votes?: number;
     readonly tie?: boolean;
-    readonly tally?: Record<string, number> | null;
-    readonly preferredOutcome?: string | null;
-    readonly tieBreaker?: "null" | "first" | "prefer" | undefined;
-    readonly tieDetectedFromTally?: boolean;
+    /**
+     * Consensus metadata falls back to `null` so downstream consumers never
+     * observe `undefined` when the tally/preferred outcome is absent.
+     */
+    readonly tally: Record<string, number> | null;
+    readonly preferredOutcome: string | null;
+    readonly tieBreaker?: "null" | "first" | "prefer";
+    /** Indicates whether the tally inferred a tie (always present for consumers). */
+    readonly tieDetectedFromTally: boolean;
   };
 }
 

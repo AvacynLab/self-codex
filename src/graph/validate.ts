@@ -246,20 +246,36 @@ function deriveOptions(
   overrides: GraphValidationOptions,
 ): DerivedValidationOptions {
   const metadata = normaliseRecord(graph.metadata ?? {});
-  return {
+  const maxNodes = overrides.maxNodes ?? parseLimit(metadata.max_nodes);
+  const maxEdges = overrides.maxEdges ?? parseLimit(metadata.max_edges);
+  const defaultMaxInDegree = overrides.defaultMaxInDegree ?? parseLimit(metadata.max_in_degree);
+  const defaultMaxOutDegree = overrides.defaultMaxOutDegree ?? parseLimit(metadata.max_out_degree);
+
+  const derived: DerivedValidationOptions = {
     enforceInvariants: overrides.enforceInvariants ?? true,
     allowSelfLoops: overrides.allowSelfLoops ?? metadata.allow_self_loops === true,
     allowIsolatedNodes: overrides.allowIsolatedNodes ?? metadata.allow_isolated_nodes === true,
-    maxNodes: overrides.maxNodes ?? parseLimit(metadata.max_nodes),
-    maxEdges: overrides.maxEdges ?? parseLimit(metadata.max_edges),
     enforceDag:
       overrides.enforceDag ?? (metadata.graph_kind === "dag" || metadata.dag === true || metadata.enforce_dag === true),
     requireNodeLabels: overrides.requireNodeLabels ?? metadata.require_labels === true,
     requireEdgeLabels: overrides.requireEdgeLabels ?? metadata.require_edge_labels === true,
     requirePortAttributes: overrides.requirePortAttributes ?? metadata.require_ports === true,
-    defaultMaxInDegree: overrides.defaultMaxInDegree ?? parseLimit(metadata.max_in_degree),
-    defaultMaxOutDegree: overrides.defaultMaxOutDegree ?? parseLimit(metadata.max_out_degree),
   } satisfies DerivedValidationOptions;
+
+  if (maxNodes !== undefined) {
+    derived.maxNodes = maxNodes;
+  }
+  if (maxEdges !== undefined) {
+    derived.maxEdges = maxEdges;
+  }
+  if (defaultMaxInDegree !== undefined) {
+    derived.defaultMaxInDegree = defaultMaxInDegree;
+  }
+  if (defaultMaxOutDegree !== undefined) {
+    derived.defaultMaxOutDegree = defaultMaxOutDegree;
+  }
+
+  return derived;
 }
 
 /** Normalise metadata/attribute records. */

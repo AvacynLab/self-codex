@@ -9,6 +9,7 @@ import {
   parseLogCaptureCliOptions,
   type LogCaptureCliLogger,
 } from "../../src/validation/logsCli.js";
+import { type CaptureHttpLogOptions, type HttpLogSummary } from "../../src/validation/logs.js";
 
 /**
  * Unit tests ensuring the log capture CLI follows the expected orchestration
@@ -89,5 +90,95 @@ describe("log capture CLI", () => {
 
     expect(loggerOutput.some((line) => line.includes("Top messages"))).to.equal(true);
     expect(loggerOutput.some((line) => line.includes("[2] first message"))).to.equal(true);
+  });
+
+  it("omits unspecified CLI overrides when capturing logs", async () => {
+    const logger: LogCaptureCliLogger = { log: () => undefined };
+    const observedOptions: CaptureHttpLogOptions[] = [];
+    const stubSummary: HttpLogSummary = {
+      generatedAt: new Date().toISOString(),
+      sourcePath: "/tmp/mcp_http.log",
+      fileSizeBytes: 0,
+      totalLines: 0,
+      emptyLines: 0,
+      parseFailures: 0,
+      levelCounts: {},
+      errorLines: 0,
+      warnLines: 0,
+      infoLines: 0,
+      topMessages: [],
+      latency: { samples: 0, fields: [], min: null, max: null, p50: null, p95: null, p99: null },
+    };
+
+    const { runRoot } = await executeLogCaptureCli(
+      { baseDir: workingDir, runId: "validation_cli_sanitised" },
+      logger,
+      {
+        capture: async (root, options) => {
+          observedOptions.push(options ?? {});
+          return {
+            logPath: join(root, "logs", "mcp_http.log"),
+            summaryPath: join(root, "logs", "summary.json"),
+            summary: stubSummary,
+          };
+        },
+      },
+    );
+
+    expect(runRoot).to.match(/validation_cli_sanitised/);
+    expect(observedOptions).to.have.lengthOf(1);
+    // Optional CLI parameters must disappear entirely so strict optional
+    // properties never observe `undefined` placeholders when the default
+    // behaviour is used.
+    expect(observedOptions[0]).to.deep.equal({});
+  });
+
+  it("trims CLI overrides before forwarding them to the capture helper", async () => {
+    const logger: LogCaptureCliLogger = { log: () => undefined };
+    const observedOptions: CaptureHttpLogOptions[] = [];
+    const stubSummary: HttpLogSummary = {
+      generatedAt: new Date().toISOString(),
+      sourcePath: "/tmp/custom.log",
+      fileSizeBytes: 0,
+      totalLines: 0,
+      emptyLines: 0,
+      parseFailures: 0,
+      levelCounts: {},
+      errorLines: 0,
+      warnLines: 0,
+      infoLines: 0,
+      topMessages: [],
+      latency: { samples: 0, fields: [], min: null, max: null, p50: null, p95: null, p99: null },
+    };
+
+    await executeLogCaptureCli(
+      {
+        baseDir: workingDir,
+        runId: "validation_cli_trim",
+        sourcePath: "  /tmp/custom.log  ",
+        targetFileName: " custom.log ",
+        summaryFileName: " summary.json ",
+      },
+      logger,
+      {
+        capture: async (root, options) => {
+          observedOptions.push(options ?? {});
+          return {
+            logPath: join(root, "logs", "custom.log"),
+            summaryPath: join(root, "logs", "summary.json"),
+            summary: stubSummary,
+          };
+        },
+      },
+    );
+
+    expect(observedOptions).to.have.lengthOf(1);
+    // Trimming guarantees we forward precise overrides without leaking blank
+    // strings that would otherwise serialize as empty values.
+    expect(observedOptions[0]).to.deep.equal({
+      sourcePath: "/tmp/custom.log",
+      targetFileName: "custom.log",
+      summaryFileName: "summary.json",
+    });
   });
 });

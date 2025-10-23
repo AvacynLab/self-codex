@@ -63,4 +63,23 @@ describe("orchestrator pushEvent optional identifiers", () => {
     assert.strictEqual(busLatest!.data, payload);
     assert.strictEqual(busLatest!.jobId, null);
   });
+
+  it("derives default component and stage tags without leaking undefined values", () => {
+    const payload = { run_id: "run-component-default" } as const;
+    const emitted = __eventRuntimeInternals.pushEvent({
+      kind: "INFO",
+      payload,
+      component: undefined,
+      stage: undefined,
+    });
+
+    assert.ok(emitted.seq > 0, "event store should emit a new sequence");
+
+    const busLatest = eventBus.list({ limit: 1 })[0];
+    assert.ok(busLatest, "event bus should expose the emitted event");
+    assert.strictEqual(busLatest!.component, "graph");
+    assert.strictEqual(busLatest!.stage, "info");
+    assert.strictEqual(busLatest!.elapsedMs, null);
+    assert.strictEqual(busLatest!.data, payload);
+  });
 });

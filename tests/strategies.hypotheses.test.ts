@@ -59,6 +59,54 @@ describe("strategies.hypotheses", () => {
     expect(hasExploration).to.equal(true);
   });
 
+  it("ignore les overrides undefined pour conserver les poids et bonus par défaut", () => {
+    const hypotheses = generateHypotheses(
+      {
+        objective: "Livrer une fonctionnalité",
+        basePlan,
+        divergences: [
+          {
+            id: "quality",
+            description: "Accent sur la qualité",
+            emphasis: "quality",
+            addSteps: [
+              { id: "tests", summary: "Renforcer les tests", effort: 2, risk: 0.2, domain: "qa", tags: ["quality"] },
+            ],
+          },
+          {
+            id: "explore",
+            description: "Explorer alternatives",
+            emphasis: "explore",
+            addSteps: [
+              { id: "benchmark", summary: "Comparer solutions", effort: 1, risk: 0.3, domain: "research", tags: ["explore"] },
+            ],
+          },
+        ],
+      },
+      { maxHypotheses: undefined, noveltyBoost: undefined },
+    );
+
+    expect(hypotheses).to.have.length(3);
+    const exploratory = hypotheses.find((hypothesis) => hypothesis.id === "explore");
+    expect(exploratory).to.not.equal(undefined);
+    // The novelty boost must remain numerical even when callers supply
+    // `undefined`, otherwise downstream ranking would encounter NaN values.
+    expect(Number.isNaN(exploratory?.novelty ?? NaN)).to.equal(false);
+
+    const ranked = evaluateHypotheses(hypotheses, basePlan, {
+      noveltyWeight: undefined,
+      riskWeight: undefined,
+      effortWeight: undefined,
+      coverageWeight: undefined,
+    });
+
+    const baselineScore = ranked.find((hypothesis) => hypothesis.label === "baseline")?.score;
+    expect(baselineScore).to.not.equal(undefined);
+    // Scores should stay well-defined so orchestrator tie-breaking logic can
+    // continue to rely on numeric comparisons.
+    expect(Number.isNaN(baselineScore ?? NaN)).to.equal(false);
+  });
+
   it("converges top hypotheses while preserving unique steps", () => {
     const hypotheses: PlanHypothesis[] = generateHypotheses(
       {
@@ -151,5 +199,45 @@ describe("strategies.hypotheses", () => {
 
     expect(fusedIds).to.deep.equal(["analyse", "design", "implement", "qa_plan", "spike"]);
     expect(new Set(fusedIds).size).to.equal(fusedIds.length);
+  });
+
+  it("omits undefined optional fields when cloning plan steps", () => {
+    const sparsePlan: PlanStep[] = [
+      { id: "draft", summary: "Rédiger le plan", effort: 1, risk: 0.2 },
+      { id: "review", summary: "Relire", effort: 1, risk: 0.1, tags: ["qa"] },
+    ];
+
+    const hypotheses = generateHypotheses(
+      {
+        objective: "Préparer un plan minimal",
+        basePlan: sparsePlan,
+        divergences: [
+          {
+            id: "enrich",
+            description: "Ajouter un contrôle",
+            emphasis: "quality",
+            addSteps: [
+              { id: "lint", summary: "Lancer lint", effort: 1, risk: 0.1 },
+            ],
+          },
+        ],
+      },
+      { maxHypotheses: 2 },
+    );
+
+    expect(hypotheses).to.have.length(2);
+    const baseline = hypotheses.find((hypothesis) => hypothesis.label === "baseline");
+    expect(baseline).to.not.equal(undefined);
+    expect(baseline?.steps).to.have.length(2);
+    const firstBaselineStep = baseline?.steps[0] ?? {};
+    expect(Object.prototype.hasOwnProperty.call(firstBaselineStep, "tags")).to.equal(false);
+    expect(Object.prototype.hasOwnProperty.call(firstBaselineStep, "domain")).to.equal(false);
+
+    const ranked = evaluateHypotheses(hypotheses, sparsePlan);
+    const convergence = convergeHypotheses(ranked);
+    const fusedDraft = convergence.fusedPlan.find((step) => step.id === "draft");
+    expect(fusedDraft).to.not.equal(undefined);
+    expect(Object.prototype.hasOwnProperty.call(fusedDraft ?? {}, "tags")).to.equal(false);
+    expect(Object.prototype.hasOwnProperty.call(fusedDraft ?? {}, "domain")).to.equal(false);
   });
 });

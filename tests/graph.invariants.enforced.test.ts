@@ -2,7 +2,12 @@ import { describe, it } from "mocha";
 import { expect } from "chai";
 
 import type { NormalisedGraph } from "../src/graph/types.js";
-import { assertGraphInvariants, evaluateGraphInvariants, GraphInvariantError } from "../src/graph/invariants.js";
+import {
+  assertGraphInvariants,
+  evaluateGraphInvariants,
+  GraphInvariantError,
+  type GraphInvariantOptions,
+} from "../src/graph/invariants.js";
 import { ERROR_CODES } from "../src/types.js";
 
 function createGraph(partial?: Partial<NormalisedGraph>): NormalisedGraph {
@@ -93,5 +98,17 @@ describe("graph invariants", () => {
     });
 
     expect(() => assertGraphInvariants(graph)).to.not.throw();
+  });
+
+  it("falls back to metadata when overrides carry undefined placeholders", () => {
+    const graph = createGraph({ metadata: { require_labels: true } });
+    graph.nodes[0]!.label = "";
+
+    const overrides = { requireNodeLabels: undefined } satisfies GraphInvariantOptions;
+    const report = evaluateGraphInvariants(graph, overrides);
+
+    expect(report.ok).to.equal(false);
+    const violation = report.ok ? null : report.violations.find((entry) => entry.path === "/nodes/0");
+    expect(violation?.hint).to.contain("label");
   });
 });

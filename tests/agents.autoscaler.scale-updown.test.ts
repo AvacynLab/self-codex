@@ -1,7 +1,11 @@
 import { describe, it } from "mocha";
 import { expect } from "chai";
 
-import { Autoscaler, AutoscalerSupervisor } from "../src/agents/autoscaler.js";
+import {
+  Autoscaler,
+  type AutoscalerEventInput,
+  type AutoscalerSupervisor,
+} from "../src/agents/autoscaler.js";
 import { ChildrenIndex } from "../src/state/childrenIndex.js";
 import type { LoopTickContext } from "../src/executor/loop.js";
 
@@ -106,5 +110,56 @@ describe("agents autoscaler scale up/down", () => {
     expect(supervisor.cancelled).to.deep.equal([retireCandidate]);
     const remainingIds = supervisor.childrenIndex.list().map((child) => child.childId).sort();
     expect(remainingIds).to.deep.equal(["child-2"]);
+  });
+
+  it("omits optional fields when scale-up fails without correlation hints", async () => {
+    const clock = new ManualClock();
+    const events: AutoscalerEventInput[] = [];
+
+    class FailingSupervisor implements AutoscalerSupervisor {
+      public readonly childrenIndex = new ChildrenIndex();
+
+      constructor(private readonly now: () => number) {}
+
+      async createChild(): Promise<never> {
+        // Simulate an infrastructure failure before the child runtime boots so
+        // the autoscaler emits the structured error payload without access to
+        // spawn metadata or correlation hints.
+        void this.now();
+        throw new Error("spawn_failed");
+      }
+
+      async cancel(): Promise<void> {
+        /* No-op: the failure occurs before any child exists. */
+      }
+    }
+
+    const supervisor = new FailingSupervisor(() => clock.now());
+    const autoscaler = new Autoscaler({
+      supervisor,
+      now: () => clock.now(),
+      config: { minChildren: 0, maxChildren: 1, cooldownMs: 0 },
+      thresholds: {
+        backlogHigh: 1,
+        backlogLow: 0,
+        latencyHighMs: 1,
+        latencyLowMs: 0,
+        failureRateHigh: 1,
+        failureRateLow: 0,
+      },
+      emitEvent: (event) => {
+        events.push(event);
+      },
+    });
+
+    autoscaler.updateBacklog(5);
+    await autoscaler.reconcile(buildContext(clock));
+
+    expect(events).to.have.lengthOf(1);
+    const event = events[0]!;
+    expect(event.payload.msg).to.equal("scale_up_failed");
+    expect(event.payload.child_id).to.equal(undefined);
+    expect("childId" in event).to.equal(false);
+    expect("correlation" in event).to.equal(false);
   });
 });

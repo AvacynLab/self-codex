@@ -85,4 +85,31 @@ describe("graph hierarchy - flatten", () => {
       flat.edges.map((edge) => `${edge.from}->${edge.to}`),
     );
   });
+
+  it("omits optional node and edge fields when hierarchy definitions skip them", () => {
+    const hier: HierGraph = {
+      id: "minimal",
+      nodes: [
+        { id: "alpha", kind: "task", attributes: { tier: "core" } },
+        { id: "beta", kind: "task" },
+      ],
+      edges: [
+        { id: "e1", from: { nodeId: "alpha" }, to: { nodeId: "beta" } },
+      ],
+    };
+
+    const flat = flatten(hier);
+
+    const alpha = flat.nodes.find((node) => node.id === "alpha");
+    expect(alpha?.attributes.tier).to.equal("core");
+    expect(Object.hasOwn(alpha ?? {}, "label")).to.equal(false);
+
+    const beta = flat.nodes.find((node) => node.id === "beta");
+    expect(beta).to.not.equal(undefined);
+    expect(Object.hasOwn(beta ?? {}, "label")).to.equal(false);
+
+    const edge = flat.edges.find((candidate) => candidate.from === "alpha" && candidate.to === "beta");
+    expect(edge).to.not.equal(undefined);
+    expect(Object.hasOwn(edge ?? {}, "label")).to.equal(false);
+  });
 });

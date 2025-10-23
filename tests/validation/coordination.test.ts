@@ -129,6 +129,14 @@ describe("coordination validation runner", () => {
     expect(summary.consensus.outcome).to.equal("validation_tie_break_preference");
     expect(summary.consensus.votes).to.equal(2);
     expect(summary.consensus.tieDetectedFromTally).to.equal(true);
+    expect(summary.stigmergy.lastSnapshot).to.deep.equal({
+      marks: [
+        { key: "beacon", intensity: 0.8 },
+      ],
+    });
+    expect(summary.consensus.tally).to.deep.equal({ plan_alpha: 1, plan_beta: 1 });
+    expect(summary.consensus.preferredOutcome).to.equal("validation_tie_break_preference");
+    expect(summary.consensus.tieBreaker).to.equal("prefer");
 
     const eventsLog = await readFile(join(runRoot, COORDINATION_JSONL_FILES.events), "utf8");
     const eventEntries = eventsLog.trim().split(/\n+/);

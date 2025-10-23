@@ -93,6 +93,50 @@ describe("ToolRouter", () => {
     ]);
   });
 
+  it("omits undefined routing hints when emitting decision telemetry", () => {
+    const router = new ToolRouter({ acceptanceThreshold: 0.2 });
+    router.register(
+      buildManifest({
+        name: "artifact_preview",
+        category: "artifact",
+        description: "Prévisualiser un artefact existant.",
+      }),
+    );
+
+    let observed: unknown;
+    router.on("decision", (payload) => {
+      // Capture the emitted payload to confirm optional hints disappear instead of leaking
+      // explicit `undefined` markers in the routed context snapshot.
+      observed = payload;
+    });
+
+    router.route({
+      goal: "prévisualiser le document",
+      // Explicitly surface optional hints as `undefined` so the sanitiser must drop them.
+      category: undefined,
+      tags: undefined,
+      preferredTools: undefined,
+      metadata: { region: "eu", fallback: undefined } as Record<string, unknown>,
+    });
+
+    expect(observed).to.not.equal(undefined);
+    const snapshot = observed as { context: Record<string, unknown> };
+    expect(
+      Object.prototype.hasOwnProperty.call(snapshot.context, "category"),
+      "category should be omitted when undefined",
+    ).to.equal(false);
+    expect(
+      Object.prototype.hasOwnProperty.call(snapshot.context, "tags"),
+      "tags should be omitted when undefined",
+    ).to.equal(false);
+    expect(
+      Object.prototype.hasOwnProperty.call(snapshot.context, "preferredTools"),
+      "preferredTools should be omitted when undefined",
+    ).to.equal(false);
+    const metadata = snapshot.context.metadata as Record<string, unknown> | undefined;
+    expect(metadata).to.deep.equal({ region: "eu" });
+  });
+
   it("adjusts reliability based on recorded outcomes", () => {
     const router = new ToolRouter({ acceptanceThreshold: 0.3 });
     router.register(

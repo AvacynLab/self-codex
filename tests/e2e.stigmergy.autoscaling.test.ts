@@ -174,6 +174,10 @@ describe("stigmergy driven autoscaling", function () {
     expect(createChild.calledOnce, "autoscaler should scale up").to.equal(true);
     expect(autoscaler.backlogHistory.some((value) => value >= 3)).to.equal(true);
     expect(children.length).to.equal(1);
+    expect(
+      children.some((child) => Object.values(child).some((value) => value === undefined)),
+      "child snapshots should omit undefined optional fields",
+    ).to.equal(false);
 
     // Second run without additional stigmergy to trigger scale-down.
     const secondScheduler = buildScheduler(interpreter, autoscaler);

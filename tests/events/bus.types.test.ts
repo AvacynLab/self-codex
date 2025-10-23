@@ -102,6 +102,21 @@ describe("events/bus type safety", () => {
     expect(bus.list()[0].msg).to.equal("child_stdout");
   });
 
+  it("omits optional kind and data fields when publishers provide minimal payloads", () => {
+    const bus = new EventBus({ now: () => 51 });
+
+    const envelope = bus.publish({
+      cat: "child",
+      msg: "child_stdout",
+    });
+
+    expect(Object.hasOwn(envelope, "kind"), "kind is materialised only when provided").to.equal(false);
+    expect(Object.hasOwn(envelope, "data"), "data property stays absent when omitted").to.equal(false);
+    expect(envelope.component).to.equal("child");
+    expect(envelope.stage).to.equal("child_stdout");
+    expect(envelope.elapsedMs).to.equal(null);
+  });
+
   it("persists published envelopes by reference without cloning the payload", () => {
     const bus = new EventBus({ now: () => 21 });
     const payload = createChildPayload();
@@ -234,6 +249,47 @@ describe("events/bus type safety", () => {
 
     expect(envelope.msg).to.equal("jsonrpc_request");
     expect(envelope.data).to.deep.equal(payload);
+  });
+
+  it("allows JSON-RPC publishers to omit optional telemetry metrics entirely", () => {
+    const bus = new EventBus({ now: () => 100 });
+    const payload: JsonRpcRequestPayload = {
+      msg: "jsonrpc_request",
+      method: "tools/call",
+      metric_method: "tools/call",
+      tool: null,
+      request_id: "req-jsonrpc-minimal",
+      status: "pending",
+      run_id: null,
+      op_id: null,
+      child_id: null,
+      job_id: null,
+      error_message: null,
+      error_code: null,
+    };
+
+    const envelope = bus.publish({
+      cat: "scheduler",
+      msg: payload.msg,
+      data: payload,
+      component: "jsonrpc",
+      stage: payload.msg,
+    });
+
+    expect(envelope.msg).to.equal("jsonrpc_request");
+    // Convert the payload to a loose record so assertions can focus on
+    // property presence without upsetting TypeScript's discriminated union.
+    const raw = envelope.data as Record<string, unknown> | undefined;
+    expect(raw).to.not.equal(undefined);
+    expect(Object.prototype.hasOwnProperty.call(raw, "transport")).to.equal(false);
+    expect(Object.prototype.hasOwnProperty.call(raw, "elapsed_ms")).to.equal(false);
+    expect(Object.prototype.hasOwnProperty.call(raw, "trace_id")).to.equal(false);
+    expect(Object.prototype.hasOwnProperty.call(raw, "span_id")).to.equal(false);
+    expect(Object.prototype.hasOwnProperty.call(raw, "duration_ms")).to.equal(false);
+    expect(Object.prototype.hasOwnProperty.call(raw, "bytes_in")).to.equal(false);
+    expect(Object.prototype.hasOwnProperty.call(raw, "bytes_out")).to.equal(false);
+    expect(Object.prototype.hasOwnProperty.call(raw, "idempotency_key")).to.equal(false);
+    expect(Object.prototype.hasOwnProperty.call(raw, "timeout_ms")).to.equal(false);
   });
 
   it("accepts structured introspection probe payloads", () => {

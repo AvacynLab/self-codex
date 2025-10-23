@@ -109,37 +109,37 @@ export interface SecuritySummary {
     readonly method: string;
     readonly status: number;
     readonly statusText: string;
-    readonly expectedStatus?: number;
     readonly requireAuth: boolean;
-    readonly notes?: string;
+    readonly expectedStatus: number | null;
+    readonly notes: string | null;
   }[];
-  readonly redaction?: {
+  readonly redaction: {
     readonly secret: string;
-    readonly description?: string;
+    readonly description: string | null;
     readonly calls: readonly {
       readonly scenario: string;
       readonly name: string;
       readonly leakedInResponse: boolean;
       readonly leakedInEvents: boolean;
     }[];
-  };
-  readonly unauthorized?: {
+  } | null;
+  readonly unauthorized: {
     readonly calls: readonly {
       readonly scenario: string;
       readonly name: string;
       readonly status: number;
       readonly success: boolean;
     }[];
-  };
-  readonly pathValidation?: {
+  } | null;
+  readonly pathValidation: {
     readonly calls: readonly {
       readonly scenario: string;
       readonly name: string;
       readonly attemptedPath: string;
       readonly status: number;
-      readonly description?: string;
+      readonly description: string | null;
     }[];
-  };
+  } | null;
 }
 
 /** Relative filename of the summary persisted under the `report/` directory. */
@@ -329,10 +329,8 @@ function buildSecuritySummary(outcomes: readonly SecurityCallOutcome[]): Securit
     status: outcome.check.response.status,
     statusText: outcome.check.response.statusText,
     requireAuth: outcome.call.requireAuth !== false,
-    ...(outcome.call.expectedStatus !== undefined
-      ? { expectedStatus: outcome.call.expectedStatus }
-      : {}),
-    ...(outcome.call.notes !== undefined ? { notes: outcome.call.notes } : {}),
+    expectedStatus: outcome.call.expectedStatus ?? null,
+    notes: outcome.call.notes ?? null,
   }));
 
   const redactionCalls = outcomes.filter((outcome) => outcome.call.redactionProbe);
@@ -341,10 +339,10 @@ function buildSecuritySummary(outcomes: readonly SecurityCallOutcome[]): Securit
   const unauthorizedCalls = outcomes.filter((outcome) => outcome.call.unauthorizedProbe);
   const pathCalls = outcomes.filter((outcome) => outcome.call.pathProbe);
 
-  const redactionSummary: SecuritySummary["redaction"] | undefined = redactionCalls.length
+  const redactionSummary: SecuritySummary["redaction"] = redactionCalls.length
     ? {
         secret: redactionSecret,
-        ...(redactionDescription !== undefined ? { description: redactionDescription } : {}),
+        description: redactionDescription ?? null,
         calls: redactionCalls.map((outcome) => ({
           scenario: outcome.call.scenario,
           name: outcome.call.name,
@@ -352,9 +350,9 @@ function buildSecuritySummary(outcomes: readonly SecurityCallOutcome[]): Securit
           leakedInEvents: outcome.events.some((event) => payloadContainsSecret(event, redactionSecret)),
         })),
       }
-    : undefined;
+    : null;
 
-  const unauthorizedSummary: SecuritySummary["unauthorized"] | undefined = unauthorizedCalls.length
+  const unauthorizedSummary: SecuritySummary["unauthorized"] = unauthorizedCalls.length
     ? {
         calls: unauthorizedCalls.map((outcome) => ({
           scenario: outcome.call.scenario,
@@ -364,21 +362,19 @@ function buildSecuritySummary(outcomes: readonly SecurityCallOutcome[]): Securit
             outcome.check.response.status === 401 || outcome.check.response.status === 403,
         })),
       }
-    : undefined;
+    : null;
 
-  const pathSummary: SecuritySummary["pathValidation"] | undefined = pathCalls.length
+  const pathSummary: SecuritySummary["pathValidation"] = pathCalls.length
     ? {
         calls: pathCalls.map((outcome) => ({
           scenario: outcome.call.scenario,
           name: outcome.call.name,
           attemptedPath: outcome.call.pathProbe?.attemptedPath ?? "",
           status: outcome.check.response.status,
-          ...(outcome.call.pathProbe?.description !== undefined
-            ? { description: outcome.call.pathProbe.description }
-            : {}),
+          description: outcome.call.pathProbe?.description ?? null,
         })),
       }
-    : undefined;
+    : null;
 
   return {
     artefacts: {
@@ -388,9 +384,9 @@ function buildSecuritySummary(outcomes: readonly SecurityCallOutcome[]): Securit
       httpSnapshotLog: SECURITY_JSONL_FILES.log,
     },
     checks,
-    ...(redactionSummary ? { redaction: redactionSummary } : {}),
-    ...(unauthorizedSummary ? { unauthorized: unauthorizedSummary } : {}),
-    ...(pathSummary ? { pathValidation: pathSummary } : {}),
+    redaction: redactionSummary,
+    unauthorized: unauthorizedSummary,
+    pathValidation: pathSummary,
   };
 }
 

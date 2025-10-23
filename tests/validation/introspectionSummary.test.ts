@@ -52,6 +52,31 @@ describe("introspection summary", () => {
     }
   });
 
+  it("omits optional error payloads when the call succeeds", () => {
+    const successfulOutcome = createOutcome("mcp_info", "mcp_info", {
+      jsonrpc: "2.0",
+      result: { info: { version: "1.0.0" } },
+    });
+    const errorPayload = { code: -32123, message: "server exploded" };
+    const failingOutcome = createOutcome(
+      "events_subscribe",
+      "events_subscribe",
+      { jsonrpc: "2.0", error: errorPayload },
+      {
+        response: {
+          status: 500,
+          statusText: "Internal Server Error",
+        },
+      },
+    );
+
+    const summary = buildIntrospectionSummary([successfulOutcome, failingOutcome]);
+
+    expect(summary.calls).to.have.lengthOf(2);
+    expect(Object.prototype.hasOwnProperty.call(summary.calls[0], "error")).to.equal(false);
+    expect(summary.calls[1].error).to.deep.equal(errorPayload);
+  });
+
   it("aggregates the key JSON-RPC payloads and event diagnostics", () => {
     const outcomes: JsonRpcCallOutcome[] = [
       createOutcome("mcp_info", "mcp_info", { jsonrpc: "2.0", result: { info: { version: "1.2.3" } } }),
