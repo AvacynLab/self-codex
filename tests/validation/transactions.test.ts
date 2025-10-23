@@ -145,6 +145,66 @@ describe("transactions phase runner", () => {
     expect(logContent).to.contain("tx_commit_probe");
   });
 
+  it("omits undefined events from the persisted artefacts", async () => {
+    const responses = [
+      {
+        jsonrpc: "2.0",
+        result: {
+          tx_id: "abc-123",
+          events: [undefined, { seq: 1, type: "defined", detail: "kept" }],
+        },
+      },
+      { jsonrpc: "2.0", result: { ok: true } },
+    ];
+
+    const capturedRequests: Array<{ url: RequestInfo | URL; init?: RequestInit }> = [];
+
+    globalThis.fetch = (async (url: RequestInfo | URL, init?: RequestInit) => {
+      capturedRequests.push({ url, init });
+      const payload = responses.shift() ?? { jsonrpc: "2.0", error: { code: -1, message: "exhausted" } };
+      return new Response(JSON.stringify(payload), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as typeof fetch;
+
+    const calls: TransactionCallSpec[] = [
+      {
+        scenario: "nominal",
+        name: "tx_begin_probe",
+        method: "tx_begin",
+        params: { graph_id: "G_TEST", owner: "tester" },
+      },
+      {
+        scenario: "nominal",
+        name: "tx_commit_probe",
+        method: "tx_commit",
+        params: ({ previousCalls }) => {
+          const beginOutcome = previousCalls.find((entry) => entry.call.name === "tx_begin_probe");
+          const body = beginOutcome?.check.response.body as { result?: { tx_id?: string } } | undefined;
+          return { tx_id: body?.result?.tx_id ?? "missing" };
+        },
+      },
+    ];
+
+    const outcomes = await runTransactionsPhase(runRoot, environment, calls);
+
+    expect(outcomes).to.have.lengthOf(2);
+    expect(capturedRequests).to.have.lengthOf(2);
+
+    const eventsContent = await readFile(join(runRoot, TRANSACTIONS_JSONL_FILES.events), "utf8");
+    const eventLines = eventsContent
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((line) => JSON.parse(line) as { event?: unknown });
+
+    expect(eventLines).to.have.lengthOf(1);
+    expect(eventLines[0]?.event).to.deep.equal({ seq: 1, type: "defined", detail: "kept" });
+
+    expect(outcomes[0]?.events).to.deep.equal([{ seq: 1, type: "defined", detail: "kept" }]);
+  });
+
   it("supports the default call plan and records failure responses", async () => {
     const baseGraph = {
       name: "Validation baseline workflow",

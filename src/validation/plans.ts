@@ -20,7 +20,7 @@ import {
   type HttpEnvironmentSummary,
   type HttpCheckArtefactTargets,
 } from "./runSetup.js";
-import { omitUndefinedEntries } from "../utils/object.js";
+import { coerceNullToUndefined, omitUndefinedEntries } from "../utils/object.js";
 
 /** JSONL artefacts dedicated to the Behaviour Tree planning validation phase. */
 export const PLAN_JSONL_FILES = {
@@ -628,12 +628,18 @@ export function buildPlanSummary(
       cancelled: reactiveCancelled,
       ...omitUndefinedEntries({ cancellationError: reactiveCancellationError }),
     },
-    lifecycle: {
-      statusSnapshot: statusSnapshot ?? null,
-      pauseResult: pauseResult ?? null,
-      resumeResult: resumeResult ?? null,
-      cancelResult: cancelResult ?? null,
-    },
+    // Lifecycle transitions occasionally omit extended payloads (snapshot,
+    // pause/resume confirmations, cancellation details). Converting null-ish
+    // placeholders to `undefined` before applying `omitUndefinedEntries`
+    // prevents serialising empty optional fields once
+    // `exactOptionalPropertyTypes` enforces strict omission semantics.
+    lifecycle:
+      omitUndefinedEntries({
+        statusSnapshot: coerceNullToUndefined(statusSnapshot),
+        pauseResult: coerceNullToUndefined(pauseResult),
+        resumeResult: coerceNullToUndefined(resumeResult),
+        cancelResult: coerceNullToUndefined(cancelResult),
+      }) satisfies PlanPhaseSummaryDocument["lifecycle"],
     opCancel: {
       ok: opCancelOk,
       outcome: opCancelOutcome,

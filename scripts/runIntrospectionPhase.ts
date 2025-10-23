@@ -1,11 +1,13 @@
 #!/usr/bin/env node
-import process from "process";
-import { join } from "path";
+import process from "node:process";
+import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 
 import {
   executeIntrospectionCli,
   parseIntrospectionCliOptions,
 } from "../src/validation/introspectionCli.js";
+import { cloneDefinedEnv } from "./lib/env-helpers.mjs";
 
 /**
  * CLI entrypoint that wires the minimal option parser to the reusable
@@ -14,10 +16,27 @@ import {
  * extending the workflow (e.g. injecting extra probes).
  */
 
-async function main(): Promise<void> {
-  const options = parseIntrospectionCliOptions(process.argv.slice(2));
+/**
+ * Normalises the argv/env tuple for the introspection stage so strict optional
+ * semantics are preserved when forwarding process state to the validation
+ * runner.
+ */
+export function prepareIntrospectionCliInvocation(
+  rawArgs: readonly string[] = process.argv.slice(2),
+  rawEnv: NodeJS.ProcessEnv = process.env,
+) {
+  const options = parseIntrospectionCliOptions(Array.from(rawArgs));
+  const env = cloneDefinedEnv(rawEnv) as NodeJS.ProcessEnv;
+  return { options, env };
+}
 
-  const { runRoot, outcomes } = await executeIntrospectionCli(options, process.env, console);
+async function main(): Promise<void> {
+  const { options, env } = prepareIntrospectionCliInvocation(
+    process.argv.slice(2),
+    process.env,
+  );
+
+  const { runRoot, outcomes } = await executeIntrospectionCli(options, env, console);
 
   console.log("📊 Introspection call summary:");
   for (const outcome of outcomes) {
@@ -29,7 +48,9 @@ async function main(): Promise<void> {
   console.log(`🧾 Detailed log: ${join(runRoot, "logs", "introspection_http.json")}`);
 }
 
-main().catch((error) => {
-  console.error("Failed to execute introspection phase:", error);
-  process.exitCode = 1;
-});
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]!).href) {
+  main().catch((error) => {
+    console.error("Failed to execute introspection phase:", error);
+    process.exitCode = 1;
+  });
+}

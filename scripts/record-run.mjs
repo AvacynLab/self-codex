@@ -28,6 +28,8 @@ import { createRequire } from "node:module";
 import { setTimeout as delay } from "node:timers/promises";
 import { performance } from "node:perf_hooks";
 
+import { cloneDefinedEnv } from "./lib/env-helpers.mjs";
+
 const require = createRequire(import.meta.url);
 const tsxLoaderModule = require.resolve("tsx");
 
@@ -472,19 +474,19 @@ async function startServer({ host, port, path, token }) {
 
   const childRunner = resolve(workspaceRoot, "tests/fixtures/mock-runner.ts");
   const childArgs = JSON.stringify(["--import", tsxLoaderModule, childRunner, "--scenario", "record-run"]);
-  const childEnv = {
-    ...process.env,
-    MCP_HTTP_TOKEN: token,
-    MCP_LOG_FILE: resolve(directories.logs, "server.jsonl"),
-    MCP_LOG_REDACT: process.env.MCP_LOG_REDACT ?? "on",
-    MCP_LOG_ROTATE_SIZE: process.env.MCP_LOG_ROTATE_SIZE ?? "4096",
-    MCP_LOG_ROTATE_KEEP: process.env.MCP_LOG_ROTATE_KEEP ?? "3",
-    MCP_RUNS_ROOT: runRoot,
-    MCP_CHILDREN_ROOT: resolve(directories.artifacts, "children"),
-    MCP_CHILD_COMMAND: process.execPath,
-    MCP_CHILD_ARGS: childArgs,
-    MCP_HTTP_STATELESS: "yes",
-  };
+  const childEnv = cloneDefinedEnv();
+  // Ensure child processes inherit a clean environment without `undefined`
+  // placeholders so strict optional semantics remain intact.
+  childEnv.MCP_HTTP_TOKEN = token;
+  childEnv.MCP_LOG_FILE = resolve(directories.logs, "server.jsonl");
+  childEnv.MCP_LOG_REDACT = process.env.MCP_LOG_REDACT ?? "on";
+  childEnv.MCP_LOG_ROTATE_SIZE = process.env.MCP_LOG_ROTATE_SIZE ?? "4096";
+  childEnv.MCP_LOG_ROTATE_KEEP = process.env.MCP_LOG_ROTATE_KEEP ?? "3";
+  childEnv.MCP_RUNS_ROOT = runRoot;
+  childEnv.MCP_CHILDREN_ROOT = resolve(directories.artifacts, "children");
+  childEnv.MCP_CHILD_COMMAND = process.execPath;
+  childEnv.MCP_CHILD_ARGS = childArgs;
+  childEnv.MCP_HTTP_STATELESS = "yes";
 
   const args = [
     serverEntry,

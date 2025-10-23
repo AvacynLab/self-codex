@@ -121,4 +121,22 @@ describe("behaviour tree task leaves", () => {
 
     sinon.assert.calledOnceWithExactly(invokeTool, "noop", {});
   });
+
+  it("omits optional TaskLeaf configuration when constructors receive undefined placeholders", async () => {
+    const invokeTool = sinon.stub().resolves(undefined);
+    const runtime: TickRuntime = {
+      invokeTool,
+      variables: {},
+    };
+
+    const leaf = new TaskLeaf("optional-placeholders", "noop", {
+      inputKey: undefined,
+      schema: undefined,
+    });
+
+    const result = await leaf.tick(runtime);
+
+    expect(result).to.deep.equal({ status: "success" });
+    sinon.assert.calledOnceWithExactly(invokeTool, "noop", {});
+  });
 });

@@ -470,7 +470,10 @@ async function appendPerformanceEvents(
         attempt: call.attempt,
         capturedAt,
         eventIndex: index,
-        event,
+        // Stage 10 artefacts must avoid `undefined` placeholders so the stricter
+        // optional property semantics enforced by `exactOptionalPropertyTypes`
+        // remain satisfied. Only attach the payload when the event is defined.
+        ...(event !== undefined ? { event } : {}),
       }),
     )
     .join("");
@@ -482,11 +485,15 @@ async function appendPerformanceEvents(
 function extractEvents(body: unknown): unknown[] {
   const result = extractJsonRpcResult(body);
   if (result && Array.isArray((result as { events?: unknown }).events)) {
-    return (result as { events?: unknown[] }).events ?? [];
+    return ((result as { events?: unknown[] }).events ?? []).filter(
+      (event): event is unknown => event !== undefined,
+    );
   }
   const error = extractJsonRpcError(body);
   if (error?.data && Array.isArray((error.data as { events?: unknown }).events)) {
-    return (error.data as { events?: unknown[] }).events ?? [];
+    return ((error.data as { events?: unknown[] }).events ?? []).filter(
+      (event): event is unknown => event !== undefined,
+    );
   }
   return [];
 }

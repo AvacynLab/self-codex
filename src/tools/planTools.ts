@@ -2654,7 +2654,10 @@ export function handlePlanCompileBT(
   input: PlanCompileBTInput,
 ): PlanCompileBTResult {
   context.logger.info("plan_compile_bt", { graph_id: input.graph.id });
-  const compiled = compileHierGraphToBehaviorTree(input.graph);
+  // Sanitise the parsed hierarchy so optional labels/ports omitted by callers
+  // never materialise as `undefined` when compiling the behaviour tree.
+  const graph = sanitiseHierGraphInput(input.graph);
+  const compiled = compileHierGraphToBehaviorTree(graph);
   return CompiledBehaviorTreeSchema.parse(compiled);
 }
 
@@ -4165,7 +4168,12 @@ function serialiseCorrelationForPayload(
   };
 }
 
-/** @internal Aggregates helper functions that are exclusively used in tests. */
+/**
+ * @internal Aggregates helper functions that are exclusively used in tests.
+ * Keeping the sanitiser exported ensures optional-field regressions can assert
+ * on the precise shape forwarded to the behaviour tree compiler.
+ */
 export const __testing = {
   runWithConcurrency,
+  sanitiseHierGraphInput,
 };

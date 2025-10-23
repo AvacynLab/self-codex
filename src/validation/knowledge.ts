@@ -11,7 +11,7 @@ import {
   type HttpCheckSnapshot,
   type HttpEnvironmentSummary,
 } from "./runSetup.js";
-import { omitUndefinedEntries } from "../utils/object.js";
+import { coerceNullToUndefined, omitUndefinedEntries } from "../utils/object.js";
 
 /** JSONL artefacts dedicated to the knowledge & values validation phase. */
 export const KNOWLEDGE_JSONL_FILES = {
@@ -143,8 +143,10 @@ export interface KnowledgeSummary {
     readonly outputsJsonl: string;
     readonly eventsJsonl: string;
     readonly httpSnapshotLog: string;
-    readonly valuesGraphExport?: string | null;
-    readonly causalExport?: string | null;
+    /** Optional values graph export persisted when the snapshot tool succeeds. */
+    readonly valuesGraphExport?: string;
+    /** Optional causal export persisted when the causal snapshot tool succeeds. */
+    readonly causalExport?: string;
   };
   readonly knowledge: {
     readonly assistQuery?: string;
@@ -642,8 +644,14 @@ export function buildKnowledgeSummary(
       outputsJsonl: join(runRoot, KNOWLEDGE_JSONL_FILES.outputs),
       eventsJsonl: join(runRoot, KNOWLEDGE_JSONL_FILES.events),
       httpSnapshotLog: join(runRoot, KNOWLEDGE_JSONL_FILES.log),
-      valuesGraphExport: state.valuesGraphExportPath,
-      causalExport: state.causalExportPath,
+      // Optional artefacts are only attached when the underlying tools persist
+      // snapshots. Converting their `null` placeholders to `undefined` lets the
+      // helper strip absent entries and keeps future strict optional checks
+      // satisfied once `exactOptionalPropertyTypes` is enforced globally.
+      ...omitUndefinedEntries({
+        valuesGraphExport: coerceNullToUndefined(state.valuesGraphExportPath),
+        causalExport: coerceNullToUndefined(state.causalExportPath),
+      }),
     },
     knowledge: knowledgeSummary,
     values: valuesSummary,

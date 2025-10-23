@@ -117,10 +117,10 @@ function normaliseCursor(cursor: number | undefined | null): number | undefined 
 export function buildReplayPage(eventStore: EventStore, jobId: string, options: ReplayPageOptions = {}): ReplayPage {
   const limit = clampReplayLimit(options.limit);
   const cursor = normaliseCursor(options.cursor);
-  const events = eventStore.listForJob(jobId, {
-    minSeq: cursor,
-    limit: limit + 1,
-  });
+    const events = eventStore.listForJob(jobId, {
+      ...(cursor !== undefined ? { minSeq: cursor } : {}),
+      limit: limit + 1,
+    });
   const hasMore = events.length > limit;
   const pageEvents = hasMore ? events.slice(0, limit) : events;
   const mapped = pageEvents.map((event) => mapEventForReplay(event));

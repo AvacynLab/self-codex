@@ -1,9 +1,12 @@
 import { describe, it } from "mocha";
 import { expect } from "chai";
 
+import { Buffer } from "node:buffer";
+
 import { __httpServerInternals } from "../../src/httpServer.js";
 import { RecordingLogger } from "../helpers/recordingLogger.js";
-import { MemoryHttpResponse } from "../helpers/http.js";
+import { MemoryHttpResponse, createHttpRequest } from "../helpers/http.js";
+import type { JsonRpcRequest } from "../../src/server.js";
 
 /**
  * Narrows an unknown payload into a structured record for assertion purposes.
@@ -123,6 +126,44 @@ describe("http jsonrpc error helper", () => {
     const loggedPayload = expectRecord(entry?.payload);
     expect(loggedPayload.cache_status).to.equal("miss");
     expect(loggedPayload.status).to.equal(500);
+  });
+
+  it("omits optional route context fields when headers are absent", () => {
+    const request = createHttpRequest("POST", "/mcp", {
+      "content-type": "application/json",
+      accept: "application/json",
+    });
+    const rpcRequest = { id: "rpc-1", method: "mcp.ping" } as JsonRpcRequest;
+
+    const context = __httpServerInternals.buildRouteContextFromHeaders(request, rpcRequest);
+
+    expect(context.headers).to.deep.equal({
+      "content-type": "application/json",
+      accept: "application/json",
+    });
+    expect(context.transport).to.equal("http");
+    expect(context.requestId).to.equal("rpc-1");
+    expect("childId" in context, "childId key should be omitted").to.equal(false);
+    expect("childLimits" in context, "childLimits key should be omitted").to.equal(false);
+    expect("idempotencyKey" in context, "idempotency key should be omitted").to.equal(false);
+  });
+
+  it("decodes optional headers without surfacing undefined placeholders", () => {
+    const encodedLimits = Buffer.from(JSON.stringify({ cpuMs: 50, memMb: 128 })).toString("base64");
+    const request = createHttpRequest("POST", "/mcp", {
+      "content-type": "application/json",
+      accept: "application/json",
+      "x-child-id": " child-7 ",
+      "x-child-limits": encodedLimits,
+      "idempotency-key": "   req-42   ",
+    });
+    const rpcRequest = { id: 42, method: "mcp.run" } as JsonRpcRequest;
+
+    const context = __httpServerInternals.buildRouteContextFromHeaders(request, rpcRequest);
+
+    expect(context.childId).to.equal("child-7");
+    expect(context.childLimits).to.deep.equal({ cpuMs: 50, memMb: 128 });
+    expect(context.idempotencyKey).to.equal("req-42");
   });
 });
 

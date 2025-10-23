@@ -6,6 +6,11 @@ import type { RunContext } from './runContext.js';
 import { ArtifactRecorder } from './artifactRecorder.js';
 import { McpSession, McpToolCallError, type ToolCallRecord } from './mcpSession.js';
 import type { BaseToolCallSummary, ToolResponseSummary } from './baseTools.js';
+import {
+  buildTransportFailureSummary,
+  parseToolResponseText,
+  summariseToolResponse,
+} from './responseSummary.js';
 
 import { childProcessSupervisor, server } from '../../../src/server.js';
 import type {
@@ -154,40 +159,9 @@ export interface ChildStageResult {
 }
 
 /** Extracts the first textual entry from an MCP response and attempts to decode it as JSON. */
-function parseTextContent(response: ToolCallRecord['response']): {
-  parsed?: unknown;
-  errorCode?: string | null;
-  hint?: string | null;
-} {
-  const contentEntries = Array.isArray(response.content) ? response.content : [];
-  const firstText = contentEntries.find(
-    (entry): entry is { type?: string; text?: string } =>
-      typeof entry?.text === 'string' && (entry.type === undefined || entry.type === 'text'),
-  );
-  if (!firstText?.text) {
-    return { parsed: undefined, errorCode: null, hint: null };
-  }
-
-  try {
-    const parsed = JSON.parse(firstText.text);
-    const errorCode = typeof (parsed as { error?: unknown }).error === 'string' ? (parsed as { error: string }).error : null;
-    const hint = typeof (parsed as { hint?: unknown }).hint === 'string' ? (parsed as { hint: string }).hint : null;
-    return { parsed, errorCode, hint };
-  } catch {
-    return { parsed: firstText.text, errorCode: null, hint: null };
-  }
-}
-
 /** Builds a structured summary of the MCP response suitable for audit reports. */
 function summariseResponse(response: ToolCallRecord['response']): ToolResponseSummary {
-  const { parsed, errorCode, hint } = parseTextContent(response);
-  return {
-    isError: response.isError ?? false,
-    structured: response.structuredContent ?? undefined,
-    parsedText: parsed,
-    errorCode: errorCode ?? null,
-    hint: hint ?? null,
-  };
+  return summariseToolResponse(response);
 }
 
 /**
@@ -206,7 +180,7 @@ async function callAndRecord(
     const call = await session.callTool(toolName, payload);
     sink.push({
       toolName,
-      scenario: options.scenario,
+      ...(options.scenario ? { scenario: options.scenario } : {}),
       traceId: call.traceId,
       durationMs: call.durationMs,
       artefacts: call.artefacts,
@@ -217,20 +191,11 @@ async function callAndRecord(
     if (error instanceof McpToolCallError) {
       sink.push({
         toolName,
-        scenario: options.scenario,
+        ...(options.scenario ? { scenario: options.scenario } : {}),
         traceId: error.traceId,
         durationMs: error.durationMs,
         artefacts: error.artefacts,
-        response: {
-          isError: true,
-          structured: undefined,
-          parsedText:
-            error.cause instanceof Error
-              ? { message: error.cause.message, stack: error.cause.stack }
-              : { message: String(error.cause) },
-          errorCode: 'transport_failure',
-          hint: null,
-        },
+        response: buildTransportFailureSummary(error),
       });
       return null;
     }
@@ -277,7 +242,7 @@ function extractPendingId(call: ToolCallRecord | null): string | null {
   if (structured && typeof structured.pending_id === 'string') {
     return structured.pending_id;
   }
-  const parsed = parseTextContent(call.response).parsed;
+  const parsed = parseToolResponseText(call.response).parsed;
   if (parsed && typeof parsed === 'object' && parsed !== null) {
     const candidate = (parsed as { pending_id?: unknown }).pending_id;
     if (typeof candidate === 'string') {

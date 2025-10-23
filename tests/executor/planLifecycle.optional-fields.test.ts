@@ -1,7 +1,7 @@
 import { describe, it } from "mocha";
 import { expect } from "chai";
 
-import { PlanLifecycleRegistry } from "../../src/executor/planLifecycle.js";
+import { PlanLifecycleError, PlanLifecycleRegistry } from "../../src/executor/planLifecycle.js";
 
 /**
  * Regression coverage guaranteeing lifecycle snapshots omit undefined payload
@@ -44,5 +44,15 @@ describe("PlanLifecycleRegistry optional fields", () => {
     expect(Object.prototype.hasOwnProperty.call(payload, "optional_status")).to.equal(true);
     expect((payload.nested as { drop?: unknown }).drop).to.equal(undefined);
     expect((payload.history as Array<Record<string, unknown> | undefined>)[0]?.optional).to.equal(undefined);
+  });
+
+  it("retains lifecycle error metadata without forcing undefined placeholders", () => {
+    const withoutHint = new PlanLifecycleError("boom", "E-PLAN", undefined, { context: "failure" });
+    expect(Object.prototype.hasOwnProperty.call(withoutHint, "hint"), "error should expose the optional hint field").to.equal(true);
+    expect(withoutHint.hint, "hint remains undefined when callers skip it").to.equal(undefined);
+    expect(withoutHint.details, "structured details remain attached").to.deep.equal({ context: "failure" });
+
+    const withHint = new PlanLifecycleError("boom", "E-PLAN", "plan_status");
+    expect(withHint.hint, "provided hints surface unchanged").to.equal("plan_status");
   });
 });

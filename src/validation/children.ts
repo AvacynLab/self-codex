@@ -444,7 +444,10 @@ export async function runChildrenPhase(
       // avoid leaking `undefined` into persisted artefacts once
       // `exactOptionalPropertyTypes` is enabled.
       ...(spec.captureEvents !== undefined ? { captureEvents: spec.captureEvents } : {}),
-      params,
+      // Parameters are only retained when the factory returns a concrete payload so
+      // JSONL artefacts never persist `{ "params": undefined }` entries. This keeps the
+      // runner compatible with strict optional property semantics.
+      ...(params !== undefined ? { params } : {}),
     };
 
     await appendHttpCheckArtefactsToFiles(runRoot, CHILDREN_TARGETS, check, CHILDREN_JSONL_FILES.log);

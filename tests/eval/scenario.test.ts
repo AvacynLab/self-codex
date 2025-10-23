@@ -4,8 +4,33 @@ import { resolve } from "node:path";
 
 import {
   loadScenarioFromFile,
+  loadScenariosFromDirectory,
   parseScenario,
 } from "../../src/eval/scenario.js";
+
+/**
+ * Recursively asserts that the provided value tree never materialises
+ * `undefined` entries. The helper mirrors the optional-field assertions used
+ * across the MCP suites so documentation fixtures remain aligned with the
+ * sanitisation guarantees enforced by the scenario loader.
+ */
+function assertNoUndefinedValues(value: unknown, path = "scenario"): void {
+  if (value === undefined) {
+    throw new Error(`unexpected undefined value at ${path}`);
+  }
+  if (value === null || typeof value !== "object") {
+    return;
+  }
+  if (Array.isArray(value)) {
+    value.forEach((entry, index) => {
+      assertNoUndefinedValues(entry, `${path}[${index}]`);
+    });
+    return;
+  }
+  for (const [key, entry] of Object.entries(value)) {
+    assertNoUndefinedValues(entry, `${path}.${key}`);
+  }
+}
 
 /**
  * Unit coverage for the scenario loader to guarantee the CLI parses YAML/JSON
@@ -90,5 +115,34 @@ describe("evaluation scenarios", () => {
       throw new Error("expected script oracle");
     }
     expect(Object.prototype.hasOwnProperty.call(scriptOracle, "exportName")).to.equal(false);
+  });
+
+  it("omits optional fields across repository scenarios", async () => {
+    const scenarios = await loadScenariosFromDirectory(resolve("scenarios"));
+    const introspection = scenarios.find((entry) => entry.id === "introspection-smoke");
+    if (!introspection) {
+      throw new Error("expected to load the introspection smoke scenario");
+    }
+
+    assertNoUndefinedValues(introspection, "scenario[introspection-smoke]");
+
+    const [infoStep, capabilitiesStep, resourcesStep] = introspection.steps;
+    if (!infoStep || !capabilitiesStep || !resourcesStep) {
+      throw new Error("expected the introspection scenario to define three steps");
+    }
+
+    // Steps using empty argument objects should omit the property after
+    // sanitisation while populated payloads remain intact for downstream
+    // executors.
+    expect(Object.prototype.hasOwnProperty.call(infoStep, "arguments")).to.equal(false);
+    expect(Object.prototype.hasOwnProperty.call(capabilitiesStep, "arguments")).to.equal(false);
+    expect(resourcesStep.arguments).to.deep.equal({ limit: 10 });
+
+    // The scenario advertises the required MCP tools via constraints; ensure
+    // the sanitiser keeps the populated optional field.
+    expect(introspection.constraints.requiredTools).to.deep.equal([
+      "mcp_info",
+      "mcp_capabilities",
+    ]);
   });
 });

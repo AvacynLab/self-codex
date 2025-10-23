@@ -15,6 +15,7 @@ import {
   verifyAutosaveQuiescence,
   type GraphForgePhaseOptions,
   type AutosaveTickSample,
+  type AutosaveObservationResult,
 } from "../../src/validation/graphForge.js";
 
 /**
@@ -135,6 +136,16 @@ describe("graph forge validation runner", () => {
     expect(httpLog).to.contain("graph_state_autosave:start");
     expect(httpLog).to.contain("graph_state_autosave:stop");
 
+    const quiescenceEntry = eventsLog
+      .trim()
+      .split(/\r?\n/)
+      .map((line) => JSON.parse(line) as Record<string, unknown>)
+      .find((entry) => entry.type === "autosave.quiescence");
+    // Successful runs should omit the optional `lastError` field altogether so
+    // the JSONL artefact remains compliant with strict optional semantics.
+    expect(quiescenceEntry).to.not.equal(undefined);
+    expect(Object.prototype.hasOwnProperty.call(quiescenceEntry!, "lastError")).to.equal(false);
+
     expect(capturedRequests).to.have.lengthOf(3);
     const firstRequest = capturedRequests[0]?.init;
     expect(firstRequest?.headers).to.satisfy((headers: HeadersInit) => {
@@ -202,6 +213,74 @@ describe("graph forge validation runner", () => {
     expect(result.autosave.absolutePath).to.equal(join(workingDir, "tmp", "_danger_.json"));
     expect(observedPaths).to.deep.equal([result.autosave.absolutePath]);
     expect(result.autosave.absolutePath).to.not.include("<");
+  });
+
+  it("records quiescence errors without leaking undefined placeholders", async function () {
+    this.timeout(5000);
+    const responses = [
+      { jsonrpc: "2.0", result: { content: [{ type: "text", text: JSON.stringify({ report: "ok" }) }] } },
+      { jsonrpc: "2.0", result: { status: "started" } },
+      { jsonrpc: "2.0", result: { status: "stopped" } },
+    ];
+
+    globalThis.fetch = (async () => {
+      const payload = responses.shift() ?? { jsonrpc: "2.0", result: {} };
+      return new Response(JSON.stringify(payload), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as typeof fetch;
+
+    const autosaveObserver: GraphForgePhaseOptions["autosaveObserver"] = async (absolutePath, observerOptions) => {
+      await mkdir(dirname(absolutePath), { recursive: true });
+      const savedAt = new Date().toISOString();
+      const payload = {
+        metadata: { saved_at: savedAt },
+        snapshot: { nodes: [], edges: [] },
+      };
+      const serialised = `${JSON.stringify(payload, null, 2)}\n`;
+      await writeFile(absolutePath, serialised, "utf8");
+      const sample: AutosaveTickSample = {
+        capturedAt: new Date().toISOString(),
+        savedAt,
+        fileSize: Buffer.byteLength(serialised, "utf8"),
+      };
+      // Delete the artefact immediately so the verification step captures an
+      // `ENOENT` error. The regression verifies the log entry keeps the message
+      // without serialising `{ "lastError": undefined }` placeholders.
+      await rm(absolutePath, { force: true });
+      return {
+        path: absolutePath,
+        requiredTicks: observerOptions.requiredTicks ?? 1,
+        observedTicks: 1,
+        durationMs: 5,
+        completed: true,
+        samples: [sample],
+      } satisfies AutosaveObservationResult;
+    };
+
+    const { autosave } = await runGraphForgePhase(runRoot, environment, {
+      workspaceRoot: workingDir,
+      autosaveObserver,
+      autosaveObservation: { requiredTicks: 1 },
+      autosaveQuiescence: { pollIntervalMs: 5, durationMs: 20 },
+    });
+
+    const eventsLog = await readFile(join(runRoot, GRAPH_FORGE_JSONL_FILES.events), "utf8");
+    const entries = eventsLog
+      .trim()
+      .split(/\r?\n/)
+      .map((line) => JSON.parse(line) as Record<string, unknown>);
+    const quiescenceEntry = entries.find((entry) => entry.type === "autosave.quiescence");
+
+    expect(quiescenceEntry).to.not.equal(undefined);
+    expect(quiescenceEntry?.lastError).to.equal("ENOENT");
+    expect(Object.prototype.hasOwnProperty.call(quiescenceEntry!, "lastError")).to.equal(true);
+
+    const summaryDocument = JSON.parse(await readFile(autosave.summaryPath, "utf8")) as {
+      autosave: { quiescence: { lastError?: string | null } };
+    };
+    expect(summaryDocument.autosave.quiescence.lastError).to.equal("ENOENT");
   });
 
   it("throws when the autosave artefact changes after stop", async function () {

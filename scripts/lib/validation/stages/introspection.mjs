@@ -84,7 +84,16 @@ export async function runIntrospectionStage(options) {
   } = options;
 
   const toolCalls = [];
-  const aggregatedPaths = { requests: null, responses: null, events: null };
+  /**
+   * Tracks the first materialised artefact paths for the aggregated JSONL files.
+   *
+   * The validation harness only needs the location of the consolidated request
+   * / response / event streams when they actually exist.  By keeping the slots
+   * `undefined` until a file is created we can later omit the corresponding
+   * properties from persisted summaries, avoiding `null` placeholders that would
+   * violate the future `exactOptionalPropertyTypes` contract.
+   */
+  const aggregatedPaths = { requests: undefined, responses: undefined, events: undefined };
   let requestSequence = 0;
   let responseSequence = 0;
   let eventSequence = 0;
@@ -327,7 +336,7 @@ export async function runIntrospectionStage(options) {
     });
     const toolsResponse = toolsListCall?.response ?? {};
     const tools = Array.isArray(toolsResponse.tools) ? [...toolsResponse.tools] : [];
-    const toolsNextCursor = toolsResponse.nextCursor ?? null;
+    const toolsNextCursor = toolsResponse.nextCursor;
 
     const resourcesListCall = await executeCall({
       label: "resources_list",
@@ -413,6 +422,17 @@ export async function runIntrospectionStage(options) {
     }
 
     const reportPath = join(context.directories.report, AGGREGATED_FILENAMES.report);
+    /**
+     * Builds the artefact pointers without serialising `undefined` values.  The
+     * resulting object is reused for the JSON report as well as the returned
+     * stage summary so all consumers observe the same sanitised payload.
+     */
+    const aggregatedArtifacts = {
+      ...(aggregatedPaths.requests ? { requests: aggregatedPaths.requests } : {}),
+      ...(aggregatedPaths.responses ? { responses: aggregatedPaths.responses } : {}),
+      ...(aggregatedPaths.events ? { events: aggregatedPaths.events } : {}),
+    };
+
     await writeFile(
       reportPath,
       `${JSON.stringify(
@@ -421,7 +441,9 @@ export async function runIntrospectionStage(options) {
           capabilities,
           tools: {
             total: tools.length,
-            next_cursor: toolsNextCursor,
+            ...(toolsNextCursor !== undefined && toolsNextCursor !== null
+              ? { next_cursor: toolsNextCursor }
+              : {}),
             items: tools,
           },
           resource_prefixes: prefixResults.map((entry) => ({ prefix: entry.prefix, count: entry.items.length })),
@@ -430,11 +452,7 @@ export async function runIntrospectionStage(options) {
             baseline_count: baselineEvents?.count ?? (Array.isArray(baselineEvents?.events) ? baselineEvents.events.length : 0),
             follow_up_count: followUpEvents?.count ?? (Array.isArray(followUpEvents?.events) ? followUpEvents.events.length : 0),
           },
-          artifacts: {
-            requests: aggregatedPaths.requests,
-            responses: aggregatedPaths.responses,
-            events: aggregatedPaths.events,
-          },
+          artifacts: aggregatedArtifacts,
         },
         null,
         2,
@@ -497,7 +515,9 @@ export async function runIntrospectionStage(options) {
         capabilities,
         tools: {
           total: tools.length,
-          nextCursor: toolsNextCursor,
+          ...(toolsNextCursor !== undefined && toolsNextCursor !== null
+            ? { nextCursor: toolsNextCursor }
+            : {}),
           items: tools,
         },
         resourceCatalog: {
@@ -510,9 +530,9 @@ export async function runIntrospectionStage(options) {
           followUp: followUpEvents,
         },
         artifacts: {
-          requestsPath: aggregatedPaths.requests,
-          responsesPath: aggregatedPaths.responses,
-          eventsPath: aggregatedPaths.events,
+          ...(aggregatedPaths.requests ? { requestsPath: aggregatedPaths.requests } : {}),
+          ...(aggregatedPaths.responses ? { responsesPath: aggregatedPaths.responses } : {}),
+          ...(aggregatedPaths.events ? { eventsPath: aggregatedPaths.events } : {}),
           reportPath,
           resourceIndexPath,
           toolsCatalogPath,

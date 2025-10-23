@@ -235,5 +235,9 @@ describe("knowledge validation runner", () => {
     expect(summary.values.explanationConsistent).to.equal(false);
     expect(Object.prototype.hasOwnProperty.call(summary.values, "topic")).to.equal(false);
     expect(Object.prototype.hasOwnProperty.call(summary.values, "citationCount")).to.equal(false);
+    expect(Object.prototype.hasOwnProperty.call(summary.artefacts, "valuesGraphExport")).to.equal(
+      false,
+    );
+    expect(Object.prototype.hasOwnProperty.call(summary.artefacts, "causalExport")).to.equal(false);
   });
 });

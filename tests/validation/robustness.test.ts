@@ -165,6 +165,86 @@ describe("robustness validation runner", () => {
     expect(Object.values(summaryDocument).includes(null)).to.equal(false);
   });
 
+  it("omits undefined events when persisting robustness JSONL artefacts", async () => {
+    const responses = [
+      { status: 400, payload: { jsonrpc: "2.0", error: { message: "Invalid" } } },
+      { status: 404, payload: { jsonrpc: "2.0", error: { message: "Unknown" } } },
+      {
+        status: 200,
+        payload: {
+          jsonrpc: "2.0",
+          result: {
+            transaction_id: "tx-keep",
+            idempotent: true,
+            idempotency_key: "robustness-tx",
+            events: [],
+          },
+        },
+      },
+      {
+        status: 200,
+        payload: {
+          jsonrpc: "2.0",
+          result: {
+            transaction_id: "tx-keep",
+            idempotent: true,
+            idempotency_key: "robustness-tx",
+            events: [],
+          },
+        },
+      },
+      {
+        status: 500,
+        payload: {
+          jsonrpc: "2.0",
+          error: {
+            code: 5001,
+            message: "Crash detected",
+            data: {
+              events: [
+                undefined,
+                { type: "child.cleanup", seq: 2 },
+              ],
+            },
+          },
+        },
+      },
+      {
+        status: 200,
+        payload: {
+          jsonrpc: "2.0",
+          result: {
+            status: "timeout",
+            events: [undefined],
+          },
+        },
+      },
+    ];
+
+    globalThis.fetch = (async () => {
+      const next = responses.shift() ?? { status: 200, payload: { jsonrpc: "2.0", result: {} } };
+      return new Response(JSON.stringify(next.payload), {
+        status: next.status,
+        headers: { "content-type": "application/json" },
+      });
+    }) as typeof fetch;
+
+    const result = await runRobustnessPhase(runRoot, environment);
+
+    const eventsLog = await readFile(join(runRoot, ROBUSTNESS_JSONL_FILES.events), "utf8");
+    const entries = eventsLog
+      .trim()
+      .split("\n")
+      .filter((line) => line.length > 0)
+      .map((line) => JSON.parse(line) as { event?: unknown });
+
+    // The sanitisation pass should keep only the concrete event captured during
+    // the crash scenario; undefined placeholders are filtered out entirely.
+    expect(entries).to.have.lengthOf(1);
+    expect(entries[0]?.event).to.deep.equal({ type: "child.cleanup", seq: 2 });
+    expect(result.summary.crashSimulation?.eventCount).to.equal(1);
+  });
+
   it("omits timeout summary fields when the backend does not provide them", async () => {
     const responses = [
       { status: 400, payload: { jsonrpc: "2.0", error: { message: "Invalid" } } },

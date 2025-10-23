@@ -74,6 +74,12 @@ describe("environment script helpers", () => {
     expect(original.NODE_OPTIONS).to.equal("--inspect");
   });
 
+  it("omits undefined entries when cloning environment variables", () => {
+    const clone = helpers.cloneDefinedEnv({ FOO: "bar", BAZ: undefined, EMPTY: "" });
+    expect(clone).to.deep.equal({ FOO: "bar", EMPTY: "" });
+    expect(Object.prototype.hasOwnProperty.call(clone, "BAZ"), "undefined keys should be absent").to.equal(false);
+  });
+
   it("rejects runtimes older than the minimum supported Node.js version", () => {
     process.env.CODEX_NODE_VERSION_OVERRIDE = "18.19.0";
     expect(() => helpers.assertNodeVersion(20)).to.throw(/Node\.js 20\+/);

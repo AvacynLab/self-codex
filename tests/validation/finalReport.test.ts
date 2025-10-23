@@ -1115,3 +1115,43 @@ describe("validation final report", () => {
     expect(stageForge?.missingScenarios).to.deep.equal([]);
   });
 });
+
+/**
+ * Additional smoke checks verifying sparse runs do not surface `undefined` values in
+ * the aggregated findings. This guards against regressions where optional fields may
+ * accidentally be forwarded without using `omitUndefinedEntries` before the strict
+ * `exactOptionalPropertyTypes` flag is enabled.
+ */
+describe("validation final report sanitisation", () => {
+  it("omits undefined fields when artefacts are absent", async () => {
+    const workspaceRoot = await mkdtemp(join(tmpdir(), "codex-final-report-sanitise-"));
+    const runRoot = join(workspaceRoot, "runs", "validation_empty");
+    await mkdir(runRoot, { recursive: true });
+
+    try {
+      const result = await runFinalReport(runRoot, { now: () => new Date("2099-01-01T00:00:00Z") });
+
+      const undefinedPaths: string[] = [];
+      const collectUndefinedPaths = (value: unknown, path: string): void => {
+        if (value === undefined) {
+          undefinedPaths.push(path);
+          return;
+        }
+        if (Array.isArray(value)) {
+          value.forEach((entry, index) => collectUndefinedPaths(entry, `${path}[${index}]`));
+          return;
+        }
+        if (value && typeof value === "object") {
+          for (const [key, nested] of Object.entries(value)) {
+            collectUndefinedPaths(nested, `${path}.${key}`);
+          }
+        }
+      };
+
+      collectUndefinedPaths(result, "result");
+      expect(undefinedPaths).to.deep.equal([]);
+    } finally {
+      await rm(workspaceRoot, { recursive: true, force: true });
+    }
+  });
+});

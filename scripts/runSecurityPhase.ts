@@ -1,9 +1,24 @@
 #!/usr/bin/env node
 import process from "node:process";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 
 import { executeSecurityCli, parseSecurityCliOptions } from "../src/validation/securityCli.js";
 import { SECURITY_JSONL_FILES } from "../src/validation/security.js";
+import { cloneDefinedEnv } from "./lib/env-helpers.mjs";
+
+/**
+ * Normalises argv/environment inputs for the security validation runner so the
+ * downstream workflow never encounters `undefined` sentinel values.
+ */
+export function prepareSecurityCliInvocation(
+  rawArgs: readonly string[] = process.argv.slice(2),
+  rawEnv: NodeJS.ProcessEnv = process.env,
+) {
+  const options = parseSecurityCliOptions(Array.from(rawArgs));
+  const env = cloneDefinedEnv(rawEnv) as NodeJS.ProcessEnv;
+  return { options, env };
+}
 
 /**
  * CLI entrypoint for the Stage 11 security validation workflow. The script
@@ -11,8 +26,11 @@ import { SECURITY_JSONL_FILES } from "../src/validation/security.js";
  * without memorising new conventions or artefact locations.
  */
 async function main(): Promise<void> {
-  const options = parseSecurityCliOptions(process.argv.slice(2));
-  const { runRoot, result } = await executeSecurityCli(options, process.env, console);
+  const { options, env } = prepareSecurityCliInvocation(
+    process.argv.slice(2),
+    process.env,
+  );
+  const { runRoot, result } = await executeSecurityCli(options, env, console);
 
   console.log("🛡️  Security validation summary:");
   for (const check of result.summary.checks) {
@@ -49,7 +67,9 @@ async function main(): Promise<void> {
   console.log(`📝 Summary: ${result.summaryPath}`);
 }
 
-main().catch((error) => {
-  console.error("Failed to execute security validation workflow:", error);
-  process.exitCode = 1;
-});
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]!).href) {
+  main().catch((error) => {
+    console.error("Failed to execute security validation workflow:", error);
+    process.exitCode = 1;
+  });
+}

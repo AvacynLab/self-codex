@@ -3,6 +3,8 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import process from "node:process";
 
+import { cloneDefinedEnv } from "./lib/env-helpers.mjs";
+
 /**
  * Resolves the repository root.  The helper keeps the rest of the script tidy
  * when the file is moved or symlinked in the future.
@@ -20,6 +22,14 @@ const MOCHA_BOOTSTRAP = resolve(ROOT_DIR, "tests", "setup.ts");
  * `MCP_TEST_ALLOW_LOOPBACK` enabled and forwards any additional Mocha flags.
  */
 export function createHttpE2ERunner(extraMochaArgs = []) {
+  const env = cloneDefinedEnv();
+  // Clone the base environment while omitting `undefined` entries so child
+  // processes never receive placeholder variables under
+  // `exactOptionalPropertyTypes`.
+  env.MCP_TEST_ALLOW_LOOPBACK = "yes";
+  // Disable request throttling to avoid interfering with stress-heavy suites.
+  env.MCP_HTTP_RATE_LIMIT_DISABLE = "1";
+
   return {
     command: process.execPath,
     args: [
@@ -33,12 +43,7 @@ export function createHttpE2ERunner(extraMochaArgs = []) {
       "tests/e2e/**/*.test.ts",
       ...extraMochaArgs,
     ],
-    env: {
-      ...process.env,
-      MCP_TEST_ALLOW_LOOPBACK: "yes",
-      // Disable request throttling to avoid interfering with stress-heavy suites.
-      MCP_HTTP_RATE_LIMIT_DISABLE: "1",
-    },
+    env,
   };
 }
 

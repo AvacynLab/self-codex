@@ -700,14 +700,18 @@ export class GuardNode implements BehaviorNode {
 
 /** Behaviour Tree task leaf calling an orchestrator tool. */
 export class TaskLeaf implements BehaviorNode {
-  private readonly inputKey?: string;
-  private readonly schema?: z.ZodTypeAny;
+  /** Optional runtime variable key resolved before invoking the tool. */
+  private readonly inputKey: string | undefined;
+  /** Optional Zod schema validating the input payload. */
+  private readonly schema: z.ZodTypeAny | undefined;
 
   constructor(
     public readonly id: string,
     private readonly toolName: string,
     options: { inputKey?: string; schema?: z.ZodTypeAny } = {},
   ) {
+    // Preserve the explicit `undefined` union so `exactOptionalPropertyTypes`
+    // accepts constructors that receive `schema`/`inputKey` placeholders.
     this.inputKey = options.inputKey;
     this.schema = options.schema;
   }

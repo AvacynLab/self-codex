@@ -10,6 +10,7 @@ import {
   type FinalReportOptions,
   type FinalReportResult,
 } from "./finalReport.js";
+import { omitUndefinedEntries } from "../utils/object.js";
 
 /** CLI flags recognised by the final report workflow. */
 export interface FinalReportCliOptions {
@@ -82,8 +83,26 @@ export async function executeFinalReportCli(
   logger.log(`→ Validation report run: ${runId}`);
   logger.log(`   Target: ${environment.baseUrl}`);
 
-  const runner = overrides.runner ?? ((root: string, finalOptions?: FinalReportOptions) => runFinalReport(root, finalOptions));
-  const result = await runner(runRoot, overrides.options);
+  const runner =
+    overrides.runner ?? ((root: string, finalOptions?: FinalReportOptions) => runFinalReport(root, finalOptions));
+
+  // The CLI only forwards override options when tests explicitly provide them. Sanitising the
+  // structure prevents `undefined` placeholders from leaking into the final report workflow once
+  // `exactOptionalPropertyTypes` is fully enforced.
+  const sanitisedOptions = (() => {
+    if (!overrides.options) {
+      return undefined;
+    }
+
+    const trimmed = omitUndefinedEntries({
+      now: overrides.options.now,
+      expectedToolsOverride: overrides.options.expectedToolsOverride,
+      packageJsonPath: overrides.options.packageJsonPath,
+    });
+    return Object.keys(trimmed).length > 0 ? (trimmed as FinalReportOptions) : undefined;
+  })();
+
+  const result = await runner(runRoot, sanitisedOptions);
 
   logger.log(`   Findings JSON: ${join(runRoot, "report", FINAL_REPORT_FINDINGS_FILENAME)}`);
   logger.log(`   Summary Markdown: ${join(runRoot, "report", FINAL_REPORT_SUMMARY_FILENAME)}`);

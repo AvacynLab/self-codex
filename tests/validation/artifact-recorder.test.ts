@@ -69,6 +69,38 @@ describe("validation artifact recorder helpers", () => {
       expect(registered?.metadata).to.include({ artifact: "session_context", role: "document" });
     });
 
+    it("omits registry metadata when callers skip the optional payload", async () => {
+      const context = await runContextModule.createRunContext({
+        runId: "validation_2099-01-01B",
+        workspaceRoot,
+      });
+
+      const recorder = new recorderModule.ArtifactRecorder(context, {
+        clock: () => new Date("2099-01-01T01:00:00.000Z"),
+        resourceRegistry: {
+          registerValidationArtifact(input: Record<string, unknown>) {
+            registeredArtifacts.push(input);
+            return `sc://validation/${String(input.name ?? "unknown")}`;
+          },
+        },
+        logger: { warn() {} },
+      });
+
+      recorder.registerArtifactForTesting({
+        artifactType: "report",
+        name: "context.json",
+        phaseId: "phase-00-preflight",
+        data: { kind: "context" },
+      });
+
+      const registered = registeredArtifacts.at(-1);
+      expect(registered).to.include({ artifactType: "report", name: "context.json" });
+      // The registry mirror must avoid materialising a `metadata: undefined`
+      // placeholder so the stricter optional property semantics stay satisfied
+      // when the optional payload is omitted.
+      expect(Object.prototype.hasOwnProperty.call(registered ?? {}, "metadata")).to.equal(false);
+    });
+
     it("appends jsonl entries while tracking counters", async () => {
       const context = await runContextModule.createRunContext({
         runId: "validation_2099-01-02",

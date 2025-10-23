@@ -39,6 +39,21 @@ configuration éventuelle de `~/.codex/config.toml`.
   `tsx`, ainsi que les fichiers `tsconfig.json` et `package-lock.json`. Pratique
   pour confirmer qu'un conteneur CI respecte les prérequis Node ≥ 20.
 
+## `exactOptionalPropertyTypes`
+
+Le dépôt active `"exactOptionalPropertyTypes": true` pour toutes les sources et
+les tests. Avant d'ajouter un nouveau module ou d'étendre un flux existant,
+consultez le guide [`docs/exact-optional-property-types.md`](docs/exact-optional-property-types.md)
+qui recense les helpers de sanitisation (`omitUndefinedEntries`,
+`omitUndefinedDeep`, `cloneDefinedEnv`, etc.) et les suites de tests associées.
+
+Les contributions doivent :
+
+- omettre les clés optionnelles plutôt que de leur affecter `undefined` ;
+- exposer des helpers testables lorsque la sanitisation est complexe ;
+- valider `npm run build`, `npm run typecheck -- --pretty false --noEmit` et
+  `npm run test` avant tout commit pour préserver le pipeline strict.
+
 ## Structure du dépôt
 
 | Chemin | Rôle principal |

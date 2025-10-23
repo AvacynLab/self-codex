@@ -187,6 +187,16 @@ function extractEvents(body: unknown): unknown[] {
 }
 
 /**
+ * Removes `undefined` placeholders that occasionally surface in the events
+ * array returned by MCP tools. Persisting those placeholders would violate the
+ * future `exactOptionalPropertyTypes` run when the JSONL artefacts are parsed
+ * again, hence the defensive filtering.
+ */
+function sanitiseTransactionEvents(events: readonly unknown[]): unknown[] {
+  return events.filter((event): event is unknown => event !== undefined && event !== null);
+}
+
+/**
  * Persists the JSON-RPC request/response and a structured log entry.
  */
 async function appendTransactionCallArtefacts(
@@ -325,7 +335,8 @@ export async function runTransactionsPhase(
 
     await appendTransactionCallArtefacts(runRoot, executedCall, check);
 
-    const events = spec.captureEvents === false ? [] : extractEvents(check.response.body);
+    const events =
+      spec.captureEvents === false ? [] : sanitiseTransactionEvents(extractEvents(check.response.body));
     if (events.length) {
       await appendTransactionEvents(runRoot, executedCall, events);
     }

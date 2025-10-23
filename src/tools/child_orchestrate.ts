@@ -163,7 +163,13 @@ function serialiseBudgetSnapshot(snapshot: BudgetSnapshot): SerialisedBudgetSnap
     createdAt: snapshot.createdAt,
     updatedAt: snapshot.updatedAt,
     lastUsage: snapshot.lastUsage
-      ? { charge: serialiseBudgetUsage(snapshot.lastUsage.charge), metadata: snapshot.lastUsage.metadata }
+      ? {
+          charge: serialiseBudgetUsage(snapshot.lastUsage.charge),
+          // Preserve the metadata object only when the tracker actually recorded
+          // contextual hints so the serialised snapshot remains free of
+          // `metadata: undefined` placeholders under strict optional semantics.
+          ...(snapshot.lastUsage.metadata ? { metadata: snapshot.lastUsage.metadata } : {}),
+        }
       : null,
   };
 }
@@ -672,9 +678,22 @@ export function createChildOrchestrateHandler(
             shutdown = normaliseShutdown(killed);
           } else {
             const resolvedSignal = parsed.shutdown?.signal as Signal | undefined;
+            // Build the supervisor cancellation envelope by materialising only
+            // the concrete signal/timeout values. This prevents `{ timeoutMs:
+            // undefined }` placeholders from leaking into the runtime API once
+            // `exactOptionalPropertyTypes` is fully enforced.
+            const cancelOptions: { signal?: Signal; timeoutMs?: number | null } = {};
+            if (resolvedSignal !== undefined) {
+              cancelOptions.signal = resolvedSignal;
+            }
+            if (typeof timeoutMs === "number") {
+              cancelOptions.timeoutMs = timeoutMs;
+            } else if (timeoutMs === null) {
+              cancelOptions.timeoutMs = null;
+            }
             const cancelled = await context.supervisor.cancel(
               childId,
-              buildSupervisorCancelOptions({ signal: resolvedSignal, timeoutMs }),
+              buildSupervisorCancelOptions(cancelOptions),
             );
             shutdown = normaliseShutdown(cancelled);
           }

@@ -232,6 +232,76 @@ describe("performance validation", () => {
     expect(defaultPlan[0]?.repeat).to.equal(2);
   });
 
+  it("omits undefined events from the captured artefacts", async () => {
+    const calls: PerformanceCallSpec[] = [
+      {
+        scenario: "custom",
+        name: "with_events",
+        method: "custom/echo",
+        params: () => ({ message: "hello" }),
+        collectLatency: true,
+        repeat: 50,
+      },
+      {
+        scenario: "custom",
+        name: "with_concurrency",
+        method: "custom/echo",
+        params: { message: "hello burst" },
+        concurrencyGroup: "custom_group",
+        batch: 5,
+      },
+    ];
+
+    const durations = Array.from({ length: 60 }, (_, index) => 15 + index);
+    let callIndex = 0;
+
+    const httpCheck = async (
+      name: string,
+      request: HttpCheckRequestSnapshot,
+    ): Promise<HttpCheckSnapshot> => {
+      const durationMs = durations[callIndex] ?? 15;
+      callIndex += 1;
+      return {
+        name,
+        startedAt: new Date(2024, 0, 1, 4, 0, callIndex).toISOString(),
+        durationMs,
+        request,
+        response: {
+          status: 200,
+          statusText: "OK",
+          headers: { "content-type": "application/json" },
+          body: {
+            jsonrpc: "2.0",
+            result:
+              name.includes("with_events")
+                ? { ok: true, events: [undefined, { type: "custom", detail: "defined" }] }
+                : { ok: true },
+          },
+        },
+      };
+    };
+
+    await runPerformancePhase(
+      runRoot,
+      baseEnvironment,
+      { calls },
+      { httpCheck },
+    );
+
+    const eventsContent = await readFile(join(runRoot, PERFORMANCE_JSONL_FILES.events), "utf8");
+    const entries = eventsContent
+      .trim()
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => JSON.parse(line) as Record<string, unknown>);
+
+    expect(entries).to.have.lengthOf(50);
+    for (const entry of entries) {
+      expect(Object.prototype.hasOwnProperty.call(entry, "event")).to.equal(true);
+      expect(entry.event).to.not.equal(undefined);
+    }
+  });
+
   it("fails when the latency plan collects fewer than 50 samples", async () => {
     const logPath = join(workingDir, "mcp_http_small.log");
     await writeFile(logPath, "seed\n", "utf8");

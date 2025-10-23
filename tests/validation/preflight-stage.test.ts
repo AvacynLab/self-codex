@@ -10,12 +10,18 @@ import { join } from "node:path";
  * the in-process server, (2) records the probing requests and responses in the
  * expected directories, and (3) restores environment mutations once finished.
  */
+type PreflightStageModule = typeof import("../../scripts/lib/validation/stages/preflight.mjs") & {
+  __TESTING__?: {
+    buildMissingModuleErrorOptions: (error: unknown) => Record<string, unknown> | undefined;
+  };
+};
+
 describe("validation preflight stage", function () {
   this.timeout(20000);
 
   let runContextModule: typeof import("../../scripts/lib/validation/run-context.mjs");
   let recorderModule: typeof import("../../scripts/lib/validation/artifact-recorder.mjs");
-  let stageModule: typeof import("../../scripts/lib/validation/stages/preflight.mjs");
+  let stageModule: PreflightStageModule;
   let workspaceRoot: string;
   const originalEnv: Partial<Record<string, string>> = {};
 
@@ -87,6 +93,11 @@ describe("validation preflight stage", function () {
       logger: { warn() {} },
     });
 
+    // Capture the token state enforced by the test harness so we can assert
+    // the stage restores the environment to the same baseline regardless of
+    // the outer process configuration.
+    const tokenBeforeStage = process.env.MCP_HTTP_TOKEN;
+
     const outcome = await stageModule.runPreflightStage({
       context,
       recorder,
@@ -142,10 +153,22 @@ describe("validation preflight stage", function () {
       expect(contextDocument.token.source).to.equal("generated");
     }
 
-    expect(process.env.MCP_HTTP_TOKEN).to.equal(originalEnv.MCP_HTTP_TOKEN);
+    expect(process.env.MCP_HTTP_TOKEN).to.equal(tokenBeforeStage);
 
     const phaseEvents = join(context.directories.events, "phase-00-preflight.jsonl");
     const recordedEvents = (await readFile(phaseEvents, "utf8")).trim().split("\n");
     expect(recordedEvents.length).to.equal(2);
+  });
+
+  it("omits undefined causes when constructing missing-module error options", () => {
+    const testing = stageModule.__TESTING__;
+    expect(testing, "expected testing hook to be exposed").to.exist;
+
+    const withoutCause = testing?.buildMissingModuleErrorOptions(undefined);
+    expect(withoutCause, "should omit options when no cause is provided").to.equal(undefined);
+
+    const sentinelError = new Error("fixture: missing module");
+    const withCause = testing?.buildMissingModuleErrorOptions(sentinelError);
+    expect(withCause).to.deep.equal({ cause: sentinelError });
   });
 });

@@ -224,6 +224,43 @@ describe("children validation runner", () => {
     expect(Object.prototype.hasOwnProperty.call(summary.artefacts, "conversation")).to.equal(false);
   });
 
+  it("omits optional params when factories return undefined", async () => {
+    const responses = [
+      { jsonrpc: "2.0", result: { events: [{ type: "child.ping", seq: 1 }] } },
+    ];
+
+    globalThis.fetch = (async (_url: RequestInfo | URL, init?: RequestInit) => {
+      return new Response(JSON.stringify(responses.shift() ?? { jsonrpc: "2.0", result: {} }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as typeof fetch;
+
+    const result = await runChildrenPhase(runRoot, environment, {
+      calls: [
+        {
+          scenario: "noop",
+          name: "child_ping",
+          method: "child_ping",
+          params: () => undefined,
+        },
+      ],
+      requireLimitEvent: false,
+    });
+
+    const call = result.outcomes[0]?.call ?? {};
+    expect(Object.prototype.hasOwnProperty.call(call, "params")).to.equal(false);
+
+    const inputsLog = await readFile(join(runRoot, CHILDREN_JSONL_FILES.inputs), "utf8");
+    const entries = inputsLog
+      .trim()
+      .split("\n")
+      .filter((line) => line.length > 0)
+      .map((line) => JSON.parse(line) as { request: { body: Record<string, unknown> } });
+    expect(entries).to.have.lengthOf(1);
+    expect(Object.prototype.hasOwnProperty.call(entries[0].request.body, "params")).to.equal(false);
+  });
+
   it("fails fast when no limit-related events are captured", async () => {
     const responses = [
       {

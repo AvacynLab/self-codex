@@ -420,7 +420,10 @@ async function appendAutosaveQuiescenceEvent(
     pollIntervalMs: result.pollIntervalMs,
     verified: result.verified,
     fileMissing: result.fileMissing,
-    lastError: result.lastError ?? null,
+    // Only surface `lastError` when the quiescence check captured a message to
+    // keep the events JSONL artefacts free from `{ "lastError": undefined }`
+    // placeholders ahead of `exactOptionalPropertyTypes`.
+    ...omitUndefinedEntries({ lastError: result.lastError }),
   });
 
   await writeFile(join(runRoot, GRAPH_FORGE_JSONL_FILES.events), payload, { encoding: "utf8", flag: "a" });

@@ -737,7 +737,13 @@ export async function runValidationCampaign(options = {}) {
   };
 }
 
-function parseArguments(argv) {
+/**
+ * Parses CLI arguments emitted by `scripts/validate-run.mjs` while omitting
+ * placeholder `undefined` values.  Returning a sparse object keeps future
+ * `exactOptionalPropertyTypes` runs happy because consumers only observe
+ * concrete overrides for the recognised flags.
+ */
+export function parseValidateRunArguments(argv) {
   const args = argv.slice(2);
   let dryRunFlag = null;
   let prepareOnlyFlag = null;
@@ -759,14 +765,14 @@ function parseArguments(argv) {
   }
 
   return {
-    dryRun: dryRunFlag ?? undefined,
-    prepareOnly: prepareOnlyFlag ?? undefined,
-    sessionName: sessionName ?? undefined,
+    ...(dryRunFlag === true ? { dryRun: true } : {}),
+    ...(prepareOnlyFlag === true ? { prepareOnly: true } : {}),
+    ...(sessionName !== null ? { sessionName } : {}),
   };
 }
 
 async function main() {
-  const { dryRun, prepareOnly, sessionName } = parseArguments(process.argv);
+  const { dryRun, prepareOnly, sessionName } = parseValidateRunArguments(process.argv);
   try {
     await runValidationCampaign({
       dryRun,
