@@ -6,9 +6,21 @@ import { pathToFileURL } from "node:url";
 import { createCliStructuredLogger } from "../src/validation/cliLogger.js";
 import { executePlanCli, parsePlanCliOptions } from "../src/validation/plansCli.js";
 import { PLAN_JSONL_FILES } from "../src/validation/plans.js";
+import { cloneDefinedEnv } from "./lib/env-helpers.mjs";
 
 /** Identifier used to namespace structured log messages for this CLI. */
 const STAGE_ID = "plan_validation";
+
+/**
+ * Normalises the environment bag used by the planning stage before forwarding
+ * it to the validation workflow. Keeping the helper exported lets the test
+ * suite assert the sanitisation behaviour directly.
+ */
+export function preparePlanPhaseEnvironment(
+  rawEnv: NodeJS.ProcessEnv = process.env,
+): NodeJS.ProcessEnv {
+  return cloneDefinedEnv(rawEnv) as NodeJS.ProcessEnv;
+}
 
 /**
  * Runs the Stage 6 planning validation workflow with structured logging. The
@@ -21,10 +33,11 @@ export async function runPlanPhase(
   stageLogger = createCliStructuredLogger(STAGE_ID),
 ): Promise<void> {
   const { logger } = stageLogger;
+  const sanitisedEnv = preparePlanPhaseEnvironment(env);
 
   try {
     const options = parsePlanCliOptions(argv);
-    const { runRoot, result } = await executePlanCli(options, env, stageLogger.console);
+    const { runRoot, result } = await executePlanCli(options, sanitisedEnv, stageLogger.console);
 
     logger.info("plan_validation.summary", {
       runRoot,

@@ -1,6 +1,7 @@
 import { strict as assert } from "node:assert";
 
 import { eventBus, eventStore, __eventRuntimeInternals } from "../../src/orchestrator/runtime.js";
+import { EventStore } from "../../src/eventStore.js";
 
 /**
  * Regression tests guarding the behaviour of the `pushEvent` helper when
@@ -81,5 +82,35 @@ describe("orchestrator pushEvent optional identifiers", () => {
     assert.strictEqual(busLatest!.stage, "info");
     assert.strictEqual(busLatest!.elapsedMs, null);
     assert.strictEqual(busLatest!.data, payload);
+  });
+
+  it("coerces null identifiers to undefined when emitting events directly", () => {
+    const localStore = new EventStore({ maxHistory: 5 });
+    const direct = localStore.emit({
+      kind: "INFO",
+      // The EventStore API historically accepted `null` placeholders when callers
+      // bypassed the higher-level `pushEvent` helper. The sanitisation guarantees
+      // the resulting snapshot omits those optional identifiers entirely.
+      jobId: null as unknown as string,
+      childId: null as unknown as string,
+    });
+
+    assert.strictEqual(direct.jobId, undefined, "job identifiers should not surface as null");
+    assert.strictEqual(direct.childId, undefined, "child identifiers should not surface as null");
+    assert.strictEqual(
+      Object.prototype.hasOwnProperty.call(direct, "jobId"),
+      false,
+      "jobId key should be omitted from the snapshot",
+    );
+    assert.strictEqual(
+      Object.prototype.hasOwnProperty.call(direct, "childId"),
+      false,
+      "childId key should be omitted from the snapshot",
+    );
+
+    const stored = localStore.getSnapshot().at(-1);
+    assert.ok(stored, "event store should retain the emitted event");
+    assert.strictEqual(Object.prototype.hasOwnProperty.call(stored!, "jobId"), false);
+    assert.strictEqual(Object.prototype.hasOwnProperty.call(stored!, "childId"), false);
   });
 });

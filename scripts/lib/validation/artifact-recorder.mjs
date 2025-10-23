@@ -339,6 +339,15 @@ export class ArtifactRecorder {
       return;
     }
     try {
+      // NOTE: The registry entry mirrors the artefact persisted on disk.  When
+      // optional metadata is omitted by the caller we must avoid forwarding an
+      // explicit `undefined` placeholder because the upcoming
+      // `exactOptionalPropertyTypes` flag rejects such assignments.  Spreading a
+      // conditional object keeps the payload compact while still cloning the
+      // metadata object when it is concretely provided.
+      const metadataPayload =
+        metadata !== undefined && metadata !== null ? { ...metadata } : undefined;
+
       this.resourceRegistry.registerValidationArtifact({
         sessionId: this.context.runId,
         runId: this.context.runId,
@@ -348,7 +357,7 @@ export class ArtifactRecorder {
         recordedAt: recordedAt ? recordedAt.getTime() : this.clock().getTime(),
         mime: VALIDATION_MIME,
         data: this.#clone(data),
-        metadata: metadata ? { ...metadata } : undefined,
+        ...(metadataPayload !== undefined ? { metadata: metadataPayload } : {}),
       });
     } catch (error) {
       this.logger?.warn?.("validation_artifact_registration_failed", {
@@ -357,6 +366,15 @@ export class ArtifactRecorder {
         message: error instanceof Error ? error.message : String(error),
       });
     }
+  }
+
+  /**
+   * @internal Testing hook allowing the suite to exercise the registry payload
+   * normalisation without touching the file-system. The helper simply proxies
+   * the private {@link ArtifactRecorder#registerValidationArtifact} logic.
+   */
+  registerArtifactForTesting(options) {
+    this.#registerValidationArtifact(options);
   }
 
   #clone(value) {

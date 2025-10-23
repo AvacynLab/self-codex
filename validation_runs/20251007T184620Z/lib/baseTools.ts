@@ -4,9 +4,15 @@ import path from 'node:path';
 import type { RunContext } from './runContext.js';
 import { ArtifactRecorder } from './artifactRecorder.js';
 import { McpSession, McpToolCallError, type ToolCallRecord } from './mcpSession.js';
+import {
+  buildTransportFailureSummary,
+  parseToolResponseText,
+  summariseToolResponse,
+} from './responseSummary.js';
 
 import type { GraphDescriptorPayload, GraphGenerateResult } from '../../../src/tools/graphTools.js';
 import { SUBGRAPH_REGISTRY_KEY } from '../../../src/graph/subgraphRegistry.js';
+import { omitUndefinedEntries } from '../../../src/utils/object.js';
 
 /**
  * Summary describing the extracted payloads from an MCP tool response. Storing
@@ -94,37 +100,6 @@ export interface BaseToolsStageResult {
  * JSON. The helper gracefully falls back to the raw string when parsing fails
  * so that the audit report can still surface the original message.
  */
-function parseTextContent(response: ToolCallRecord['response']): { parsed?: unknown; errorCode?: string | null; hint?: string | null } {
-  const contentEntries = Array.isArray(response.content) ? response.content : [];
-  const firstText = contentEntries.find(
-    (entry): entry is { type?: string; text?: string } => typeof entry?.text === 'string' && (entry.type === undefined || entry.type === 'text'),
-  );
-  if (!firstText?.text) {
-    return { parsed: undefined, errorCode: null, hint: null };
-  }
-
-  try {
-    const parsed = JSON.parse(firstText.text);
-    const errorCode = typeof (parsed as { error?: unknown }).error === 'string' ? (parsed as { error: string }).error : null;
-    const hint = typeof (parsed as { hint?: unknown }).hint === 'string' ? (parsed as { hint: string }).hint : null;
-    return { parsed, errorCode, hint };
-  } catch {
-    return { parsed: firstText.text, errorCode: null, hint: null };
-  }
-}
-
-/** Builds a structured summary of the MCP response for the audit report. */
-function summariseResponse(response: ToolCallRecord['response']): ToolResponseSummary {
-  const { parsed, errorCode, hint } = parseTextContent(response);
-  return {
-    isError: response.isError ?? false,
-    structured: response.structuredContent ?? undefined,
-    parsedText: parsed,
-    errorCode: errorCode ?? null,
-    hint: hint ?? null,
-  };
-}
-
 /**
  * Calls an MCP tool while capturing the {@link BaseToolCallSummary}. Transport
  * failures are converted into synthetic summaries so the report still contains
@@ -141,31 +116,22 @@ async function callAndRecord(
     const call = await session.callTool(toolName, payload);
     sink.push({
       toolName,
-      scenario: options.scenario,
+      ...(options.scenario ? { scenario: options.scenario } : {}),
       traceId: call.traceId,
       durationMs: call.durationMs,
       artefacts: call.artefacts,
-      response: summariseResponse(call.response),
+      response: summariseToolResponse(call.response),
     });
     return call;
   } catch (error) {
     if (error instanceof McpToolCallError) {
       sink.push({
         toolName,
-        scenario: options.scenario,
+        ...(options.scenario ? { scenario: options.scenario } : {}),
         traceId: error.traceId,
         durationMs: error.durationMs,
         artefacts: error.artefacts,
-        response: {
-          isError: true,
-          structured: undefined,
-          parsedText:
-            error.cause instanceof Error
-              ? { message: error.cause.message, stack: error.cause.stack }
-              : { message: String(error.cause) },
-          errorCode: 'transport_failure',
-          hint: null,
-        },
+        response: buildTransportFailureSummary(error),
       });
       return null;
     }
@@ -232,7 +198,7 @@ export async function runBaseToolsStage(options: BaseToolsStageOptions): Promise
       const structured = generateCall.response.structuredContent as GraphGenerateResult;
       generatedGraph = structured.graph;
     } else if (generateCall?.response.content) {
-      const parsed = parseTextContent(generateCall.response).parsed as Partial<GraphGenerateResult> | undefined;
+      const parsed = parseToolResponseText(generateCall.response).parsed as Partial<GraphGenerateResult> | undefined;
       if (parsed && typeof parsed === 'object' && parsed && 'graph' in parsed) {
         generatedGraph = (parsed as { graph?: GraphDescriptorPayload }).graph;
       }
@@ -317,7 +283,7 @@ export async function runBaseToolsStage(options: BaseToolsStageOptions): Promise
         generatedGraph = structured.graph;
       }
     } else if (mutateCall?.response.content) {
-      const parsed = parseTextContent(mutateCall.response).parsed as { graph?: GraphDescriptorPayload } | undefined;
+      const parsed = parseToolResponseText(mutateCall.response).parsed as { graph?: GraphDescriptorPayload } | undefined;
       if (parsed?.graph) {
         generatedGraph = parsed.graph;
       }
@@ -358,7 +324,7 @@ export async function runBaseToolsStage(options: BaseToolsStageOptions): Promise
     let firstResourceUri: string | null = null;
     if (resourcesCall) {
       const structured = resourcesCall.response.structuredContent as { items?: Array<{ uri?: unknown }> } | undefined;
-      const parsed = structured ?? (parseTextContent(resourcesCall.response).parsed as { items?: Array<{ uri?: unknown }> } | undefined);
+      const parsed = structured ?? (parseToolResponseText(resourcesCall.response).parsed as { items?: Array<{ uri?: unknown }> } | undefined);
       const items = parsed?.items ?? [];
       const first = items.find((entry) => typeof entry?.uri === 'string');
       if (first && typeof first.uri === 'string') {
@@ -442,7 +408,7 @@ export async function runBaseToolsStage(options: BaseToolsStageOptions): Promise
         return null;
       }
       if (!bbSetCall.response.structuredContent) {
-        const parsed = parseTextContent(bbSetCall.response).parsed as { version?: number } | undefined;
+        const parsed = parseToolResponseText(bbSetCall.response).parsed as { version?: number } | undefined;
         return typeof parsed?.version === 'number' ? parsed.version : null;
       }
       const structured = bbSetCall.response.structuredContent as { version?: number };
@@ -1033,7 +999,7 @@ export async function runBaseToolsStage(options: BaseToolsStageOptions): Promise
         generatedGraph = structured.graph;
       }
     } else if (batchMutateCall?.response.content) {
-      const parsed = parseTextContent(batchMutateCall.response).parsed as { graph?: GraphDescriptorPayload } | undefined;
+      const parsed = parseToolResponseText(batchMutateCall.response).parsed as { graph?: GraphDescriptorPayload } | undefined;
       if (parsed?.graph) {
         generatedGraph = parsed.graph;
       }
@@ -1152,7 +1118,7 @@ export async function runBaseToolsStage(options: BaseToolsStageOptions): Promise
     );
   }
 
-  const report: BaseToolsStageReport = {
+  const report = omitUndefinedEntries({
     runId: options.context.runId,
     completedAt: new Date().toISOString(),
     calls,
@@ -1160,8 +1126,11 @@ export async function runBaseToolsStage(options: BaseToolsStageOptions): Promise
       totalCalls: calls.length,
       errorCount: calls.filter((entry) => entry.response.isError).length,
     },
-    generatedGraphId: generatedGraph?.graph_id,
-  };
+    generatedGraphId:
+      typeof generatedGraph?.graph_id === 'string' && generatedGraph.graph_id.trim().length > 0
+        ? generatedGraph.graph_id
+        : undefined,
+  }) as BaseToolsStageReport;
 
   const reportPath = path.join(options.context.directories.report, 'step02-base-tools.json');
   await writeFile(reportPath, `${JSON.stringify(report, null, 2)}\n`, 'utf8');
@@ -1172,5 +1141,5 @@ export async function runBaseToolsStage(options: BaseToolsStageOptions): Promise
     await writeFile(generatedGraphPath, `${JSON.stringify(generatedGraph, null, 2)}\n`, 'utf8');
   }
 
-  return { reportPath, generatedGraphPath, calls };
+  return omitUndefinedEntries({ reportPath, generatedGraphPath, calls }) as BaseToolsStageResult;
 }

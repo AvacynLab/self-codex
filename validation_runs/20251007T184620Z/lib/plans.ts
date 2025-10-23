@@ -6,6 +6,11 @@ import type { RunContext } from './runContext.js';
 import { ArtifactRecorder } from './artifactRecorder.js';
 import { McpSession, McpToolCallError, type ToolCallRecord } from './mcpSession.js';
 import type { BaseToolCallSummary, ToolResponseSummary } from './baseTools.js';
+import {
+  buildTransportFailureSummary,
+  parseToolResponseText,
+  summariseToolResponse,
+} from './responseSummary.js';
 
 import type { GraphDescriptorPayload, GraphGenerateResult, GraphMutateResult } from '../../../src/tools/graphTools.js';
 import type {
@@ -202,40 +207,6 @@ export interface PlanningStageResult {
  * it as JSON. Returning the raw string keeps audit artefacts useful even when
  * the payload does not represent structured data.
  */
-function parseTextContent(
-  response: ToolCallRecord['response'],
-): { parsed?: unknown; errorCode?: string | null; hint?: string | null } {
-  const contentEntries = Array.isArray(response.content) ? response.content : [];
-  const firstText = contentEntries.find(
-    (entry): entry is { type?: string; text?: string } =>
-      typeof entry?.text === 'string' && (entry.type === undefined || entry.type === 'text'),
-  );
-  if (!firstText?.text) {
-    return { parsed: undefined, errorCode: null, hint: null };
-  }
-
-  try {
-    const parsed = JSON.parse(firstText.text);
-    const errorCode = typeof (parsed as { error?: unknown }).error === 'string' ? (parsed as { error: string }).error : null;
-    const hint = typeof (parsed as { hint?: unknown }).hint === 'string' ? (parsed as { hint: string }).hint : null;
-    return { parsed, errorCode, hint };
-  } catch {
-    return { parsed: firstText.text, errorCode: null, hint: null };
-  }
-}
-
-/** Builds a structured summary of the MCP response for the audit report. */
-function summariseResponse(response: ToolCallRecord['response']): ToolResponseSummary {
-  const { parsed, errorCode, hint } = parseTextContent(response);
-  return {
-    isError: response.isError ?? false,
-    structured: response.structuredContent ?? undefined,
-    parsedText: parsed,
-    errorCode: errorCode ?? null,
-    hint: hint ?? null,
-  };
-}
-
 /**
  * Counts the number of task leaves contained in a compiled Behaviour Tree.
  * Traversing the structure keeps the stage report informative without
@@ -324,31 +295,22 @@ async function callAndRecord(
     const call = await session.callTool(toolName, payload);
     sink.push({
       toolName,
-      scenario: options.scenario,
+      ...(options.scenario ? { scenario: options.scenario } : {}),
       traceId: call.traceId,
       durationMs: call.durationMs,
       artefacts: call.artefacts,
-      response: summariseResponse(call.response),
+      response: summariseToolResponse(call.response),
     });
     return call;
   } catch (error) {
     if (error instanceof McpToolCallError) {
       sink.push({
         toolName,
-        scenario: options.scenario,
+        ...(options.scenario ? { scenario: options.scenario } : {}),
         traceId: error.traceId,
         durationMs: error.durationMs,
         artefacts: error.artefacts,
-        response: {
-          isError: true,
-          structured: undefined,
-          parsedText:
-            error.cause instanceof Error
-              ? { message: error.cause.message, stack: error.cause.stack }
-              : { message: String(error.cause) },
-          errorCode: 'transport_failure',
-          hint: null,
-        },
+        response: buildTransportFailureSummary(error),
       });
       return null;
     }
@@ -531,7 +493,7 @@ export async function runPlanningStage(options: PlanningStageOptions): Promise<P
       if (structured?.graph) {
         generatedGraph = structured.graph;
       } else {
-        const parsed = parseTextContent(graphGenerateCall.response).parsed as Partial<GraphGenerateResult> | undefined;
+        const parsed = parseToolResponseText(graphGenerateCall.response).parsed as Partial<GraphGenerateResult> | undefined;
         if (parsed && typeof parsed === 'object' && parsed && 'graph' in parsed) {
           generatedGraph = (parsed as { graph?: GraphDescriptorPayload }).graph ?? null;
         }
@@ -597,7 +559,7 @@ export async function runPlanningStage(options: PlanningStageOptions): Promise<P
 
     if (graphMutateCall && !graphMutateCall.response.isError) {
       const structured = graphMutateCall.response.structuredContent as GraphMutateResult | undefined;
-      const parsed = structured ?? (parseTextContent(graphMutateCall.response).parsed as GraphMutateResult | undefined);
+      const parsed = structured ?? (parseToolResponseText(graphMutateCall.response).parsed as GraphMutateResult | undefined);
       if (parsed?.graph) {
         mutatedGraph = parsed.graph;
         mutationCount = Array.isArray(parsed.applied) ? parsed.applied.length : mutationCount;
@@ -755,7 +717,7 @@ export async function runPlanningStage(options: PlanningStageOptions): Promise<P
       );
       if (compileCall && !compileCall.response.isError) {
         const structured = compileCall.response.structuredContent as PlanCompileBTResult | undefined;
-        return structured ?? (parseTextContent(compileCall.response).parsed as PlanCompileBTResult | undefined) ?? null;
+        return structured ?? (parseToolResponseText(compileCall.response).parsed as PlanCompileBTResult | undefined) ?? null;
       }
       return null;
     })();
@@ -788,7 +750,7 @@ export async function runPlanningStage(options: PlanningStageOptions): Promise<P
       );
       if (fanoutCall && !fanoutCall.response.isError) {
         const structured = fanoutCall.response.structuredContent as PlanFanoutResult | undefined;
-        const parsed = structured ?? (parseTextContent(fanoutCall.response).parsed as PlanFanoutResult | undefined);
+        const parsed = structured ?? (parseToolResponseText(fanoutCall.response).parsed as PlanFanoutResult | undefined);
         if (parsed) {
           childIdsToCancel.push(...parsed.child_ids);
           return parsed;
@@ -825,7 +787,7 @@ export async function runPlanningStage(options: PlanningStageOptions): Promise<P
           );
           if (sendCall && !sendCall.response.isError) {
             const structured = sendCall.response.structuredContent as ChildSendResult | undefined;
-            const parsed = structured ?? (parseTextContent(sendCall.response).parsed as ChildSendResult | undefined);
+            const parsed = structured ?? (parseToolResponseText(sendCall.response).parsed as ChildSendResult | undefined);
             if (parsed) {
               const awaited = parsed.awaited_message as { parsed?: { type?: unknown } | null } | null | undefined;
               const awaitedRaw =
@@ -882,7 +844,7 @@ export async function runPlanningStage(options: PlanningStageOptions): Promise<P
       );
       if (joinAllCall && !joinAllCall.response.isError) {
         const structured = joinAllCall.response.structuredContent as PlanJoinResult | undefined;
-        const parsed = structured ?? (parseTextContent(joinAllCall.response).parsed as PlanJoinResult | undefined);
+        const parsed = structured ?? (parseToolResponseText(joinAllCall.response).parsed as PlanJoinResult | undefined);
         if (parsed) {
           joinResults.push(parsed);
         }
@@ -903,7 +865,7 @@ export async function runPlanningStage(options: PlanningStageOptions): Promise<P
       );
       if (joinQuorumCall && !joinQuorumCall.response.isError) {
         const structured = joinQuorumCall.response.structuredContent as PlanJoinResult | undefined;
-        const parsed = structured ?? (parseTextContent(joinQuorumCall.response).parsed as PlanJoinResult | undefined);
+        const parsed = structured ?? (parseToolResponseText(joinQuorumCall.response).parsed as PlanJoinResult | undefined);
         if (parsed) {
           joinResults.push(parsed);
         }
@@ -921,7 +883,7 @@ export async function runPlanningStage(options: PlanningStageOptions): Promise<P
       );
       if (reduceConcatCall && !reduceConcatCall.response.isError) {
         const structured = reduceConcatCall.response.structuredContent as PlanReduceResult | undefined;
-        const parsed = structured ?? (parseTextContent(reduceConcatCall.response).parsed as PlanReduceResult | undefined);
+        const parsed = structured ?? (parseToolResponseText(reduceConcatCall.response).parsed as PlanReduceResult | undefined);
         if (parsed) {
           reduceResults.push(parsed);
         }
@@ -939,7 +901,7 @@ export async function runPlanningStage(options: PlanningStageOptions): Promise<P
       );
       if (reduceMergeCall && !reduceMergeCall.response.isError) {
         const structured = reduceMergeCall.response.structuredContent as PlanReduceResult | undefined;
-        const parsed = structured ?? (parseTextContent(reduceMergeCall.response).parsed as PlanReduceResult | undefined);
+        const parsed = structured ?? (parseToolResponseText(reduceMergeCall.response).parsed as PlanReduceResult | undefined);
         if (parsed) {
           reduceResults.push(parsed);
         }
@@ -962,7 +924,7 @@ export async function runPlanningStage(options: PlanningStageOptions): Promise<P
       );
       if (reduceVoteCall && !reduceVoteCall.response.isError) {
         const structured = reduceVoteCall.response.structuredContent as PlanReduceResult | undefined;
-        const parsed = structured ?? (parseTextContent(reduceVoteCall.response).parsed as PlanReduceResult | undefined);
+        const parsed = structured ?? (parseToolResponseText(reduceVoteCall.response).parsed as PlanReduceResult | undefined);
         if (parsed) {
           reduceResults.push(parsed);
         }

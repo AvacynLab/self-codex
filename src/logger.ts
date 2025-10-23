@@ -177,8 +177,14 @@ export interface CognitiveLogEvent {
  * Structured logger that emits JSON lines on stdout and optionally mirrors them
  * to a file. File writes are queued sequentially to guarantee ordering.
  */
-export class StructuredLogger {
-  private readonly logFile?: string;
+  export class StructuredLogger {
+    /**
+     * Destination file used for log mirroring. The field is normalised to an
+     * explicit union so a `null` override becomes `undefined` and therefore does
+     * not materialise placeholder keys when strict optional property typing is
+     * enforced.
+     */
+    private readonly logFile: string | undefined;
   private readonly maxFileSizeBytes?: number;
   private readonly maxFileCount: number;
   private readonly redactSecrets: Array<string | RegExp>;
@@ -190,8 +196,12 @@ export class StructuredLogger {
    * `./tmp/orchestrator.log` work even when the `tmp/` folder is missing.
    */
   private logDirectoryReady = false;
-  /** Optional listener invoked with the structured entry. */
-  private readonly entryListener?: (entry: LogEntry) => void;
+    /**
+     * Optional listener invoked with the structured entry. The union maintains
+     * compatibility with strict optional typing while keeping the runtime check
+     * simple when broadcasting log entries to observers.
+     */
+    private readonly entryListener: ((entry: LogEntry) => void) | undefined;
   /** Whether automatic header redaction is enabled via environment variable. */
   private readonly redactionEnabled: boolean;
 

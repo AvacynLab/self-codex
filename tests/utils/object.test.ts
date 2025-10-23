@@ -1,6 +1,6 @@
 import { strict as assert } from "node:assert";
 
-import { coerceNullToUndefined, omitUndefinedEntries } from "../../src/utils/object.js";
+import { coerceNullToUndefined, omitUndefinedDeep, omitUndefinedEntries } from "../../src/utils/object.js";
 
 describe("utils/object", () => {
   describe("omitUndefinedEntries", () => {
@@ -30,6 +30,36 @@ describe("utils/object", () => {
 
       assert.deepEqual(compacted, { nested });
       assert.strictEqual(compacted.nested, nested);
+    });
+  });
+
+  describe("omitUndefinedDeep", () => {
+    it("recursively removes undefined values from nested objects", () => {
+      const payload = {
+        summary: {
+          metrics: {
+            total: 5,
+            pending: undefined,
+          },
+          incidents: [{ status: 500, error: undefined }],
+        },
+        empty: undefined,
+      };
+
+      const sanitised = omitUndefinedDeep(payload);
+
+      assert.deepEqual(sanitised, {
+        summary: {
+          metrics: { total: 5 },
+          incidents: [{ status: 500 }],
+        },
+      });
+    });
+
+    it("drops undefined entries from arrays while keeping ordering for defined values", () => {
+      const sanitised = omitUndefinedDeep(["alpha", undefined, "beta", undefined, "gamma"]);
+
+      assert.deepEqual(sanitised, ["alpha", "beta", "gamma"]);
     });
   });
 

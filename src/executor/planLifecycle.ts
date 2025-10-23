@@ -87,8 +87,19 @@ export interface PlanLifecycleRegistryOptions {
  */
 export class PlanLifecycleError extends Error {
   public readonly code: string;
-  public readonly hint?: string;
-  public readonly details?: unknown;
+  /**
+   * Optional hint surfaced to operators when diagnosing lifecycle failures.
+   * The field is expressed as an explicit `string | undefined` union so
+   * `exactOptionalPropertyTypes` recognises that the property may be omitted
+   * without forcing call sites to materialise placeholder values.
+   */
+  public readonly hint: string | undefined;
+  /**
+   * Optional structured payload attached to lifecycle errors. The union keeps
+   * the metadata compatible with strict optional typing while still omitting
+   * the key from JSON serialisations when the value is undefined.
+   */
+  public readonly details: unknown | undefined;
 
   constructor(message: string, code: string, hint?: string, details?: unknown) {
     super(message);

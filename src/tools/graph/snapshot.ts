@@ -82,10 +82,6 @@ export const GraphHyperExportInputSchema = z
 
 export const GraphHyperExportInputShape = GraphHyperExportInputSchema.shape;
 
-export type GraphNodePayload = z.output<typeof GraphNodeSchema> & Record<string, unknown>;
-
-export type GraphEdgePayload = z.output<typeof GraphEdgeSchema> & Record<string, unknown>;
-
 export type GraphDescriptorPayload = z.output<typeof GraphDescriptorSchema> & Record<string, unknown>;
 
 export interface GraphHyperExportResult extends Record<string, unknown> {
@@ -317,82 +313,9 @@ export function normaliseDescriptor(graph: z.infer<typeof GraphDescriptorSchema>
   return descriptor;
 }
 
-export function graphPayloadEquals(
-  a: GraphDescriptorPayload,
-  b: GraphDescriptorPayload,
-): boolean {
-  if ((a.name ?? "") !== (b.name ?? "")) {
-    return false;
-  }
-
-  if (
-    !shallowRecordEquals(
-      normaliseAttributesForEquality(a.metadata),
-      normaliseAttributesForEquality(b.metadata),
-    )
-  ) {
-    return false;
-  }
-
-  if (a.nodes.length !== b.nodes.length) {
-    return false;
-  }
-
-  const nodesById = new Map<string, (typeof b.nodes)[number]>();
-  for (const node of b.nodes) {
-    nodesById.set(node.id, node);
-  }
-  for (const node of a.nodes) {
-    const peer = nodesById.get(node.id);
-    if (!peer) {
-      return false;
-    }
-    if ((node.label ?? null) !== (peer.label ?? null)) {
-      return false;
-    }
-    if (
-      !shallowRecordEquals(
-        normaliseAttributesForEquality(node.attributes),
-        normaliseAttributesForEquality(peer.attributes),
-      )
-    ) {
-      return false;
-    }
-  }
-
-  if (a.edges.length !== b.edges.length) {
-    return false;
-  }
-
-  const edgesByKey = new Map<string, (typeof b.edges)[number]>();
-  for (const edge of b.edges) {
-    edgesByKey.set(`${edge.from}->${edge.to}`, edge);
-  }
-  for (const edge of a.edges) {
-    const peer = edgesByKey.get(`${edge.from}->${edge.to}`);
-    if (!peer) {
-      return false;
-    }
-    const leftWeight = typeof edge.weight === "number" ? Number(edge.weight) : null;
-    const rightWeight = typeof peer.weight === "number" ? Number(peer.weight) : null;
-    if (leftWeight !== rightWeight) {
-      return false;
-    }
-    if ((edge.label ?? null) !== (peer.label ?? null)) {
-      return false;
-    }
-    if (
-      !shallowRecordEquals(
-        normaliseAttributesForEquality(edge.attributes),
-        normaliseAttributesForEquality(peer.attributes),
-      )
-    ) {
-      return false;
-    }
-  }
-
-  return true;
-}
+// The comparison helper now lives alongside the mutation workflow where it is
+// used. Keeping it local avoids exporting testing-only utilities that would
+// otherwise trip the dead-export scanner.
 
 export function adoptGraphDescriptor(target: NormalisedGraph, source: NormalisedGraph): void {
   target.name = source.name;
@@ -446,41 +369,6 @@ export function sortAttributes(
     sorted[key] = value;
   }
   return sorted;
-}
-
-function shallowRecordEquals(
-  left: Record<string, string | number | boolean>,
-  right: Record<string, string | number | boolean>,
-): boolean {
-  const leftKeys = Object.keys(left);
-  const rightKeys = Object.keys(right);
-  if (leftKeys.length !== rightKeys.length) {
-    return false;
-  }
-  for (const key of leftKeys) {
-    if (!(key in right)) {
-      return false;
-    }
-    if (left[key] !== right[key]) {
-      return false;
-    }
-  }
-  return true;
-}
-
-function normaliseAttributesForEquality(
-  attributes: Record<string, string | number | boolean | undefined> | undefined,
-): Record<string, string | number | boolean> {
-  if (!attributes) {
-    return {};
-  }
-  const filtered: Record<string, string | number | boolean> = {};
-  for (const [key, value] of Object.entries(attributes)) {
-    if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
-      filtered[key] = value;
-    }
-  }
-  return sortAttributes(filtered);
 }
 
 export type GraphHyperExportInput = z.infer<typeof GraphHyperExportInputSchema>;

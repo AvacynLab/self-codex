@@ -36,15 +36,16 @@ type GraphWorkerMessage = GraphWorkerSuccessMessage | GraphWorkerErrorMessage;
 export function serialiseGraphWorkerError(error: unknown): GraphWorkerErrorMessage["error"] {
   if (error instanceof Error) {
     const name = typeof error.name === "string" && error.name.trim().length > 0 ? error.name : "Error";
-    const details: GraphWorkerErrorMessage["error"] = {
-      name,
-      message: error.message,
-    };
-    const stack = typeof error.stack === "string" && error.stack.trim().length > 0 ? error.stack : undefined;
-    if (stack) {
-      details.stack = stack;
-    }
-    return details;
+      const stack = typeof error.stack === "string" && error.stack.trim().length > 0 ? error.stack : undefined;
+      // Construct the payload in a single expression so readonly properties stay
+      // untouched once emitted. Mutating the object would violate the
+      // `GraphWorkerErrorMessage` contract which marks every field as read-only
+      // to mirror the shape exchanged with the parent thread.
+      return {
+        name,
+        message: error.message,
+        ...(stack ? { stack } : {}),
+      } satisfies GraphWorkerErrorMessage["error"];
   }
   return {
     name: "Error",

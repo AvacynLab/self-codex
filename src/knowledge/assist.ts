@@ -6,7 +6,7 @@ import type {
   KnowledgePlanTask,
   KnowledgeTripleSnapshot,
 } from "./knowledgeGraph.js";
-import type { HybridRetriever, HybridRetrieverHit } from "../memory/retriever.js";
+import type { HybridRetriever, HybridRetrieverHit, HybridRetrieverSearchOptions } from "../memory/retriever.js";
 import {
   mergeProvenance,
   normaliseProvenanceList,
@@ -859,14 +859,14 @@ async function collectRagEvidence(
   minScore: number,
   domainTags: string[],
 ): Promise<KnowledgeAssistRagEvidence[]> {
-  const ragQuery = context ? `${context}\n${query}` : query;
-  // Ensure the retriever only receives defined option overrides so
-  // `exactOptionalPropertyTypes` can enforce strict omission semantics.
-  const searchOptions: HybridRetrieverSearchOptions = {
-    limit,
-    minScore,
-    ...(domainTags.length > 0 ? { requiredTags: domainTags } : {}),
-  };
+    const ragQuery = context ? `${context}\n${query}` : query;
+    // Ensure the retriever only receives defined option overrides so
+    // `exactOptionalPropertyTypes` can enforce strict omission semantics.
+    const searchOptions: HybridRetrieverSearchOptions = {
+      limit,
+      minScore,
+      ...(domainTags.length > 0 ? { requiredTags: domainTags } : {}),
+    };
   const hits: HybridRetrieverHit[] = await retriever.search(ragQuery, searchOptions);
   if (hits.length === 0) {
     return [];

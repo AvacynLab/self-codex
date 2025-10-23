@@ -48,6 +48,10 @@ describe("sandbox registry", () => {
     expect(failed.status).to.equal("error");
     expect(failed.reason).to.match(/mock failure/);
     expect(failed.preview).to.deep.equal({ note: "simulated" });
+    // Optional fields should disappear entirely when the handler omits them so
+    // the strict optional property semantics stay satisfied.
+    expect(failed).to.not.have.property("metadata");
+    expect(failed).to.not.have.property("metrics");
 
     registry.register("slow", async () => {
       await new Promise((resolve) => setTimeout(resolve, 30));
@@ -57,6 +61,7 @@ describe("sandbox registry", () => {
     const timedOut = await registry.execute({ action: "slow", payload: null, timeoutMs: 5 });
     expect(timedOut.status).to.equal("timeout");
     expect(timedOut.reason).to.equal("timeout_after_5ms");
+    expect(timedOut).to.not.have.property("metadata");
   });
 
   it("returns skipped status when no handler is registered", async () => {
@@ -64,6 +69,7 @@ describe("sandbox registry", () => {
     const skipped = await registry.execute({ action: "unknown", payload: 1 });
     expect(skipped.status).to.equal("skipped");
     expect(skipped.reason).to.equal("handler_missing");
+    expect(skipped).to.not.have.property("metadata");
   });
 
   it("isole les payloads/metadata et capture les erreurs levées", async () => {

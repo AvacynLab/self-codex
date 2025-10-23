@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import { omitUndefinedDeep } from "../../utils/object.js";
+
 /**
  * Status returned by every Behaviour Tree node after a tick.
  */
@@ -182,69 +184,69 @@ export interface CompiledBehaviorTree {
 }
 
 /** Schema validating a serialised Behaviour Tree definition. */
-export const BehaviorNodeDefinitionSchema: z.ZodType<BehaviorNodeDefinition> = z.lazy(() =>
-  z
+export const BehaviorNodeDefinitionSchema: z.ZodType<BehaviorNodeDefinition> = z.lazy(() => {
+  const schema = z
     .discriminatedUnion("type", [
       z.object({
         type: z.literal("sequence"),
         id: z.string().min(1).optional(),
         children: z.array(BehaviorNodeDefinitionSchema).min(1),
       }),
-    z.object({
-      type: z.literal("selector"),
-      id: z.string().min(1).optional(),
-      children: z.array(BehaviorNodeDefinitionSchema).min(1),
-    }),
-    z.object({
-      type: z.literal("parallel"),
-      id: z.string().min(1).optional(),
-      policy: z.union([
-        z.enum(["all", "any"]),
-        z
-          .object({
-            mode: z.literal("quota"),
-            threshold: z.number().int().min(1),
-          })
-          .strict(),
-      ]),
-      children: z.array(BehaviorNodeDefinitionSchema).min(1),
-    }),
-    z.object({
-      type: z.literal("retry"),
-      id: z.string().min(1).optional(),
-      max_attempts: z.number().int().min(1),
-      backoff_ms: z.number().int().min(0).optional(),
-      backoff_jitter_ms: z.number().int().min(0).optional(),
-      child: BehaviorNodeDefinitionSchema,
-    }),
-    z.object({
-      type: z.literal("timeout"),
-      id: z.string().min(1).optional(),
-      timeout_ms: z.number().int().min(1).optional(),
-      timeout_category: z.string().min(1).optional(),
-      complexity_score: z.number().positive().max(100).optional(),
-      child: BehaviorNodeDefinitionSchema,
-    }),
-    z.object({
-      type: z.literal("guard"),
-      id: z.string().min(1).optional(),
-      condition_key: z.string().min(1),
-      expected: z.unknown().optional(),
-      child: BehaviorNodeDefinitionSchema,
-    }),
-    z.object({
-      type: z.literal("cancellable"),
-      id: z.string().min(1).optional(),
-      child: BehaviorNodeDefinitionSchema,
-    }),
-    z.object({
-      type: z.literal("task"),
-      id: z.string().min(1).optional(),
-      node_id: z.string().min(1),
-      tool: z.string().min(1),
-      input_key: z.string().min(1).optional(),
-    }),
-  ])
+      z.object({
+        type: z.literal("selector"),
+        id: z.string().min(1).optional(),
+        children: z.array(BehaviorNodeDefinitionSchema).min(1),
+      }),
+      z.object({
+        type: z.literal("parallel"),
+        id: z.string().min(1).optional(),
+        policy: z.union([
+          z.enum(["all", "any"]),
+          z
+            .object({
+              mode: z.literal("quota"),
+              threshold: z.number().int().min(1),
+            })
+            .strict(),
+        ]),
+        children: z.array(BehaviorNodeDefinitionSchema).min(1),
+      }),
+      z.object({
+        type: z.literal("retry"),
+        id: z.string().min(1).optional(),
+        max_attempts: z.number().int().min(1),
+        backoff_ms: z.number().int().min(0).optional(),
+        backoff_jitter_ms: z.number().int().min(0).optional(),
+        child: BehaviorNodeDefinitionSchema,
+      }),
+      z.object({
+        type: z.literal("timeout"),
+        id: z.string().min(1).optional(),
+        timeout_ms: z.number().int().min(1).optional(),
+        timeout_category: z.string().min(1).optional(),
+        complexity_score: z.number().positive().max(100).optional(),
+        child: BehaviorNodeDefinitionSchema,
+      }),
+      z.object({
+        type: z.literal("guard"),
+        id: z.string().min(1).optional(),
+        condition_key: z.string().min(1),
+        expected: z.unknown().optional(),
+        child: BehaviorNodeDefinitionSchema,
+      }),
+      z.object({
+        type: z.literal("cancellable"),
+        id: z.string().min(1).optional(),
+        child: BehaviorNodeDefinitionSchema,
+      }),
+      z.object({
+        type: z.literal("task"),
+        id: z.string().min(1).optional(),
+        node_id: z.string().min(1),
+        tool: z.string().min(1),
+        input_key: z.string().min(1).optional(),
+      }),
+    ])
     .superRefine((value, ctx) => {
       if (value.type === "timeout" && value.timeout_ms === undefined && value.timeout_category === undefined) {
         ctx.addIssue({
@@ -260,8 +262,11 @@ export const BehaviorNodeDefinitionSchema: z.ZodType<BehaviorNodeDefinition> = z
           path: ["complexity_score"],
         });
       }
-    }),
-);
+    })
+    .transform((value) => omitUndefinedDeep(value));
+
+  return schema as unknown as z.ZodType<BehaviorNodeDefinition>;
+});
 
 /** Schema validating an entire compiled Behaviour Tree payload. */
 export const CompiledBehaviorTreeSchema = z.object({

@@ -20,6 +20,24 @@ const JSON_HEADERS = Object.freeze({
 let httpServerModulePromise = null;
 let loggerModulePromise = null;
 
+/**
+ * Builds the options bag passed to {@link Error} while omitting the optional
+ * {@link ErrorOptions.cause} field whenever no upstream exception is available.
+ * The helper ensures we never emit `cause: undefined` placeholders once
+ * `exactOptionalPropertyTypes` is enforced across the validation toolchain.
+ *
+ * @param {unknown} lastError potential underlying exception captured during
+ *                            dynamic imports.
+ * @returns {ErrorOptions | undefined} the structured options bag containing a
+ *          concrete cause when available.
+ */
+function buildMissingModuleErrorOptions(lastError) {
+  if (lastError === null || lastError === undefined) {
+    return undefined;
+  }
+  return { cause: lastError };
+}
+
 function isModuleNotFound(error) {
   if (!error || typeof error !== "object") {
     return false;
@@ -53,7 +71,10 @@ async function loadHttpServerModule() {
         throw error;
       }
     }
-    throw new Error("Unable to locate the HTTP server module", { cause: lastError ?? undefined });
+    throw new Error(
+      "Unable to locate the HTTP server module",
+      buildMissingModuleErrorOptions(lastError),
+    );
   })();
   return httpServerModulePromise;
 }
@@ -79,7 +100,10 @@ async function loadLoggerModule() {
         throw error;
       }
     }
-    throw new Error("Unable to locate the logger module", { cause: lastError ?? undefined });
+    throw new Error(
+      "Unable to locate the logger module",
+      buildMissingModuleErrorOptions(lastError),
+    );
   })();
   return loggerModulePromise;
 }
@@ -135,6 +159,15 @@ async function readResponseBody(response) {
     return { raw: text, parsed: null };
   }
 }
+
+export const __TESTING__ = {
+  /**
+   * Exposes the sanitised error option builder so regression tests can ensure
+   * the stage never propagates `cause: undefined` placeholders when dynamic
+   * imports fail to resolve.
+   */
+  buildMissingModuleErrorOptions,
+};
 
 function maskToken(token) {
   if (!token) {

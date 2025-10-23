@@ -25,6 +25,37 @@ export function omitUndefinedEntries<
 }
 
 /**
+ * Recursively drops `undefined` entries from plain JSON structures.
+ *
+ * The helper sanitises objects and arrays so artefacts persisted to disk never
+ * contain `undefined` placeholders that would otherwise surface in regression
+ * tests once `exactOptionalPropertyTypes` is enabled. Nested objects retain
+ * their identity semantics whereas array entries with `undefined` values are
+ * simply removed to preserve dense sequences for downstream consumers.
+ */
+export function omitUndefinedDeep<T>(value: T): T {
+  if (Array.isArray(value)) {
+    const compacted = value
+      .map((entry) => omitUndefinedDeep(entry))
+      .filter((entry) => entry !== undefined);
+    return compacted as unknown as T;
+  }
+
+  if (!value || typeof value !== "object") {
+    return value;
+  }
+
+  const result: Record<string, unknown> = {};
+  for (const [key, nested] of Object.entries(value as Record<string, unknown>)) {
+    if (nested === undefined) {
+      continue;
+    }
+    result[key] = omitUndefinedDeep(nested);
+  }
+  return result as T;
+}
+
+/**
  * Collapses nullable values to `undefined` so they can be omitted by
  * {@link omitUndefinedEntries}. This is useful when callers surface `null`
  * placeholders but downstream consumers expect properties to disappear

@@ -341,13 +341,26 @@ async function appendRobustnessEvents(
   call: ExecutedRobustnessCall,
   events: unknown[],
 ): Promise<void> {
+  // Stage 9 robustness artefacts must omit placeholder payloads (`undefined` or
+  // `null`) so the JSONL stream stays compatible with `exactOptionalPropertyTypes`.
+  // Filtering up-front also prevents us from emitting empty log entries when the
+  // backend surfaces sparse event arrays.
+  const definedEvents = events.filter(
+    (event): event is unknown => event !== undefined && event !== null,
+  );
+  if (!definedEvents.length) {
+    return;
+  }
+
   const capturedAt = new Date().toISOString();
-  const payload = events
+  const payload = definedEvents
     .map((event) =>
       toJsonlLine({
         scenario: call.scenario,
         name: call.name,
         capturedAt,
+        // The event payload is guaranteed to be defined thanks to the filtering
+        // above, which keeps the artefacts free of `undefined` placeholders.
         event,
       }),
     )
@@ -409,11 +422,15 @@ function extractJsonRpcError(body: unknown): {
 function extractEvents(body: unknown): unknown[] {
   const result = extractJsonRpcResult(body);
   if (result && Array.isArray((result as { events?: unknown }).events)) {
-    return (result as { events?: unknown[] }).events ?? [];
+    return ((result as { events?: unknown[] }).events ?? []).filter(
+      (event): event is unknown => event !== undefined && event !== null,
+    );
   }
   const error = extractJsonRpcError(body);
   if (error?.data && Array.isArray((error.data as { events?: unknown }).events)) {
-    return (error.data as { events?: unknown[] }).events ?? [];
+    return ((error.data as { events?: unknown[] }).events ?? []).filter(
+      (event): event is unknown => event !== undefined && event !== null,
+    );
   }
   return [];
 }

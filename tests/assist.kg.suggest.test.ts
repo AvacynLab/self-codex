@@ -5,15 +5,21 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 
 import { KnowledgeGraph } from "../src/knowledge/knowledgeGraph.js";
-import { suggestPlanFragments } from "../src/knowledge/assist.js";
+import { assistKnowledgeQuery, suggestPlanFragments } from "../src/knowledge/assist.js";
 import {
   KgSuggestPlanInputSchema,
   handleKgSuggestPlan,
   type KnowledgeToolContext,
 } from "../src/tools/knowledgeTools.js";
 import { StructuredLogger } from "../src/logger.js";
+import type {
+  VectorMemory,
+  VectorMemoryDocument,
+  VectorMemorySearchHit,
+  VectorMemorySearchOptions,
+} from "../src/memory/vectorMemory.js";
 import { LocalVectorMemory } from "../src/memory/vectorMemory.js";
-import { HybridRetriever } from "../src/memory/retriever.js";
+import { HybridRetriever, type HybridRetrieverHit, type HybridRetrieverSearchOptions } from "../src/memory/retriever.js";
 
 function seedLaunchPlan(graph: KnowledgeGraph): void {
   graph.insert({
@@ -48,6 +54,68 @@ function seedLaunchPlan(graph: KnowledgeGraph): void {
 /** Creates a logger that records every entry for assertions without printing output. */
 function createCapturingLogger(entries: Array<{ message: string; payload?: unknown }>): StructuredLogger {
   return new StructuredLogger({ onEntry: (entry) => entries.push({ message: entry.message, payload: entry.payload }) });
+}
+
+/**
+ * Minimal vector memory satisfying the {@link HybridRetriever} constructor
+ * contract. The implementation never stores documents because tests override
+ * {@link HybridRetriever.search} directly to intercept the options forwarded by
+ * `assistKnowledgeQuery`.
+ */
+class StubVectorMemory implements VectorMemory {
+  async upsert(): Promise<VectorMemoryDocument[]> {
+    return [];
+  }
+
+  async search(_query: string, _options?: VectorMemorySearchOptions): Promise<VectorMemorySearchHit[]> {
+    return [];
+  }
+
+  async delete(): Promise<number> {
+    return 0;
+  }
+
+  async clear(): Promise<void> {}
+
+  size(): number {
+    return 0;
+  }
+}
+
+/**
+ * Retriever capturing the latest search invocation so tests can assert that the
+ * helper omits undefined overrides once strict optional typing is enforced.
+ */
+class CapturingHybridRetriever extends HybridRetriever {
+  public capturedQuery: string | undefined;
+  public capturedOptions: HybridRetrieverSearchOptions | undefined;
+
+  constructor() {
+    super(new StubVectorMemory(), new StructuredLogger({ logFile: null }));
+  }
+
+  override async search(
+    query: string,
+    options: HybridRetrieverSearchOptions = {},
+  ): Promise<HybridRetrieverHit[]> {
+    this.capturedQuery = query;
+    this.capturedOptions = options;
+    return [
+      {
+        id: "stub-hit",
+        text: "relevant passage",
+        score: 0.88,
+        vectorScore: 0.88,
+        lexicalScore: 0.44,
+        tags: options.requiredTags ?? [],
+        matchedTags: options.requiredTags ? [...options.requiredTags] : [],
+        provenance: [],
+        metadata: {},
+        createdAt: 0,
+        updatedAt: 0,
+      },
+    ];
+  }
 }
 
 describe("knowledge graph plan suggestions", () => {
@@ -187,5 +255,37 @@ describe("knowledge graph plan suggestions", () => {
     } finally {
       await rm(tmpDir, { recursive: true, force: true });
     }
+  });
+
+  it("omits undefined domain tags when invoking the RAG retriever", async () => {
+    const knowledgeGraph = new KnowledgeGraph({ now: () => 0 });
+    const retriever = new CapturingHybridRetriever();
+
+    const result = await assistKnowledgeQuery(knowledgeGraph, {
+      query: "How to secure a deployment?",
+      limit: 1,
+      ragRetriever: retriever,
+      ragLimit: 2,
+      ragMinScore: 0.42,
+    });
+
+    expect(result.rag_evidence).to.have.length(1);
+    expect(retriever.capturedQuery).to.equal("How to secure a deployment?");
+    expect(retriever.capturedOptions?.limit).to.equal(2);
+    expect(retriever.capturedOptions?.minScore).to.equal(0.42);
+    expect("requiredTags" in (retriever.capturedOptions ?? {})).to.equal(false);
+  });
+
+  it("forwards normalised domain tags to the RAG retriever", async () => {
+    const knowledgeGraph = new KnowledgeGraph({ now: () => 0 });
+    const retriever = new CapturingHybridRetriever();
+
+    await assistKnowledgeQuery(knowledgeGraph, {
+      query: "Provide security steps",
+      ragRetriever: retriever,
+      domainTags: [" Security ", "", "Infra"],
+    });
+
+    expect(retriever.capturedOptions?.requiredTags).to.deep.equal(["security", "infra"]);
   });
 });

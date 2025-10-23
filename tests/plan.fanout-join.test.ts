@@ -79,9 +79,15 @@ function createPlanContext(options: {
   };
 }
 
-describe("plan tools", () => {
+describe("plan tools", function () {
+  // The plan fan-out suites spin up real child processes and touch the filesystem; allow
+  // extra time so process cleanup and artifact flushing complete on slower CI runners.
+  this.timeout(20000);
+
   it("launches clones, renders prompts and records the fan-out mapping", async function () {
-    this.timeout(10000);
+    // Spawning three child processes plus orchestrator logging can exceed Mocha's default
+    // 2s limit. Give the test 20s so we never abort cleanup on busy hosts.
+    this.timeout(20000);
     const childrenRoot = await mkdtemp(path.join(tmpdir(), "plan-tools-fanout-"));
     const supervisor = new ChildSupervisor({
       childrenRoot,
@@ -196,7 +202,9 @@ describe("plan tools", () => {
   });
 
   it("propagates provided correlation hints across outputs", async function () {
-    this.timeout(10000);
+    // The correlation case also spawns child workers and performs artifact IO; mirror the
+    // wider timeout to avoid flaky teardown when the filesystem is contended.
+    this.timeout(20000);
     const childrenRoot = await mkdtemp(path.join(tmpdir(), "plan-tools-fanout-hints-"));
     const supervisor = new ChildSupervisor({
       childrenRoot,

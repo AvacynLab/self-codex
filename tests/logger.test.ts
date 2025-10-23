@@ -62,5 +62,22 @@ describe("StructuredLogger", () => {
       await rm(directory, { recursive: true, force: true });
     }
   });
+
+  it("omits file mirroring when callers pass a null logFile override", async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "logger-"));
+    try {
+      const entries: Array<{ message: string }> = [];
+      const logger = new StructuredLogger({ logFile: null, onEntry: (entry) => entries.push({ message: entry.message }) });
+
+      logger.warn("null_logfile_sanitised", { detail: "capture" });
+      await logger.flush();
+
+      const files = await readdir(directory);
+      expect(files.length, "the logger should not create files when mirroring is disabled").to.equal(0);
+      expect(entries.map((entry) => entry.message)).to.deep.equal(["null_logfile_sanitised"]);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
 });
 

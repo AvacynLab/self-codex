@@ -1,9 +1,25 @@
 #!/usr/bin/env node
 import process from "node:process";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 
 import { executeKnowledgeCli, parseKnowledgeCliOptions } from "../src/validation/knowledgeCli.js";
 import { KNOWLEDGE_JSONL_FILES } from "../src/validation/knowledge.js";
+import { cloneDefinedEnv } from "./lib/env-helpers.mjs";
+
+/**
+ * Creates the sanitised invocation payload for the knowledge validation
+ * runner, ensuring both argv and environment inputs remain deterministic and
+ * free from `undefined` placeholders.
+ */
+export function prepareKnowledgeCliInvocation(
+  rawArgs: readonly string[] = process.argv.slice(2),
+  rawEnv: NodeJS.ProcessEnv = process.env,
+) {
+  const options = parseKnowledgeCliOptions(Array.from(rawArgs));
+  const env = cloneDefinedEnv(rawEnv) as NodeJS.ProcessEnv;
+  return { options, env };
+}
 
 /**
  * CLI entrypoint for the Stage 8 knowledge & values validation workflow. The
@@ -11,9 +27,12 @@ import { KNOWLEDGE_JSONL_FILES } from "../src/validation/knowledge.js";
  * chain runs across the entire validation checklist.
  */
 async function main(): Promise<void> {
-  const options = parseKnowledgeCliOptions(process.argv.slice(2));
+  const { options, env } = prepareKnowledgeCliInvocation(
+    process.argv.slice(2),
+    process.env,
+  );
 
-  const { runRoot, result } = await executeKnowledgeCli(options, process.env, console);
+  const { runRoot, result } = await executeKnowledgeCli(options, env, console);
 
   console.log("🧠 Knowledge & values validation summary:");
   console.log(`   • assist query: ${result.summary.knowledge.assistQuery ?? "unknown"}`);
@@ -36,7 +55,9 @@ async function main(): Promise<void> {
   console.log(`📝 Summary: ${result.summaryPath}`);
 }
 
-main().catch((error) => {
-  console.error("Failed to execute knowledge validation workflow:", error);
-  process.exitCode = 1;
-});
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]!).href) {
+  main().catch((error) => {
+    console.error("Failed to execute knowledge validation workflow:", error);
+    process.exitCode = 1;
+  });
+}

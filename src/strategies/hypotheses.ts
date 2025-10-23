@@ -283,7 +283,10 @@ function clonePlanStep(step: PlanStep): PlanStep {
  * `undefined` overrides so mathematical operations never receive `NaN`.
  */
 function mergeGenerationOptions(options: HypothesisGenerationOptions): NormalisedGenerationOptions {
-  const sanitised = omitUndefinedEntries(options ?? {});
+  // Materialise the sparse overrides into a plain record so `omitUndefinedEntries`
+  // can scrub optional fields before we merge them with the defaults.
+  const { maxHypotheses, noveltyBoost } = options;
+  const sanitised = omitUndefinedEntries({ maxHypotheses, noveltyBoost });
   return {
     ...DEFAULT_GENERATION_OPTIONS,
     ...(sanitised as Partial<NormalisedGenerationOptions>),
@@ -291,7 +294,15 @@ function mergeGenerationOptions(options: HypothesisGenerationOptions): Normalise
 }
 
 function mergeEvaluationOptions(options: HypothesisEvaluationOptions): NormalisedEvaluationOptions {
-  const sanitised = omitUndefinedEntries(options ?? {});
+  // Same rationale as `mergeGenerationOptions`: shape the overrides into a
+  // serialisable record so undefined entries disappear before the merge.
+  const { noveltyWeight, riskWeight, effortWeight, coverageWeight } = options;
+  const sanitised = omitUndefinedEntries({
+    noveltyWeight,
+    riskWeight,
+    effortWeight,
+    coverageWeight,
+  });
   return {
     ...DEFAULT_EVALUATION_OPTIONS,
     ...(sanitised as Partial<NormalisedEvaluationOptions>),

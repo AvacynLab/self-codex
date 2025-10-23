@@ -142,11 +142,19 @@ function refreshRateLimiterFromEnv(): RateLimiterConfig {
   const envRps = parseEnvRateLimitSetting("MCP_HTTP_RATE_LIMIT_RPS");
   const envBurst = parseEnvRateLimitSetting("MCP_HTTP_RATE_LIMIT_BURST");
 
-  return configureRateLimiter({
-    disabled: envDisabledFlag,
+  // Only override the disable flag when the environment exposes a concrete
+  // boolean. This keeps the configuration compatible with
+  // `exactOptionalPropertyTypes` by avoiding `{ disabled: undefined }` spreads
+  // while still allowing explicit `false` to re-enable throttling.
+  const overrides: Partial<RateLimiterConfig> = {
     rps: coerceFiniteNumber(envRps, DEFAULT_RATE_LIMIT_CONFIG.rps),
     burst: coerceFiniteNumber(envBurst, DEFAULT_RATE_LIMIT_CONFIG.burst),
-  });
+  };
+  if (envDisabledFlag !== undefined) {
+    overrides.disabled = envDisabledFlag;
+  }
+
+  return configureRateLimiter(overrides);
 }
 
 // Initialise the limiter from the current environment as soon as the module loads.
@@ -597,7 +605,7 @@ async function tryHandleJsonRpc(
       jsonrpcId,
       status,
       cacheStatus: "bypass",
-          errorCode: typeof payload.error?.code === "number" ? payload.error.code : undefined,
+      errorCode: typeof payload.error?.code === "number" ? payload.error.code : null,
     });
     return true;
   }
@@ -721,6 +729,11 @@ async function tryHandleJsonRpc(
           message: error instanceof Error ? error.message : String(error),
           request_id: requestId,
         });
+        const errorOptions: JsonRpcErrorResponseOptions = {
+          cacheKey,
+          ...(idempotency ? { idempotency } : {}),
+        };
+
         await respondWithJsonRpcError(
           res,
           500,
@@ -734,10 +747,7 @@ async function tryHandleJsonRpc(
             method: methodName,
             jsonrpcId,
           },
-          {
-            cacheKey,
-            idempotency,
-          },
+          errorOptions,
         );
       }
     },
@@ -774,14 +784,31 @@ function buildRouteContextFromHeaders(req: HttpTransportRequest, request: JsonRp
     }
   }
 
-  return {
+  const context: JsonRpcRouteContext = {
     headers,
     transport: "http",
     requestId: request?.id ?? null,
-    childId,
-    childLimits,
-    idempotencyKey,
   };
+
+  if (childId !== undefined) {
+    // Propagate the trimmed child identifier when available without exposing
+    // `undefined` to callers enforcing `exactOptionalPropertyTypes`.
+    context.childId = childId;
+  }
+  if (childLimits !== undefined) {
+    // Only attach the decoded limits when the header contained a valid JSON
+    // payload so downstream logic observes either a concrete object or the
+    // absence of limits.
+    context.childLimits = childLimits;
+  }
+  if (idempotencyKey !== undefined) {
+    // Idempotency metadata is optional; omit the property entirely when the
+    // header is absent to keep the context compatible with strict optional
+    // property semantics.
+    context.idempotencyKey = idempotencyKey;
+  }
+
+  return context;
 }
 
 /** Safely retrieves the bound port once the HTTP server is listening. */

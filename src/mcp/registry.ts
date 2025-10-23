@@ -575,7 +575,10 @@ export class ToolRegistry {
     }
     return {
       manifest: cloneJson(record.manifest),
-      inputSchema: record.inputSchema,
+      // Forward the parsed schema only when it exists so callers never observe
+      // `inputSchema: undefined` once strict optional property typing is
+      // enforced on the registry contract.
+      ...(record.inputSchema ? { inputSchema: record.inputSchema } : {}),
     };
   }
 
@@ -638,42 +641,44 @@ export class ToolRegistry {
         })),
       });
     }
-    const manifest: ToolManifest = {
-      name: trimmedName,
-      title: draft.title.trim(),
-      description: draft.description?.trim() || undefined,
-      kind: draft.kind,
-      version: draft.version ?? 1,
-      createdAt: options.overrideManifest?.createdAt ?? nowIso,
-      updatedAt: options.overrideManifest?.updatedAt ?? nowIso,
-      category: resolvedCategory,
-      tags,
-      hidden,
-      deprecated: coerceNullToUndefined(deprecationState.metadata),
-      budgets,
-      steps: draft.steps ? cloneJson(draft.steps) : undefined,
-      inputs: draft.inputs ? [...draft.inputs] : undefined,
-      source: options.overrideManifest?.source ?? draft.source ?? "runtime",
-    };
+      const description = options.overrideManifest?.description?.trim() ?? draft.description?.trim();
+      const deprecatedMetadata = coerceNullToUndefined(deprecationState.metadata);
+      const manifest: ToolManifest = {
+        name: trimmedName,
+        title: draft.title.trim(),
+        kind: draft.kind,
+        version: draft.version ?? 1,
+        createdAt: options.overrideManifest?.createdAt ?? nowIso,
+        updatedAt: options.overrideManifest?.updatedAt ?? nowIso,
+        category: resolvedCategory,
+        hidden,
+        source: options.overrideManifest?.source ?? draft.source ?? "runtime",
+        ...(description ? { description } : {}),
+        ...(tags.length > 0 ? { tags } : {}),
+        ...(draft.steps ? { steps: cloneJson(draft.steps) } : {}),
+        ...(draft.inputs ? { inputs: [...draft.inputs] } : {}),
+        ...(deprecatedMetadata ? { deprecated: deprecatedMetadata } : {}),
+        ...(budgets ? { budgets } : {}),
+      };
 
     const manifestPath = options.persistManifest
       ? options.manifestPath ?? path.join(this.manifestsDir, `${sanitizeFilename(trimmedName)}.json`)
       : options.manifestPath;
 
     const registeredTool = (() => {
-      const baseConfig = {
-        title: manifest.title,
-        description: manifest.description,
-        outputSchema: options.outputSchema,
-        annotations: options.annotations,
-        _meta: { ...options.meta, tool_kind: manifest.kind },
-      } satisfies {
-        title?: string;
-        description?: string;
-        outputSchema?: z.ZodRawShape;
-        annotations?: ToolAnnotations;
-        _meta?: Record<string, unknown>;
-      };
+        const baseConfig = {
+          title: manifest.title,
+          _meta: { ...options.meta, tool_kind: manifest.kind },
+          ...(manifest.description ? { description: manifest.description } : {}),
+          ...(options.outputSchema ? { outputSchema: options.outputSchema } : {}),
+          ...(options.annotations ? { annotations: options.annotations } : {}),
+        } satisfies {
+          title?: string;
+          description?: string;
+          outputSchema?: z.ZodRawShape;
+          annotations?: ToolAnnotations;
+          _meta?: Record<string, unknown>;
+        };
 
       const schema = options.inputSchema;
       if (schema) {
@@ -691,13 +696,13 @@ export class ToolRegistry {
     })();
 
     const storedSchema = options.inputSchema ? z.object(options.inputSchema).strict() : undefined;
-    const record: ToolRegistrationRecord = {
-      manifest: cloneJson(manifest),
-      handler: implementation,
-      registeredTool,
-      inputSchema: storedSchema,
-      manifestPath,
-    };
+      const record: ToolRegistrationRecord = {
+        manifest: cloneJson(manifest),
+        handler: implementation,
+        registeredTool,
+        ...(storedSchema ? { inputSchema: storedSchema } : {}),
+        ...(manifestPath ? { manifestPath } : {}),
+      };
     this.entries.set(trimmedName, record);
 
     if (manifestPath) {
@@ -751,17 +756,17 @@ export class ToolRegistry {
     }
 
     const inputs = steps.flatMap((step) => Object.keys(step.arguments ?? {}));
-    const draft: ToolManifestDraft = {
-      name: request.name,
-      title: request.title,
-      description: request.description,
-      kind: "composite",
-      tags: request.tags,
-      steps,
-      inputs,
-      version: 1,
-      source: "runtime",
-    };
+      const draft: ToolManifestDraft = {
+        name: request.name,
+        title: request.title,
+        kind: "composite",
+        steps,
+        inputs,
+        version: 1,
+        source: "runtime",
+        ...(request.description ? { description: request.description } : {}),
+        ...(request.tags && request.tags.length > 0 ? { tags: request.tags } : {}),
+      };
 
     const implementation = this.createCompositeImplementation(request.name, steps);
 
@@ -833,19 +838,26 @@ export class ToolRegistry {
       }
     }
 
-    for (const manifest of manifests) {
-      const draft: ToolManifestDraft = {
-        name: manifest.name,
-        title: manifest.title,
-        description: manifest.description,
-        kind: "composite",
-        tags: manifest.tags,
-        steps: manifest.steps,
-        version: manifest.version,
-        source: "persisted",
-      };
+      for (const manifest of manifests) {
+        const persistedSteps: CompositeToolStep[] = manifest.steps.map((step) => ({
+          id: step.id,
+          tool: step.tool,
+          ...(step.arguments ? { arguments: step.arguments } : {}),
+          ...(step.capture !== undefined ? { capture: step.capture } : {}),
+        }));
 
-      const implementation = this.createCompositeImplementation(manifest.name, manifest.steps);
+        const draft: ToolManifestDraft = {
+          name: manifest.name,
+          title: manifest.title,
+          kind: "composite",
+          steps: persistedSteps,
+          version: manifest.version,
+          source: "persisted",
+          ...(manifest.description ? { description: manifest.description } : {}),
+          ...(manifest.tags && manifest.tags.length > 0 ? { tags: manifest.tags } : {}),
+        };
+
+        const implementation = this.createCompositeImplementation(manifest.name, persistedSteps);
 
       await this.register(draft, implementation, {
         manifestPath: path.join(this.manifestsDir, `${sanitizeFilename(manifest.name)}.json`),
@@ -946,15 +958,16 @@ export class ToolRegistry {
     };
   }
 
-  private applyDeprecationPolicy(record: ToolRegistrationRecord): ToolManifest {
-    const base = cloneJson(record.manifest);
-    const evaluation = evaluateToolDeprecation(base.name, base.deprecated, this.clock());
-    return {
-      ...base,
-      hidden: base.hidden || evaluation.forceHidden,
-      deprecated: evaluation.metadata ?? base.deprecated,
-    };
-  }
+    private applyDeprecationPolicy(record: ToolRegistrationRecord): ToolManifest {
+      const base = cloneJson(record.manifest);
+      const evaluation = evaluateToolDeprecation(base.name, base.deprecated, this.clock());
+      const deprecatedMetadata = evaluation.metadata ?? base.deprecated;
+      return {
+        ...base,
+        hidden: base.hidden || evaluation.forceHidden,
+        ...(deprecatedMetadata ? { deprecated: deprecatedMetadata } : {}),
+      };
+    }
 }
 
 /** Error thrown when invoking a tool that has reached the removal deadline. */

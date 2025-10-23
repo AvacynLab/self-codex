@@ -178,8 +178,14 @@ const scenarioSchema = z.object({
 
 type ParsedScenario = z.infer<typeof scenarioSchema>;
 
+/**
+ * Normalises a declarative regex expectation parsed from YAML/JSON fixtures.
+ * The schema allows callers to explicitly spell `flags: undefined`; this helper
+ * trims the placeholder so `exactOptionalPropertyTypes` never sees
+ * `{ flags: undefined }` objects.
+ */
 function normaliseRegexExpectation(
-  value: { pattern: string; flags?: string } | string | undefined,
+  value: { pattern: string; flags?: string | undefined } | string | undefined,
 ): ScenarioStepExpectation["match"] {
   if (value === undefined || typeof value === "string") {
     return value;

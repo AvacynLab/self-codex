@@ -108,5 +108,24 @@ describe("validation introspection stage", function () {
     };
     expect(toolsCatalog.total).to.equal(toolsCatalog.items.length);
     expect(toolsCatalog.items.some((tool) => typeof tool.name === "string")).to.equal(true);
+
+    const stepReportPath = join(context.directories.report, "step01-introspection.json");
+    const stepReport = JSON.parse(await readFile(stepReportPath, "utf8")) as {
+      artifacts?: Record<string, unknown>;
+      tools?: Record<string, unknown>;
+    };
+
+    // The stage report should only surface artefact paths when they exist.
+    expect(stepReport.artifacts?.requests).to.be.a("string");
+    expect(stepReport.artifacts?.responses).to.be.a("string");
+    expect(stepReport.artifacts?.events).to.be.a("string");
+    expect(stepReport.tools).to.not.have.property("next_cursor", null);
+
+    // The in-memory summary mirrors the sanitised artefact pointers returned on disk.
+    expect(outcome.summary.artifacts?.requestsPath).to.be.a("string");
+    expect(outcome.summary.artifacts).to.not.have.property("requestsPath", null);
+    expect(outcome.summary.artifacts).to.not.have.property("responsesPath", null);
+    expect(outcome.summary.artifacts).to.not.have.property("eventsPath", null);
+    expect(outcome.summary.tools).to.not.have.property("nextCursor", null);
   });
 });

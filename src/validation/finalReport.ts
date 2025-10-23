@@ -18,6 +18,7 @@ import { KNOWLEDGE_JSONL_FILES } from "./knowledge.js";
 import { ROBUSTNESS_JSONL_FILES } from "./robustness.js";
 import { PERFORMANCE_JSONL_FILES } from "./performance.js";
 import { SECURITY_JSONL_FILES } from "./security.js";
+import { omitUndefinedDeep } from "../utils/object.js";
 
 /** Relative filename of the final aggregated findings artefact. */
 export const FINAL_REPORT_FINDINGS_FILENAME = "findings.json";
@@ -1855,7 +1856,7 @@ export async function runFinalReport(runRoot: string, options: FinalReportOption
   const packageJsonPath = options.packageJsonPath ?? join(process.cwd(), "package.json");
   const packageVersions = await readPackageVersions(packageJsonPath);
 
-  const findings: FinalFindingsDocument = {
+  const findingsUnsanitised: FinalFindingsDocument = {
     generatedAt,
     runId,
     versions: {
@@ -1871,6 +1872,9 @@ export async function runFinalReport(runRoot: string, options: FinalReportOption
     coverage,
     kpis,
   };
+
+  // Drop any latent `undefined` placeholders before persisting the findings.
+  const findings = omitUndefinedDeep(findingsUnsanitised);
 
   const summaryMarkdown = buildSummaryMarkdown({
     runId,

@@ -21,6 +21,44 @@ interface CliOptions {
   readonly weightKey?: string;
 }
 
+interface AnalysisInput {
+  readonly args: string[];
+  readonly compiledGraph: ReturnType<typeof compileSource>;
+  readonly weightKey?: string;
+}
+
+/**
+ * Builds the analysis input object forwarded to individual handlers while
+ * omitting the `weightKey` property when it is not explicitly provided.
+ *
+ * The CLI previously forwarded `{ weightKey: undefined }`, which breaks once
+ * `exactOptionalPropertyTypes` is enabled. This helper centralises the
+ * sanitisation to make the omission explicit and easily testable.
+ */
+function buildAnalysisInput(
+  task: CliAnalysis,
+  compiledGraph: ReturnType<typeof compileSource>,
+  weightKey: string | undefined
+): AnalysisInput {
+  const base = {
+    args: task.args,
+    compiledGraph
+  } as const;
+  return weightKey === undefined ? base : { ...base, weightKey };
+}
+
+/**
+ * Normalises the optional weight attribute passed to the graph algorithms so
+ * that we never emit `{ weightAttribute: undefined }` when the CLI flag is not
+ * supplied. Returning `undefined` keeps the downstream helper signatures happy
+ * under `exactOptionalPropertyTypes`.
+ */
+function buildWeightAttributeOptions(weightKey: string | undefined):
+  | { weightAttribute: string }
+  | undefined {
+  return weightKey === undefined ? undefined : { weightAttribute: weightKey };
+}
+
 async function main(argv: string[]): Promise<void> {
   if (argv.length === 0) {
     printUsage();
@@ -56,7 +94,7 @@ async function main(argv: string[]): Promise<void> {
     if (!handler) {
       throw new Error(`Unknown analysis '${task.name}'`);
     }
-    const result = handler({ args: task.args, weightKey: options.weightKey, compiledGraph: compiled });
+    const result = handler(buildAnalysisInput(task, compiled, options.weightKey));
     return { name: task.name, source: task.source, result };
   });
 
@@ -81,11 +119,7 @@ async function main(argv: string[]): Promise<void> {
   }
 }
 
-type AnalysisHandler = (input: {
-  args: string[];
-  weightKey?: string;
-  compiledGraph: ReturnType<typeof compileSource>;
-}) => unknown;
+type AnalysisHandler = (input: AnalysisInput) => unknown;
 
 const analysisHandlers: Record<string, AnalysisHandler> = {
   shortestPath: ({ args, weightKey, compiledGraph }) => {
@@ -93,10 +127,10 @@ const analysisHandlers: Record<string, AnalysisHandler> = {
       throw new Error("shortestPath requires <start> and <goal>");
     }
     const [start, goal] = args;
-    return shortestPath(compiledGraph.graph, start, goal, { weightAttribute: weightKey });
+    return shortestPath(compiledGraph.graph, start, goal, buildWeightAttributeOptions(weightKey));
   },
   criticalPath: ({ weightKey, compiledGraph }) => {
-    return criticalPath(compiledGraph.graph, { weightAttribute: weightKey });
+    return criticalPath(compiledGraph.graph, buildWeightAttributeOptions(weightKey));
   },
   stronglyConnected: ({ compiledGraph }) => {
     return tarjanScc(compiledGraph.graph);
@@ -186,7 +220,12 @@ function parseArgs(argv: string[]): CliOptions {
     }
   }
 
-  return { file, format, analyses, weightKey };
+  return {
+    file,
+    format,
+    analyses,
+    ...(weightKey === undefined ? {} : { weightKey })
+  };
 }
 
 function coerceToString(value: AttributeValue): string {
@@ -222,3 +261,14 @@ if (isCliEntryPoint) {
     process.exit(1);
   });
 }
+
+/**
+ * Exposes internal helpers for the dedicated Node test suite so we can assert
+ * optional-field sanitisation without exporting them as part of the runtime
+ * API surface.
+ */
+export const __testing = {
+  buildAnalysisInput,
+  buildWeightAttributeOptions,
+  parseArgs
+};

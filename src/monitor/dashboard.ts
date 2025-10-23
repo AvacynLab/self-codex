@@ -453,8 +453,11 @@ export function createDashboardRouter(options: DashboardRouterOptions): Dashboar
   const supervisor = options.supervisor;
   const stigmergy = options.stigmergy;
   const btStatusRegistry = options.btStatusRegistry;
-  const supervisorAgent = options.supervisorAgent;
-  const contractNetWatcherTelemetry = options.contractNetWatcherTelemetry;
+  // Optional collaborators are normalised to `null` so downstream helpers can
+  // forward concrete values without sprinkling explicit `undefined` placeholders
+  // through SSE payloads or JSON responses.
+  const supervisorAgent = options.supervisorAgent ?? null;
+  const contractNetWatcherTelemetry = options.contractNetWatcherTelemetry ?? null;
   const streamIntervalMs = Math.max(250, options.streamIntervalMs ?? 2_000);
   const clients = new Set<DashboardHttpResponse>();
   const autoBroadcast = options.autoBroadcast ?? true;
@@ -550,10 +553,10 @@ export function createDashboardRouter(options: DashboardRouterOptions): Dashboar
           writeJson(res, 400, { error: "INVALID_INPUT", message: "cursor must be a non-negative integer" });
           return;
         }
-        const page = buildReplayPage(eventStore, jobId, {
-          limit: parsedLimit,
-          cursor: parsedCursor,
-        });
+          const page = buildReplayPage(eventStore, jobId, {
+            ...(parsedLimit !== undefined ? { limit: parsedLimit } : {}),
+            ...(parsedCursor !== undefined ? { cursor: parsedCursor } : {}),
+          });
         writeJson(res, 200, page);
         return;
       }
@@ -680,19 +683,21 @@ export async function startDashboardServer(options: DashboardServerOptions): Pro
   const host = options.host ?? "127.0.0.1";
   const port = options.port ?? 0;
   const logger = options.logger ?? new StructuredLogger();
-  const router = createDashboardRouter({
-    graphState: options.graphState,
-    eventStore: options.eventStore,
-    supervisor: options.supervisor,
-    logger,
-    streamIntervalMs: options.streamIntervalMs,
-    autoBroadcast: true,
-    stigmergy: options.stigmergy,
-    btStatusRegistry: options.btStatusRegistry,
-    supervisorAgent: options.supervisorAgent,
-    contractNetWatcherTelemetry: options.contractNetWatcherTelemetry,
-    logJournal: options.logJournal,
-  });
+    const router = createDashboardRouter({
+      graphState: options.graphState,
+      eventStore: options.eventStore,
+      supervisor: options.supervisor,
+      logger,
+      autoBroadcast: true,
+      stigmergy: options.stigmergy,
+      btStatusRegistry: options.btStatusRegistry,
+      ...(options.streamIntervalMs !== undefined ? { streamIntervalMs: options.streamIntervalMs } : {}),
+      ...(options.supervisorAgent !== undefined ? { supervisorAgent: options.supervisorAgent } : {}),
+      ...(options.contractNetWatcherTelemetry
+        ? { contractNetWatcherTelemetry: options.contractNetWatcherTelemetry }
+        : {}),
+      ...(options.logJournal ? { logJournal: options.logJournal } : {}),
+    });
 
   const server = createServer((req, res) => {
     void router.handleRequest(req, res);
@@ -948,8 +953,8 @@ function handleStreamRequest(
   eventStore: EventStore,
   stigmergy: StigmergyField,
   btStatusRegistry: BehaviorTreeStatusRegistry,
-  supervisorAgent: OrchestratorSupervisorContract | undefined,
-  contractNetWatcherTelemetry: ContractNetWatcherTelemetryRecorder | undefined,
+  supervisorAgent: OrchestratorSupervisorContract | null,
+  contractNetWatcherTelemetry: ContractNetWatcherTelemetryRecorder | null,
   logger: StructuredLogger,
   streamIntervalMs: number,
 ): void {
@@ -992,8 +997,8 @@ function broadcast(
   eventStore: EventStore,
   stigmergy: StigmergyField,
   btStatusRegistry: BehaviorTreeStatusRegistry,
-  supervisorAgent: OrchestratorSupervisorContract | undefined,
-  contractNetWatcherTelemetry: ContractNetWatcherTelemetryRecorder | undefined,
+  supervisorAgent: OrchestratorSupervisorContract | null,
+  contractNetWatcherTelemetry: ContractNetWatcherTelemetryRecorder | null,
   logger: StructuredLogger,
 ): void {
   if (clients.size === 0) {
@@ -1020,8 +1025,8 @@ function buildSnapshot(
   eventStore: EventStore,
   stigmergy: StigmergyField,
   btStatusRegistry: BehaviorTreeStatusRegistry,
-  supervisorAgent: OrchestratorSupervisorContract | undefined,
-  contractNetWatcherTelemetry: ContractNetWatcherTelemetryRecorder | undefined,
+  supervisorAgent: OrchestratorSupervisorContract | null,
+  contractNetWatcherTelemetry: ContractNetWatcherTelemetryRecorder | null,
 ): DashboardSnapshot {
   const metrics = graphState.collectMetrics();
   const heatmap = computeDashboardHeatmap(graphState, eventStore, stigmergy);
@@ -1708,9 +1713,14 @@ export function summariseRuntimeCosts(
   };
 }
 
-/** Builds a scheduler snapshot suitable for dashboard consumption. */
+/**
+ * Builds a scheduler snapshot suitable for dashboard consumption while also
+ * normalising the optional supervisor telemetry so the stream never leaks
+ * `undefined` placeholders once `exactOptionalPropertyTypes` is fully
+ * enforced.
+ */
 function buildSchedulerSnapshot(
-  supervisorAgent: OrchestratorSupervisorContract | undefined,
+  supervisorAgent: OrchestratorSupervisorContract | null,
 ): DashboardSchedulerSnapshot {
   if (!supervisorAgent) {
     return { tick: 0, backlog: 0, completed: 0, failed: 0, updatedAt: null };
@@ -3482,3 +3492,8 @@ function serialiseSnapshotForInlineScript(snapshot: DashboardSnapshot): string {
     .replace(/\u2028/g, "\\u2028")
     .replace(/\u2029/g, "\\u2029");
 }
+
+/** @internal Exposes helpers exclusively used within the test-suite. */
+export const __testing = {
+  buildSchedulerSnapshot,
+};

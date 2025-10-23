@@ -43,6 +43,7 @@
     "src/types.ts#Version",
     "src/validation/logStimulus.ts#resolveLogStimulusHttpLogPath",
     "src/validation/transactions.ts#resolveTransactionsHttpLogPath",
+    "validation_runs/20251007T184620Z/lib/runContext.ts#createRunContext",
     "tests/perf/paths.micro-bench.ts#runPathsBench"
   ]
 }

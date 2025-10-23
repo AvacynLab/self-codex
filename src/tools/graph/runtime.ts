@@ -4,14 +4,10 @@ import type { NormalisedGraph } from "../../graph/types.js";
 import type {
   GraphModel as GraphForgeModelInstance,
   EdgeCostDescriptor as ForgeEdgeCostDescriptor,
-  ConstrainedPathResult as ForgeConstrainedPathResult,
 } from "graph-forge/dist/index.js";
 
 /** Edge cost descriptor re-exported from Graph Forge for typed callers. */
 export type GraphForgeEdgeCostDescriptor = ForgeEdgeCostDescriptor;
-/** Result returned by the constrained shortest path helper. */
-export type GraphForgeConstrainedResult = ForgeConstrainedPathResult;
-
 export const computationCache = new GraphComputationCache(128);
 
 const {

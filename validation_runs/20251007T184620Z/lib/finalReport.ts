@@ -112,6 +112,21 @@ function isErrnoException(error: unknown): error is NodeJS.ErrnoException {
 }
 
 /** Reads the JSON artefact at the provided path if it exists. */
+/**
+ * Normalises unexpected filesystem failures so callers observe a consistent
+ * error shape while avoiding `cause: undefined` placeholders.  The helper keeps
+ * the original `Error` instance attached when possible and falls back to the
+ * stringified value otherwise.
+ */
+function rethrowReadJsonError(filePath: string, error: unknown): never {
+  const reason = error instanceof Error ? error.message : String(error);
+  const message = `Unable to read JSON artefact at ${filePath}: ${reason}`;
+  if (error instanceof Error) {
+    throw new Error(message, { cause: error });
+  }
+  throw new Error(message);
+}
+
 async function readJsonIfExists<T>(filePath: string): Promise<T | null> {
   try {
     const raw = await readFile(filePath, 'utf8');
@@ -120,9 +135,7 @@ async function readJsonIfExists<T>(filePath: string): Promise<T | null> {
     if (isErrnoException(error) && error.code === 'ENOENT') {
       return null;
     }
-    throw new Error(`Unable to read JSON artefact at ${filePath}: ${(error as Error).message}`, {
-      cause: error instanceof Error ? error : undefined,
-    });
+    rethrowReadJsonError(filePath, error);
   }
 }
 
@@ -911,3 +924,11 @@ export async function runFinalReportStage(options: FinalReportStageOptions): Pro
     },
   };
 }
+
+/**
+ * Test-only helpers surfaced so the regression suite can exercise the
+ * sanitised error handling without relying on brittle filesystem primitives.
+ */
+export const __testing = {
+  rethrowReadJsonError,
+};

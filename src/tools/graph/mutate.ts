@@ -317,7 +317,13 @@ export function handleGraphGenerate(
     }
     // Centralise the omission of optional fields so generated nodes remain
     // compliant with strict optional property checks.
-    descriptor.nodes.push(buildGraphNodeRecord({ id: task.id, label: task.label, attributes }));
+    descriptor.nodes.push(
+      buildGraphNodeRecord({
+        id: task.id,
+        ...(task.label !== undefined ? { label: task.label } : {}),
+        attributes,
+      }),
+    );
   }
 
   const edgeSet = new Set<string>();
@@ -882,7 +888,11 @@ function applyAddNode(descriptor: NormalisedGraph, node: z.infer<typeof GraphNod
   // Build the node using conditional spreads so optional properties remain
   // absent instead of being serialised as `undefined`. This keeps the in-memory
   // descriptor compatible with `exactOptionalPropertyTypes`.
-  const createdNode = buildGraphNodeRecord({ id: node.id, label: node.label, attributes: nodeAttributes });
+  const createdNode = buildGraphNodeRecord({
+    id: node.id,
+    ...(node.label !== undefined ? { label: node.label } : {}),
+    attributes: nodeAttributes,
+  });
   descriptor.nodes.push(createdNode);
   return { op: "add_node", description: `node '${node.id}' created`, changed: true };
 }
@@ -954,8 +964,8 @@ function applyAddEdge(descriptor: NormalisedGraph, edge: z.infer<typeof GraphEdg
   const createdEdge = buildGraphEdgeRecord({
     from: edge.from,
     to: edge.to,
-    label: edge.label,
-    weight: typeof edge.weight === "number" ? edge.weight : undefined,
+    ...(edge.label !== undefined ? { label: edge.label } : {}),
+    ...(typeof edge.weight === "number" ? { weight: edge.weight } : {}),
     attributes: edgeAttributes,
   });
   descriptor.edges.push(createdEdge);

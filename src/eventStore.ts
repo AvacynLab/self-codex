@@ -1,5 +1,5 @@
 import { StructuredLogger } from "./logger.js";
-import { omitUndefinedEntries } from "./utils/object.js";
+import { coerceNullToUndefined, omitUndefinedEntries } from "./utils/object.js";
 import { normaliseProvenanceList, type Provenance } from "./types/provenance.js";
 
 /**
@@ -187,9 +187,13 @@ export class EventStore {
       kind: input.kind,
       level: input.level ?? "info",
       source: input.source ?? "orchestrator",
+      // Optional identifiers are coerced to `undefined` so the resulting event
+      // never materialises `null` placeholders. This keeps the EventStore API
+      // aligned with `exactOptionalPropertyTypes` and mirrors the behaviour of
+      // higher-level emitters such as `pushEvent`.
       ...omitUndefinedEntries({
-        jobId: input.jobId,
-        childId: input.childId,
+        jobId: coerceNullToUndefined(input.jobId),
+        childId: coerceNullToUndefined(input.childId),
         payload: input.payload,
       }),
       provenance: normaliseProvenanceList(input.provenance),

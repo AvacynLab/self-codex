@@ -1,9 +1,26 @@
 #!/usr/bin/env node
 import process from "node:process";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 
 import { executeCoordinationCli, parseCoordinationCliOptions } from "../src/validation/coordinationCli.js";
 import { COORDINATION_JSONL_FILES } from "../src/validation/coordination.js";
+import { cloneDefinedEnv } from "./lib/env-helpers.mjs";
+
+/**
+ * Builds the sanitised invocation bag for the Stage 7 coordination runner.
+ * The helper clones argv so repeated calls remain side-effect free and strips
+ * `undefined` entries from the environment to preserve strict optional
+ * semantics when the workflow inspects process settings.
+ */
+export function prepareCoordinationCliInvocation(
+  rawArgs: readonly string[] = process.argv.slice(2),
+  rawEnv: NodeJS.ProcessEnv = process.env,
+) {
+  const options = parseCoordinationCliOptions(Array.from(rawArgs));
+  const env = cloneDefinedEnv(rawEnv) as NodeJS.ProcessEnv;
+  return { options, env };
+}
 
 /**
  * CLI entrypoint for the Stage 7 coordination validation workflow. The helper
@@ -11,9 +28,12 @@ import { COORDINATION_JSONL_FILES } from "../src/validation/coordination.js";
  * across the entire validation checklist.
  */
 async function main(): Promise<void> {
-  const options = parseCoordinationCliOptions(process.argv.slice(2));
+  const { options, env } = prepareCoordinationCliInvocation(
+    process.argv.slice(2),
+    process.env,
+  );
 
-  const { runRoot, result } = await executeCoordinationCli(options, process.env, console);
+  const { runRoot, result } = await executeCoordinationCli(options, env, console);
 
   console.log("🤝 Coordination validation summary:");
   console.log(`   • blackboard key: ${result.summary.blackboard.key ?? "unknown"}`);
@@ -29,7 +49,9 @@ async function main(): Promise<void> {
   console.log(`📝 Summary: ${result.summaryPath}`);
 }
 
-main().catch((error) => {
-  console.error("Failed to execute coordination validation workflow:", error);
-  process.exitCode = 1;
-});
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]!).href) {
+  main().catch((error) => {
+    console.error("Failed to execute coordination validation workflow:", error);
+    process.exitCode = 1;
+  });
+}

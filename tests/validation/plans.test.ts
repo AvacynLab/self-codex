@@ -13,6 +13,7 @@ import {
   PLAN_JSONL_FILES,
   buildPlanSummary,
   runPlanPhase,
+  type PlanCallOutcome,
 } from "../../src/validation/plans.js";
 
 /** Unit tests covering the Stage 6 planning validation runner. */
@@ -208,6 +209,79 @@ describe("planning validation runner", () => {
     expect(summary.events.total).to.equal(2);
     expect(summary.events.types).to.have.property("phase:start", 1);
     expect(summary.events.types).to.have.property("phase:complete", 1);
+  });
+
+  it("omits lifecycle payloads when responses omit JSON-RPC results", () => {
+    const lifecycleOutcomes: PlanCallOutcome[] = [
+      {
+        call: { scenario: "lifecycle", name: "plan_status", method: "plan_status" },
+        check: {
+          name: "lifecycle:plan_status",
+          startedAt: new Date().toISOString(),
+          durationMs: 4,
+          request: { method: "POST", url: "http://127.0.0.1:8080/mcp", headers: {}, body: {} },
+          response: {
+            status: 500,
+            statusText: "Internal Server Error",
+            headers: {},
+            body: { error: { message: "upstream failure" } },
+          },
+        },
+        events: [],
+      },
+      {
+        call: { scenario: "lifecycle", name: "plan_pause", method: "plan_pause" },
+        check: {
+          name: "lifecycle:plan_pause",
+          startedAt: new Date().toISOString(),
+          durationMs: 3,
+          request: { method: "POST", url: "http://127.0.0.1:8080/mcp", headers: {}, body: {} },
+          response: {
+            status: 500,
+            statusText: "Internal Server Error",
+            headers: {},
+            body: { error: { message: "pause failed" } },
+          },
+        },
+        events: [],
+      },
+      {
+        call: { scenario: "lifecycle", name: "plan_resume", method: "plan_resume" },
+        check: {
+          name: "lifecycle:plan_resume",
+          startedAt: new Date().toISOString(),
+          durationMs: 3,
+          request: { method: "POST", url: "http://127.0.0.1:8080/mcp", headers: {}, body: {} },
+          response: {
+            status: 500,
+            statusText: "Internal Server Error",
+            headers: {},
+            body: { error: { message: "resume failed" } },
+          },
+        },
+        events: [],
+      },
+      {
+        call: { scenario: "lifecycle", name: "plan_cancel", method: "plan_cancel" },
+        check: {
+          name: "lifecycle:plan_cancel",
+          startedAt: new Date().toISOString(),
+          durationMs: 2,
+          request: { method: "POST", url: "http://127.0.0.1:8080/mcp", headers: {}, body: {} },
+          response: {
+            status: 500,
+            statusText: "Internal Server Error",
+            headers: {},
+            body: { error: { message: "cancel failed" } },
+          },
+        },
+        events: [],
+      },
+    ];
+
+    const summary = buildPlanSummary(runRoot, lifecycleOutcomes);
+
+    expect(Object.keys(summary.lifecycle)).to.have.lengthOf(0);
   });
 
   it("fails when plan_pause does not confirm a paused state", async () => {

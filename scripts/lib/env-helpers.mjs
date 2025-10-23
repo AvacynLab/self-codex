@@ -152,6 +152,18 @@ export function ensureSourceMapNodeOptions(baseEnv = process.env) {
 }
 
 /**
+ * Produces a shallow clone of the provided environment bag while omitting keys
+ * that resolve to `undefined`.  Node.js differentiates between missing
+ * variables and explicit `undefined` assignments when spawning child
+ * processes; the sanitiser preserves the former semantics so upcoming
+ * `exactOptionalPropertyTypes` enforcement never observes placeholder values.
+ */
+export function cloneDefinedEnv(source = process.env) {
+  const entries = Object.entries(source ?? {}).filter(([, value]) => value !== undefined);
+  return Object.fromEntries(entries);
+}
+
+/**
  * Ensures the host Node.js runtime satisfies the minimum supported version.
  * The check defends against CI misconfiguration where an older interpreter
  * could silently skip source-map support and other language features.

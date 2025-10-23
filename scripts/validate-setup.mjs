@@ -22,6 +22,8 @@ import { once } from "node:events";
 import { performance } from "node:perf_hooks";
 import { setTimeout as delay } from "node:timers/promises";
 
+import { cloneDefinedEnv } from "./lib/env-helpers.mjs";
+
 const TEST_MODE = process.env.CODEX_VALIDATE_SETUP_TEST === "1";
 const workspaceRoot = resolve(process.cwd());
 const runsRoot = resolve(process.env.VALIDATE_SETUP_ROOT ?? "validation_runs");
@@ -83,14 +85,14 @@ async function waitForReady(baseUrl, token) {
  */
 async function runSetupScript({ host, port, path, token }) {
   const scriptPath = resolve(workspaceRoot, "scripts/setup-agent-env.sh");
-  const childEnv = {
-    ...process.env,
-    START_HTTP: "1",
-    MCP_HTTP_HOST: host,
-    MCP_HTTP_PORT: String(port),
-    MCP_HTTP_PATH: path,
-    MCP_HTTP_TOKEN: token,
-  };
+  const childEnv = cloneDefinedEnv();
+  // Preserve the caller environment while omitting undefined entries so
+  // `exactOptionalPropertyTypes` never observes placeholder variables.
+  childEnv.START_HTTP = "1";
+  childEnv.MCP_HTTP_HOST = host;
+  childEnv.MCP_HTTP_PORT = String(port);
+  childEnv.MCP_HTTP_PATH = path;
+  childEnv.MCP_HTTP_TOKEN = token;
   const child = spawn("bash", [scriptPath], {
     cwd: workspaceRoot,
     env: childEnv,

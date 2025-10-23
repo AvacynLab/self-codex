@@ -98,7 +98,11 @@ import {
   recallLessons,
   seedLessons as seedLessonsUtility,
 } from "../learning/lessonPrompts.js";
-import { buildLessonsPromptPayload, normalisePromptBlueprint } from "../learning/lessonPromptDiff.js";
+import {
+  buildLessonsPromptPayload,
+  normalisePromptBlueprint,
+  type PromptBlueprint,
+} from "../learning/lessonPromptDiff.js";
 import { selectMemoryContext } from "../memory/attention.js";
 import { LoopDetector } from "../guard/loopDetector.js";
 import { BlackboardStore } from "../coord/blackboard.js";
@@ -195,7 +199,16 @@ import {
 import {
   ChildBudgetManager,
   ChildToolContext,
+  type ChildAttachRequest,
+  type ChildBatchCreateRequest,
+  type ChildCreateRequest,
+  type ChildSandboxOptionsInput,
   type ChildSendRequest,
+  type ChildStreamRequest,
+  type ChildCancelRequest,
+  type ChildSetLimitsRequest,
+  type ChildSetRoleRequest,
+  type ChildSpawnCodexRequest,
   handleChildAttach,
   handleChildBatchCreate,
   handleChildCancel,
@@ -1888,18 +1901,18 @@ function getPlanToolContext(): PlanToolContext {
     logger,
     childrenRoot: CHILDREN_ROOT,
     defaultChildRuntime: DEFAULT_CHILD_RUNTIME,
-    emitEvent: (event) => {
-      pushEvent({
-        kind: event.kind,
-        level: event.level,
-        payload: event.payload,
-        ...omitUndefinedEntries({
-          jobId: event.jobId,
-          childId: event.childId,
-          correlation: coerceNullToUndefined(event.correlation ?? null),
-        }),
-      });
-    },
+      emitEvent: (event) => {
+        pushEvent({
+          kind: event.kind,
+          payload: event.payload,
+          ...omitUndefinedEntries({
+            level: event.level,
+            jobId: event.jobId,
+            childId: event.childId,
+            correlation: coerceNullToUndefined(event.correlation ?? null),
+          }),
+        });
+      },
     stigmergy,
     supervisorAgent: orchestratorSupervisor,
     loopDetector,
@@ -2111,6 +2124,13 @@ export const __runtimeToolInternals = {
   getMemoryUpsertToolContext,
 };
 
+/** @internal Surface graph handler sanitisation helpers for focused regressions. */
+export const __graphHandlerInternals = {
+  buildGraphConfigRetentionOptions,
+  normaliseGraphQueryFilterInput,
+  buildGraphSubgraphExtractOptions,
+};
+
 /** @internal Exposes Graph Forge sanitisation helpers for targeted tests. */
 export const __graphForgeInternals = {
   buildGraphForgeTasks,
@@ -2126,10 +2146,14 @@ export const __transcriptAggregationInternals = {
  * The code/hint pair mirrors other knowledge-tool errors so clients receive a
  * deterministic diagnostic that can be surfaced in UX workflows.
  */
-class RagContextUnavailableError extends Error {
-  public readonly code = "E-RAG-CONTEXT";
-  public readonly hint = "rag_context_unavailable";
-  public readonly details?: Record<string, unknown>;
+  class RagContextUnavailableError extends Error {
+    public readonly code = "E-RAG-CONTEXT";
+    public readonly hint = "rag_context_unavailable";
+    /**
+     * Optional diagnostic payload mirroring the knowledge tool errors. Expressed
+     * as an explicit union to stay compatible with `exactOptionalPropertyTypes`.
+     */
+    public readonly details: Record<string, unknown> | undefined;
 
   constructor(message: string, details?: Record<string, unknown>) {
     super(message);
@@ -2843,6 +2867,22 @@ const GraphSubgraphExtractInputShape = GraphSubgraphExtractInputSchema.shape;
 
 type GraphSubgraphExtractInput = z.infer<typeof GraphSubgraphExtractInputSchema>;
 
+/**
+ * Builds the extraction options forwarded to the filesystem helper while omitting
+ * optional directory hints when callers rely on the default destination.
+ */
+function buildGraphSubgraphExtractOptions(
+  parsed: GraphSubgraphExtractInput,
+): Parameters<typeof extractSubgraphToFile>[0] {
+  return {
+    graph: parsed.graph,
+    nodeId: parsed.node_id,
+    runId: parsed.run_id,
+    childrenRoot: CHILDREN_ROOT,
+    ...omitUndefinedEntries({ directoryName: parsed.directory }),
+  };
+}
+
 interface PushEventInput {
   kind: EventKind;
   level?: EventLevel;
@@ -2858,29 +2898,34 @@ interface PushEventInput {
 }
 
 function pushEvent(event: PushEventInput): OrchestratorEvent {
-  const emitted = eventStore.emit({
-    // Forward the semantic kind so downstream consumers can latch onto
-    // PROMPT/PENDING/... identifiers without re-deriving them from payloads.
-    kind: event.kind,
-    level: event.level,
-    source: event.source,
-    ...omitUndefinedEntries({
-      // Null identifiers are intentionally omitted because the event store
-      // only tracks concrete string IDs while the public payload still exposes
-      // explicit `null` values via the correlation hints below.
-      jobId: coerceNullToUndefined(event.jobId),
-      childId: coerceNullToUndefined(event.childId),
-    }),
-    payload: event.payload,
-    provenance: event.provenance,
-  });
+    const emitted = eventStore.emit({
+      // Forward the semantic kind so downstream consumers can latch onto
+      // PROMPT/PENDING/... identifiers without re-deriving them from payloads.
+      kind: event.kind,
+      ...omitUndefinedEntries({
+        level: event.level,
+        source: event.source,
+        // Null identifiers are intentionally omitted because the event store
+        // only tracks concrete string IDs while the public payload still exposes
+        // explicit `null` values via the correlation hints below.
+        jobId: coerceNullToUndefined(event.jobId),
+        childId: coerceNullToUndefined(event.childId),
+      }),
+      ...(event.payload !== undefined ? { payload: event.payload } : {}),
+      ...(event.provenance !== undefined ? { provenance: event.provenance } : {}),
+    });
   graphState.recordEvent({
     seq: emitted.seq,
     ts: emitted.ts,
     kind: emitted.kind,
     level: emitted.level,
-    jobId: emitted.jobId,
-    childId: emitted.childId,
+    ...omitUndefinedEntries({
+      // Graph snapshots omit undefined identifiers so downstream visualisers
+      // never materialise empty slots when the orchestrator emits anonymous
+      // events.
+      jobId: emitted.jobId,
+      childId: emitted.childId,
+    }),
     provenance: emitted.provenance,
   });
 
@@ -2997,12 +3042,14 @@ export const __eventRuntimeInternals = {
 function buildLiveEvents(input: { job_id?: string; child_id?: string; limit?: number; order?: "asc" | "desc"; min_seq?: number }) {
   const limit = input.limit && input.limit > 0 ? Math.min(input.limit, 500) : 100;
   const afterSeq = typeof input.min_seq === "number" ? input.min_seq - 1 : undefined;
-  const snapshot = eventBus.list({
-    jobId: input.job_id,
-    childId: input.child_id,
-    afterSeq,
-    limit,
-  });
+    const snapshot = eventBus.list(
+      omitUndefinedEntries({
+        jobId: input.job_id,
+        childId: input.child_id,
+        afterSeq,
+        limit,
+      }),
+    );
   const ordered = [...snapshot].sort((a, b) => (input.order === "asc" ? a.seq - b.seq : b.seq - a.seq));
   return ordered.slice(0, limit).map((evt) => {
     const childId = evt.childId ?? null;
@@ -3368,6 +3415,177 @@ const ChildPromptShape = {
 } as const;
 const ChildPromptSchema = z.object(ChildPromptShape);
 type ChildPromptInput = z.infer<typeof ChildPromptSchema>;
+type StartChildSpecInput = NonNullable<z.infer<typeof StartSchema>["children"]>[number];
+type ChildSpawnCodexInput = z.infer<typeof ChildSpawnCodexInputSchema>;
+type ChildBatchCreateInput = z.infer<typeof ChildBatchCreateInputSchema>;
+type ChildAttachInput = z.infer<typeof ChildAttachInputSchema>;
+type ChildSetRoleInput = z.infer<typeof ChildSetRoleInputSchema>;
+type ChildSetLimitsInput = z.infer<typeof ChildSetLimitsInputSchema>;
+type ChildCreateInput = z.infer<typeof ChildCreateInputSchema>;
+type ChildStreamInput = z.infer<typeof ChildStreamInputSchema>;
+type ChildCancelInput = z.infer<typeof ChildCancelInputSchema>;
+
+/**
+ * Normalises the optional spawn spec parameters collected by the `start` tool.
+ *
+ * Zod surfaces absent optional fields as `undefined`, which would violate the
+ * stricter optional property typing enforced by `exactOptionalPropertyTypes`.
+ * By pruning those entries we keep the in-memory representation aligned with
+ * the `SpawnChildSpec` contract consumed by `createChild`.
+ */
+function normaliseSpawnChildSpecInput(spec: StartChildSpecInput): SpawnChildSpec {
+  return {
+    name: spec.name,
+    ...omitUndefinedEntries({
+      system: spec.system,
+      goals: spec.goals,
+    }),
+    runtime: spec.runtime ?? DEFAULT_CHILD_RUNTIME,
+  };
+}
+
+/**
+ * Sanitises sandbox overrides provided during child spawn/create operations.
+ * The helper drops undefined toggles so downstream supervisors never observe
+ * `{ inherit_default_env: undefined }` placeholders and therefore remain
+ * compatible with strict optional semantics.
+ */
+function buildChildSandboxOptions(
+  sandbox: ChildSpawnCodexInput["sandbox"],
+): ChildSandboxOptionsInput | undefined {
+  if (!sandbox) {
+    return undefined;
+  }
+  const options = omitUndefinedEntries({
+    profile: sandbox.profile,
+    allow_env: sandbox.allow_env,
+    env: sandbox.env,
+    inherit_default_env: sandbox.inherit_default_env,
+  });
+  return Object.keys(options).length > 0 ? options : undefined;
+}
+
+/** Builds the request forwarded to the child spawn helper without undefined fields. */
+function buildChildSpawnCodexRequest(parsed: ChildSpawnCodexInput): ChildSpawnCodexRequest {
+  const sandbox = buildChildSandboxOptions(parsed.sandbox);
+  return {
+    prompt: parsed.prompt,
+    ...(parsed.op_id ? { op_id: parsed.op_id } : {}),
+    ...(parsed.role ? { role: parsed.role } : {}),
+    ...(parsed.model_hint ? { model_hint: parsed.model_hint } : {}),
+    ...(parsed.limits ? { limits: parsed.limits } : {}),
+    ...(parsed.metadata ? { metadata: parsed.metadata } : {}),
+    ...(parsed.manifest_extras ? { manifest_extras: parsed.manifest_extras } : {}),
+    ...(typeof parsed.ready_timeout_ms === "number" ? { ready_timeout_ms: parsed.ready_timeout_ms } : {}),
+    ...(parsed.idempotency_key ? { idempotency_key: parsed.idempotency_key } : {}),
+    ...(sandbox ? { sandbox } : {}),
+  };
+}
+
+/** Materialises the batch create payload with fully sanitised entries. */
+function buildChildBatchCreateRequest(parsed: ChildBatchCreateInput): ChildBatchCreateRequest {
+  return {
+    entries: parsed.entries.map((entry) => buildChildSpawnCodexRequest(entry)),
+  };
+}
+
+/** Normalises the attach payload so optional extras disappear when absent. */
+function buildChildAttachRequest(parsed: ChildAttachInput): ChildAttachRequest {
+  return {
+    child_id: parsed.child_id,
+    ...(parsed.manifest_extras ? { manifest_extras: parsed.manifest_extras } : {}),
+  };
+}
+
+/** Normalises the set-role payload before forwarding it to the supervisor. */
+function buildChildSetRoleRequest(parsed: ChildSetRoleInput): ChildSetRoleRequest {
+  return {
+    child_id: parsed.child_id,
+    role: parsed.role,
+    ...(parsed.manifest_extras ? { manifest_extras: parsed.manifest_extras } : {}),
+  };
+}
+
+/** Normalises the set-limits payload so undefined overrides never surface. */
+function buildChildSetLimitsRequest(parsed: ChildSetLimitsInput): ChildSetLimitsRequest {
+  return {
+    child_id: parsed.child_id,
+    ...(parsed.limits !== undefined ? { limits: parsed.limits } : {}),
+    ...(parsed.manifest_extras ? { manifest_extras: parsed.manifest_extras } : {}),
+  };
+}
+
+/** Normalises child stream pagination options before hitting the supervisor. */
+function buildChildStreamRequest(parsed: ChildStreamInput): ChildStreamRequest {
+  return {
+    child_id: parsed.child_id,
+    ...(typeof parsed.after_sequence === "number" ? { after_sequence: parsed.after_sequence } : {}),
+    ...(typeof parsed.limit === "number" ? { limit: parsed.limit } : {}),
+    ...(parsed.streams ? { streams: parsed.streams } : {}),
+  };
+}
+
+/** Normalises the child cancel payload so undefined overrides disappear. */
+function buildChildCancelRequest(parsed: ChildCancelInput): ChildCancelRequest {
+  return {
+    child_id: parsed.child_id,
+    ...(parsed.signal ? { signal: parsed.signal } : {}),
+    ...(typeof parsed.timeout_ms === "number" ? { timeout_ms: parsed.timeout_ms } : {}),
+  };
+}
+
+/**
+ * Sanitises the child create request prior to enriching it with lessons or
+ * memory context. Optional flags are only materialised when callers provide a
+ * concrete value so downstream helpers never observe undefined placeholders.
+ */
+function buildChildCreateRequest(parsed: ChildCreateInput): ChildCreateRequest {
+  const timeouts = parsed.timeouts ? omitUndefinedEntries(parsed.timeouts) : undefined;
+  const budget = parsed.budget ? omitUndefinedEntries(parsed.budget) : undefined;
+  return {
+    ...(parsed.op_id ? { op_id: parsed.op_id } : {}),
+    ...(parsed.child_id ? { child_id: parsed.child_id } : {}),
+    ...(parsed.command ? { command: parsed.command } : {}),
+    ...(parsed.args ? { args: parsed.args } : {}),
+    ...(parsed.env ? { env: parsed.env } : {}),
+    ...(parsed.prompt ? { prompt: parsed.prompt } : {}),
+    ...(parsed.tools_allow ? { tools_allow: parsed.tools_allow } : {}),
+    ...(timeouts ? { timeouts } : {}),
+    ...(budget ? { budget } : {}),
+    ...(parsed.metadata ? { metadata: parsed.metadata } : {}),
+    ...(parsed.manifest_extras ? { manifest_extras: parsed.manifest_extras } : {}),
+    ...(parsed.wait_for_ready !== undefined ? { wait_for_ready: parsed.wait_for_ready } : {}),
+    ...(parsed.ready_type ? { ready_type: parsed.ready_type } : {}),
+    ...(parsed.ready_timeout_ms !== undefined ? { ready_timeout_ms: parsed.ready_timeout_ms } : {}),
+    ...(parsed.initial_payload !== undefined ? { initial_payload: parsed.initial_payload } : {}),
+    ...(parsed.idempotency_key ? { idempotency_key: parsed.idempotency_key } : {}),
+  };
+}
+
+/** Test-only hook exposing the child sanitisation helpers. */
+export const __childHandlerInternals = {
+  normaliseSpawnChildSpecInput,
+  buildChildSpawnCodexRequest,
+  buildChildBatchCreateRequest,
+  buildChildAttachRequest,
+  buildChildSetRoleRequest,
+  buildChildSetLimitsRequest,
+  buildChildStreamRequest,
+  buildChildCancelRequest,
+  buildChildCreateRequest,
+};
+
+function toPromptBlueprint(prompt: ChildCreateRequest["prompt"] | undefined): PromptBlueprint | undefined {
+  if (!prompt) {
+    return undefined;
+  }
+  const blueprint = omitUndefinedEntries({
+    system: prompt.system,
+    user: prompt.user,
+    assistant: prompt.assistant,
+  });
+  return blueprint as PromptBlueprint;
+}
 /**
  * Structured payload emitted by `child_prompt` so operators can reconcile
  * transcript growth without replaying the entire conversation history.
@@ -3527,6 +3745,14 @@ const GraphSaveShape = { path: z.string() } as const;
 const GraphSaveSchema = z.object(GraphSaveShape);
 type GraphSaveInput = z.infer<typeof GraphSaveSchema>;
 
+const GraphAutosaveShape = {
+  action: z.enum(["start", "stop"]),
+  path: z.string().optional(),
+  interval_ms: z.number().optional(),
+} as const;
+const GraphAutosaveSchema = z.object(GraphAutosaveShape);
+type GraphAutosaveInput = z.infer<typeof GraphAutosaveSchema>;
+
 const GraphLoadShape = { path: z.string() } as const;
 const GraphLoadSchema = z.object(GraphLoadShape);
 type GraphLoadInput = z.infer<typeof GraphLoadSchema>;
@@ -3534,6 +3760,18 @@ type GraphLoadInput = z.infer<typeof GraphLoadSchema>;
 const GraphRuntimeShape = { runtime: z.string().optional(), reset: z.boolean().optional() } as const;
 const GraphRuntimeSchema = z.object(GraphRuntimeShape);
 type GraphRuntimeInput = z.infer<typeof GraphRuntimeSchema>;
+
+/**
+ * Schema guarding retention tweaks applied through the MCP layer. The helper
+ * enforces positive integers so the runtime never receives zero/negative
+ * thresholds when strict optional property typing is enabled.
+ */
+const GraphConfigRetentionShape = {
+  max_transcript_per_child: z.number().int().positive().optional(),
+  max_event_nodes: z.number().int().positive().optional(),
+} as const;
+const GraphConfigRetentionSchema = z.object(GraphConfigRetentionShape);
+type GraphConfigRetentionInput = z.infer<typeof GraphConfigRetentionSchema>;
 
 const GraphStatsShape = {} as const;
 const GraphStatsSchema = z.object(GraphStatsShape);
@@ -3554,6 +3792,57 @@ const GraphInactivityShape = {
 } as const;
 const GraphInactivitySchema = z.object(GraphInactivityShape);
 type GraphInactivityInput = z.infer<typeof GraphInactivitySchema>;
+
+/**
+ * Contract exposed by the lightweight `graph_query` helper. Optional fields are
+ * explicitly declared as unions so strict optional property typing does not
+ * force downstream handlers to materialise `undefined` placeholders.
+ */
+const GraphQueryShape = {
+  kind: z.enum(["neighbors", "filter"]),
+  node_id: z.string().min(1).optional(),
+  direction: z.enum(["out", "in", "both"]).optional(),
+  edge_type: z.string().min(1).optional(),
+  select: z.enum(["nodes", "edges", "both"]).optional(),
+  where: z.record(z.union([z.string(), z.number(), z.boolean()])).optional(),
+  limit: z.number().int().positive().optional(),
+} as const;
+const GraphQuerySchema = z.object(GraphQueryShape);
+type GraphQueryInput = z.infer<typeof GraphQuerySchema>;
+
+/**
+ * Builds the sanitized retention overrides propagated to the graph state. The helper
+ * drops optional keys that remain undefined so the runtime stays compliant with
+ * `exactOptionalPropertyTypes`.
+ */
+function buildGraphConfigRetentionOptions(
+  input: GraphConfigRetentionInput,
+): Partial<{ maxTranscriptPerChild: number; maxEventNodes: number }> {
+  return omitUndefinedEntries({
+    maxTranscriptPerChild: input.max_transcript_per_child,
+    maxEventNodes: input.max_event_nodes,
+  });
+}
+
+/**
+ * Normalises the `graph_query` filter inputs so the handler receives concrete defaults
+ * without reintroducing optional placeholders. The return type mirrors the arguments
+ * accepted by the underlying graph state helpers.
+ */
+function normaliseGraphQueryFilterInput(input: GraphQueryInput): {
+  select: "nodes" | "edges" | "both";
+  where: Record<string, string | number | boolean>;
+  limit?: number;
+} {
+  const select = input.select ?? "nodes";
+  const where = input.where ?? {};
+  const limit = input.limit;
+  return {
+    select,
+    where,
+    ...(limit !== undefined ? { limit } : {}),
+  };
+}
 
 // job_view
 const JobViewShape = { job_id: z.string(), per_child_limit: z.number().optional(), format: z.enum(["json", "text"]).optional(), include_system: z.boolean().optional() } as const;
@@ -3689,10 +3978,18 @@ function runGraphForgeAnalysis(
         throw new Error("shortestPath requires <start> and <goal>");
       }
       const [start, goal] = task.args;
-      return mod.shortestPath(compiled.graph, start, goal, { weightAttribute });
-    }
-    case "criticalPath":
-      return mod.criticalPath(compiled.graph, { weightAttribute });
+        return mod.shortestPath(
+          compiled.graph,
+          start,
+          goal,
+          weightAttribute !== undefined ? { weightAttribute } : {},
+        );
+      }
+      case "criticalPath":
+        return mod.criticalPath(
+          compiled.graph,
+          weightAttribute !== undefined ? { weightAttribute } : {},
+        );
     case "stronglyConnected": {
       if (task.args.length) {
         throw new Error("stronglyConnected does not accept arguments");
@@ -3755,10 +4052,10 @@ async function invokeToolForRegistry(
         }),
       )
     : undefined;
-  const result = await routeJsonRpcRequest(tool, args, {
-    headers,
-    transport: "tool-os",
-  });
+    const result = await routeJsonRpcRequest(tool, args, {
+      transport: "tool-os",
+      ...(headers ? { headers } : {}),
+    });
   return result as CallToolResult;
 }
 
@@ -3786,13 +4083,14 @@ export const __rpcServerInternals = {
   },
 };
 
-const toolRegistry = await ToolRegistry.create({
-  server,
-  logger,
-  runsRoot: process.env.MCP_RUNS_ROOT,
-  clock: () => new Date(),
-  invokeTool: invokeToolForRegistry,
-});
+  const runsRoot = process.env.MCP_RUNS_ROOT;
+  const toolRegistry = await ToolRegistry.create({
+    server,
+    logger,
+    clock: () => new Date(),
+    invokeTool: invokeToolForRegistry,
+    ...(runsRoot !== undefined ? { runsRoot } : {}),
+  });
 process.once("exit", () => toolRegistry.close());
 
 const toolsHelpManifest = await registerToolsHelpTool(toolRegistry, { logger });
@@ -3865,12 +4163,12 @@ bindToolIntrospectionProvider(() => {
   if (!registry) {
     return [];
   }
-  return Object.entries(registry).map(([name, tool]) => ({
-    name,
-    inputSchema: tool.inputSchema as ZodTypeAny | undefined,
-    enabled: tool.enabled !== false,
-  }));
-});
+    return Object.entries(registry).map(([name, tool]) => ({
+      name,
+      enabled: tool.enabled !== false,
+      ...(tool.inputSchema ? { inputSchema: tool.inputSchema as ZodTypeAny } : {}),
+    }));
+  });
 
 /**
  * Tool exposing the runtime metadata so MCP clients can negotiate transports
@@ -4014,20 +4312,20 @@ server.registerTool(
   async (input: unknown) => {
     try {
       const parsed = ToolComposeRegisterInputSchema.parse(input);
-      const request: CompositeRegistrationRequest = {
-        name: parsed.name,
-        title: parsed.title,
-        description: parsed.description,
-        tags: parsed.tags ?? [],
-        steps: parsed.steps.map((step) => ({
-          id: step.id,
-          tool: step.tool,
-          ...omitUndefinedEntries({
-            arguments: step.arguments,
-            capture: step.capture,
-          }),
-        })),
-      };
+        const request: CompositeRegistrationRequest = {
+          name: parsed.name,
+          title: parsed.title,
+          steps: parsed.steps.map((step) => ({
+            id: step.id,
+            tool: step.tool,
+            ...omitUndefinedEntries({
+              arguments: step.arguments,
+              capture: step.capture,
+            }),
+          })),
+          ...(parsed.description ? { description: parsed.description } : {}),
+          ...(parsed.tags && parsed.tags.length > 0 ? { tags: parsed.tags } : {}),
+        };
       const manifest = await toolRegistry.registerComposite(request);
       const payload = { tool: manifest.name, manifest };
       return {
@@ -4125,46 +4423,52 @@ server.registerTool(
   async (input: unknown) => {
     try {
       const parsed = ResourceWatchInputSchema.parse(input);
-      const result = resources.watch(parsed.uri, {
-        fromSeq: parsed.from_seq,
-        limit: parsed.limit,
-        keys: parsed.keys,
-        blackboard: parsed.blackboard
-          ? {
-              keys: parsed.blackboard.keys,
-              kinds: parsed.blackboard.kinds,
-              tags: parsed.blackboard.tags,
-              sinceTs: parsed.blackboard.since_ts,
-              untilTs: parsed.blackboard.until_ts,
-            }
-          : undefined,
-        run: parsed.run
-          ? {
-              levels: parsed.run.levels,
-              kinds: parsed.run.kinds,
-              jobIds: parsed.run.job_ids,
-              opIds: parsed.run.op_ids,
-              graphIds: parsed.run.graph_ids,
-              nodeIds: parsed.run.node_ids,
-              childIds: parsed.run.child_ids,
-              runIds: parsed.run.run_ids,
-              sinceTs: parsed.run.since_ts,
-              untilTs: parsed.run.until_ts,
-            }
-          : undefined,
-        child: parsed.child
-          ? {
-              streams: parsed.child.streams,
-              jobIds: parsed.child.job_ids,
-              runIds: parsed.child.run_ids,
-              opIds: parsed.child.op_ids,
-              graphIds: parsed.child.graph_ids,
-              nodeIds: parsed.child.node_ids,
-              sinceTs: parsed.child.since_ts,
-              untilTs: parsed.child.until_ts,
-            }
-          : undefined,
-      });
+      const blackboardFilters = parsed.blackboard
+        ? omitUndefinedEntries({
+            keys: parsed.blackboard.keys,
+            kinds: parsed.blackboard.kinds,
+            tags: parsed.blackboard.tags,
+            sinceTs: parsed.blackboard.since_ts,
+            untilTs: parsed.blackboard.until_ts,
+          })
+        : undefined;
+      const runFilters = parsed.run
+        ? omitUndefinedEntries({
+            levels: parsed.run.levels,
+            kinds: parsed.run.kinds,
+            jobIds: parsed.run.job_ids,
+            opIds: parsed.run.op_ids,
+            graphIds: parsed.run.graph_ids,
+            nodeIds: parsed.run.node_ids,
+            childIds: parsed.run.child_ids,
+            runIds: parsed.run.run_ids,
+            sinceTs: parsed.run.since_ts,
+            untilTs: parsed.run.until_ts,
+          })
+        : undefined;
+      const childFilters = parsed.child
+        ? omitUndefinedEntries({
+            streams: parsed.child.streams,
+            jobIds: parsed.child.job_ids,
+            runIds: parsed.child.run_ids,
+            opIds: parsed.child.op_ids,
+            graphIds: parsed.child.graph_ids,
+            nodeIds: parsed.child.node_ids,
+            sinceTs: parsed.child.since_ts,
+            untilTs: parsed.child.until_ts,
+          })
+        : undefined;
+      const result = resources.watch(
+        parsed.uri,
+        omitUndefinedEntries({
+          fromSeq: parsed.from_seq,
+          limit: parsed.limit,
+          keys: parsed.keys,
+          blackboard: blackboardFilters,
+          run: runFilters,
+          child: childFilters,
+        }),
+      );
       const format = parsed.format ?? "json";
       const filtersSnapshot = result.filters
         ? (structuredClone(result.filters) as ResourceWatchResult["filters"])
@@ -4229,19 +4533,35 @@ server.registerTool(
       const parsed = EventSubscribeInputSchema.parse(input ?? {});
       const limit = parsed.limit ?? 100;
       const cats = parseEventCategories(parsed.cats);
-      const filter: EventFilter = {
-        cats,
-        levels: parsed.levels as BusEventLevel[] | undefined,
-        jobId: parsed.job_id,
-        runId: parsed.run_id,
-        opId: parsed.op_id,
-        graphId: parsed.graph_id,
-        nodeId: parsed.node_id,
-        childId: parsed.child_id,
-        afterSeq: typeof parsed.from_seq === "number" ? parsed.from_seq : undefined,
-        limit,
-      };
-      const events = eventBus.list(filter).sort((a, b) => a.seq - b.seq);
+        const filter: EventFilter = { limit };
+        if (cats) {
+          filter.cats = cats;
+        }
+        if (parsed.levels) {
+          filter.levels = parsed.levels as BusEventLevel[];
+        }
+        if (parsed.job_id) {
+          filter.jobId = parsed.job_id;
+        }
+        if (parsed.run_id) {
+          filter.runId = parsed.run_id;
+        }
+        if (parsed.op_id) {
+          filter.opId = parsed.op_id;
+        }
+        if (parsed.graph_id) {
+          filter.graphId = parsed.graph_id;
+        }
+        if (parsed.node_id) {
+          filter.nodeId = parsed.node_id;
+        }
+        if (parsed.child_id) {
+          filter.childId = parsed.child_id;
+        }
+        if (typeof parsed.from_seq === "number") {
+          filter.afterSeq = parsed.from_seq;
+        }
+        const events = eventBus.list(filter).sort((a, b) => a.seq - b.seq);
       const serialised = events.map((evt) => {
         const eventKind = evt.kind && evt.kind.trim().length > 0 ? evt.kind : evt.cat.toUpperCase();
         return {
@@ -4398,26 +4718,35 @@ server.registerTool(
         sinceTs !== undefined ||
         untilTs !== undefined;
 
-      const result = logJournal.tail({
-        stream,
-        bucketId: targetBucket,
-        fromSeq: parsed.from_seq,
-        limit: parsed.limit,
-        levels: requestedLevels,
-        filters: hasFilters
-          ? {
-              runIds,
-              jobIds,
-              opIds,
-              graphIds,
-              nodeIds,
-              childIds,
-              messageIncludes: messageContains,
-              sinceTs,
-              untilTs,
-            }
-          : undefined,
-      });
+        const tailOptions: Parameters<LogJournal["tail"]>[0] = {
+          stream,
+          bucketId: targetBucket,
+        };
+        if (parsed.from_seq !== undefined) {
+          tailOptions.fromSeq = parsed.from_seq;
+        }
+        if (parsed.limit !== undefined) {
+          tailOptions.limit = parsed.limit;
+        }
+        if (requestedLevels) {
+          tailOptions.levels = requestedLevels;
+        }
+
+        if (hasFilters) {
+          tailOptions.filters = omitUndefinedEntries({
+            runIds,
+            jobIds,
+            opIds,
+            graphIds,
+            nodeIds,
+            childIds,
+            messageIncludes: messageContains,
+            sinceTs,
+            untilTs,
+          });
+        }
+
+        const result = logJournal.tail(tailOptions);
 
       const entries = result.entries.map((entry) => ({
         seq: entry.seq,
@@ -4523,9 +4852,10 @@ server.registerTool(
     try {
       const parsed = GraphExportSchema.parse(input);
       const snapshot = graphState.serialize();
-      const descriptor = snapshotToGraphDescriptor(snapshot, {
-        labelAttribute: parsed.label_attribute,
-      });
+      const descriptor = snapshotToGraphDescriptor(
+        snapshot,
+        parsed.label_attribute !== undefined ? { labelAttribute: parsed.label_attribute } : {},
+      );
 
       let payloadString = "";
       let structuredPayload: unknown = null;
@@ -4544,26 +4874,35 @@ server.registerTool(
           break;
         }
         case "mermaid": {
-          payloadString = renderMermaidFromGraph(descriptor, {
-            direction: parsed.direction ?? "LR",
-            labelAttribute: parsed.label_attribute,
-            weightAttribute: parsed.weight_attribute,
-            maxLabelLength: parsed.max_label_length,
-          });
+          payloadString = renderMermaidFromGraph(
+            descriptor,
+            omitUndefinedEntries({
+              direction: parsed.direction ?? "LR",
+              labelAttribute: parsed.label_attribute,
+              weightAttribute: parsed.weight_attribute,
+              maxLabelLength: parsed.max_label_length,
+            }),
+          );
           break;
         }
         case "dot": {
-          payloadString = renderDotFromGraph(descriptor, {
-            labelAttribute: parsed.label_attribute,
-            weightAttribute: parsed.weight_attribute,
-          });
+          payloadString = renderDotFromGraph(
+            descriptor,
+            omitUndefinedEntries({
+              labelAttribute: parsed.label_attribute,
+              weightAttribute: parsed.weight_attribute,
+            }),
+          );
           break;
         }
         case "graphml": {
-          payloadString = renderGraphmlFromGraph(descriptor, {
-            labelAttribute: parsed.label_attribute,
-            weightAttribute: parsed.weight_attribute,
-          });
+          payloadString = renderGraphmlFromGraph(
+            descriptor,
+            omitUndefinedEntries({
+              labelAttribute: parsed.label_attribute,
+              weightAttribute: parsed.weight_attribute,
+            }),
+          );
           break;
         }
       }
@@ -4679,14 +5018,25 @@ server.registerTool(
 server.registerTool(
   "conversation_view",
   { title: "Conversation view", description: "Affiche la conversation d'un enfant (texte ou JSON).", inputSchema: { child_id: z.string(), since_index: z.number().optional(), since_ts: z.number().optional(), limit: z.number().optional(), format: z.enum(["text", "json"]).optional(), include_system: z.boolean().optional() } },
-  async (input: { child_id: string; since_index?: number; since_ts?: number; limit?: number; format?: "text" | "json"; include_system?: boolean }) => {
-    const child = graphState.getChild(input.child_id);
+  async (input, _extra: RequestHandlerExtra<ServerRequest, ServerNotification>) => {
+    const args = input as {
+      child_id: string;
+      since_index?: number;
+      since_ts?: number;
+      limit?: number;
+      format?: "text" | "json";
+      include_system?: boolean;
+    };
+    const child = graphState.getChild(args.child_id);
     if (!child) return { isError: true, content: [{ type: "text", text: j({ error: "NOT_FOUND", message: "child_id inconnu" }) }] };
-    const slice = graphState.getTranscript(child.id, { sinceIndex: input.since_index, sinceTs: input.since_ts, limit: input.limit });
-    const items = slice.items.filter((m) => (m.role === "system" ? (input.include_system ?? true) : true));
+    const slice = graphState.getTranscript(
+      child.id,
+      omitUndefinedEntries({ sinceIndex: args.since_index, sinceTs: args.since_ts, limit: args.limit }),
+    );
+    const items = slice.items.filter((m) => (m.role === "system" ? (args.include_system ?? true) : true));
     const deepLink = `vscode://local.self-fork-orchestrator-viewer/open?child_id=${encodeURIComponent(child.id)}`;
     const commandUri = `command:selfForkViewer.openConversation?${encodeURIComponent(JSON.stringify({ child_id: child.id }))}`;
-    if ((input.format ?? "text") === "json") {
+    if ((args.format ?? "text") === "json") {
       return { content: [{ type: "text", text: j({ format: "json", child: { id: child.id, name: child.name }, total: slice.total, items, vscode_deeplink: deepLink, vscode_command: commandUri }) }] };
     }
     const lines: string[] = [
@@ -4701,12 +5051,20 @@ server.registerTool(
 server.registerTool(
   "events_view",
   { title: "Events view", description: "Affiche les evenements (recent/pending/live)", inputSchema: { mode: z.enum(["recent", "pending", "live"]).optional(), job_id: z.string().optional(), child_id: z.string().optional(), limit: z.number().optional(), order: z.enum(["asc", "desc"]).optional(), min_seq: z.number().optional() } },
-  async (input: { mode?: "recent" | "pending" | "live"; job_id?: string; child_id?: string; limit?: number; order?: "asc" | "desc"; min_seq?: number }) => {
-    const mode = input.mode ?? "recent";
+  async (input, _extra: RequestHandlerExtra<ServerRequest, ServerNotification>) => {
+    const args = input as {
+      mode?: "recent" | "pending" | "live";
+      job_id?: string;
+      child_id?: string;
+      limit?: number;
+      order?: "asc" | "desc";
+      min_seq?: number;
+    };
+    const mode = args.mode ?? "recent";
     if (mode === "pending") {
       const nodes = graphState.filterNodes({ type: "pending" }, undefined);
       const items = nodes
-        .filter((n) => (input.child_id ? String(n.attributes.child_id ?? "") === input.child_id : true))
+        .filter((n) => (args.child_id ? String(n.attributes.child_id ?? "") === args.child_id : true))
         .map((n) => {
           const childId = String(n.attributes.child_id ?? "");
           const deepLink = `vscode://local.self-fork-orchestrator-viewer/open?child_id=${encodeURIComponent(childId)}`;
@@ -4716,14 +5074,22 @@ server.registerTool(
       return { content: [{ type: "text", text: j({ format: "json", mode: "pending", pending: items }) }] };
     }
     if (mode === "live") {
-      const events = buildLiveEvents({ job_id: input.job_id, child_id: input.child_id, limit: input.limit, order: input.order, min_seq: input.min_seq });
+      const events = buildLiveEvents(
+        omitUndefinedEntries({
+          job_id: args.job_id,
+          child_id: args.child_id,
+          limit: args.limit,
+          order: args.order,
+          min_seq: args.min_seq,
+        }),
+      );
       return { content: [{ type: "text", text: j({ format: "json", mode: "live", events, via: "events_view" }) }] };
     }
-    const limit = input.limit && input.limit > 0 ? input.limit : 100;
+    const limit = args.limit && args.limit > 0 ? args.limit : 100;
     const events = graphState
       .filterNodes({ type: "event" }, undefined)
-      .filter((n) => (input.job_id ? String(n.attributes.job_id ?? "") === input.job_id : true))
-      .filter((n) => (input.child_id ? String(n.attributes.child_id ?? "") === input.child_id : true))
+      .filter((n) => (args.job_id ? String(n.attributes.job_id ?? "") === args.job_id : true))
+      .filter((n) => (args.child_id ? String(n.attributes.child_id ?? "") === args.child_id : true))
       .map((n) => {
         const childId = String(n.attributes.child_id ?? "");
         const deepLink = childId ? `vscode://local.self-fork-orchestrator-viewer/open?child_id=${encodeURIComponent(childId)}` : null;
@@ -4740,9 +5106,30 @@ server.registerTool(
           vscode_command: commandUri
         };
       })
-      .sort((a, b) => (input.order === "asc" ? a.seq - b.seq : b.seq - a.seq))
+      .sort((a, b) => (args.order === "asc" ? a.seq - b.seq : b.seq - a.seq))
       .slice(0, limit);
-    return { content: [{ type: "text", text: j({ format: "json", mode: "recent", events, live_hint: { tool: "events_view_live", suggested_input: { job_id: input.job_id ?? null, child_id: input.child_id ?? null, limit: input.limit ?? null, order: input.order ?? null, min_seq: input.min_seq ?? null } } }) }] };
+    return {
+      content: [
+        {
+          type: "text",
+          text: j({
+            format: "json",
+            mode: "recent",
+            events,
+            live_hint: {
+              tool: "events_view_live",
+              suggested_input: {
+                job_id: args.job_id ?? null,
+                child_id: args.child_id ?? null,
+                limit: args.limit ?? null,
+                order: args.order ?? null,
+                min_seq: args.min_seq ?? null,
+              },
+            },
+          }),
+        },
+      ],
+    };
   }
 );
 
@@ -4751,24 +5138,58 @@ server.registerTool(
   "events_view_live",
   { title: "Events view (live)", description: "Affiche les evenements issus du bus live.", inputSchema: EventsViewLiveShape },
   async (input: EventsViewLiveInput) => {
-    const events = buildLiveEvents(input);
+    const events = buildLiveEvents(
+      omitUndefinedEntries({
+        job_id: input.job_id,
+        child_id: input.child_id,
+        limit: input.limit,
+        order: input.order,
+        min_seq: input.min_seq,
+      }),
+    );
     return { content: [{ type: "text", text: j({ format: "json", mode: "live", events, via: "events_view_live" }) }] };
   }
 );
 
 // Autosave (start/stop)
+const AUTOSAVE_DEFAULT_INTERVAL_MS = 5_000;
+const AUTOSAVE_MIN_INTERVAL_MS = 1_000;
+const AUTOSAVE_MAX_INTERVAL_MS = 600_000;
 let AUTOSAVE_TIMER: IntervalHandle | null = null;
 let AUTOSAVE_PATH: string | null = null;
+
+/**
+ * Clamps the autosave interval to the guard rails enforced by the runtime. The helper keeps the
+ * handler implementation expressive while documenting the bounds used to protect the worker
+ * thread from overly chatty timers.
+ */
+function clampAutosaveInterval(candidate?: number): number {
+  if (candidate === undefined || Number.isNaN(candidate)) {
+    return AUTOSAVE_DEFAULT_INTERVAL_MS;
+  }
+  return Math.min(Math.max(candidate, AUTOSAVE_MIN_INTERVAL_MS), AUTOSAVE_MAX_INTERVAL_MS);
+}
+
 server.registerTool(
   "graph_state_autosave",
-  { title: "Graph autosave", description: "Demarre/arrete la sauvegarde periodique du graphe.", inputSchema: { action: z.enum(["start", "stop"]), path: z.string().optional(), interval_ms: z.number().optional() } },
-  async (input: { action: "start" | "stop"; path?: string; interval_ms?: number }) => {
+  {
+    title: "Graph autosave",
+    description: "Demarre/arrete la sauvegarde periodique du graphe.",
+    inputSchema: GraphAutosaveShape,
+  },
+  async (
+    input: GraphAutosaveInput,
+    _extra: RequestHandlerExtra<ServerRequest, ServerNotification>,
+  ) => {
     if (input.action === "stop") {
-      if (AUTOSAVE_TIMER) runtimeTimers.clearInterval(AUTOSAVE_TIMER);
+      if (AUTOSAVE_TIMER) {
+        runtimeTimers.clearInterval(AUTOSAVE_TIMER);
+      }
       AUTOSAVE_TIMER = null;
       AUTOSAVE_PATH = null;
       return { content: [{ type: "text", text: j({ format: "json", ok: true, status: "stopped" }) }] };
     }
+
     let targetPath: string;
     try {
       targetPath = resolveWorkspacePath(input.path ?? "graph-autosave.json");
@@ -4778,36 +5199,44 @@ server.registerTool(
       }
       throw error;
     }
-    const interval = Math.min(Math.max(input.interval_ms ?? 5000, 1000), 600000);
-    if (AUTOSAVE_TIMER) runtimeTimers.clearInterval(AUTOSAVE_TIMER);
+
+    const interval = clampAutosaveInterval(input.interval_ms ?? AUTOSAVE_DEFAULT_INTERVAL_MS);
+
+    if (AUTOSAVE_TIMER) {
+      runtimeTimers.clearInterval(AUTOSAVE_TIMER);
+    }
+
     await ensureParentDirectory(targetPath);
     AUTOSAVE_PATH = targetPath;
     AUTOSAVE_TIMER = runtimeTimers.setInterval(async () => {
+      const activePath = AUTOSAVE_PATH;
+      if (!activePath) {
+        return;
+      }
+
       try {
         const snap = graphState.serialize();
         const metadata = {
           saved_at: new Date().toISOString(),
           inactivity_threshold_ms: lastInactivityThresholdMs,
-          event_history_limit: eventStore.getMaxHistory()
+          event_history_limit: eventStore.getMaxHistory(),
         };
-        await ensureParentDirectory(AUTOSAVE_PATH!);
-        await writeFile(
-          AUTOSAVE_PATH!,
-          JSON.stringify({ metadata, snapshot: snap }, null, 2),
-          "utf8"
-        );
+        await ensureParentDirectory(activePath);
+        await writeFile(activePath, JSON.stringify({ metadata, snapshot: snap }, null, 2), "utf8");
         logger.info("graph_autosave_written", {
-          path: AUTOSAVE_PATH,
+          path: activePath,
           node_count: snap.nodes.length,
-          edge_count: snap.edges.length
+          edge_count: snap.edges.length,
         });
       } catch (error) {
+        const activePathForError = AUTOSAVE_PATH;
         logger.error("graph_autosave_failed", {
-          path: AUTOSAVE_PATH,
-          message: error instanceof Error ? error.message : String(error)
+          path: activePathForError,
+          message: error instanceof Error ? error.message : String(error),
         });
       }
     }, interval);
+
     return {
       content: [
         {
@@ -4819,25 +5248,37 @@ server.registerTool(
             path: targetPath,
             interval_ms: interval,
             inactivity_threshold_ms: lastInactivityThresholdMs,
-            event_history_limit: eventStore.getMaxHistory()
-          })
-        }
-      ]
+            event_history_limit: eventStore.getMaxHistory(),
+          }),
+        },
+      ],
     };
-  }
+  },
 );
+
+/**
+ * Exposes the autosave state so targeted tests can assert the timer lifecycle without relying on
+ * module internals. The helper is intentionally minimal to avoid extending the runtime surface
+ * area for production callers.
+ */
+export function getGraphAutosaveStatusForTesting(): { path: string | null; timerActive: boolean } {
+  return { path: AUTOSAVE_PATH, timerActive: AUTOSAVE_TIMER !== null };
+}
 
 // graph_config_retention
 server.registerTool(
   "graph_config_retention",
-  { title: "Graph retention", description: "Configure la retention (transcripts, events).", inputSchema: { max_transcript_per_child: z.number().optional(), max_event_nodes: z.number().optional() } },
-  async (input: { max_transcript_per_child?: number; max_event_nodes?: number }) => {
-    graphState.configureRetention({
-      maxTranscriptPerChild: input.max_transcript_per_child,
-      maxEventNodes: input.max_event_nodes
-    });
+  {
+    title: "Graph retention",
+    description: "Configure la retention (transcripts, events).",
+    inputSchema: GraphConfigRetentionShape,
+  },
+  async (input: GraphConfigRetentionInput) => {
+    const parsed = GraphConfigRetentionSchema.parse(input);
+    const retentionOptions = buildGraphConfigRetentionOptions(parsed);
+    graphState.configureRetention(retentionOptions);
     return { content: [{ type: "text", text: j({ format: "json", ok: true }) }] };
-  }
+  },
 );
 
 // graph_prune
@@ -5132,29 +5573,39 @@ server.registerTool(
 
 server.registerTool(
   "graph_query",
-  { title: "Graph query", description: "Requete simple: neighbors ou filter.", inputSchema: { kind: z.enum(["neighbors", "filter"]), node_id: z.string().optional(), direction: z.enum(["out", "in", "both"]).optional(), edge_type: z.string().optional(), select: z.enum(["nodes", "edges", "both"]).optional(), where: z.record(z.union([z.string(), z.number(), z.boolean()])).optional(), limit: z.number().optional() } },
-  async (input: { kind: "neighbors" | "filter"; node_id?: string; direction?: "out" | "in" | "both"; edge_type?: string; select?: "nodes" | "edges" | "both"; where?: Record<string, string | number | boolean>; limit?: number }) => {
-    if (input.kind === "neighbors") {
-      if (!input.node_id) return { isError: true, content: [{ type: "text", text: j({ error: "BAD_REQUEST", message: "node_id requis" }) }] };
-      const res = graphState.neighbors(input.node_id, input.direction ?? "both", input.edge_type);
-      return { content: [{ type: "text", text: j({ format: "json", data: res }) }] };
+  {
+    title: "Graph query",
+    description: "Requete simple: neighbors ou filter.",
+    inputSchema: GraphQueryShape,
+  },
+  async (input: GraphQueryInput) => {
+    const parsed = GraphQuerySchema.parse(input);
+    if (parsed.kind === "neighbors") {
+      if (!parsed.node_id) {
+        return {
+          isError: true,
+          content: [
+            { type: "text", text: j({ error: "BAD_REQUEST", message: "node_id requis" }) },
+          ],
+        };
+      }
+      const result = graphState.neighbors(parsed.node_id, parsed.direction ?? "both", parsed.edge_type);
+      return { content: [{ type: "text", text: j({ format: "json", data: result }) }] };
     }
-    // filter
-    const select = input.select ?? "nodes";
-    const where = input.where ?? {};
-    const limit = input.limit && input.limit > 0 ? input.limit : undefined;
-    if (select === "nodes") {
-      const nodes = graphState.filterNodes(where, limit);
+
+    const filterInput = normaliseGraphQueryFilterInput(parsed);
+    if (filterInput.select === "nodes") {
+      const nodes = graphState.filterNodes(filterInput.where, filterInput.limit);
       return { content: [{ type: "text", text: j({ format: "json", nodes }) }] };
-    } else if (select === "edges") {
-      const edges = graphState.filterEdges(where, limit);
-      return { content: [{ type: "text", text: j({ format: "json", edges }) }] };
-    } else {
-      const nodes = graphState.filterNodes(where, limit);
-      const edges = graphState.filterEdges(where, limit);
-      return { content: [{ type: "text", text: j({ format: "json", nodes, edges }) }] };
     }
-  }
+    if (filterInput.select === "edges") {
+      const edges = graphState.filterEdges(filterInput.where, filterInput.limit);
+      return { content: [{ type: "text", text: j({ format: "json", edges }) }] };
+    }
+    const nodes = graphState.filterNodes(filterInput.where, filterInput.limit);
+    const edges = graphState.filterEdges(filterInput.where, filterInput.limit);
+    return { content: [{ type: "text", text: j({ format: "json", nodes, edges }) }] };
+  },
 );
 
 server.registerTool(
@@ -5175,7 +5626,7 @@ server.registerTool(
         op_id: opId,
       });
       const result = handleGraphGenerate(enrichedInput, {
-        knowledgeGraph: runtimeFeatures.enableKnowledge ? knowledgeGraph : undefined,
+        knowledgeGraph: runtimeFeatures.enableKnowledge ? knowledgeGraph : null,
         knowledgeEnabled: runtimeFeatures.enableKnowledge,
       });
       const summary = summariseSubgraphUsage(result.graph);
@@ -5641,13 +6092,7 @@ server.registerTool(
         run_id: parsed.run_id,
         op_id: opId,
       });
-      const extraction = await extractSubgraphToFile({
-        graph: parsed.graph,
-        nodeId: parsed.node_id,
-        runId: parsed.run_id,
-        childrenRoot: CHILDREN_ROOT,
-        directoryName: parsed.directory,
-      });
+      const extraction = await extractSubgraphToFile(buildGraphSubgraphExtractOptions(parsed));
       logger.info("graph_subgraph_extract_succeeded", {
         node_id: parsed.node_id,
         run_id: extraction.runId,
@@ -7641,7 +8086,7 @@ server.registerTool(
     if (children?.length) {
 
       for (const spec of children) {
-        const normalized: SpawnChildSpec = { ...spec, runtime: spec.runtime ?? DEFAULT_CHILD_RUNTIME };
+        const normalized = normaliseSpawnChildSpecInput(spec);
         createChild(job_id, normalized);
       }
 
@@ -7703,7 +8148,8 @@ server.registerTool(
     pruneExpired();
     try {
       const parsed = ChildBatchCreateInputSchema.parse(input);
-      const result = await handleChildBatchCreate(getChildToolContext(), parsed);
+      const request = buildChildBatchCreateRequest(parsed);
+      const result = await handleChildBatchCreate(getChildToolContext(), request);
       result.children.forEach((child, index) => {
         const entry = parsed.entries[index] ?? parsed.entries[parsed.entries.length - 1]!;
         ensureChildVisibleInGraph({
@@ -7740,12 +8186,13 @@ server.registerTool(
     }
     try {
       const parsed = ChildSpawnCodexInputSchema.parse(input);
-      const result = await handleChildSpawnCodex(getChildToolContext(), parsed);
+      const request = buildChildSpawnCodexRequest(parsed);
+      const result = await handleChildSpawnCodex(getChildToolContext(), request);
       ensureChildVisibleInGraph({
         childId: result.child_id,
         snapshot: result.index_snapshot,
         metadata: result.index_snapshot.metadata,
-        prompt: parsed.prompt,
+        prompt: request.prompt,
         runtimeStatus: result.runtime_status,
         startedAt: result.started_at,
       });
@@ -7774,7 +8221,8 @@ server.registerTool(
     }
     try {
       const parsed = ChildAttachInputSchema.parse(input);
-      const result = await handleChildAttach(getChildToolContext(), parsed);
+      const request = buildChildAttachRequest(parsed);
+      const result = await handleChildAttach(getChildToolContext(), request);
       graphState.syncChildIndexSnapshot(result.index_snapshot);
       const payload = { tool: "child_attach", result };
       return {
@@ -7801,7 +8249,8 @@ server.registerTool(
     }
     try {
       const parsed = ChildSetRoleInputSchema.parse(input);
-      const result = await handleChildSetRole(getChildToolContext(), parsed);
+      const request = buildChildSetRoleRequest(parsed);
+      const result = await handleChildSetRole(getChildToolContext(), request);
       graphState.syncChildIndexSnapshot(result.index_snapshot);
       const payload = { tool: "child_set_role", result };
       return {
@@ -7828,7 +8277,8 @@ server.registerTool(
     }
     try {
       const parsed = ChildSetLimitsInputSchema.parse(input);
-      const result = await handleChildSetLimits(getChildToolContext(), parsed);
+      const request = buildChildSetLimitsRequest(parsed);
+      const result = await handleChildSetLimits(getChildToolContext(), request);
       graphState.syncChildIndexSnapshot(result.index_snapshot);
       const payload = { tool: "child_set_limits", result };
       return {
@@ -7851,6 +8301,7 @@ server.registerTool(
   async (input) => {
     try {
       const parsed = ChildCreateInputSchema.parse(input);
+      const baseRequest = buildChildCreateRequest(parsed);
       const metadata = parsed.metadata ?? {};
       const goals = extractMetadataGoals(metadata);
       const tags = extractMetadataTags(metadata);
@@ -7861,10 +8312,11 @@ server.registerTool(
         limit: 4,
       });
 
+      const promptBlueprint = toPromptBlueprint(parsed.prompt);
       const lessonRecall = recallLessons(lessonsStore, {
         metadata,
         goals,
-        prompt: parsed.prompt,
+        ...(promptBlueprint ? { prompt: promptBlueprint } : {}),
         additionalTags: tags,
       });
       const lessonManifest =
@@ -7880,9 +8332,9 @@ server.registerTool(
         });
       }
 
-      const enrichedInput = { ...parsed } as z.infer<typeof ChildCreateInputSchema>;
-      if (lessonManifest && parsed.prompt) {
-        const promptWithLessons: ChildCreatePrompt = structuredClone(parsed.prompt);
+      const enrichedRequest: ChildCreateRequest = { ...baseRequest };
+      if (lessonManifest && baseRequest.prompt) {
+        const promptWithLessons: ChildCreatePrompt = structuredClone(baseRequest.prompt);
         const lessonSegment = formatLessonsForPromptMessage(lessonRecall.matches);
         if (Array.isArray(promptWithLessons.system)) {
           promptWithLessons.system = [lessonSegment, ...promptWithLessons.system];
@@ -7891,23 +8343,23 @@ server.registerTool(
         } else {
           promptWithLessons.system = lessonSegment;
         }
-        enrichedInput.prompt = promptWithLessons;
+        enrichedRequest.prompt = promptWithLessons;
       }
       if (contextSelection.episodes.length > 0 || contextSelection.keyValues.length > 0) {
-        enrichedInput.manifest_extras = {
-          ...(parsed.manifest_extras ?? {}),
+        enrichedRequest.manifest_extras = {
+          ...(baseRequest.manifest_extras ?? {}),
           memory_context: contextSelection,
         };
       }
       if (lessonManifest) {
-        enrichedInput.manifest_extras = {
-          ...(enrichedInput.manifest_extras ?? parsed.manifest_extras ?? {}),
+        enrichedRequest.manifest_extras = {
+          ...(enrichedRequest.manifest_extras ?? baseRequest.manifest_extras ?? {}),
           lessons_context: lessonManifest,
         };
         logger.logCognitive({
           actor: "lessons",
           phase: "prompt",
-          childId: coerceNullToUndefined(parsed.child_id),
+          ...(baseRequest.child_id ? { childId: baseRequest.child_id } : {}),
           content: lessonRecall.matches[0]?.summary ?? "lessons_injected",
           metadata: {
             topics: lessonRecall.matches.map((lesson) => lesson.topic),
@@ -7919,8 +8371,8 @@ server.registerTool(
       }
 
       if (lessonManifest && lessonRecall.matches.length > 0) {
-        const originalPromptSnapshot = normalisePromptBlueprint(parsed.prompt);
-        const enrichedPromptSnapshot = normalisePromptBlueprint(enrichedInput.prompt);
+        const originalPromptSnapshot = normalisePromptBlueprint(toPromptBlueprint(baseRequest.prompt));
+        const enrichedPromptSnapshot = normalisePromptBlueprint(toPromptBlueprint(enrichedRequest.prompt));
         const lessonsPromptPayload = buildLessonsPromptPayload({
           source: "child_create",
           before: originalPromptSnapshot,
@@ -7932,7 +8384,7 @@ server.registerTool(
         pushEvent({
           kind: "PROMPT",
           source: "orchestrator",
-          childId: coerceNullToUndefined(parsed.child_id),
+          childId: baseRequest.child_id ?? null,
           payload: {
             operation: "child_create",
             lessons_prompt: lessonsPromptPayload,
@@ -7940,12 +8392,12 @@ server.registerTool(
         });
       }
 
-      const result = await handleChildCreate(getChildToolContext(), enrichedInput);
+      const result = await handleChildCreate(getChildToolContext(), enrichedRequest);
       ensureChildVisibleInGraph({
         childId: result.child_id,
         snapshot: result.index_snapshot,
         metadata: result.index_snapshot.metadata,
-        prompt: enrichedInput.prompt,
+        prompt: enrichedRequest.prompt,
         runtimeStatus: result.runtime_status,
         startedAt: result.started_at,
       });
@@ -8077,7 +8529,7 @@ server.registerTool(
         logger.logCognitive({
           actor: "lessons",
           phase: "learn",
-          childId: coerceNullToUndefined(parsed.child_id),
+          childId: parsed.child_id,
           content: upsert.record.summary,
           metadata: {
             topic: upsert.record.topic,
@@ -8236,7 +8688,8 @@ server.registerTool(
   (input) => {
     try {
       const parsed = ChildStreamInputSchema.parse(input);
-      const result = handleChildStream(getChildToolContext(), parsed);
+      const request = buildChildStreamRequest(parsed);
+      const result = handleChildStream(getChildToolContext(), request);
       return {
         content: [{ type: "text" as const, text: j({ tool: "child_stream", result }) }],
         structuredContent: result,
@@ -8260,7 +8713,8 @@ server.registerTool(
   async (input) => {
     try {
       const parsed = ChildCancelInputSchema.parse(input);
-      const result = await handleChildCancel(getChildToolContext(), parsed);
+      const request = buildChildCancelRequest(parsed);
+      const result = await handleChildCancel(getChildToolContext(), request);
       return {
         content: [{ type: "text" as const, text: j({ tool: "child_cancel", result }) }],
         structuredContent: result,

@@ -1,12 +1,29 @@
 #!/usr/bin/env node
 import process from "node:process";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 
 import {
   executeChildrenCli,
   parseChildrenCliOptions,
 } from "../src/validation/childrenCli.js";
 import { CHILDREN_JSONL_FILES } from "../src/validation/children.js";
+import { cloneDefinedEnv } from "./lib/env-helpers.mjs";
+
+/**
+ * Prepares the sanitised invocation for the Stage 5 validation runner. The
+ * helper clones the incoming argv slice to avoid mutating the caller and
+ * filters `undefined` environment entries so downstream strict optional checks
+ * never observe placeholder values.
+ */
+export function prepareChildrenCliInvocation(
+  rawArgs: readonly string[] = process.argv.slice(2),
+  rawEnv: NodeJS.ProcessEnv = process.env,
+) {
+  const options = parseChildrenCliOptions(Array.from(rawArgs));
+  const env = cloneDefinedEnv(rawEnv) as NodeJS.ProcessEnv;
+  return { options, env };
+}
 
 /**
  * CLI entrypoint for the Stage 5 (child orchestration) validation workflow.
@@ -14,9 +31,12 @@ import { CHILDREN_JSONL_FILES } from "../src/validation/children.js";
  * operators can chain stages without memorising new flag conventions.
  */
 async function main(): Promise<void> {
-  const options = parseChildrenCliOptions(process.argv.slice(2));
+  const { options, env } = prepareChildrenCliInvocation(
+    process.argv.slice(2),
+    process.env,
+  );
 
-  const { runRoot, result } = await executeChildrenCli(options, process.env, console);
+  const { runRoot, result } = await executeChildrenCli(options, env, console);
 
   console.log("🧒 Child validation summary:");
   console.log(`   • child id: ${result.summary.childId ?? "unknown"}`);
@@ -41,7 +61,9 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((error) => {
-  console.error("Failed to execute child validation workflow:", error);
-  process.exitCode = 1;
-});
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]!).href) {
+  main().catch((error) => {
+    console.error("Failed to execute child validation workflow:", error);
+    process.exitCode = 1;
+  });
+}

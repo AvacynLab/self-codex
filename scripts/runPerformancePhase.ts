@@ -1,9 +1,24 @@
 #!/usr/bin/env node
 import process from "node:process";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 
 import { executePerformanceCli, parsePerformanceCliOptions } from "../src/validation/performanceCli.js";
 import { PERFORMANCE_JSONL_FILES } from "../src/validation/performance.js";
+import { cloneDefinedEnv } from "./lib/env-helpers.mjs";
+
+/**
+ * Normalises the Stage 10 performance invocation so the orchestrator receives
+ * cloned argv/env bags without `undefined` placeholders.
+ */
+export function preparePerformanceCliInvocation(
+  rawArgs: readonly string[] = process.argv.slice(2),
+  rawEnv: NodeJS.ProcessEnv = process.env,
+) {
+  const options = parsePerformanceCliOptions(Array.from(rawArgs));
+  const env = cloneDefinedEnv(rawEnv) as NodeJS.ProcessEnv;
+  return { options, env };
+}
 
 /**
  * CLI entrypoint for the Stage 10 performance validation workflow. The script
@@ -11,9 +26,12 @@ import { PERFORMANCE_JSONL_FILES } from "../src/validation/performance.js";
  * without memorising new conventions.
  */
 async function main(): Promise<void> {
-  const options = parsePerformanceCliOptions(process.argv.slice(2));
+  const { options, env } = preparePerformanceCliInvocation(
+    process.argv.slice(2),
+    process.env,
+  );
 
-  const { runRoot, result } = await executePerformanceCli(options, process.env, console);
+  const { runRoot, result } = await executePerformanceCli(options, env, console);
 
   console.log("⚙️  Performance validation summary:");
   console.log(
@@ -60,7 +78,9 @@ function formatBytes(value: number | null): string {
   return `${value.toFixed(0)}B`;
 }
 
-main().catch((error) => {
-  console.error("Failed to execute performance validation workflow:", error);
-  process.exitCode = 1;
-});
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]!).href) {
+  main().catch((error) => {
+    console.error("Failed to execute performance validation workflow:", error);
+    process.exitCode = 1;
+  });
+}

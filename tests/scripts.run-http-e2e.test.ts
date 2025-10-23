@@ -15,6 +15,10 @@ describe("scripts/run-http-e2e", () => {
     expect(invocation.command).to.equal(process.execPath);
     expect(invocation.args).to.include("tests/e2e/**/*.test.ts");
     expect(invocation.env).to.have.property("MCP_TEST_ALLOW_LOOPBACK", "yes");
+    expect(
+      Object.values(invocation.env).every((value) => value !== undefined),
+      "env clone should not expose undefined values",
+    ).to.equal(true);
   });
 
   it("forwards additional mocha flags verbatim", async () => {

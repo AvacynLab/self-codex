@@ -36,6 +36,37 @@ function isEventLogPayload(value: unknown): value is { data?: { events?: unknown
 describe("validate run script", () => {
   let originalAllowNoAuth: string | undefined;
 
+  describe("parseValidateRunArguments", () => {
+    it("omits optional overrides when flags are absent", async () => {
+      const module = await import("../scripts/validate-run.mjs");
+
+      const parsed = module.parseValidateRunArguments(["node", "validate-run.mjs"]);
+
+      expect(parsed).to.deep.equal({});
+      expect("dryRun" in parsed).to.equal(false);
+      expect("prepareOnly" in parsed).to.equal(false);
+      expect("sessionName" in parsed).to.equal(false);
+    });
+
+    it("captures recognised flags without surfacing undefined placeholders", async () => {
+      const module = await import("../scripts/validate-run.mjs");
+
+      const parsed = module.parseValidateRunArguments([
+        "node",
+        "validate-run.mjs",
+        "--dry-run",
+        "--prepare-only",
+        "--session=SESSION-42",
+        "--unknown",
+      ]);
+
+      expect(parsed).to.deep.equal({ dryRun: true, prepareOnly: true, sessionName: "SESSION-42" });
+      expect(parsed.dryRun).to.equal(true);
+      expect(parsed.prepareOnly).to.equal(true);
+      expect(parsed.sessionName).to.equal("SESSION-42");
+    });
+  });
+
   beforeEach(() => {
     process.env.CODEX_SCRIPT_TEST = "1";
     delete process.env.START_MCP_BG;
