@@ -399,7 +399,14 @@ function applyBudgetOverrides(
     const next = typeof current === "number" ? Math.max(current, override) : override;
     if (current !== next) {
       working[dimension.key] = next;
-      applied.push({ dimension: dimension.key, value: next, previous: current });
+      // Preserve the `previous` snapshot only when the dimension existed to
+      // avoid materialising explicit `undefined` values while strict optional
+      // property typing is being enforced.
+      applied.push(
+        current === undefined
+          ? { dimension: dimension.key, value: next }
+          : { dimension: dimension.key, value: next, previous: current },
+      );
     }
   }
 
@@ -870,7 +877,11 @@ export class ToolRegistry {
       .strict();
 
     return async (input, extra) => {
-      const parsed = input ? ExecutionInputSchema.parse(input) : { initial: undefined, overrides: undefined };
+        type ExecutionInput = z.infer<typeof ExecutionInputSchema>;
+        // NOTE: The parsed payload defaults to an empty object so optional
+        // fields remain entirely absent when callers omit them, keeping strict
+        // optional property typing satisfied once enforced globally.
+        const parsed: ExecutionInput = input ? ExecutionInputSchema.parse(input) : {};
 
       const stepSummaries: Array<{
         id: string;
@@ -895,13 +906,25 @@ export class ToolRegistry {
         const result = await this.invokeTool(step.tool, mergedArgs, extra);
         const structured = result.structuredContent ?? null;
         if (step.capture !== false) {
-          stepSummaries.push({
+          const summary: {
+            id: string;
+            tool: string;
+            is_error: boolean;
+            structured?: unknown;
+            content?: CallToolResult["content"];
+          } = {
             id: step.id,
             tool: step.tool,
             is_error: result.isError === true,
-            structured: coerceNullToUndefined(structured),
-            content: result.content,
-          });
+          };
+          const structuredPayload = coerceNullToUndefined(structured);
+          if (structuredPayload !== undefined) {
+            summary.structured = structuredPayload;
+          }
+          if (result.content !== undefined) {
+            summary.content = result.content;
+          }
+          stepSummaries.push(summary);
         }
         previous = structured;
         if (result.isError) {

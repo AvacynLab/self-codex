@@ -113,14 +113,23 @@ describe("security validation", () => {
 
     expect(result.summaryPath).to.equal(join(runRoot, "report", "security_summary.json"));
     const summaryDocument = JSON.parse(await readFile(result.summaryPath, "utf8"));
+    expect(summaryDocument.checks[0].expectedStatus).to.equal(401);
+    expect(summaryDocument.checks[1].expectedStatus).to.equal(null);
     expect(summaryDocument.redaction.secret).to.equal("SECRET-TOKEN-123");
+    expect(summaryDocument.redaction.description).to.equal(
+      "Ensure MCP_LOG_REDACT hides sensitive substrings in logs.",
+    );
     expect(summaryDocument.redaction.calls[0].leakedInResponse).to.equal(false);
     expect(summaryDocument.redaction.calls[0].leakedInEvents).to.equal(false);
     expect(summaryDocument.unauthorized.calls[0].status).to.equal(401);
+    expect(summaryDocument.unauthorized.calls[0].success).to.equal(true);
     expect(summaryDocument.pathValidation.calls[0].attemptedPath).to.equal("../../etc/passwd");
+    expect(summaryDocument.pathValidation.calls[0].description).to.equal(
+      "Server should refuse writing outside the validation run directory.",
+    );
   });
 
-  it("omits optional security summary fields when probes skip them", async () => {
+  it("records null sentinels for optional security summary fields when probes skip them", async () => {
     const calls = [
       {
         scenario: "auth",
@@ -213,13 +222,13 @@ describe("security validation", () => {
     const summary = JSON.parse(await readFile(result.summaryPath, "utf8"));
     const unauthorizedCheck = summary.checks.find((entry: { name: string }) => entry.name === "unauthenticated");
     expect(unauthorizedCheck).to.exist;
-    expect(Object.prototype.hasOwnProperty.call(unauthorizedCheck ?? {}, "expectedStatus")).to.equal(false);
+    expect(unauthorizedCheck?.expectedStatus).to.equal(null);
 
     expect(summary.redaction.secret).to.equal("SYNTH-SECRET");
-    expect(Object.prototype.hasOwnProperty.call(summary.redaction, "description")).to.equal(false);
+    expect(summary.redaction.description).to.equal(null);
     expect(summary.unauthorized.calls[0].status).to.equal(401);
     expect(summary.pathValidation.calls[0].attemptedPath).to.equal("../../tmp/leak");
-    expect(Object.prototype.hasOwnProperty.call(summary.pathValidation.calls[0], "description")).to.equal(false);
+    expect(summary.pathValidation.calls[0].description).to.equal(null);
   });
 
   it("exposes knobs to customise the default call plan", () => {

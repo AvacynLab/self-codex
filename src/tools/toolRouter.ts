@@ -2,6 +2,7 @@ import { EventEmitter } from "node:events";
 
 import { readOptionalInt } from "../config/env.js";
 import type { ToolBudgets, ToolManifest } from "../mcp/registry.js";
+import { omitUndefinedEntries } from "../utils/object.js";
 
 /** Default number of router candidates surfaced to callers. */
 const DEFAULT_ROUTER_TOPK = 5;
@@ -246,6 +247,48 @@ function buildContextEmbedding(context: ToolRoutingContext): { embedding: Record
   return buildEmbedding(tokens);
 }
 
+/**
+ * Normalises router metadata by dropping keys with `undefined` values.
+ *
+ * Keeping the metadata compact avoids leaking undefined placeholders when
+ * routing contexts are serialised for observability or persisted in the
+ * registry history.
+ */
+function normaliseRoutingMetadata(
+  metadata: Record<string, unknown> | undefined,
+): Record<string, unknown> | undefined {
+  if (!metadata) {
+    return undefined;
+  }
+  const cleaned: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(metadata)) {
+    if (value !== undefined) {
+      cleaned[key] = value;
+    }
+  }
+  return Object.keys(cleaned).length > 0 ? cleaned : undefined;
+}
+
+/**
+ * Produces a sanitised snapshot of the routing context that omits every
+ * optional field left `undefined` by callers. Arrays and metadata are cloned so
+ * observers cannot mutate the original context.
+ */
+function sanitiseRoutingContext(context: ToolRoutingContext): ToolRoutingContext {
+  const metadata = normaliseRoutingMetadata(context.metadata);
+  const snapshot = omitUndefinedEntries({
+    goal: context.goal,
+    category: context.category,
+    tags: context.tags && context.tags.length > 0 ? [...context.tags] : undefined,
+    preferredTools:
+      context.preferredTools && context.preferredTools.length > 0
+        ? [...context.preferredTools]
+        : undefined,
+    metadata: metadata ? { ...metadata } : undefined,
+  });
+  return snapshot as ToolRoutingContext;
+}
+
 /** Pre-computes a deterministic budget weight derived from the manifest budgets. */
 function computeBudgetWeight(budgets: ToolBudgets | undefined): number {
   if (!budgets) {
@@ -405,6 +448,7 @@ export class ToolRouter extends EventEmitter {
     const topKLimit = resolveToolRouterTopKLimit();
     const best = candidates[0];
     const decisionTime = this.now();
+    const contextSnapshot = sanitiseRoutingContext(context);
 
     if (!best || best.score < this.acceptanceThreshold) {
       const fallback = this.resolveFallbackCandidates(context, topKLimit);
@@ -419,7 +463,7 @@ export class ToolRouter extends EventEmitter {
         candidates: fallback,
         decidedAt: decisionTime,
       };
-      this.emit("decision", { context, decision });
+      this.emit("decision", { context: contextSnapshot, decision });
       return decision;
     }
 
@@ -446,7 +490,7 @@ export class ToolRouter extends EventEmitter {
       candidates: limitedCandidates,
       decidedAt: decisionTime,
     };
-    this.emit("decision", { context, decision });
+    this.emit("decision", { context: contextSnapshot, decision });
     return decision;
   }
 

@@ -34,6 +34,7 @@ Suivi granulaire des tâches engagées pour préparer l'activation de `exactOpti
 - [x] Sanitiser `planTools` (dry-run hiérarchique, rewrite hints) pour écarter les champs optionnels indéfinis avant `exactOptionalPropertyTypes`.
 - [x] Poursuivre la normalisation de `planTools` (résultats `plan_join`, journaux d'événements, `TickRuntime`, `ExecutionLoopOptions`) afin de résoudre les erreurs restantes signalées par `--exactOptionalPropertyTypes`.
 - [x] Aligner les émissions orchestrateur/plan pour propager `jobId`/`childId` nuls plutôt qu'`undefined` et couvrir les tests `plan.fanout-join`.
+- [x] Filtrer les overrides `undefined` dans `src/strategies/hypotheses.ts` et garantir des scores numériques via `tests/strategies.hypotheses.test.ts`.
 
 ## Plan détaillé — activation finale de `exactOptionalPropertyTypes`
 
@@ -58,64 +59,97 @@ Suivi granulaire des tâches engagées pour préparer l'activation de `exactOpti
 | Registres MCP & conformité | `src/mcp/{deprecations,registry}.ts` | `Finaliser les outils métiers et les intégrations MCP` |
 
 - [ ] Nettoyer `src/orchestrator/**` pour la stricte omission des optionnels
-  - [ ] Corriger `runtime.ts`, `controller.ts`, `events.ts` pour utiliser `omitUndefinedEntries`/`coerceNullToUndefined` et des spreads conditionnels.
-  - [ ] Harmoniser `EventPayloadMap` et les DTO côté tests (`tests/events/*.test.ts`).
-  - [ ] Étendre les tests d'événements et d'orchestrateur (`tests/events/controller.optional-fields.test.ts`, `tests/events/pushEvent.optional-fields.test.ts`, `tests/plan.fanout-join.test.ts`).
+  - [x] Corriger `runtime.ts`, `controller.ts`, `events.ts` pour utiliser `omitUndefinedEntries`/`coerceNullToUndefined` et des spreads conditionnels.
+  - [x] Harmoniser `EventPayloadMap` et les DTO côté tests (`tests/events/*.test.ts`).
+  - [x] Étendre les tests d'événements et d'orchestrateur (`tests/events/controller.optional-fields.test.ts`, `tests/events/pushEvent.optional-fields.test.ts`, `tests/plan.fanout-join.test.ts`).
+  - [x] Normaliser `createOrchestratorController` pour filtrer les balises transport vides, cloner le contexte nettoyé et couvrir le comportement via `tests/events/controller.optional-fields.test.ts`.
 
-- [ ] Aligner les outils de planification (`src/tools/planTools.ts`, `plan_compile_execute.ts`, `planner/compileBT.ts`)
-  - [ ] Assainir les émissions `PLAN`/`PROMPT`/`STATUS`/`PLAN_JOIN` et les structures de résultats.
-  - [ ] Régénérer les snapshots façades si nécessaire et documenter les invariants.
-  - [ ] Renforcer les suites `tests/plan.*.test.ts`, `tests/tools/plan_compile_execute.*.test.ts` (y compris `npm run test:unit -- --grep "plan"`).
+- [x] Aligner les outils de planification (`src/tools/planTools.ts`, `plan_compile_execute.ts`, `planner/compileBT.ts`)
+  - [x] Assainir les émissions `PLAN`/`PROMPT`/`STATUS`/`PLAN_JOIN` et les structures de résultats.
+  - [x] Régénérer les snapshots façades si nécessaire et documenter les invariants.
+  - [x] Renforcer les suites `tests/plan.*.test.ts`, `tests/tools/plan_compile_execute.*.test.ts` (y compris `npm run test:unit -- --grep "plan"`).
+    - 2025-10-22 : Ajout de la régression `plan-impact-sanitise` (omission de `nodeId`) et exécution de `npm run test:unit -- --grep "plan"`.
 
 - [ ] Conformer `ragTools`, graphes et router aux propriétés optionnelles exactes
-  - [ ] Mettre à jour `src/tools/ragTools.ts`, `src/tools/graph/{mutate,query}.ts`, `src/tools/toolRouter.ts`, `src/router/modelRouter.ts`.
-  - [ ] Ajuster les tests associés (`tests/tools/ragTools.test.ts`, `tests/tools/graph.optional-fields.test.ts`, `tests/tools/toolRouter.test.ts`, `tests/router.modelRouter.test.ts`).
+  - [x] Mettre à jour `src/tools/ragTools.ts` pour omettre les champs facultatifs indéfinis avant `exactOptionalPropertyTypes`.
+  - [x] Mettre à jour `src/tools/graph/query.ts` afin d'éviter de propager des options `undefined` vers Graph Forge et les simulateurs.
+  - [x] Mettre à jour `src/tools/graph/mutate.ts` pour généraliser les spreads conditionnels restants.
+  - [x] Mettre à jour `src/tools/toolRouter.ts` pour supprimer les traces `undefined` lors des décisions/mesures.
+  - [x] Mettre à jour `src/router/modelRouter.ts` en omettant les options absentes et en alignant les tests.
+  - [x] Ajuster `tests/tools/ragTools.test.ts` et `tests/tools/graph.optional-fields.test.ts` pour couvrir l'absence de champs optionnels matérialisés.
+  - [x] Étendre `tests/tools/toolRouter.test.ts` et `tests/router.modelRouter.test.ts` pour verrouiller les omissions côté router.
   - [x] Assainir `src/tools/graph/snapshot.ts` (hyper export) pour omettre les labels/poids indéfinis et propager `graph_version` uniquement si fourni.
   - [x] Étendre `tests/tools/graph.optional-fields.test.ts` pour couvrir la projection hyper-graphe sans champs optionnels matérialisés.
 
-- [ ] Durcir les agents d'autoscaling et la supervision enfants
+- [x] Durcir les agents d'autoscaling et la supervision enfants
   - [x] Assainir `src/agents/autoscaler.ts` (événements, corrélations) et couvrir `tests/agents.autoscaler.*.test.ts`.
   - [x] Assainir `src/agents/{autoscaler,supervisor}.ts` pour retirer les dépendances optionnelles implicites et propager des helpers (`omitUndefinedEntries`, `coerceNullToUndefined`).
   - [x] Harmoniser `src/children/{api,supervisor,supervisionStrategy}.ts` et `src/gateways/childProcess.ts` pour que les options (`timeoutMs`, `metadata`, `childId`) restent explicitement omises.
-  - [ ] Étendre les suites `tests/agents.autoscaler.*.test.ts`, `tests/plan.run-reactive.test.ts`, `tests/e2e.autoscaler.supervisor.test.ts`, `tests/e2e.stigmergy.autoscaling.test.ts` avec des assertions sur la présence/absence de propriétés optionnelles et relancer `npm run test:unit -- --grep "autoscaler"`.
+  - [x] Étendre les suites `tests/agents.autoscaler.*.test.ts`, `tests/plan.run-reactive.test.ts`, `tests/e2e.autoscaler.supervisor.test.ts`, `tests/e2e.stigmergy.autoscaling.test.ts` avec des assertions sur la présence/absence de propriétés optionnelles et relancer `npm run test:unit -- --grep "autoscaler"`.
 
-- [ ] Stabiliser le runtime enfant et les passerelles de processus
+- [x] Stabiliser le runtime enfant et les passerelles de processus
   - [x] Corriger `src/childRuntime.ts` et `src/bridge/fsBridge.ts` pour filtrer les champs (`stack`, `timeoutMs`) avant sérialisation et couvrir `tests/bridge.fsBridge.logging.test.ts`, `tests/children/spawn-errors.test.ts`.
-  - [ ] Harmoniser `src/tools/child_orchestrate.ts` et compléter la couverture (`tests/tools/child_orchestrate.test.ts`, `tests/child.*.test.ts`).
+  - [x] Harmoniser `src/tools/child_orchestrate.ts` et compléter la couverture (`tests/tools/child_orchestrate.test.ts`, `tests/child.*.test.ts`).
 
-- [ ] Renforcer la coordination stigmergique et les raisonnements
-  - [ ] Appliquer la même rigueur dans `src/coord/{consensus,stigmergy}.ts`, `src/reasoning/thoughtCoordinator.ts`, `src/strategies/hypotheses.ts`, `src/learning/{lessons,lessonPrompts}.ts`.
-  - [ ] Ajuster les tests (`tests/coordination.*.test.ts`, `tests/events/subscribe.plan-correlation.test.ts`, `tests/learning.lessons.test.ts`) pour exiger l'absence de `undefined`.
+- [x] Renforcer la coordination stigmergique et les raisonnements
+  - [x] Appliquer la même rigueur dans `src/coord/{consensus,stigmergy}.ts`, `src/reasoning/thoughtCoordinator.ts`, `src/strategies/hypotheses.ts`, `src/learning/{lessons,lessonPrompts}.ts`.
+  - [x] Ajuster les tests (`tests/coordination.*.test.ts`, `tests/events/subscribe.plan-correlation.test.ts`, `tests/learning.lessons.test.ts`) pour exiger l'absence de `undefined`.
 
-- [ ] Assainir les exécutors et la planification réactive
-  - [ ] Balayer `src/executor/bt/{compiler,interpreter,nodes,types}.ts`, `src/executor/{loop,planLifecycle,reactiveScheduler}.ts`, `src/planner/{domain,schedule}.ts` pour n'exposer que des propriétés optionnelles explicites.
-  - [ ] Mettre à jour les suites `tests/plan.run-reactive.test.ts`, `tests/planner/compile.test.ts`, `tests/executor.*.test.ts` et relancer `npm run test:unit -- --grep "plan"`.
+- [x] Assainir les exécutors et la planification réactive
+  - [x] Balayer `src/executor/bt/{compiler,interpreter,nodes,types}.ts`, `src/executor/{loop,planLifecycle,reactiveScheduler}.ts`, `src/planner/{domain,schedule}.ts` pour n'exposer que des propriétés optionnelles explicites.
+    - [x] `src/executor/loop.ts` · supprimer `budget: undefined` et normaliser `errorMessage` (2025-10-22)
+  - [x] Assainir `src/executor/reactiveScheduler.ts` pour supprimer les hints optionnels `undefined` et centraliser la lecture des bornes.
+  - [x] Mettre à jour les suites `tests/plan.run-reactive.test.ts`, `tests/planner/compile.test.ts`, `tests/executor.*.test.ts` et relancer `npm run test:unit -- --grep "plan"`.
+    - [x] Ajouter `tests/executor.scheduler.optional-fields.test.ts` pour verrouiller la purge des champs optionnels et exécuter la suite ciblée.
+    - [x] Ajouter `tests/executor.loop.optional-fields.test.ts` et confirmer la suite `execution loop*` (2025-10-22).
 
-- [ ] Normaliser le cœur graph et les réécritures
-  - [ ] Étendre le nettoyage à `src/graph/{adaptive,hierarchy,hypergraph,invariants,patch,rewrite,state,tx,validate}.ts`.
-  - [ ] Couvrir via `tests/graph.*.test.ts`, `tests/tools/graph.snapshot.test.ts`, `tests/e2e.graph.*.test.ts` pour vérifier les chemins avec options manquantes.
+- [x] Normaliser le cœur graph et les réécritures
+  - [x] Étendre le nettoyage à `src/graph/{adaptive,hierarchy,hypergraph,invariants,patch,rewrite,state,tx,validate}.ts`.
+    - [x] Assainir `src/graph/hypergraph.ts` pour omettre `label`/`weight` lorsqu'ils sont absents et couvrir `tests/graph.hyper.project.test.ts`.
+    - [x] Assainir `src/graph/hierarchy.ts` pour reconstruire les enregistrements sans champs optionnels indéfinis et étendre `tests/graph.hierarchy.flatten.test.ts`.
+    - [x] Assainir `src/graph/invariants.ts` pour dériver les options via `omitUndefinedEntries` sans matérialiser de valeurs `undefined`.
+    - [x] Assainir `src/graph/patch.ts` pour réappliquer les JSON Patch sans exposer `label`/`weight` lorsque les payloads les omettent.
+    - [x] Assainir `src/graph/rewrite.ts` afin que les arêtes générées (split, inline, reroute) propagent uniquement les champs optionnels définis.
+    - [x] Assainir `src/graph/state.ts` pour éliminer les placeholders `undefined` sur les provenances, snapshots enfants et abonnements (2025-10-22).
+    - [x] Assainir `src/graph/tx.ts` afin de n'exposer `hint` que lorsqu'il est fourni et rester compatible avec `exactOptionalPropertyTypes` (2025-10-22).
+    - [x] Assainir `src/graph/validate.ts` pour n'ajouter les limites dérivées que lorsqu'elles sont définies (2025-10-22).
+  - [x] Couvrir via `tests/graph.*.test.ts`, `tests/tools/graph.snapshot.test.ts`, `tests/e2e.graph.*.test.ts` pour vérifier les chemins avec options manquantes.
+    - [x] Ajouter `tests/graph.rewrite.optional-fields.test.ts` pour verrouiller les réécritures et patches sans champs optionnels matérialisés.
+    - [x] Ajouter `tests/graph.state.optional-fields.test.ts` pour vérifier la normalisation des provenances, enfants et abonnements (2025-10-22).
+    - [x] 2025-10-23 : Ajouter `tests/tools/graph.snapshot.optional-fields.test.ts` pour garantir que la sérialisation et la normalisation des snapshots omettent les propriétés optionnelles absentes, exécuter `node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --file tests/setup.ts tests/tools/graph.snapshot.optional-fields.test.ts tests/tools/graph.optional-fields.test.ts`.
 
 - [x] Aligner knowledge graph, mémoire et ressources
-  - [ ] Passer `src/knowledge/{assist,knowledgeGraph}.ts`, `src/memory/{kg,retriever,vectorMemory}.ts`, `src/resources/registry.ts` en respect des champs optionnels stricts.
-  - [ ] Rafraîchir `tests/knowledge.*.test.ts`, `tests/memory/*.test.ts`, `tests/resources.registry.test.ts` et relancer `npm run test:unit -- --grep "knowledge"`.
+  - [x] Passer `src/knowledge/{assist,knowledgeGraph}.ts`, `src/memory/{kg,retriever,vectorMemory}.ts`, `src/resources/registry.ts` en respect des champs optionnels stricts.
+  - [x] Rafraîchir `tests/knowledge.*.test.ts`, `tests/memory/*.test.ts`, `tests/resources.registry.test.ts` et relancer `npm run test:unit -- --grep "knowledge"`.
 
-- [ ] Finaliser les outils métiers et les intégrations MCP
-  - [ ] Nettoyer `src/tools/{causalTools,knowledgeTools,memory_upsert,graph/snapshot}.ts` ainsi que `src/mcp/{deprecations,registry}.ts` et `src/server/toolErrors.ts`.
-  - [ ] Étendre `tests/tools/*.test.ts`, `tests/mcp.*.test.ts`, `tests/server.logs.correlation.test.ts` pour garantir les omissions.
+- [x] Finaliser les outils métiers et les intégrations MCP
+  - [x] Nettoyer `src/tools/{causalTools,knowledgeTools,memory_upsert,graph/snapshot}.ts` ainsi que `src/mcp/{deprecations,registry}.ts` et `src/server/toolErrors.ts`.
+  - [x] Étendre `tests/tools/*.test.ts`, `tests/mcp.*.test.ts`, `tests/server.logs.correlation.test.ts` pour garantir les omissions.
 
-- [ ] Sécuriser l'infrastructure runtime, l'event store et la supervision
+- [x] Sécuriser l'infrastructure runtime, l'event store et la supervision
   - [x] Harmoniser `src/eventStore.ts`, `src/httpServer.ts`, `src/logger.ts`, `src/sim/sandbox.ts` et étendre la couverture (`tests/eventStore.test.ts`, `tests/http/jsonrpc.errors.test.ts`, `tests/logger.test.ts`, `tests/sim.sandbox.test.ts`).
   - [x] Purger `src/events/{bus,cognitive}.ts` des propriétés optionnelles indéfinies et renforcer `tests/events/*.test.ts` au besoin.
-  - [ ] Finaliser `src/infra/{budget,graphWorkerThread,runtime}.ts`, `src/monitor/{dashboard,replay}.ts` et compléter les tests associés.
+  - [x] Finaliser `src/infra/{budget,graphWorkerThread,runtime}.ts`, `src/monitor/{dashboard,replay}.ts` et compléter les tests associés.
+    - [x] `src/infra/budget.ts` · normaliser les métadonnées budgets, ajouter la régression `tests/infra/budget.test.ts` (2025-10-22).
+    - [x] `src/infra/graphWorkerThread.ts` · sérialiser les erreurs sans champs optionnels indéfinis et ajouter `tests/infra/graphWorkerThread.optional-fields.test.ts` (2025-10-22).
+    - [x] `src/infra/runtime.ts` · cloner le contexte JSON-RPC sans `undefined`, attacher les budgets et couvrir `tests/infra/runtime.test.ts` (2025-10-22).
+    - [x] `src/monitor/{dashboard,replay}.ts` · normaliser les journaux/instantanés, ajouter `tests/monitor/{dashboard,replay}.optional-fields.test.ts` (2025-10-22).
 
-- [ ] Renforcer les parcours évaluation et scénarios
+- [x] Renforcer les parcours évaluation et scénarios
   - [x] Adapter `src/eval/{runner,scenario}.ts` pour omettre les placeholders `undefined`.
-  - [ ] Auditer `scenarios/**` et la documentation pour confirmer l'absence de clés facultatives matérialisées.
+  - [x] Auditer `scenarios/**` et la documentation pour confirmer l'absence de clés facultatives matérialisées.
   - [x] Mettre à jour `tests/eval.*.test.ts` pour couvrir l'omission des champs optionnels.
 
 - [ ] Finaliser validations, CLI et résumés persistés
   - [ ] Purger `src/validation/**`, `scripts/validation`, `tests/validation/**` des propriétés `undefined` restantes.
+    - [x] `validation/introspectionSummary` · omettre les erreurs `undefined` et couvrir `tests/validation/introspectionSummary.test.ts`.
+    - [x] `scripts/validation/run-eval.mjs` · filtrer les options CLI `undefined` via `normaliseRunInvocationOptions` et couvrir `tests/validation/run-eval.test.ts`.
+    - [x] `scripts/validation/run-smoke.mjs` · normaliser les métadonnées des opérations (durée, traceId, détails) et étendre `tests/validation/run-smoke.test.ts` pour refuser les `undefined`.
+    - [x] `validation/logsCli.ts` · filtrer les overrides CLI vides, exposer un override `capture` pour les tests et garantir l'absence de champs `undefined` via `tests/validation/logsCli.test.ts`.
+    - [x] `validation/logStimulus{,.ts/.Cli.ts}` · normaliser la spécification d'appel JSON-RPC (trim, omission des `params` indéfinis) et couvrir `tests/validation/logStimulus*.test.ts` (2025-10-23).
   - [ ] Mettre à jour les schémas Zod/types TS et couvrir les omissions dans les tests CLI.
+    - [x] Coordination summary types align with null sentinels et le CLI capture les overrides sans `undefined` (tests `coordination{,Cli}.test.ts` exécutés le 2025-10-23).
+    - [x] Security summary types exposent `expectedStatus`, `notes`, `redaction`, `unauthorized` et `pathValidation` avec des sentinelles `null`, couverture `tests/validation/security.test.ts` & `tests/validation/securityCli.test.ts` (2025-10-23).
   - [ ] Vérifier les scripts `npm run build`, `npm run typecheck`, `npm run test`.
 
 - [ ] Stabiliser l'activation, documentation et livraison
@@ -572,67 +606,32 @@ Suivi granulaire des tâches engagées pour préparer l'activation de `exactOpti
 Exécute ces tâches **dans l’ordre**. À chaque étape, lance `npm run build && npm run typecheck && npm run test` pour verrouiller la non-régression avant de poursuivre.
 ----------
 
--### Historique
-- 2025-10-21 · gpt-5-codex : assaini `src/tools/graph/snapshot.ts` (hyper export) via `omitUndefinedEntries`, étendu
-  `tests/tools/graph.optional-fields.test.ts` pour couvrir la projection sans labels/poids indéfinis et exécuté
-  `npm run test -- tests/tools/graph.optional-fields.test.ts` (échoue car la phase build/typecheck bute encore sur
-  les diagnostics stricts `exactOptionalPropertyTypes`).
-- 2025-10-21 · gpt-5-codex : purgé `src/eventStore.ts`, `src/events/{bus,cognitive}.ts`, `src/eval/{runner,scenario}.ts`,
-  `src/agents/supervisor.ts` et `src/bridge/fsBridge.ts` des champs optionnels indéfinis, ajouté la couverture ciblant
-  la normalisation (`tests/eval/scenario.test.ts`, `tests/coord.consensus.modes.test.ts`) et collecté `npx tsc --noEmit --pretty false`
-  (échoue toujours sur les diagnostics restants des exécutors/infra).
-- 2025-10-21 · gpt-5-codex : assaini `OrchestratorSupervisor`, `ChildSupervisor`, `children/api`, `children/supervisionStrategy`
-  et `gateways/childProcess` pour éliminer les assignations `undefined`, ajouté le test ciblé
-  `tests/children/api.optional-fields.test.ts` garantissant l'omission des options indéfinies et relancé `npm run build`,
-  `npm run typecheck`, `npm run test` (échouent toujours sur les diagnostics stricts restants `exactOptionalPropertyTypes`).
-- 2025-10-21 · gpt-5-codex : durci `src/agents/autoscaler.ts` pour ne plus assigner de dépendances optionnelles à `undefined`,
-  conditionné la publication des événements (childId/correlation) et ajouté le scénario de régression
-  `tests/agents.autoscaler.correlation.test.ts` garantissant l'absence de champs optionnels lors d'un échec de spawn.
-  Commandes exécutées : `npm run build`, `npm run typecheck`, `npm run test` (échouent toujours sur les diagnostics stricts
-  restants `exactOptionalPropertyTypes`).
-- 2025-10-21 · gpt-5-codex : aligné le domaine "Connaissance & mémoire" (assist/knowledgeGraph, mémoire persistance/recherche, registry, outils causal/knowledge/memory_upsert) avec l'omission stricte des optionnels et ajouté les tests ciblant les omissions (assist, vectorMemory, registry). Commandes exécutées : `npm run build` (échoue sur les diagnostics stricts restants), `npm run typecheck` (échoue idem), `npm run test` (échoue car build strict échoue).
-- 2025-10-21 · gpt-5-codex : assaini `fsBridge`, `childRuntime`, `eventStore`, `httpServer`, `logger` et `sim/sandbox` pour omettre les propriétés optionnelles `undefined`, ajouté la couverture ciblée (`tests/bridge.fsBridge.logging.test.ts`, `tests/children/spawn-errors.test.ts`, `tests/eventStore.test.ts`, `tests/http/jsonrpc.errors.test.ts`, `tests/logger.test.ts`, `tests/sim.sandbox.test.ts`) et exécuté `npm run build`, `npm run typecheck`, `npm run test`.
-- 2025-10-21 · gpt-5-codex : activé `exactOptionalPropertyTypes` dans `tsconfig.json`, archivé les diagnostics stricts (`tmp/exact-optional.log`) via `npm run typecheck -- --extendedDiagnostics --pretty false` (échoue comme prévu) et généré `tmp/exact-optional.todo.md` pour classer les 62 fichiers signalés.
-- 2025-10-21 · gpt-5-codex : consigné la matrice de couverture stricte `exactOptionalPropertyTypes`, mis à jour la checklist (bullet documentation) et tronqué l'historique aux entrées récentes. Commande exécutée : `npm run typecheck -- --exactOptionalPropertyTypes`.
-- 2025-10-21 · gpt-5-codex : relancé `npm run typecheck -- --exactOptionalPropertyTypes`, vérifié que les 238 erreurs sur 62 fichiers sont toutes mappées aux sections de la checklist et noté l'absence de tâches manquantes.
-- 2025-10-21 · gpt-5-codex : audité la sortie `npm run typecheck -- --exactOptionalPropertyTypes` (238 erreurs / 62 fichiers), vérifié la couverture de chaque domaine par la checklist et ajouté `lessonPrompts` + le récapitulatif d'audit. Commande exécutée : `npm run typecheck -- --exactOptionalPropertyTypes`.
-- 2025-10-21 · gpt-5-codex : audité la couverture du plan `exactOptionalPropertyTypes`, enrichi la checklist (agents, enfants, executors, graph, knowledge, infra, évaluation) et collecté les diagnostics via `npm run typecheck -- --exactOptionalPropertyTypes` (log `tmp/typecheck.log`).
-- 2025-10-21 · gpt-5-codex : établi le plan détaillé d'activation `exactOptionalPropertyTypes`, ajouté la checklist multi-étapes (diagnostics, orchestrateur, planTools, validations, projets annexes) et aucune commande exécutée.
-- 2025-10-21 · gpt-5-codex : aligné les émissions orchestrateur et plan pour propager `jobId`/`childId` à `null` quand absents, ajusté `planTools` (scheduler, lifecycle) et étendu `tests/plan.fanout-join.test.ts` pour vérifier l'absence de propriétés optionnelles. Commandes exécutées : `npm run build`, `npm run typecheck`, `npm run test`.
-- 2025-10-21 · gpt-5-codex : normalisé `planTools` pour omettre `consensus` et les callbacks optionnels lorsqu'ils sont absents (résultats `plan_join`, STATUS events, TickRuntime, ExecutionLoopOptions), étendu `tests/plan.fanout-join.test.ts` pour vérifier l'absence de `undefined`. Commandes exécutées : `npm run build`, `npm run typecheck`, `npm run test`.
-- 2025-10-21 · gpt-5-codex : assaini le dry-run plan (`planTools`) en convertissant les graphes hiérarchiques et les hints reroute pour omettre les `undefined`, ajusté `deriveRerouteAvoidHints`, mis à jour `handlePlanDryRun` et étendu `tests/plan.dry-run.test.ts`. Commandes exécutées : `npm run build`, `npm run typecheck`, `npm run test`, `npm run typecheck -- --exactOptionalPropertyTypes`.
-- 2025-10-21 · gpt-5-codex : routé `createOrchestratorController` via `buildJsonRpcObservabilityInput` pour éviter les `transport` indéfinis, étendu `tests/orchestrator/jsonrpc.observability-input.test.ts` (cas `null`) et renforcé `tests/events/controller.optional-fields.test.ts`. Commandes exécutées : `npm run build`, `npm run typecheck`, `npm run test`.
-- 2025-10-21 · gpt-5-codex : omis `input_key`/`id`/`latencyMs` lorsqu'ils sont indéfinis (planner, ragTools, ToolRouter), ajouté les tests associés et confirmé `npm run build`, `npm run typecheck`, `npm run test`.
-- 2025-10-21 · gpt-5-codex : factorisé le champ `transport` des observabilités JSON-RPC via `omitUndefinedEntries` (controller &
-  runtime) pour éviter les valeurs `undefined` avec `exactOptionalPropertyTypes`. Commande exécutée : `npm run typecheck --
-  --exactOptionalPropertyTypes` (diagnostic).
-- 2025-10-21 · gpt-5-codex : normalisé `runChildrenPhase` pour omettre `captureEvents` indéfini, dépanné le test
-  `children validation runner` et rafraîchi le snapshot `plan_compile_execute.facade.json` suite au changement de hash.
-  Commandes exécutées : `npm run build`, `npm run typecheck`, `npm run test`, `npm run test:unit -- --grep "plan_compile_execute"`.
-- 2025-10-21 · gpt-5-codex : assaini le parseur CLI `validate-run` (suppression des `undefined`, exposition du crochet de test),
-  aligné le stage preflight sur les nouvelles conventions et étendu la suite `tests/scripts.validate-run.test.ts`. Commandes
-  exécutées : `npm run build`, `npm run typecheck`, `npm run test`.
-- 2025-10-21 · gpt-5-codex : mis à jour le snapshot `plan_compile_execute.facade.json`, corrigé le test
-  `children validation runner` pour exiger les paramètres spawn et relancé `npm run build`, `npm run typecheck`, `npm run test`.
-- 2025-10-21 · gpt-5-codex : converti le résumé robustness pour éliminer les `null` via `coerceNullToUndefined`, ajouté une
-  assertion sur le JSON persistant et confirmé `npm run build`, `npm run typecheck`, `npm run test`.
-- 2025-10-21 · gpt-5-codex : repris la passe optional-fields (ModelRouter, middleware JSON-RPC, outils enfants) en retirant les
-  placeholders `undefined`, aligné `toolErrors`/`children`/`robustness` sur `omitUndefinedEntries`, renforcé les tests CLI/runners
-  (plan overrides, transcripts, erreurs RPC) et confirmé la stabilité. Commandes exécutées : `npm run build`, `npm run typecheck`,
-  `npm run test`.
-- 2025-10-21 · gpt-5-codex : assaini les runners/CLI de validation (coordination, knowledge, plans, performance, robustness) pour
-  écarter les propriétés optionnelles `undefined`, ajusté les merges CLI, enrichi les tests (omission des champs optionnels) et
-  relancé `npm run typecheck -- --exactOptionalPropertyTypes` (diagnostic) puis `npm run test` (1287 verts).
-- 2025-10-21 · gpt-5-codex : confirmé la purge des `?? undefined` hors validation, relancé `npm run test` jusqu'au trailer TAP (1283/1283 verts) et mis à jour la checklist/historique `AGENTS.md`.
-- 2025-10-21 · gpt-5-codex : retiré les `?? undefined` des résumés validation (children, robustness, final report), ajouté les tests garantissant l'omission des transcripts/idempotency absents et mis à jour la checklist `exactOptionalPropertyTypes`. Commandes exécutées : `npm run build`, `npm run typecheck`, `npm run test`.
-- 2025-10-21 · gpt-5-codex : assaini `handleChildSend` pour retirer les `taskId` indéfinis, ajouté les tests de boucle sur un
-  superviseur simulé et confirmé `npm run build`, `npm run typecheck`, `npm run test`.
-- 2025-10-21 · gpt-5-codex : corrigé les tests `knowledgeCli`/`plansCli` pour viser `result.summaryPath` sur le résultat imbriqué et
-  relancé `npm run build`, `npm run typecheck`, `npm run test` (suite verte, 1280 tests). Commandes exécutées : `npm run build`,
-  `npm run typecheck`, `npm run test`.
-- 2025-10-21 · gpt-5-codex : aligné `createOrchestratorController` sur `coerceNullToUndefined`, ajouté le test
-  `tests/events/controller.optional-fields.test.ts` pour capturer l'observabilité JSON-RPC et confirmé la persistance
-  des journaux. Commandes exécutées : `npm run build`, `npm run typecheck`, `npm run test`.
-- 2025-10-21 · gpt-5-codex : remplacé chaque `?? undefined` du runtime par `coerceNullToUndefined`, exposé `__eventRuntimeInternals.pushEvent` et ajouté la suite `tests/events/pushEvent.optional-fields.test.ts` pour couvrir les identifiants optionnels. Commandes exécutées : `npm run build`, `npm run typecheck`, `npm run test`.
-- 2025-10-21 · gpt-5-codex : nettoyé les defaults sandbox du runtime avec `omitUndefinedEntries`, ajouté le test `tests/child.supervisor.sandbox-config.test.ts` et confirmé `npm run build`, `npm run typecheck`, `npm run test`. Commandes exécutées : `npm run build`, `npm run typecheck`, `npm run test`.
-- 2025-10-21 · gpt-5-codex : relancé `npm run test` jusqu'au trailer TAP après la passe optional-field interrompue ; 1266 tests verts confirmés. Commande exécutée : `npm run test`.
+### Historique
+- 2025-10-23 · gpt-5-codex : aligné `SecuritySummary` sur des sentinelles `null` (checks, redaction, unauthorized, pathValidation), mis à jour les suites CLI/unitaires et confirmé `node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --file tests/setup.ts tests/validation/security.test.ts tests/validation/securityCli.test.ts`.
+- 2025-10-23 · gpt-5-codex : ajusté les types `CoordinationSummary` pour toujours exposer `lastSnapshot`, `tally`, `preferredOutcome` et `tieDetectedFromTally` sans `undefined`, ajouté une régression CLI garantissant l'absence d'overrides indéfinis et confirmé `node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --file tests/setup.ts tests/validation/coordination.test.ts tests/validation/coordinationCli.test.ts`.
+- 2025-10-23 · gpt-5-codex : normalisé `validation/logStimulus.ts` pour trimmer les appels JSON-RPC, supprimer `params: undefined`, étendu `tests/validation/logStimulus{,Cli}.test.ts` et confirmé `node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --file tests/setup.ts tests/validation/logStimulus.test.ts tests/validation/logStimulusCli.test.ts`.
+- 2025-10-23 · gpt-5-codex : assaini `validation/logsCli.ts` pour supprimer les overrides vides, injecte un override `capture` testable et confirme `node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --file tests/setup.ts tests/validation/logsCli.test.ts`.
+- 2025-10-23 · gpt-5-codex : assaini `scripts/validation/run-smoke.mjs` pour supprimer les `undefined` dans les métadonnées des opérations, étendu `tests/validation/run-smoke.test.ts` et confirmé `node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --file tests/setup.ts tests/validation/run-smoke.test.ts`.
+- 2025-10-23 · gpt-5-codex : normalisé les contextes d'enregistrement MCP pour retirer les dépendances optionnelles indéfinies (`idempotency`, `runsRoot`, `workerPool`), ajouté la couverture dédiée dans `tests/orchestrator/runtime.optional-contexts.test.ts` et confirmé `node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --file tests/setup.ts tests/orchestrator/runtime.optional-contexts.test.ts`.
+- 2025-10-23 · gpt-5-codex : assaini `validation/introspectionSummary` pour ne pas sérialiser `error: undefined`, ajouté la régression « omits optional error payloads » et confirmé `node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --file tests/setup.ts tests/validation/introspectionSummary.test.ts`.
+- 2025-10-23 · gpt-5-codex : normalisé `createOrchestratorController` pour filtrer les balises transport vides, cloner le contexte avant routage et garantir que le WAL/journal omettent les tags blancs ; couverture `tests/events/controller.optional-fields.test.ts`, `tests/orchestrator/jsonrpc.observability-input.test.ts`, `tests/orchestrator/runtime.optional-contexts.test.ts`.
+- 2025-10-23 · gpt-5-codex : assaini `TaskLeaf` pour ne plus exposer `output: undefined`, documenté `BehaviorTickResult`, étendu `tests/executor.bt.optional-fields.test.ts` et `tests/bt.compiler.from-hiergraph.test.ts`.
+- 2025-10-23 · gpt-5-codex : ajouté `tests/tools/graph.snapshot.optional-fields.test.ts` pour couvrir la sérialisation des snapshots sans champs optionnels implicites et confirmé `node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --file tests/setup.ts tests/tools/graph.snapshot.optional-fields.test.ts tests/tools/graph.optional-fields.test.ts`.
+- 2025-10-23 · gpt-5-codex : introduit `normaliseTransportTag` pour assainir les tags transport JSON-RPC, supprimé les `ts`/`seq` indéfinis des journaux scheduler/logJournal et étendu `tests/orchestrator/jsonrpc.observability-input.test.ts`.
+- 2025-10-23 · gpt-5-codex : assaini `planner/domain.ts` pour cloner les plans sans clés optionnelles `undefined`, raffiné `planner/schedule.ts` et confirmé `node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --file tests/setup.ts tests/planner/compile.test.ts`.
+- 2025-10-23 · gpt-5-codex : propage `jobId: null` dans les événements `child_collect`, étendu `tests/events.cognitive.test.ts` et confirmé `node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --file tests/setup.ts tests/events.cognitive.test.ts tests/orchestrator/runtime.optional-contexts.test.ts`.
+- 2025-10-23 · gpt-5-codex : converti `ReactiveScheduler` et `ExecutionLoop` pour stocker les callbacks optionnels via des sentinelles `null`, supprimé les enregistrements `causalEventId: undefined` et confirmé `node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --file tests/setup.ts tests/executor.scheduler.optional-fields.test.ts tests/executor.loop.optional-fields.test.ts`.
+- 2025-10-23 · gpt-5-codex : renforcé `src/orchestrator/runtime.ts` (Graph Forge tasks, agrégateur transcripts, extras JSON-RPC et outils enfant) pour purger `weightKey`/`include*`/`sessionId`/`timeout` indéfinis et étendu `tests/orchestrator/runtime.optional-contexts.test.ts`.
+- 2025-10-23 · gpt-5-codex : assaini `src/orchestrator/runtime.ts` (contexts outils, autoscaler, métriques qualité, options logger), ajouté `tests/orchestrator/runtime.optional-contexts.test.ts` et confirmé `node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --file tests/setup.ts tests/orchestrator/runtime.optional-contexts.test.ts tests/orchestrator/jsonrpc.observability-input.test.ts tests/infra/runtime.test.ts`.
+- 2025-10-23 · gpt-5-codex : introduit `normaliseRunInvocationOptions` dans `scripts/validation/run-eval.mjs`, omis les paramètres CLI `undefined`, étendu `tests/validation/run-eval.test.ts`.
+- 2025-10-22 · gpt-5-codex : assaini `PlanLifecycleRegistry` pour purger les payloads `undefined`, ajouté `tests/executor/planLifecycle.optional-fields.test.ts` et confirmé `node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --file tests/setup.ts tests/executor/planLifecycle.optional-fields.test.ts`.
+- 2025-10-22 · gpt-5-codex : normalisé `OneForOneSupervisor` et `ChildSupervisor` pour forcer `retryAt` à `null`, ajouté la couverture half-open et confirmé `node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --file tests/setup.ts tests/children/supervisor.test.ts` (typecheck strict encore rouge).
+- 2025-10-22 · gpt-5-codex : assaini la construction des corrélations cognitives pour omettre `jobId` implicite, dérive les identifiants depuis les sources auxiliaires et ajouté `tests/events.cognitive.test.ts tests/events/bus.types.test.ts`.
+- 2025-10-22 · gpt-5-codex : retiré les `?? undefined` restants dans `normalisePlanEventScope`, ajouté la régression plan_reduce et confirmé `npm run test:unit -- --grep "plan tools"`.
+- 2025-10-22 · gpt-5-codex : filtré les options `timeoutMs`/`signal` de `child_orchestrate` lors des arrêts, ajouté les régressions shutdown et confirmé `node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --file tests/setup.ts tests/tools/child_orchestrate.optional-fields.test.ts`.
+- 2025-10-22 · gpt-5-codex : sérialisé les erreurs du worker graph sans champs optionnels indéfinis, exposé le helper dédié et confirmé `node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --file tests/setup.ts tests/infra/graphWorkerThread.optional-fields.test.ts`.
+- 2025-10-22 · gpt-5-codex : clôné le contexte JSON-RPC sans `undefined`, normalisé les journaux dashboard/replay et confirmé `node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --file tests/setup.ts tests/infra/runtime.test.ts tests/monitor/dashboard.optional-fields.test.ts tests/monitor/replay.optional-fields.test.ts`.
+- 2025-10-22 · gpt-5-codex : normalisé `BudgetTracker` pour retirer les métadonnées `undefined`, ajouté la régression infra/budget et confirmé `node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --file tests/setup.ts tests/infra/budget.test.ts`.
+- 2025-10-22 · gpt-5-codex : assaini `src/graph/{invariants,patch,rewrite}.ts` pour propager `omitUndefinedEntries`, ajouté `tests/graph.rewrite.optional-fields.test.ts`, renforcé `tests/graph.invariants.enforced.test.ts` et confirmé `node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --file tests/setup.ts tests/graph.rewrite.optional-fields.test.ts tests/graph.invariants.enforced.test.ts`.
+- 2025-10-22 · gpt-5-codex : assaini `ExecutionLoop` pour omettre `budget` implicite et les `errorMessage` indéfinis, ajouté `tests/executor.loop.optional-fields.test.ts` et confirmé `node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --file tests/setup.ts tests/executor.loop.optional-fields.test.ts tests/executor.loop.budget.test.ts tests/executor.loop.timing.test.ts tests/executor.loop.reconciler.test.ts`.
+- 2025-10-22 · gpt-5-codex : assaini `src/graph/{hypergraph,hierarchy}.ts` pour supprimer les champs optionnels implicites, étendu les tests `tests/graph.hyper.project.test.ts`, `tests/graph.hierarchy.flatten.test.ts`, `tests/tools/graph.optional-fields.test.ts` et confirmé la commande ciblée.

@@ -151,6 +151,46 @@ function normaliseLimits(input: BudgetLimits | undefined): Required<BudgetLimits
   return limits;
 }
 
+/**
+ * Normalises optional usage metadata to guarantee snapshots never expose
+ * `undefined` placeholders. The helper trims whitespace, drops empty strings
+ * and clones the resulting values so downstream metrics cannot mutate the
+ * tracker state.
+ */
+function normaliseBudgetMetadata(metadata: BudgetUsageMetadata | undefined): BudgetUsageMetadata | undefined {
+  if (!metadata) {
+    return undefined;
+  }
+
+  const trim = (value: string | undefined): string | undefined => {
+    if (typeof value !== "string") {
+      return undefined;
+    }
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : undefined;
+  };
+
+  const normalised: BudgetUsageMetadata = {};
+  const actor = trim(metadata.actor);
+  if (actor) {
+    normalised.actor = actor;
+  }
+  const operation = trim(metadata.operation);
+  if (operation) {
+    normalised.operation = operation;
+  }
+  const stage = trim(metadata.stage);
+  if (stage) {
+    normalised.stage = stage;
+  }
+  const detail = trim(metadata.detail);
+  if (detail) {
+    normalised.detail = detail;
+  }
+
+  return Object.keys(normalised).length > 0 ? normalised : undefined;
+}
+
 /** Adds together two usage objects without mutating the operands. */
 function addUsage(base: BudgetUsage, delta: BudgetUsage): BudgetUsage {
   const next: BudgetUsage = { ...base };
@@ -198,6 +238,7 @@ export class BudgetTracker {
    */
   consume(consumption: BudgetConsumption, metadata?: BudgetUsageMetadata): BudgetCharge {
     const charge = normaliseUsage(consumption);
+    const metadataSnapshot = normaliseBudgetMetadata(metadata);
     const remaining = this.remaining();
 
     for (const dimension of BUDGET_DIMENSIONS) {
@@ -208,18 +249,21 @@ export class BudgetTracker {
       const available = remaining[dimension];
       const requested = charge[dimension];
       if (requested > 0 && requested > available) {
-        recordBudgetExhaustionMetric(dimension, metadata);
+        recordBudgetExhaustionMetric(dimension, metadataSnapshot);
         throw new BudgetExceededError(dimension, available, requested, limit);
       }
     }
 
     this.consumed = addUsage(this.consumed, charge);
     this.updatedAt = this.clock();
-    this.lastUsage = { charge: { ...charge }, metadata };
+    this.lastUsage = {
+      charge: { ...charge },
+      ...(metadataSnapshot ? { metadata: metadataSnapshot } : {}),
+    };
     for (const dimension of BUDGET_DIMENSIONS) {
       const amount = charge[dimension];
       if (amount > 0) {
-        recordBudgetConsumptionMetric(dimension, amount, metadata);
+        recordBudgetConsumptionMetric(dimension, amount, metadataSnapshot);
       }
     }
     return charge;
@@ -258,14 +302,19 @@ export class BudgetTracker {
         exhausted.push(dimension);
       }
     }
-    return {
+    return { 
       limits: { ...this.limits },
       consumed: { ...this.consumed },
       remaining,
       exhausted,
       createdAt: this.createdAt,
       updatedAt: this.updatedAt,
-      lastUsage: this.lastUsage ? { charge: { ...this.lastUsage.charge }, metadata: this.lastUsage.metadata } : null,
+      lastUsage: this.lastUsage
+        ? {
+            charge: { ...this.lastUsage.charge },
+            ...(this.lastUsage.metadata ? { metadata: { ...this.lastUsage.metadata } } : {}),
+          }
+        : null,
     };
   }
 }

@@ -7,6 +7,7 @@ import type { ChildSupervisorContract, SendResult } from "../children/supervisor
 import type { ChildCollectedOutputs, ChildRuntimeMessage, ChildShutdownResult } from "../childRuntime.js";
 import type { Signal } from "../nodePrimitives.js";
 import { StructuredLogger } from "../logger.js";
+import { omitUndefinedEntries } from "../utils/object.js";
 import {
   BudgetExceededError,
   type BudgetCharge,
@@ -425,44 +426,52 @@ function resolveIdempotencyKey(parsed: ChildOrchestrateInput, rpcContextIdempote
   return randomUUID();
 }
 
+/**
+ * Builds the supervisor spawn options while omitting any optional fields that
+ * were not explicitly requested by the caller. Sanitising the payload upfront
+ * keeps upcoming `exactOptionalPropertyTypes` enforcement from observing
+ * placeholder `undefined` values on the supervisor boundary.
+ */
 function buildSpawnOptions(
   parsed: ChildOrchestrateInput,
   metadata: Record<string, unknown> | undefined,
 ) {
-  const sandbox = parsed.sandbox
-    ? {
+  const sandbox = parsed.sandbox !== undefined
+    ? omitUndefinedEntries({
         profile: parsed.sandbox.profile,
-        ...(parsed.sandbox.allow_env !== undefined ? { allowEnv: parsed.sandbox.allow_env } : {}),
-        ...(parsed.sandbox.env !== undefined ? { env: parsed.sandbox.env } : {}),
-        ...(parsed.sandbox.inherit_default_env !== undefined
-          ? { inheritDefaultEnv: parsed.sandbox.inherit_default_env }
-          : {}),
-      }
-    : null;
+        allowEnv: parsed.sandbox.allow_env,
+        env: parsed.sandbox.env,
+        inheritDefaultEnv: parsed.sandbox.inherit_default_env,
+      })
+    : undefined;
 
-  return {
+  const spawnRetry = parsed.spawn_retry
+    ? omitUndefinedEntries({
+        attempts: parsed.spawn_retry.attempts,
+        initialDelayMs: parsed.spawn_retry.initial_delay_ms,
+        backoffFactor: parsed.spawn_retry.backoff_factor,
+        maxDelayMs: parsed.spawn_retry.max_delay_ms,
+      })
+    : undefined;
+
+  const normalisedSpawnRetry = spawnRetry && Object.keys(spawnRetry).length > 0 ? spawnRetry : undefined;
+
+  return omitUndefinedEntries({
     childId: parsed.child_id,
     command: parsed.command,
     args: parsed.args,
     env: parsed.env,
-    ...(metadata ? { metadata } : {}),
+    metadata,
     manifestExtras: parsed.manifest_extras,
-    limits: parsed.limits ?? null,
-    role: parsed.role ?? null,
-    toolsAllow: parsed.tools_allow ?? null,
-    waitForReady: parsed.wait_for_ready,
-    readyType: parsed.ready_type,
+    limits: parsed.limits,
+    role: parsed.role,
+    toolsAllow: parsed.tools_allow,
+    waitForReady: parsed.wait_for_ready === true ? undefined : parsed.wait_for_ready,
+    readyType: parsed.ready_type === "ready" ? undefined : parsed.ready_type,
     readyTimeoutMs: parsed.ready_timeout_ms,
     sandbox,
-    spawnRetry: parsed.spawn_retry
-      ? {
-          attempts: parsed.spawn_retry.attempts,
-          initialDelayMs: parsed.spawn_retry.initial_delay_ms,
-          backoffFactor: parsed.spawn_retry.backoff_factor,
-          maxDelayMs: parsed.spawn_retry.max_delay_ms,
-        }
-      : undefined,
-  };
+    spawnRetry: normalisedSpawnRetry,
+  });
 }
 
 function buildObservationError(error: unknown): string {
@@ -470,6 +479,38 @@ function buildObservationError(error: unknown): string {
     return error.message;
   }
   return String(error ?? "unknown observation failure");
+}
+
+/**
+ * Builds the optional timeout record forwarded to supervisor shutdown helpers.
+ *
+ * Returning `undefined` when the caller omits a concrete value prevents
+ * `{ timeoutMs: undefined }` placeholders from leaking into the supervisor API
+ * once `exactOptionalPropertyTypes` enforces strict optional semantics.
+ */
+function buildSupervisorTimeoutOptions(timeoutMs: number | null | undefined): { timeoutMs: number } | undefined {
+  if (typeof timeoutMs !== "number") {
+    return undefined;
+  }
+  return { timeoutMs };
+}
+
+/**
+ * Builds the cancel options passed to the supervisor by omitting empty signal /
+ * timeout combinations. The helper keeps the downstream contract sparse so no
+ * optional field surfaces unless the caller provided a real value.
+ */
+function buildSupervisorCancelOptions(
+  options: { signal?: Signal; timeoutMs?: number | null },
+): { signal?: Signal; timeoutMs?: number } | undefined {
+  const result: { signal?: Signal; timeoutMs?: number } = {};
+  if (options.signal !== undefined) {
+    result.signal = options.signal;
+  }
+  if (typeof options.timeoutMs === "number") {
+    result.timeoutMs = options.timeoutMs;
+  }
+  return Object.keys(result).length > 0 ? result : undefined;
 }
 
 /**
@@ -624,14 +665,17 @@ export function createChildOrchestrateHandler(
           const mode = parsed.shutdown?.mode ?? "cancel";
           const timeoutMs = parsed.shutdown?.timeout_ms;
           if (mode === "kill") {
-            const killed = await context.supervisor.kill(childId, { timeoutMs });
+            const killed = await context.supervisor.kill(
+              childId,
+              buildSupervisorTimeoutOptions(timeoutMs),
+            );
             shutdown = normaliseShutdown(killed);
           } else {
             const resolvedSignal = parsed.shutdown?.signal as Signal | undefined;
-            const cancelled = await context.supervisor.cancel(childId, {
-              signal: resolvedSignal,
-              timeoutMs,
-            });
+            const cancelled = await context.supervisor.cancel(
+              childId,
+              buildSupervisorCancelOptions({ signal: resolvedSignal, timeoutMs }),
+            );
             shutdown = normaliseShutdown(cancelled);
           }
           shutdownPerformed = true;
@@ -652,7 +696,10 @@ export function createChildOrchestrateHandler(
       } finally {
         if (childId && !shutdownPerformed) {
           try {
-            const forced = await context.supervisor.kill(childId, { timeoutMs: parsed.shutdown?.timeout_ms });
+            const forced = await context.supervisor.kill(
+              childId,
+              buildSupervisorTimeoutOptions(parsed.shutdown?.timeout_ms ?? null),
+            );
             shutdown = normaliseShutdown(forced);
           } catch (killError) {
             context.logger.error("child_orchestrate_forced_shutdown_failed", {

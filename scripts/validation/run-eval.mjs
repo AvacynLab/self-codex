@@ -566,6 +566,37 @@ function isMainModule() {
   return fileURLToPath(import.meta.url) === resolve(entry);
 }
 
+/**
+ * Builds the sanitized option bag passed to {@link run}.  The helper drops
+ * fields that the operator did not explicitly provide so the downstream
+ * execution context never receives placeholder `undefined` values.  This keeps
+ * the script compatible with `exactOptionalPropertyTypes` while documenting the
+ * intent for future maintainers.
+ */
+export function normaliseRunInvocationOptions(options) {
+  const sanitizedFeatureOverrides =
+    options.featureOverrides && Object.keys(options.featureOverrides).length > 0
+      ? { ...options.featureOverrides }
+      : undefined;
+
+  /**
+   * Collect the tuple representation first so we can easily filter out entries
+   * carrying `undefined`.  This ensures the final object mirrors the explicit
+   * CLI input without leaking implicit defaults.
+   */
+  const pairs = [
+    ["runId", options.runId],
+    ["runRoot", options.runRoot],
+    ["workspaceRoot", options.workspaceRoot],
+    ["timestamp", options.timestamp],
+    ["graphId", options.graphId],
+    ["traceSeed", options.traceSeed],
+    ["featureOverrides", sanitizedFeatureOverrides],
+  ];
+
+  return Object.fromEntries(pairs.filter(([, value]) => value !== undefined));
+}
+
 if (isMainModule()) {
   const { options, errors, helpRequested } = parseCliArgs(process.argv.slice(2));
 
@@ -580,15 +611,8 @@ if (isMainModule()) {
   } else if (helpRequested) {
     printHelp();
   } else {
-    run({
-      runId: options.runId,
-      runRoot: options.runRoot,
-      workspaceRoot: options.workspaceRoot,
-      timestamp: options.timestamp,
-      graphId: options.graphId,
-      traceSeed: options.traceSeed,
-      featureOverrides: Object.keys(options.featureOverrides).length > 0 ? options.featureOverrides : undefined,
-    })
+    const invocationOptions = normaliseRunInvocationOptions(options);
+    run(invocationOptions)
       .then((result) => {
         console.log(`Evaluation validation completed: ${result.runId}`);
         console.log(`Summary written to ${result.summaryPath}`);

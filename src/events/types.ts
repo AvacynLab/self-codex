@@ -144,6 +144,12 @@ export type JsonRpcEventStatus = "pending" | "ok" | "error";
  * structure mirrors the object assembled in
  * `recordJsonRpcObservability()` so runtime publishers can expose structured
  * telemetry without resorting to casts.
+ *
+ * Optional metrics such as `transport` or `elapsed_ms` are flagged with
+ * `?` so the runtime can omit them entirely when a measurement is not
+ * available. This keeps the JSON contract aligned with the
+ * `exactOptionalPropertyTypes` requirements by avoiding `undefined`
+ * assignments in the first place.
  */
 export interface JsonRpcEventPayloadBase {
   /** Discriminant describing the lifecycle stage (request/response/error). */
@@ -157,21 +163,21 @@ export interface JsonRpcEventPayloadBase {
   /** Identifier propagated by the client (string or numeric). */
   readonly request_id: string | number | null;
   /** Transport that carried the request (http, ws, ...). */
-  readonly transport: string | null;
+  readonly transport?: string | null;
   /** High level lifecycle status rendered by dashboards. */
   readonly status: JsonRpcEventStatus | null;
   /** Duration measured by the orchestrator for the lifecycle stage. */
-  readonly elapsed_ms: number | null;
+  readonly elapsed_ms?: number | null;
   /** Distributed trace identifier when tracing is enabled. */
-  readonly trace_id: string | null;
+  readonly trace_id?: string | null;
   /** Distributed span identifier when tracing is enabled. */
-  readonly span_id: string | null;
+  readonly span_id?: string | null;
   /** Trace duration captured by the tracing backend. */
-  readonly duration_ms: number | null;
+  readonly duration_ms?: number | null;
   /** Payload size observed on ingress. */
-  readonly bytes_in: number | null;
+  readonly bytes_in?: number | null;
   /** Payload size observed on egress. */
-  readonly bytes_out: number | null;
+  readonly bytes_out?: number | null;
   /** Run correlation identifier propagated by tools. */
   readonly run_id: string | null;
   /** Operation correlation identifier propagated by tools. */
@@ -181,13 +187,13 @@ export interface JsonRpcEventPayloadBase {
   /** Job correlation identifier propagated by tools. */
   readonly job_id: string | null;
   /** Optional idempotency key used to deduplicate requests. */
-  readonly idempotency_key: string | null;
+  readonly idempotency_key?: string | null;
   /** Normalised error message when the request fails. */
   readonly error_message: string | null;
   /** Structured JSON-RPC error code when the request fails. */
   readonly error_code: number | null;
   /** Timeout configuration applied to the request if any. */
-  readonly timeout_ms: number | null;
+  readonly timeout_ms?: number | null;
 }
 
 /**

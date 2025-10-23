@@ -1,4 +1,4 @@
-import { parentPort, workerData } from "node:worker_threads";
+import { isMainThread, parentPort, workerData } from "node:worker_threads";
 
 import type { JsonPatchOperation } from "../graph/diff.js";
 import type { NormalisedGraph } from "../graph/types.js";
@@ -25,15 +25,31 @@ interface GraphWorkerErrorMessage {
 
 type GraphWorkerMessage = GraphWorkerSuccessMessage | GraphWorkerErrorMessage;
 
-function serialiseError(error: unknown): GraphWorkerErrorMessage["error"] {
+/**
+ * Serialise arbitrary errors emitted by the worker into a JSON-friendly shape.
+ *
+ * The helper trims empty identifiers and omits optional properties entirely
+ * instead of materialising them with `undefined`. Doing so keeps the worker
+ * compatible with `exactOptionalPropertyTypes` while ensuring downstream
+ * consumers never observe placeholder values in structured telemetry.
+ */
+export function serialiseGraphWorkerError(error: unknown): GraphWorkerErrorMessage["error"] {
   if (error instanceof Error) {
-    return {
-      name: error.name ?? "Error",
+    const name = typeof error.name === "string" && error.name.trim().length > 0 ? error.name : "Error";
+    const details: GraphWorkerErrorMessage["error"] = {
+      name,
       message: error.message,
-      stack: typeof error.stack === "string" ? error.stack : undefined,
     };
+    const stack = typeof error.stack === "string" && error.stack.trim().length > 0 ? error.stack : undefined;
+    if (stack) {
+      details.stack = stack;
+    }
+    return details;
   }
-  return { name: "Error", message: typeof error === "string" ? error : JSON.stringify(error) };
+  return {
+    name: "Error",
+    message: typeof error === "string" ? error : JSON.stringify(error),
+  };
 }
 
 function assertParentPort(port: typeof parentPort): asserts port {
@@ -51,9 +67,11 @@ async function main(): Promise<void> {
     const message: GraphWorkerMessage = { ok: true, result };
     parentPort.postMessage(message);
   } catch (error) {
-    const message: GraphWorkerMessage = { ok: false, error: serialiseError(error) };
+    const message: GraphWorkerMessage = { ok: false, error: serialiseGraphWorkerError(error) };
     parentPort.postMessage(message);
   }
 }
 
-void main();
+if (!isMainThread) {
+  void main();
+}

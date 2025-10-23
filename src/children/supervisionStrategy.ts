@@ -50,6 +50,27 @@ export type SupervisorEvent =
   | { type: "breaker_half_open"; key: string }
   | { type: "breaker_closed"; key: string };
 
+/**
+ * Normalises supervision events so optional breaker metadata serialises with
+ * explicit `null` sentinels instead of leaking `undefined` once
+ * `exactOptionalPropertyTypes` is enforced globally.
+ */
+export function normaliseSupervisorEvent(event: SupervisorEvent): SupervisorEvent {
+  if (event.type === "breaker_open") {
+    return { ...event, retryAt: event.retryAt ?? null };
+  }
+  return event;
+}
+
+/**
+ * Converts the retry timestamp exposed by the circuit breaker into a `null`
+ * sentinel to keep downstream events and errors free of `undefined`
+ * placeholders.
+ */
+function normaliseRetryAt(value: number | null | undefined): number | null {
+  return value ?? null;
+}
+
 /** Error thrown when the circuit breaker refuses additional attempts. */
 export class ChildCircuitOpenError extends Error {
   constructor(
@@ -155,12 +176,18 @@ export class OneForOneSupervisor {
     this.syncBreakerState(state, key);
 
     const attempt = state.breaker.tryAcquire();
+    const retryAt = normaliseRetryAt(attempt.retryAt);
     if (!attempt.allowed) {
-      this.handleBreakerState(state, key, attempt.state, attempt.retryAt ?? null);
-      throw new ChildCircuitOpenError(key, attempt.state, attempt.retryAt);
+      this.handleBreakerState(state, key, attempt.state, retryAt);
+      throw new ChildCircuitOpenError(key, attempt.state, retryAt);
     }
 
-    this.handleBreakerState(state, key, attempt.state, state.breaker.nextRetryAt());
+    this.handleBreakerState(
+      state,
+      key,
+      attempt.state,
+      normaliseRetryAt(state.breaker.nextRetryAt()),
+    );
 
     const now = this.options.now();
     const backoffWait = Math.max(0, state.nextAllowedAt - now);
@@ -198,14 +225,24 @@ export class OneForOneSupervisor {
         settle(() => {
           attempt.succeed();
           this.resetState(state);
-          this.handleBreakerState(state, key, state.breaker.getState(), state.breaker.nextRetryAt());
+          this.handleBreakerState(
+            state,
+            key,
+            state.breaker.getState(),
+            normaliseRetryAt(state.breaker.nextRetryAt()),
+          );
         });
       },
       fail: () => {
         settle(() => {
           attempt.fail();
           this.bumpBackoff(state);
-          this.handleBreakerState(state, key, state.breaker.getState(), state.breaker.nextRetryAt());
+          this.handleBreakerState(
+            state,
+            key,
+            state.breaker.getState(),
+            normaliseRetryAt(state.breaker.nextRetryAt()),
+          );
         });
       },
     };
@@ -216,7 +253,12 @@ export class OneForOneSupervisor {
     const state = this.lookupState(key);
     state.breaker.recordFailure(at);
     this.bumpBackoff(state, at);
-    this.handleBreakerState(state, key, state.breaker.getState(), state.breaker.nextRetryAt());
+    this.handleBreakerState(
+      state,
+      key,
+      state.breaker.getState(),
+      normaliseRetryAt(state.breaker.nextRetryAt()),
+    );
   }
 
   /** Records a clean shutdown, resetting both the backoff and breaker state. */
@@ -224,7 +266,12 @@ export class OneForOneSupervisor {
     const state = this.lookupState(key);
     state.breaker.recordSuccess();
     this.resetState(state);
-    this.handleBreakerState(state, key, state.breaker.getState(), state.breaker.nextRetryAt());
+    this.handleBreakerState(
+      state,
+      key,
+      state.breaker.getState(),
+      normaliseRetryAt(state.breaker.nextRetryAt()),
+    );
   }
 
   /** Drops the cached state for a given key. */
@@ -302,8 +349,9 @@ export class OneForOneSupervisor {
     observed: CircuitBreakerState,
     retryAt: number | null,
   ): void {
+    const normalisedRetryAt = normaliseRetryAt(retryAt);
     if (observed === "open") {
-      this.emit({ type: "breaker_open", key, retryAt });
+      this.emit({ type: "breaker_open", key, retryAt: normalisedRetryAt });
     }
     if (state.lastBreakerState === observed) {
       return;
@@ -317,7 +365,12 @@ export class OneForOneSupervisor {
   }
 
   private syncBreakerState(state: SupervisedChildState, key: string): void {
-    this.handleBreakerState(state, key, state.breaker.getState(), state.breaker.nextRetryAt());
+    this.handleBreakerState(
+      state,
+      key,
+      state.breaker.getState(),
+      normaliseRetryAt(state.breaker.nextRetryAt()),
+    );
   }
 
   private emit(event: SupervisorEvent): void {
@@ -325,7 +378,7 @@ export class OneForOneSupervisor {
       return;
     }
     try {
-      this.options.onEvent(event);
+      this.options.onEvent(normaliseSupervisorEvent(event));
     } catch {
       // Observability hooks must never compromise supervision. Errors are
       // swallowed intentionally to keep the restart loop resilient.

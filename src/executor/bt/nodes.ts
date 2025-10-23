@@ -734,7 +734,12 @@ export class TaskLeaf implements BehaviorNode {
       throw error;
     }
     ensureNotCancelled(runtime);
-    return { status: "success", output };
+    // Behaviour Tree leaf nodes surface the tool output only when callers
+    // provide a meaningful value. Omitting the optional `output` key keeps the
+    // runtime compatible with `exactOptionalPropertyTypes` by avoiding
+    // `{ output: undefined }` payloads in success cases where tools return
+    // `undefined`.
+    return output === undefined ? { status: "success" } : { status: "success", output };
   }
 
   /** Task leaves are stateless, nothing to reset. */

@@ -4,7 +4,9 @@ import { expect } from "chai";
 import {
   majority,
   normaliseConsensusOptions,
+  publishConsensusEvent,
   quorum,
+  subscribeConsensusEvents,
   weighted,
   type ConsensusConfig,
   type ConsensusVote,
@@ -120,5 +122,36 @@ describe("coordination consensus helpers", () => {
     expect(Object.prototype.hasOwnProperty.call(options, "preferValue")).to.equal(false);
     expect(options.tieBreaker).to.equal("null");
     expect(Object.prototype.hasOwnProperty.call(options, "quorum")).to.equal(false);
+  });
+
+  it("omits undefined metadata when publishing consensus events", () => {
+    const received: unknown[] = [];
+    const dispose = subscribeConsensusEvents((event) => {
+      received.push(event);
+    });
+
+    const published = publishConsensusEvent({
+      kind: "decision",
+      source: "consensus_vote",
+      mode: "majority",
+      outcome: null,
+      satisfied: false,
+      tie: true,
+      threshold: null,
+      totalWeight: 0,
+      tally: {},
+      votes: 0,
+    });
+
+    dispose();
+
+    expect(published.jobId).to.equal(null);
+    expect(published.runId).to.equal(null);
+    expect(published.opId).to.equal(null);
+    expect(Object.prototype.hasOwnProperty.call(published, "metadata")).to.equal(false);
+
+    expect(received).to.have.length(1);
+    const [emitted] = received as [typeof published];
+    expect(Object.prototype.hasOwnProperty.call(emitted, "metadata")).to.equal(false);
   });
 });

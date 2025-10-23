@@ -1,5 +1,7 @@
 import { spawn as nodeSpawn, type ChildProcess, type SpawnOptions } from "node:child_process";
 
+import { omitUndefinedEntries } from "../utils/object.js";
+
 // NOTE: Node built-in modules are imported with the explicit `node:` prefix to guarantee ESM resolution in Node.js.
 
 /**
@@ -132,12 +134,14 @@ export function createChildProcessGateway({
       const abortManagement = prepareAbortHandling(options.timeoutMs, options.signal);
 
       const spawnOptions: SpawnOptions = {
-        cwd: options.cwd,
-        env,
-        stdio: options.stdio ?? "pipe",
-        shell: false,
-        windowsVerbatimArguments: false,
-        signal: abortManagement.signal,
+        ...omitUndefinedEntries({
+          cwd: options.cwd,
+          env,
+          stdio: options.stdio ?? "pipe",
+          shell: false,
+          windowsVerbatimArguments: false,
+          signal: abortManagement.signal,
+        }),
       };
 
       let child: ChildProcess;

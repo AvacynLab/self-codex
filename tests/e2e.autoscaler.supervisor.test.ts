@@ -400,6 +400,18 @@ describe("autoscaler and supervisor end-to-end", () => {
         .filter((msg): msg is string => typeof msg === "string");
       expect(autoscalerPhases).to.include("scale_up");
       expect(autoscalerPhases).to.include("scale_down");
+      for (const rawEvent of autoscalerEventsLog) {
+        expect(
+          Object.values(rawEvent).some((value) => value === undefined),
+          "autoscaler event envelope should omit undefined optional properties",
+        ).to.equal(false);
+        if (isPlainObject(rawEvent.data)) {
+          expect(
+            Object.values(rawEvent.data).some((value) => value === undefined),
+            "autoscaler event payload should omit undefined optional properties",
+          ).to.equal(false);
+        }
+      }
 
       const runEvents = await client.callTool({
         name: "events_subscribe",

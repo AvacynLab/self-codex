@@ -268,6 +268,35 @@ describe("plan_compile_execute facade", () => {
     expect(structured.ok).to.equal(false);
     expect(structured.details.budget?.reason).to.equal("budget_exhausted");
     expect(structured.details.budget?.dimension).to.equal("toolCalls");
+    expect(structured.details.plan_id).to.equal("budget-plan");
+  });
+
+  it("omits plan identifiers in budget diagnostics when the input is raw text", async () => {
+    const { planContext, logger } = buildPlanContext();
+    const handler = createPlanCompileExecuteHandler({ plan: planContext, logger });
+    const extras = createRequestExtras("req-plan-budget-text");
+    const budget = new BudgetTracker({ toolCalls: 0 });
+
+    const plan = {
+      id: "text-budget-plan",
+      tasks: [{ id: "only", tool: "noop" }],
+    };
+
+    const result = await runWithRpcTrace(
+      { method: `tools/${PLAN_COMPILE_EXECUTE_TOOL_NAME}`, traceId: "trace-plan-budget-text", requestId: extras.requestId },
+      async () =>
+        runWithJsonRpcContext({ requestId: extras.requestId, budget }, () =>
+          handler({ plan: JSON.stringify(plan) }, extras),
+        ),
+    );
+
+    const structured = result.structuredContent as Record<string, any>;
+    expect(structured.ok).to.equal(false);
+    expect(structured.details.budget?.reason).to.equal("budget_exhausted");
+    // The façade receives an opaque JSON string in this scenario, therefore the
+    // resulting diagnostics must not fabricate a `plan_id` field. The
+    // regression guards the optional-field contract documented in AGENTS.md.
+    expect(structured.details).to.not.have.property("plan_id");
   });
 
   it("validates the input payload and rejects malformed requests", async () => {

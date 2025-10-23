@@ -98,6 +98,29 @@ function buildDefaultStimulusCall(): JsonRpcCallSpec {
 }
 
 /**
+ * Clones a JSON-RPC call specification while trimming identifiers and omitting
+ * optional properties explicitly set to `undefined`.
+ *
+ * The helper avoids mutating the caller-provided object so tests can assert the
+ * sanitised payload directly. Dropping `undefined` ensures the eventual
+ * `LogStimulusResult` remains compatible with `exactOptionalPropertyTypes`.
+ */
+function normaliseStimulusCallSpec(call: JsonRpcCallSpec): JsonRpcCallSpec {
+  const normalisedName = typeof call.name === "string" ? call.name.trim() : "";
+  const normalisedMethod = typeof call.method === "string" ? call.method.trim() : "";
+  const normalised: JsonRpcCallSpec = {
+    name: normalisedName,
+    method: normalisedMethod,
+  };
+
+  if (call.params !== undefined) {
+    normalised.params = call.params;
+  }
+
+  return normalised;
+}
+
+/**
  * Collects basic metadata about a file. Missing files are tolerated – the
  * helper returns a snapshot flagging `exists: false` rather than throwing,
  * making it convenient to detect first-time log creation.
@@ -138,7 +161,7 @@ export async function stimulateHttpLogging(
     throw new Error("stimulateHttpLogging requires a valid HTTP environment");
   }
 
-  const call = options.call ?? buildDefaultStimulusCall();
+  const call = normaliseStimulusCallSpec(options.call ?? buildDefaultStimulusCall());
   const logPath = options.logPath ?? DEFAULT_HTTP_LOG_PATH;
   const iterations = Math.max(1, Math.floor(options.iterations ?? 1));
 

@@ -30,6 +30,61 @@ const SMOKE_FEATURE_OVERRIDES = Object.freeze({
 });
 
 /**
+ * Builds a shallow clone of the provided object without undefined values so the
+ * script never forwards placeholder optionals to the validation runtime. Using
+ * an explicit helper keeps the sanitisation co-located with the CLI entrypoint
+ * and documents why we intentionally drop these keys ahead of enabling
+ * `exactOptionalPropertyTypes` in the entire workspace.
+ *
+ * @param {Record<string, unknown>} source raw object coming from user options.
+ * @returns {Record<string, unknown>} clone containing only defined values.
+ */
+function omitUndefinedProperties(source) {
+  const clone = {};
+  for (const [key, value] of Object.entries(source)) {
+    if (value !== undefined) {
+      clone[key] = value;
+    }
+  }
+  return clone;
+}
+
+/**
+ * Merges the default feature toggles required by the smoke scenario with the
+ * caller overrides while filtering out `undefined` hints.  This prevents the
+ * harness from serialising `undefined` values in the persisted run context and
+ * keeps the artefacts stable once strict optional typing is enforced.
+ */
+function buildFeatureOverrides(overrides) {
+  if (!overrides || typeof overrides !== "object") {
+    return { ...SMOKE_FEATURE_OVERRIDES };
+  }
+  return {
+    ...SMOKE_FEATURE_OVERRIDES,
+    ...omitUndefinedProperties(overrides),
+  };
+}
+
+/** Normalises trace identifiers so persisted operations never expose `undefined`. */
+function normaliseTraceId(traceId) {
+  return typeof traceId === "string" && traceId.trim().length > 0 ? traceId : null;
+}
+
+/**
+ * Computes a deterministic duration (in milliseconds) even when the caller
+ * fails to provide latency metadata.  We fall back to the measured elapsed time
+ * derived from a high resolution monotonic clock to avoid returning
+ * `undefined`.
+ */
+function normaliseDuration(startedAt, durationMs) {
+  if (typeof durationMs === "number" && Number.isFinite(durationMs)) {
+    return durationMs;
+  }
+  const elapsedNs = process.hrtime.bigint() - startedAt;
+  return Number(elapsedNs) / 1_000_000;
+}
+
+/**
  * Computes an interpolated percentile for the provided dataset. A `null` value
  * is returned when the input array is empty so the caller can omit the metric.
  */
@@ -85,19 +140,21 @@ export async function run(options = {}) {
   const timestampIso = timestampSource instanceof Date ? timestampSource.toISOString() : String(timestampSource);
   const sanitizedTimestamp = timestampIso.replace(/[:.]/g, "-");
   const runId = options.runId ?? `validation_${sanitizedTimestamp}`;
-  const runContext = await createRunContext({
-    runId,
-    workspaceRoot: ROOT_DIR,
-    runRoot: options.runRoot,
-    traceSeed: options.traceSeed,
-  });
+  const runContext = await createRunContext(
+    omitUndefinedProperties({
+      runId,
+      workspaceRoot: ROOT_DIR,
+      runRoot: options.runRoot,
+      traceSeed: options.traceSeed,
+    }),
+  );
   const recorder = new ArtifactRecorder(runContext);
   const session = new McpSession({
     context: runContext,
     recorder,
     clientName: "smoke-harness",
     clientVersion: "0.1.0",
-    featureOverrides: { ...SMOKE_FEATURE_OVERRIDES, ...(options.featureOverrides ?? {}) },
+    featureOverrides: buildFeatureOverrides(options.featureOverrides),
   });
 
   const stageResults = [];
@@ -105,28 +162,36 @@ export async function run(options = {}) {
 
   /** Helper wrapping an MCP invocation while tracking latency and status. */
   async function executeStep(label, invoke) {
+    const startedAt = process.hrtime.bigint();
     try {
       const call = await invoke();
+      const durationMs = normaliseDuration(startedAt, call.durationMs);
       operations.push({
         label,
-        durationMs: call.durationMs,
+        durationMs,
         status: call.response?.isError ? "error" : "ok",
-        traceId: call.traceId,
+        traceId: normaliseTraceId(call.traceId),
+        details: null,
       });
       return call;
     } catch (error) {
       if (error instanceof McpToolCallError) {
+        const durationMs = normaliseDuration(startedAt, error.durationMs);
+        const causeMessage =
+          error.cause instanceof Error ? error.cause.message : error.cause !== undefined ? String(error.cause) : undefined;
+        const details = causeMessage ?? (error.message ?? "");
         operations.push({
           label,
-          durationMs: error.durationMs,
+          durationMs,
           status: "error",
-          traceId: error.traceId,
-          details: error.cause instanceof Error ? error.cause.message : String(error.cause),
+          traceId: normaliseTraceId(error.traceId),
+          details,
         });
       } else {
+        const durationMs = normaliseDuration(startedAt, null);
         operations.push({
           label,
-          durationMs: null,
+          durationMs,
           status: "error",
           traceId: null,
           details: error instanceof Error ? error.message : String(error),
@@ -143,7 +208,7 @@ export async function run(options = {}) {
       durationMs: 0,
       status: "skipped",
       traceId: null,
-      details: reason,
+      details: String(reason),
     });
   }
 

@@ -124,6 +124,22 @@ describe("gateways/childProcess.spawn", () => {
     expect(invocation.options?.stdio).to.equal("pipe");
   });
 
+  it("omits optional spawn properties when not configured", () => {
+    const { gateway, invocations } = createRecordingGateway();
+
+    gateway.spawn({ command: "/bin/echo", allowedEnvKeys: [] });
+
+    expect(invocations).to.have.lengthOf(1);
+    const invocation = invocations[0];
+
+    // Optional properties should disappear entirely instead of surfacing as
+    // `undefined`, keeping the gateway compatible with
+    // `exactOptionalPropertyTypes`.
+    expect(invocation.options).to.not.equal(undefined);
+    expect(Object.prototype.hasOwnProperty.call(invocation.options, "signal")).to.equal(false);
+    expect(Object.prototype.hasOwnProperty.call(invocation.options, "cwd")).to.equal(false);
+  });
+
   it("aborts processes that exceed their timeout budget", async () => {
     const gateway = createChildProcessGateway();
     const handle = gateway.spawn({

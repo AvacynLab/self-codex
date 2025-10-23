@@ -47,6 +47,15 @@ describe("infra/budget tracker", () => {
     expect(snapshot.lastUsage?.metadata).to.deep.equal({ actor: "test", operation: "unit", stage: "egress" });
   });
 
+  it("omits undefined metadata fields from budget snapshots", () => {
+    const tracker = new BudgetTracker({ tokens: 5 });
+    tracker.consume({ tokens: 1 }, { actor: "  alice  ", operation: "  ", stage: "\t", detail: "  most recent  " });
+
+    const snapshot = tracker.snapshot();
+    // The tracker stores trimmed metadata and discards empty values so snapshots do not leak undefined placeholders.
+    expect(snapshot.lastUsage?.metadata).to.deep.equal({ actor: "alice", detail: "most recent" });
+  });
+
   it("throws a BudgetExceededError when attempting to consume beyond capacity", () => {
     const tracker = new BudgetTracker({ tokens: 5 });
     tracker.consume({ tokens: 5 });

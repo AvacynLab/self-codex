@@ -110,9 +110,12 @@ interface ThoughtGraphCoordinatorOptions {
  */
 export class ThoughtGraphCoordinator {
   private readonly graphState: GraphState;
-  private readonly logger?: StructuredLogger;
-  private readonly metaCritic?: MetaCritic;
-  private readonly valueGraph?: ValueGraph;
+  /** Optional structured logger used for pruning diagnostics. */
+  private readonly logger: StructuredLogger | null;
+  /** Optional MetaCritic instance leveraged to score reasoning branches. */
+  private readonly metaCritic: MetaCritic | null;
+  /** Optional ValueGraph used when adjusting scores with guard verdicts. */
+  private readonly valueGraph: ValueGraph | null;
   private readonly maxBranches: number;
   private readonly maxDepth: number;
   private readonly now: () => number;
@@ -120,9 +123,12 @@ export class ThoughtGraphCoordinator {
 
   constructor(options: ThoughtGraphCoordinatorOptions) {
     this.graphState = options.graphState;
-    this.logger = options.logger;
-    this.metaCritic = options.metaCritic;
-    this.valueGraph = options.valueGraph;
+    // Convert optional collaborators to explicit `null` sentinels so the
+    // coordinator never surfaces `undefined` when serialising snapshots or when
+    // `exactOptionalPropertyTypes` enforces strict omissions.
+    this.logger = options.logger ?? null;
+    this.metaCritic = options.metaCritic ?? null;
+    this.valueGraph = options.valueGraph ?? null;
     this.maxBranches = Math.max(1, options.maxBranches ?? 6);
     this.maxDepth = Math.max(1, options.maxDepth ?? 3);
     this.now = options.now ?? Date.now;

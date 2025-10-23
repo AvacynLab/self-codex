@@ -89,12 +89,77 @@ describe("orchestrator controller optional telemetry fields", () => {
     const latest = schedulerEvents.at(-1);
     expect(latest?.msg).to.equal("jsonrpc_error");
     expect(latest?.elapsedMs, "elapsedMs should be omitted when undefined").to.equal(undefined);
-    expect(latest?.data && Object.prototype.hasOwnProperty.call(latest.data, "transport"))
-      .to.equal(true, "transport property exposed on scheduler payload");
-    expect(latest?.data?.transport, "transport defaults to null when omitted upstream").to.equal(null);
+    expect(Object.prototype.hasOwnProperty.call(latest?.data ?? {}, "transport"))
+      .to.equal(false, "transport field should be omitted when upstream context lacks the tag");
 
     const journalEntries = logJournal.tail({ stream: "server", bucketId: "jsonrpc" });
     expect(journalEntries.entries, "journal entries emitted").to.have.length.greaterThan(0);
     expect(journalEntries.entries.at(-1)?.elapsedMs, "log entries preserve null latency hints").to.equal(null);
+  });
+
+  it("propagates the transport tag provided by the route context", async () => {
+    const requestBudgetLimits: BudgetLimits = {};
+    const controller = createOrchestratorController({
+      server,
+      toolRegistry: registry,
+      logger,
+      eventBus,
+      logJournal,
+      requestBudgetLimits,
+      defaultTimeoutOverride: null,
+    });
+
+    const response = await controller.handleJsonRpc(
+      {
+        jsonrpc: "2.0",
+        id: "invalid-with-transport",
+        method: "",
+      },
+      { transport: "ws", requestId: "ws-request" },
+    );
+
+    expect(response.error?.code).to.equal(-32600);
+    const schedulerEvents = eventBus.published.filter((entry) => entry.cat === "scheduler");
+    expect(schedulerEvents, "scheduler events emitted").to.have.length.greaterThan(0);
+    const latest = schedulerEvents.at(-1);
+    expect(latest?.msg).to.equal("jsonrpc_error");
+    const dataRecord = latest?.data as Record<string, unknown> | undefined;
+    expect(dataRecord).to.not.equal(undefined);
+    expect(dataRecord?.transport).to.equal("ws");
+    expect(Object.prototype.hasOwnProperty.call(dataRecord, "elapsed_ms")).to.equal(false);
+  });
+
+  it("drops whitespace-only transport tags from observability payloads", async () => {
+    const requestBudgetLimits: BudgetLimits = {};
+    const controller = createOrchestratorController({
+      server,
+      toolRegistry: registry,
+      logger,
+      eventBus,
+      logJournal,
+      requestBudgetLimits,
+      defaultTimeoutOverride: null,
+    });
+
+    await controller.handleJsonRpc(
+      {
+        jsonrpc: "2.0",
+        id: "invalid-with-blank-transport",
+        method: "",
+      },
+      { transport: "   ", requestId: "blank-transport" },
+    );
+
+    const schedulerEvents = eventBus.published.filter((entry) => entry.cat === "scheduler");
+    expect(schedulerEvents, "scheduler events emitted").to.have.length.greaterThan(0);
+    const latest = schedulerEvents.at(-1);
+    const dataRecord = latest?.data as Record<string, unknown> | undefined;
+    expect(Object.prototype.hasOwnProperty.call(dataRecord ?? {}, "transport"))
+      .to.equal(false, "transport key is omitted when the context provides only whitespace");
+
+    const journalEntries = logJournal.tail({ stream: "server", bucketId: "jsonrpc" });
+    const lastEntry = journalEntries.entries.at(-1) as { data?: unknown } | undefined;
+    const journalData = (lastEntry?.data ?? {}) as Record<string, unknown>;
+    expect(Object.prototype.hasOwnProperty.call(journalData, "transport")).to.equal(false);
   });
 });

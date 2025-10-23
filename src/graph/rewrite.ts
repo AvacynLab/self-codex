@@ -6,6 +6,7 @@ import {
   type SubgraphDescriptor,
   parseSubgraphRegistry,
 } from "./subgraphRegistry.js";
+import { omitUndefinedEntries } from "../utils/object.js";
 /** Attribute flag automatically added to edges produced by the split-parallel rule. */
 const SPLIT_PARALLEL_FLAG = "rewritten_split_parallel";
 /** Attribute flag automatically added to edges produced by the inline-subgraph rule. */
@@ -131,8 +132,9 @@ export function createSplitParallelRule(targetEdges?: Set<string>): RewriteRule 
       const fanoutEdge: GraphEdgeRecord = {
         from: match.edge.from,
         to: newNode.id,
-        label: match.edge.label,
-        weight: match.edge.weight,
+        // Optional edge fields are materialised through `omitUndefinedEntries`
+        // to prevent undefined placeholders from persisting after the rewrite.
+        ...omitUndefinedEntries({ label: match.edge.label, weight: match.edge.weight }),
         attributes: {
           ...preservedAttributes,
           [SPLIT_PARALLEL_FLAG]: true,
@@ -142,8 +144,7 @@ export function createSplitParallelRule(targetEdges?: Set<string>): RewriteRule 
       const branchEdge: GraphEdgeRecord = {
         from: newNode.id,
         to: match.edge.to,
-        label: match.edge.label,
-        weight: match.edge.weight,
+        ...omitUndefinedEntries({ label: match.edge.label, weight: match.edge.weight }),
         attributes: {
           ...preservedAttributes,
           [SPLIT_PARALLEL_FLAG]: true,
@@ -236,8 +237,7 @@ export function createInlineSubgraphRule(): RewriteRule {
           rewiredEdges.push({
             from: edge.from,
             to: entry,
-            label: edge.label,
-            weight: edge.weight,
+            ...omitUndefinedEntries({ label: edge.label, weight: edge.weight }),
             attributes: {
               ...edge.attributes,
               [INLINE_SUBGRAPH_FLAG]: true,
@@ -254,8 +254,7 @@ export function createInlineSubgraphRule(): RewriteRule {
           rewiredEdges.push({
             from: exit,
             to: edge.to,
-            label: edge.label,
-            weight: edge.weight,
+            ...omitUndefinedEntries({ label: edge.label, weight: edge.weight }),
             attributes: {
               ...edge.attributes,
               [INLINE_SUBGRAPH_FLAG]: true,
@@ -334,8 +333,10 @@ export function createRerouteAvoidRule(options: {
           bypassEdges.push({
             from: source.from,
             to: target.to,
-            label: target.label ?? source.label,
-            weight: source.weight ?? target.weight,
+            ...omitUndefinedEntries({
+              label: target.label ?? source.label,
+              weight: source.weight ?? target.weight,
+            }),
             attributes: {
               ...target.attributes,
               [REROUTE_AVOID_FLAG]: true,
@@ -422,14 +423,13 @@ function cloneGraph(graph: NormalisedGraph): NormalisedGraph {
     ...graph,
     nodes: graph.nodes.map((node) => ({
       id: node.id,
-      label: node.label,
+      ...omitUndefinedEntries({ label: node.label }),
       attributes: { ...node.attributes },
     })),
     edges: graph.edges.map((edge) => ({
       from: edge.from,
       to: edge.to,
-      label: edge.label,
-      weight: edge.weight,
+      ...omitUndefinedEntries({ label: edge.label, weight: edge.weight }),
       attributes: { ...edge.attributes },
     })),
     metadata: { ...graph.metadata },
@@ -450,14 +450,13 @@ function graphsEqual(left: NormalisedGraph, right: NormalisedGraph): boolean {
 function serialiseGraph(graph: NormalisedGraph): string {
   const nodes = sortNodes(graph.nodes).map((node) => ({
     id: node.id,
-    label: node.label,
+    ...omitUndefinedEntries({ label: node.label }),
     attributes: sortAttributes(node.attributes),
   }));
   const edges = sortEdges(graph.edges).map((edge) => ({
     from: edge.from,
     to: edge.to,
-    label: edge.label,
-    weight: edge.weight,
+    ...omitUndefinedEntries({ label: edge.label, weight: edge.weight }),
     attributes: sortAttributes(edge.attributes),
   }));
   const metadata = sortAttributes(graph.metadata as Record<string, GraphAttributeValue>);
@@ -500,7 +499,7 @@ function prefixGraph(graph: NormalisedGraph, prefix: string): {
   }
   const nodes = graph.nodes.map<GraphNodeRecord>((node) => ({
     id: mapping.get(node.id)!,
-    label: node.label,
+    ...omitUndefinedEntries({ label: node.label }),
     attributes: {
       ...node.attributes,
       parent_subgraph: prefix,
@@ -509,8 +508,7 @@ function prefixGraph(graph: NormalisedGraph, prefix: string): {
   const edges = graph.edges.map<GraphEdgeRecord>((edge) => ({
     from: mapping.get(edge.from)!,
     to: mapping.get(edge.to)!,
-    label: edge.label,
-    weight: edge.weight,
+    ...omitUndefinedEntries({ label: edge.label, weight: edge.weight }),
     attributes: { ...edge.attributes, parent_subgraph: prefix },
   }));
   return {
@@ -539,7 +537,7 @@ function mergeNodes(
     }
     result.push({
       id: node.id,
-      label: node.label,
+      ...omitUndefinedEntries({ label: node.label }),
       attributes: {
         ...node.attributes,
         host: parentId,

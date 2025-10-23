@@ -1,11 +1,17 @@
 import { strict as assert } from "node:assert";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { describe, it } from "mocha";
 
 import {
+  ChildSupervisor,
   ChildCircuitOpenError,
   OneForOneSupervisor,
   type SupervisorEvent,
 } from "../../src/children/supervisor.js";
+import { EventBus } from "../../src/events/bus.js";
+import type { ChildSupervisorEventPayload } from "../../src/events/types.js";
 
 /**
  * Helper constructing a supervisor with deterministic timing primitives so the
@@ -155,5 +161,71 @@ describe("OneForOneSupervisor", () => {
       quotaWaits.some((wait) => wait >= 60_000),
       "restart events should record the quota-imposed delay",
     );
+  });
+
+  it("propagates null retryAt when half-open concurrency saturates", async () => {
+    const { supervisor, advance } = buildSupervisor({ failThreshold: 1, cooldownMs: 5, halfOpenMax: 1 });
+
+    const initial = await supervisor.acquire("worker");
+    initial.fail();
+
+    advance(5);
+
+    const halfOpen = await supervisor.acquire("worker");
+
+    await assert.rejects(
+      supervisor.acquire("worker"),
+      (error: unknown) => {
+        assert.ok(error instanceof ChildCircuitOpenError, "half-open saturation should raise ChildCircuitOpenError");
+        assert.equal(error.retryAt, null, "retryAt should normalise to null when half-open capacity blocks retries");
+        return true;
+      },
+    );
+
+    halfOpen.fail();
+  });
+});
+
+describe("ChildSupervisor optional fields", () => {
+  it("emits breaker events with explicit null retryAt and no undefined payloads", async () => {
+    const childrenRoot = await mkdtemp(path.join(tmpdir(), "supervisor-events-"));
+    const bus = new EventBus({ now: () => 0 });
+    const published: Array<ReturnType<typeof bus.publish>> = [];
+    const originalPublish = bus.publish.bind(bus);
+    bus.publish = ((input) => {
+      const envelope = originalPublish(input);
+      published.push(envelope);
+      return envelope;
+    }) as typeof bus.publish;
+
+    const supervisor = new ChildSupervisor({
+      childrenRoot,
+      defaultCommand: process.execPath,
+      defaultArgs: [],
+      eventBus: bus,
+    });
+
+    try {
+      const dispatch = supervisor as unknown as { handleSupervisionEvent(event: SupervisorEvent): void };
+      dispatch.handleSupervisionEvent({ type: "breaker_open", key: "worker", retryAt: null });
+
+      assert.equal(published.length, 1, "the supervisor should publish the breaker transition");
+      const envelope = published[0];
+      assert.equal(envelope.childId, null, "childId defaults to null without a single related runtime");
+      const payload = envelope.data as ChildSupervisorEventPayload & {
+        event: Extract<SupervisorEvent, { type: "breaker_open" }>;
+      };
+      assert.ok(payload, "structured payload should be attached to the bus message");
+      assert.equal(payload.event.retryAt, null, "retryAt should remain a null sentinel on the published event");
+      assert.equal(
+        Object.prototype.hasOwnProperty.call(payload.event, "retryAt"),
+        true,
+        "retryAt should be explicitly present on the event payload",
+      );
+      assert.notEqual(payload.maxRestartsPerMinute, undefined, "restart quotas should surface as a defined field");
+    } finally {
+      await supervisor.disposeAll();
+      await rm(childrenRoot, { recursive: true, force: true });
+    }
   });
 });

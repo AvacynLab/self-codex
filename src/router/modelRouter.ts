@@ -126,16 +126,21 @@ export class ModelRouter {
    */
   registerSpecialist(config: SpecialistConfig): void {
     const parsed = specialistConfigSchema.parse(config);
+    // Operators can override the implicit availability; we preserve explicit
+    // disablement while omitting the default `true` flag from snapshots.
+    const requestedAvailability = config.available ?? parsed.available;
     // NOTE: Optional specialist knobs (priority, languages, tags…) surface as
     // `undefined` when omitted by callers. We strip those keys to keep the
     // stored configuration compliant with `exactOptionalPropertyTypes` while
     // preserving the intent of the original payload.
-    const merged: SpecialistConfig = {
-      id: parsed.id,
-      ...omitUndefinedEntries({ ...config, id: undefined }),
-      ...omitUndefinedEntries({ ...parsed, id: undefined }),
-      available: config.available ?? parsed.available ?? true,
-    };
+    const merged = applyAvailability(
+      {
+        id: parsed.id,
+        ...omitUndefinedEntries({ ...config, id: undefined, available: undefined }),
+        ...omitUndefinedEntries({ ...parsed, id: undefined, available: undefined }),
+      },
+      requestedAvailability,
+    );
     this.specialists.set(merged.id, merged);
     if (!this.stats.has(merged.id)) {
       this.stats.set(merged.id, {
@@ -182,7 +187,7 @@ export class ModelRouter {
     if (!specialist) {
       throw new Error(`Unknown model '${id}'`);
     }
-    this.specialists.set(id, { ...specialist, available });
+    this.specialists.set(id, applyAvailability(specialist, available));
   }
 
   /**
@@ -348,6 +353,22 @@ export class ModelRouter {
     reasons.push(`reliability:${reliability.toFixed(2)}`);
     return reasons.join(", ");
   }
+}
+
+/**
+ * Normalises the optional availability flag so the stored configuration only
+ * materialises the property when the specialist is explicitly disabled. The
+ * helper keeps the router compatible with `exactOptionalPropertyTypes` by
+ * omitting implicit `true` defaults while preserving other attributes.
+ */
+function applyAvailability(config: SpecialistConfig, availability?: boolean): SpecialistConfig {
+  const sanitised: SpecialistConfig = { ...config };
+  if (availability === false) {
+    sanitised.available = false;
+    return sanitised;
+  }
+  delete (sanitised as Partial<SpecialistConfig>).available;
+  return sanitised;
 }
 
 function clamp01(value: number): number {

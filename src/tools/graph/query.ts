@@ -18,6 +18,7 @@ import {
   normaliseDescriptor,
   serialiseDescriptor,
 } from "./snapshot.js";
+import { omitUndefinedEntries } from "../../utils/object.js";
 
 type NormalisedNode = NormalisedGraph["nodes"][number];
 type NormalisedEdge = NormalisedGraph["edges"][number];
@@ -708,12 +709,15 @@ export function handleGraphPartition(input: GraphPartitionInput): GraphPartition
   const opId = resolveOperationId(input.op_id, "graph_partition_op");
   const descriptor = normaliseDescriptor(input.graph);
   const attributeIndex = buildGraphAttributeIndex(descriptor);
-  const result = partitionGraph(descriptor, attributeIndex, {
+  // Assemble the partition options while omitting undefined placeholders so
+  // Graph Forge only receives fields that callers explicitly provided.
+  const partitionOptions = {
     k: input.k,
     objective: input.objective,
-    seed: input.seed,
     maxIterations: input.max_iterations,
-  });
+    ...(input.seed !== undefined ? { seed: input.seed } : {}),
+  } as const;
+  const result = partitionGraph(descriptor, attributeIndex, partitionOptions);
 
   const assignments: GraphPartitionAssignment[] = Array.from(result.assignments.entries())
     .map(([node, partition]) => ({ node, partition }))
@@ -896,10 +900,11 @@ function normaliseCostConfig(
   if (typeof config === "string") {
     return config;
   }
+  // Avoid forwarding `undefined` optional fields to Graph Forge so the runtime
+  // stays compatible with `exactOptionalPropertyTypes`.
   return {
     attribute: config.attribute,
-    defaultValue: config.default_value,
-    scale: config.scale,
+    ...omitUndefinedEntries({ defaultValue: config.default_value, scale: config.scale }),
   } satisfies GraphForgeEdgeCostDescriptor;
 }
 
@@ -1369,11 +1374,16 @@ function buildSimulationContext(
     list.sort();
   }
 
-  const { durations, warnings } = resolveDurations(descriptor, {
+  // Resolve duration attributes without leaking optional placeholders that
+  // would violate `exactOptionalPropertyTypes` once the flag is enforced.
+  const durationOptions = {
     durationAttribute: input.duration_attribute,
-    fallbackDurationAttribute: input.fallback_duration_attribute,
     defaultDuration: input.default_duration,
-  });
+    ...(input.fallback_duration_attribute
+      ? { fallbackDurationAttribute: input.fallback_duration_attribute }
+      : {}),
+  } as const;
+  const { durations, warnings } = resolveDurations(descriptor, durationOptions);
 
   const order = computeTopologicalOrder(descriptor, adjacency, indegree);
   const critical = computeCriticalPathInfo(order, adjacency, incoming, durations);
@@ -1877,12 +1887,18 @@ function evaluateOptimizeObjective(
 /** Explore optimisation levers on top of the baseline simulation. */
 export function handleGraphOptimize(input: GraphOptimizeInput): GraphOptimizeResult {
   const opId = resolveOperationId(input.op_id, "graph_optimize_op");
-  const context = buildSimulationContext({
+  // Prepare the simulation context parameters while omitting the fallback
+  // attribute when callers omit it, keeping the helper compatible with
+  // `exactOptionalPropertyTypes`.
+  const simulationContextInput = {
     graph: input.graph,
     duration_attribute: input.duration_attribute,
-    fallback_duration_attribute: input.fallback_duration_attribute,
     default_duration: input.default_duration,
-  });
+    ...(input.fallback_duration_attribute
+      ? { fallback_duration_attribute: input.fallback_duration_attribute }
+      : {}),
+  } as const;
+  const context = buildSimulationContext(simulationContextInput);
 
   const baselineOutput = simulateGraph(context, input.parallelism);
   const baselineWarnings = [...context.warnings, ...baselineOutput.warnings];
@@ -2025,7 +2041,7 @@ export function handleGraphOptimize(input: GraphOptimizeInput): GraphOptimizeRes
     objective: {
       type: input.objective.type,
       label: baselineObjective.label,
-      attribute: baselineObjective.attribute,
+      ...(baselineObjective.attribute ? { attribute: baselineObjective.attribute } : {}),
     },
     baseline,
     projections,
@@ -2178,12 +2194,17 @@ export function handleGraphOptimizeMoo(
   input: GraphOptimizeMooInput,
 ): GraphOptimizeMooResult {
   const opId = resolveOperationId(input.op_id, "graph_optimize_moo_op");
-  const context = buildSimulationContext({
+  // Reuse the sanitised simulation context builder used by the single-objective
+  // optimiser so multi-objective runs inherit the same optional-field hygiene.
+  const simulationContextInput = {
     graph: input.graph,
     duration_attribute: input.duration_attribute,
-    fallback_duration_attribute: input.fallback_duration_attribute,
     default_duration: input.default_duration,
-  });
+    ...(input.fallback_duration_attribute
+      ? { fallback_duration_attribute: input.fallback_duration_attribute }
+      : {}),
+  } as const;
+  const context = buildSimulationContext(simulationContextInput);
 
   const objectives = normaliseMooObjectives(input.objectives);
   const uniqueParallelism = Array.from(new Set(input.parallelism_candidates)).sort((a, b) => a - b);
@@ -2273,7 +2294,7 @@ export function handleGraphOptimizeMoo(
     })),
     candidates,
     pareto_front: pareto,
-    scalarization,
+    ...(scalarization ? { scalarization } : {}),
     notes,
   };
 }

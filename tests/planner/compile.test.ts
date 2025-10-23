@@ -132,6 +132,53 @@ describe("planner specification parsing", () => {
     expect(parsed.id).to.equal("yaml-plan");
     expect(parsed.tasks[1].depends_on).to.deep.equal(["first"]);
   });
+
+  it("omits optional planner fields that were not provided", () => {
+    const parsed = parsePlannerPlan({
+      id: "sanitised-plan",
+      tasks: [
+        {
+          id: "alpha",
+          tool: "noop",
+          preconditions: [
+            {
+              description: "alpha must be ready",
+              kind: "pre",
+            },
+          ],
+          resources: [
+            {
+              name: "cpu",
+            },
+          ],
+        },
+      ],
+    });
+
+    // Parsing must strip optional keys outright so downstream TypeScript models
+    // never observe `{ key: undefined }` placeholders once strict optional typing
+    // is enabled.
+    expect(Object.prototype.hasOwnProperty.call(parsed, "version")).to.equal(false);
+    expect(Object.prototype.hasOwnProperty.call(parsed, "title")).to.equal(false);
+    expect(Object.prototype.hasOwnProperty.call(parsed, "description")).to.equal(false);
+    expect(Object.prototype.hasOwnProperty.call(parsed, "metadata")).to.equal(false);
+
+    const [task] = parsed.tasks;
+    expect(Object.prototype.hasOwnProperty.call(task, "name")).to.equal(false);
+    expect(Object.prototype.hasOwnProperty.call(task, "description")).to.equal(false);
+    expect(Object.prototype.hasOwnProperty.call(task, "input")).to.equal(false);
+    expect(Object.prototype.hasOwnProperty.call(task, "estimated_duration_ms")).to.equal(false);
+    expect(Object.prototype.hasOwnProperty.call(task, "timeout_ms")).to.equal(false);
+    expect(Object.prototype.hasOwnProperty.call(task, "metadata")).to.equal(false);
+
+    const [precondition] = task.preconditions;
+    expect(Object.prototype.hasOwnProperty.call(precondition, "id")).to.equal(false);
+    expect(Object.prototype.hasOwnProperty.call(precondition, "expression")).to.equal(false);
+
+    const [resource] = task.resources;
+    expect(Object.prototype.hasOwnProperty.call(resource, "quantity")).to.equal(false);
+    expect(Object.prototype.hasOwnProperty.call(resource, "unit")).to.equal(false);
+  });
 });
 
 /** Exercise the critical path scheduler and error handling. */
@@ -164,6 +211,34 @@ describe("planner scheduling", () => {
     };
 
     expect(() => buildPlanSchedule(parsePlannerPlan(plan))).to.throw(PlanSchedulingError);
+  });
+
+  it("omits optional metadata when the planner specification leaves it blank", () => {
+    const plan = parsePlannerPlan({
+      id: "metadata-sanitised",
+      tasks: [
+        { id: "root", tool: "noop" },
+        { id: "child", tool: "noop", depends_on: ["root"] },
+      ],
+    });
+
+    const schedule = buildPlanSchedule(plan);
+    const rootTask = schedule.tasks.root;
+    const childTask = schedule.tasks.child;
+
+    // The scheduler must not expose placeholder keys because strict optional
+    // typing treats `undefined` assignments as observable payload changes.
+    expect(Object.prototype.hasOwnProperty.call(rootTask, "name")).to.equal(false);
+    expect(Object.prototype.hasOwnProperty.call(rootTask, "description")).to.equal(false);
+    expect(Object.prototype.hasOwnProperty.call(childTask, "name")).to.equal(false);
+    expect(Object.prototype.hasOwnProperty.call(childTask, "description")).to.equal(false);
+
+    // Phase groupings reuse the same objects; ensure the omission propagates.
+    const phaseTasks = schedule.phases.flatMap((phase) => phase.tasks);
+    for (const task of phaseTasks) {
+      expect(Object.prototype.hasOwnProperty.call(task, "name")).to.equal(false);
+      expect(Object.prototype.hasOwnProperty.call(task, "description")).to.equal(false);
+    }
   });
 });
 

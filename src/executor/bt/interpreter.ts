@@ -2,6 +2,7 @@ import { z } from "zod";
 // NOTE: Node built-in modules are imported with the explicit `node:` prefix to guarantee ESM resolution in Node.js.
 
 import { runtimeTimers } from "../../runtime/timers.js";
+import { omitUndefinedEntries } from "../../utils/object.js";
 
 import {
   type BTStatus,
@@ -42,6 +43,15 @@ export class BehaviorTreeInterpreter {
    * tree automatically so callers can trigger another run without manual cleanup.
    */
   async tick(runtime: Partial<TickRuntime> & { invokeTool: ToolInvoker }): Promise<BehaviorTickResult> {
+    const optionalServices = omitUndefinedEntries({
+      /** Forward optional hooks only when explicitly provided by the runtime. */
+      random: runtime.random,
+      cancellationSignal: runtime.cancellationSignal,
+      isCancelled: runtime.isCancelled,
+      throwIfCancelled: runtime.throwIfCancelled,
+      recommendTimeout: runtime.recommendTimeout,
+      recordTimeoutOutcome: runtime.recordTimeoutOutcome,
+    });
     const resolvedRuntime: TickRuntime = {
       invokeTool: runtime.invokeTool,
       now: runtime.now ?? (() => Date.now()),
@@ -51,12 +61,13 @@ export class BehaviorTreeInterpreter {
           new Promise((resolve) => {
             runtimeTimers.setTimeout(resolve, ms);
           })),
+      /**
+       * Behaviour Tree nodes observe a snapshot of the variable map. When
+       * callers omit it we default to an empty record to avoid leaking
+       * `variables: undefined` once strict optional typing is enforced.
+       */
       variables: runtime.variables ?? {},
-      cancellationSignal: runtime.cancellationSignal,
-      isCancelled: runtime.isCancelled,
-      throwIfCancelled: runtime.throwIfCancelled,
-      recommendTimeout: runtime.recommendTimeout,
-      recordTimeoutOutcome: runtime.recordTimeoutOutcome,
+      ...optionalServices,
     };
     const result = await this.root.tick(resolvedRuntime);
     if (result.status !== "running") {
@@ -159,7 +170,16 @@ export function buildBehaviorTree(
       case "task": {
         const id = nextId(`${prefix}-task`, node.id ?? node.node_id);
         const schema = taskSchemas[node.tool];
-        return track(new TaskLeaf(id, node.tool, { inputKey: node.input_key, schema }));
+        const options = omitUndefinedEntries({
+          /**
+           * Preserve the optional task metadata without materialising
+           * `undefined` keys so planner-derived Behaviour Trees remain
+           * compatible with `exactOptionalPropertyTypes`.
+           */
+          inputKey: node.input_key,
+          schema,
+        });
+        return track(new TaskLeaf(id, node.tool, options));
       }
       default: {
         const exhaustive: never = node;

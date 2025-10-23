@@ -103,8 +103,50 @@ describe("events cognitive", () => {
     });
 
     expect(events.review.childId).to.equal("child-beta");
+    expect(events.review.jobId, "job correlation defaults to null when absent").to.equal(null);
     expect(events.review.correlation.runId).to.equal("run-txt");
+    expect(
+      Object.prototype.hasOwnProperty.call(events.review.correlation, "jobId"),
+      "correlation omits the jobId key when undefined",
+    ).to.equal(false);
+    expect(events.review.payload.job_id, "payload mirrors the null sentinel").to.equal(null);
     expect(events.reflection).to.equal(null);
+  });
+
+  it("derives the job correlation from auxiliary sources without leaking undefined", () => {
+    const review: ReviewResult = {
+      overall: 0.73,
+      verdict: "pass",
+      feedback: ["Bonne synthèse"],
+      suggestions: ["Capitaliser la conclusion"],
+      breakdown: [{ criterion: "clarity", score: 0.7, reasoning: "Arguments hiérarchisés" }],
+      fingerprint: "c0gn1t1v3",
+    };
+
+    // Compose correlation hints that only surface job/run identifiers through
+    // auxiliary sources so the builder must rely on derived metadata.
+    const events = buildChildCognitiveEvents({
+      childId: "child-gamma",
+      summary: { text: "Note corrélée", tags: ["cognitive"], kind: "plan" },
+      review,
+      artifactCount: 1,
+      messageCount: 0,
+      correlationSources: [
+        { job_id: "job-derived", run_id: "run-derived" },
+        undefined,
+        null,
+      ],
+    });
+
+    expect(events.review.jobId).to.equal("job-derived");
+    expect(events.review.correlation).to.deep.equal({
+      childId: "child-gamma",
+      jobId: "job-derived",
+      runId: "run-derived",
+    });
+    expect(events.review.payload.job_id).to.equal("job-derived");
+    expect(events.review.payload.run_id).to.equal("run-derived");
+    expect(events.review.payload.child_id).to.equal("child-gamma");
   });
 });
 

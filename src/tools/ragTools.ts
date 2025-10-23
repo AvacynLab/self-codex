@@ -4,6 +4,7 @@ import { StructuredLogger } from "../logger.js";
 import { normaliseProvenanceList, PROVENANCE_TYPES, type Provenance } from "../types/provenance.js";
 import { HybridRetriever } from "../memory/retriever.js";
 import type { VectorMemory } from "../memory/vectorMemory.js";
+import { omitUndefinedEntries } from "../utils/object.js";
 
 /** Context supplied when serving RAG-oriented tools. */
 export interface RagToolContext {
@@ -143,12 +144,14 @@ export async function handleRagIngest(
     // Remove optional provenance properties when callers leave them undefined so the
     // downstream vector memory never observes `{ span: undefined }` once exact optional
     // property semantics are enforced.
-    const provenanceInput = document.provenance?.map((entry) => ({
-      sourceId: entry.sourceId,
-      type: entry.type,
-      ...(entry.span !== undefined ? { span: entry.span } : {}),
-      ...(entry.confidence !== undefined ? { confidence: entry.confidence } : {}),
-    }));
+    const provenanceInput = document.provenance?.map((entry) =>
+      sanitiseProvenanceEntry({
+        sourceId: entry.sourceId,
+        type: entry.type,
+        span: entry.span,
+        confidence: entry.confidence,
+      }),
+    );
     const provenance = normaliseProvenanceList(provenanceInput);
     const tags = normaliseTags([...(document.tags ?? []), ...defaultTags]);
     const metadata = document.metadata ? { ...document.metadata } : {};
@@ -229,6 +232,9 @@ export async function handleRagQuery(
     vector_score: hit.vectorScore,
     lexical_score: hit.lexicalScore,
     tags: [...hit.tags],
+    // Only surface metadata when the caller explicitly opts in. Returning
+    // `null` keeps the contract explicit without leaking `undefined` once
+    // `exactOptionalPropertyTypes` is enforced.
     metadata: input.include_metadata ? { ...hit.metadata } : null,
     provenance: [...hit.provenance],
     matched_tags: [...hit.matchedTags],
@@ -330,4 +336,23 @@ function clampChunkOverlap(value: number, chunkSize: number): number {
     return 0;
   }
   return Math.min(Math.floor(value), Math.max(0, chunkSize - 1));
+}
+
+/**
+ * Drops optional provenance fields that were left undefined by callers.
+ * Leveraging {@link omitUndefinedEntries} keeps the ingestion payloads fully
+ * compatible with `exactOptionalPropertyTypes` while avoiding mutable clones
+ * of the provided entries.
+ */
+function sanitiseProvenanceEntry(entry: {
+  sourceId: string;
+  type: Provenance["type"];
+  span?: Provenance["span"];
+  confidence?: Provenance["confidence"];
+}): Provenance {
+  return {
+    sourceId: entry.sourceId,
+    type: entry.type,
+    ...omitUndefinedEntries({ span: entry.span, confidence: entry.confidence }),
+  };
 }

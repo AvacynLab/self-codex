@@ -418,7 +418,14 @@ function buildBudgetExceededOutput(
     summary: "budget épuisé avant la compilation du plan",
     details: {
       idempotency_key: idempotencyKey,
-      plan_id: typeof input.plan === "object" && input.plan !== null ? input.plan.id : undefined,
+      // Only surface the explicit plan identifier when the façade input carried
+      // a structured document. Callers may provide raw JSON strings which omit
+      // the `id` field; emitting `plan_id: undefined` would violate the
+      // optional-field contract we are enforcing ahead of
+      // `exactOptionalPropertyTypes`.
+      ...(typeof input.plan === "object" && input.plan !== null && "id" in input.plan
+        ? { plan_id: input.plan.id }
+        : {}),
       budget: {
         reason: "budget_exhausted",
         dimension: error.dimension,

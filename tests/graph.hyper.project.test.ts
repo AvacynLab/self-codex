@@ -89,4 +89,23 @@ describe("graph hypergraph - projection", () => {
       "hyper-edge oops references unknown target node missing",
     );
   });
+
+  it("omits optional fields when hyper-edges skip labels and weights", () => {
+    const hyperGraph: HyperGraph = {
+      id: "sparse",
+      nodes: [
+        { id: "alpha", attributes: {} },
+        { id: "beta", attributes: {} },
+      ],
+      hyperEdges: [
+        { id: "plain", sources: ["alpha"], targets: ["beta"] },
+      ],
+    };
+
+    const normalised = projectHyperGraph(hyperGraph);
+
+    expect(Object.hasOwn(normalised.nodes[0], "label")).to.equal(false);
+    expect(Object.hasOwn(normalised.edges[0], "label")).to.equal(false);
+    expect(Object.hasOwn(normalised.edges[0], "weight")).to.equal(false);
+  });
 });

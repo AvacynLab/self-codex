@@ -17,8 +17,12 @@ describe("evaluation scenarios", () => {
     const scenario = await loadScenarioFromFile(resolve("tests/fixtures/eval/sampleScenario.yaml"));
     expect(scenario.id).to.equal("sample");
     expect(scenario.steps).to.have.length(2);
-    expect(scenario.steps[0].expect?.success).to.equal(true);
-    expect(scenario.steps[1].expect?.success).to.equal(false);
+    const firstStep = scenario.steps[0]!;
+    expect(firstStep.expect?.match).to.equal("ok");
+    expect(Object.prototype.hasOwnProperty.call(firstStep.expect ?? {}, "success")).to.equal(false);
+
+    const secondStep = scenario.steps[1]!;
+    expect(secondStep.expect?.success).to.equal(false);
     expect(scenario.constraints.maxToolCalls).to.equal(2);
     expect(scenario.oracles).to.have.length(2);
   });
@@ -36,7 +40,8 @@ describe("evaluation scenarios", () => {
       steps: [{ id: "step", tool: "alpha" }],
       oracles: [{ type: "regex", pattern: "ok" }],
     });
-    expect(scenario.steps[0].expect?.success).to.equal(true);
+    const step = scenario.steps[0]!;
+    expect(Object.prototype.hasOwnProperty.call(step, "expect")).to.equal(false);
     expect(scenario.tags).to.deep.equal([]);
   });
 
@@ -68,9 +73,10 @@ describe("evaluation scenarios", () => {
     expect(Object.prototype.hasOwnProperty.call(scenario, "featureOverrides")).to.equal(false);
     expect(Object.prototype.hasOwnProperty.call(scenario.constraints, "maxDurationMs")).to.equal(false);
 
-    const step = scenario.steps[0];
+    const step = scenario.steps[0]!;
     expect(Object.prototype.hasOwnProperty.call(step, "arguments")).to.equal(false);
     expect(step.expect).to.not.equal(undefined);
+    expect(Object.prototype.hasOwnProperty.call(step.expect ?? {}, "success")).to.equal(false);
     expect(step.expect?.notMatch).to.deep.equal({ pattern: "beta" });
 
     const regexOracle = scenario.oracles[0];

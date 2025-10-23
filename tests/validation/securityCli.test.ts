@@ -71,7 +71,7 @@ describe("security validation CLI", () => {
       checks: [],
       redaction: {
         secret: "probe",
-        description: "",
+        description: null,
         calls: [],
       },
       unauthorized: { calls: [] },
@@ -150,6 +150,9 @@ describe("security validation CLI", () => {
             {
               artefacts: SECURITY_JSONL_FILES,
               checks: [],
+              redaction: null,
+              unauthorized: null,
+              pathValidation: null,
             },
             null,
             2,
@@ -160,6 +163,9 @@ describe("security validation CLI", () => {
           summary: {
             artefacts: SECURITY_JSONL_FILES,
             checks: [],
+            redaction: null,
+            unauthorized: null,
+            pathValidation: null,
           },
           summaryPath,
         };

@@ -114,6 +114,32 @@ export type PlanEventEmitter = (event: {
   correlation?: EventCorrelationHints | null;
 }) => void;
 
+/**
+ * Normalises the identifiers attached to plan events so optional properties
+ * vanish entirely when a correlation hint is missing.
+ *
+ * Returning an object without `undefined` values keeps the event bus contract
+ * aligned with the `exactOptionalPropertyTypes` tightening by making the
+ * omission explicit at the call site.
+ */
+function normalisePlanEventScope(
+  jobId: string | null | undefined,
+  childId: string | null | undefined,
+): { jobId?: string; childId?: string } {
+  const scope: { jobId?: string; childId?: string } = {};
+  if (jobId !== null && jobId !== undefined) {
+    // Preserve explicit job correlations while omitting missing values to keep the
+    // event scope aligned with `exactOptionalPropertyTypes` (no `undefined`).
+    scope.jobId = jobId;
+  }
+  if (childId !== null && childId !== undefined) {
+    // Child identifiers are forwarded only when supplied so downstream
+    // subscribers never observe `childId: undefined` placeholders.
+    scope.childId = childId;
+  }
+  return scope;
+}
+
 /** Shared runtime injected when the value guard feature is enabled. */
 export interface ValueGuardRuntime {
   /** Configured value graph storing principles and relations. */
@@ -1584,10 +1610,7 @@ async function spawnChildWithRetry(
             lessons_prompt: lessonsPromptPayload,
           },
           correlation: eventCorrelation,
-          ...omitUndefinedEntries({
-            jobId,
-            childId,
-          }),
+          ...normalisePlanEventScope(jobId, childId),
         });
       }
 
@@ -1854,10 +1877,7 @@ export async function handlePlanFanout(
       rejected: rejectedPlans.map((entry) => entry.name),
     },
     correlation: eventCorrelation,
-    ...omitUndefinedEntries({
-      jobId: jobId ?? undefined,
-      childId: parentChildId ?? undefined,
-    }),
+    ...normalisePlanEventScope(jobId, parentChildId),
   });
 
   const sharedVariables: Record<string, string | number | boolean> = {
@@ -2149,6 +2169,8 @@ export async function handlePlanJoin(
       options.preferValue = "success";
     }
     const { quorum: configuredQuorum, ...baseOptions } = options;
+    const quorumOverride =
+      configuredQuorum ?? (input.join_policy === "quorum" ? baseQuorum : undefined);
     switch (consensusConfig.mode) {
       case "majority":
         consensusDecision = computeConsensusMajority(statusVotes, baseOptions);
@@ -2156,7 +2178,9 @@ export async function handlePlanJoin(
       case "weighted":
         consensusDecision = computeConsensusWeighted(statusVotes, {
           ...baseOptions,
-          quorum: configuredQuorum ?? (input.join_policy === "quorum" ? baseQuorum : undefined),
+          // Only propagate the quorum override when a concrete value is available to
+          // avoid leaking `quorum: undefined` once strict optional typing is enabled.
+          ...(quorumOverride !== undefined ? { quorum: quorumOverride } : {}),
         });
         break;
       case "quorum":
@@ -2284,10 +2308,7 @@ export async function handlePlanJoin(
       ...(consensusPayload ? { consensus: consensusPayload } : {}),
     },
     correlation: correlationHints,
-    ...omitUndefinedEntries({
-      jobId: correlationHints.jobId ?? undefined,
-      childId: correlationHints.childId ?? undefined,
-    }),
+    ...normalisePlanEventScope(correlationHints.jobId, correlationHints.childId),
   });
 
   context.logger.info("plan_join_completed", {
@@ -2448,10 +2469,7 @@ export async function handlePlanReduce(
       children: summaries.map((item) => item.child_id),
     },
     correlation: correlationHints,
-    ...omitUndefinedEntries({
-      jobId: correlationHints.jobId ?? undefined,
-      childId: correlationHints.childId ?? undefined,
-    }),
+    ...normalisePlanEventScope(correlationHints.jobId, correlationHints.childId),
   });
 
   let result: PlanReduceCoreResult;
@@ -2814,10 +2832,7 @@ async function executePlanRunBT(
     context.emitEvent({
       kind: "BT_RUN",
       level: phase === "error" ? "error" : "info",
-      ...omitUndefinedEntries({
-        jobId: jobId ?? undefined,
-        childId: childId ?? undefined,
-      }),
+      ...normalisePlanEventScope(jobId, childId),
       payload: eventPayload,
       correlation: eventCorrelation,
     });
@@ -3192,10 +3207,7 @@ async function executePlanRunReactive(
     context.emitEvent({
       kind: "BT_RUN",
       level: phase === "error" ? "error" : "info",
-      ...omitUndefinedEntries({
-        jobId: jobId ?? undefined,
-        childId: childId ?? undefined,
-      }),
+      ...normalisePlanEventScope(jobId, childId),
       payload: eventPayload,
       correlation: eventCorrelation,
     });
@@ -3214,10 +3226,7 @@ async function executePlanRunReactive(
   ) => {
     context.emitEvent({
       kind: "SCHEDULER",
-      ...omitUndefinedEntries({
-        jobId: jobId ?? undefined,
-        childId: childId ?? undefined,
-      }),
+      ...normalisePlanEventScope(jobId, childId),
       payload: {
         msg: message,
         ...correlationLogFields,
@@ -4066,15 +4075,23 @@ function normalisePlanImpact(
   impact: z.infer<typeof PlanNodeImpactSchema>,
   fallbackNodeId: string | undefined,
 ): ValueImpactInput {
-  const nodeId = impact.nodeId ?? impact.node_id ?? fallbackNodeId;
-  return {
+  const derivedNodeId = impact.nodeId ?? impact.node_id ?? fallbackNodeId;
+  const sanitisedImpact: ValueImpactInput = {
     value: impact.value,
     impact: impact.impact,
-    severity: impact.severity,
-    rationale: impact.rationale,
-    source: impact.source,
-    nodeId: nodeId ?? undefined,
+    ...(impact.severity !== undefined ? { severity: impact.severity } : {}),
+    ...(impact.rationale !== undefined ? { rationale: impact.rationale } : {}),
+    ...(impact.source !== undefined ? { source: impact.source } : {}),
   };
+
+  if (derivedNodeId !== undefined) {
+    // Preserve explicit node correlations while avoiding `nodeId: undefined`
+    // entries so value guard payloads stay compatible with
+    // `exactOptionalPropertyTypes`.
+    sanitisedImpact.nodeId = derivedNodeId;
+  }
+
+  return sanitisedImpact;
 }
 
 /**

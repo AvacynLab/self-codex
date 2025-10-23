@@ -1,7 +1,10 @@
 import { describe, it } from "mocha";
 import { expect } from "chai";
 
-import { buildJsonRpcObservabilityInput } from "../../src/orchestrator/runtime.js";
+import {
+  buildJsonRpcObservabilityInput,
+  normaliseTransportTag,
+} from "../../src/orchestrator/runtime.js";
 
 type ObservabilityBase = Parameters<typeof buildJsonRpcObservabilityInput>[0];
 
@@ -55,5 +58,18 @@ describe("runtime JSON-RPC observability input", () => {
     const payload = buildJsonRpcObservabilityInput(base, null);
     expect(Object.prototype.hasOwnProperty.call(payload, "transport")).to.equal(false);
     expect(payload.errorMessage).to.equal("boom");
+  });
+
+  describe("normaliseTransportTag", () => {
+    it("returns null for undefined or blank transport tags", () => {
+      expect(normaliseTransportTag(undefined)).to.equal(null);
+      expect(normaliseTransportTag(null)).to.equal(null);
+      expect(normaliseTransportTag("   ")).to.equal(null);
+    });
+
+    it("trims non-empty transport tags", () => {
+      expect(normaliseTransportTag(" http ")).to.equal("http");
+      expect(normaliseTransportTag("stdio")).to.equal("stdio");
+    });
   });
 });

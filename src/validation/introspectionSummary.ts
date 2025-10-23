@@ -194,13 +194,21 @@ function extractJsonRpcError(body: unknown): unknown {
 export function buildIntrospectionSummary(outcomes: JsonRpcCallOutcome[]): IntrospectionSummaryDocument {
   const summary: IntrospectionSummaryDocument = {
     generatedAt: new Date().toISOString(),
-    calls: outcomes.map((outcome) => ({
-      name: outcome.call.name,
-      method: outcome.call.method,
-      status: outcome.check.response.status,
-      durationMs: outcome.check.durationMs,
-      error: extractJsonRpcError(outcome.check.response.body),
-    })),
+    calls: outcomes.map((outcome) => {
+      const error = extractJsonRpcError(outcome.check.response.body);
+
+      return {
+        name: outcome.call.name,
+        method: outcome.call.method,
+        status: outcome.check.response.status,
+        durationMs: outcome.check.durationMs,
+        // Only surface the optional error payload when the JSON-RPC response
+        // explicitly included one. Leaving the property absent ensures we stay
+        // compliant with `exactOptionalPropertyTypes` once the compiler flag is
+        // fully enforced and avoids serialising meaningless `undefined` values.
+        ...(error !== undefined ? { error } : {}),
+      } satisfies IntrospectionCallSummary;
+    }),
   };
 
   const outcomesByName = new Map<string, JsonRpcCallOutcome>();

@@ -1,6 +1,8 @@
 import { parse as parseYaml } from "yaml";
 import { z } from "zod";
 
+import { omitUndefinedEntries } from "../utils/object.js";
+
 /**
  * Error raised when a plan specification cannot be parsed or validated. The
  * error contains a stable {@link code} so transport layers can surface
@@ -193,7 +195,7 @@ export function parsePlannerPlan(spec: unknown): PlannerPlan {
     uniqueIds.add(task.id);
   }
 
-  return plan;
+  return sanitisePlannerPlan(plan);
 }
 
 /** Attempt to parse a textual specification as JSON first, then YAML. */
@@ -218,3 +220,88 @@ export const PlannerSchemas = {
   condition: PlannerConditionSchema,
   resource: PlannerResourceRequestSchema,
 };
+
+/**
+ * Removes optional `undefined` markers from a planner condition so the returned
+ * payload honours `exactOptionalPropertyTypes` while preserving the intent of
+ * the specification. Conditions are cloned to avoid mutating the parsed schema
+ * output and to make downstream consumers resilient to accidental mutation.
+ */
+function sanitisePlannerCondition(condition: PlannerConditionInput): PlannerCondition {
+  const optionalFields = omitUndefinedEntries({
+    id: condition.id,
+    expression: condition.expression,
+  });
+
+  return {
+    description: condition.description,
+    kind: condition.kind,
+    ...optionalFields,
+  };
+}
+
+/**
+ * Normalises planner resource requests by trimming `undefined` optional
+ * properties. The resulting object only exposes quantity/unit when explicitly
+ * provided in the source document, ensuring telemetry payloads stay sparse.
+ */
+function sanitisePlannerResourceRequest(
+  resource: PlannerResourceRequestInput,
+): PlannerResourceRequest {
+  const optionalFields = omitUndefinedEntries({
+    quantity: resource.quantity,
+    unit: resource.unit,
+  });
+
+  return {
+    name: resource.name,
+    ...optionalFields,
+  };
+}
+
+/**
+ * Builds a clean planner task object without serialising placeholders for
+ * optional metadata. Arrays are recreated to avoid leaking shared references
+ * from the schema output.
+ */
+function sanitisePlannerTask(task: PlannerTaskInput): PlannerTask {
+  const optionalFields = omitUndefinedEntries({
+    name: task.name,
+    description: task.description,
+    input: task.input,
+    estimated_duration_ms: task.estimated_duration_ms,
+    timeout_ms: task.timeout_ms,
+    metadata: task.metadata,
+  });
+
+  return {
+    id: task.id,
+    tool: task.tool,
+    depends_on: [...task.depends_on],
+    preconditions: task.preconditions.map(sanitisePlannerCondition),
+    postconditions: task.postconditions.map(sanitisePlannerCondition),
+    resources: task.resources.map(sanitisePlannerResourceRequest),
+    ...optionalFields,
+  };
+}
+
+/**
+ * Produces a fully sanitised planner document that omits optional fields when
+ * they were not supplied in the specification. This keeps downstream consumers
+ * compliant with strict optional typing without modifying the raw schema
+ * output in-place.
+ */
+function sanitisePlannerPlan(plan: PlannerPlanInput): PlannerPlan {
+  const optionalFields = omitUndefinedEntries({
+    version: plan.version,
+    title: plan.title,
+    description: plan.description,
+    metadata: plan.metadata,
+  });
+
+  return {
+    id: plan.id,
+    tasks: plan.tasks.map(sanitisePlannerTask),
+    ...optionalFields,
+  };
+}

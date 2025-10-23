@@ -43,6 +43,12 @@ describe("tool deprecations", () => {
     expect(late.forceRemoval, "post J+60 should reject invocations").to.equal(true);
   });
 
+  it("omits the metadata field when no deprecation catalogue entry exists", () => {
+    const evaluation = evaluateToolDeprecation("new_dynamic_tool", undefined, new Date("2025-10-20T00:00:00Z"));
+    expect(Object.prototype.hasOwnProperty.call(evaluation, "metadata"), "metadata should stay absent").to.equal(false);
+    expect(evaluation.ageDays, "age should be null when metadata is missing").to.equal(null);
+  });
+
   it("warns on legacy invocations and blocks once retired", async () => {
     const tempRoot = await mkdtemp(path.join(tmpdir(), "registry-deprecation-"));
     const { logger, warnSpy } = createLoggerStub();

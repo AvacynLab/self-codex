@@ -119,8 +119,11 @@ export function evaluateToolDeprecation(
   const ageDays = resolveAgeInDays(resolved, now);
   const forceHidden = typeof ageDays === "number" && ageDays !== null && ageDays >= 30;
   const forceRemoval = typeof ageDays === "number" && ageDays !== null && ageDays >= 60;
+  // NOTE: The metadata field is attached conditionally so the returned
+  // structure remains compliant with `exactOptionalPropertyTypes` once the
+  // TypeScript flag is enforced globally.
   return {
-    metadata: resolved ? { ...resolved } : undefined,
+    ...(resolved ? { metadata: { ...resolved } } : {}),
     ageDays,
     forceHidden,
     forceRemoval,

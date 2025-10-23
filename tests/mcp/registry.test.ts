@@ -239,6 +239,28 @@ describe("mcp/tool registry", () => {
     expect(final?.combined).to.equal("hello!");
   });
 
+  it("omits undefined composite step summaries", async () => {
+    // Register a composite stage that intentionally omits structured payloads
+    // so the registry can be asserted to drop undefined summaries.
+    await registry.register(
+      { name: "noop_stage", title: "Noop stage", kind: "dynamic" },
+      async () => ({ structuredContent: null, isError: false }),
+    );
+
+    await registry.registerComposite({
+      name: "noop_pipeline",
+      title: "Noop pipeline",
+      steps: [{ id: "noop", tool: "noop_stage" }],
+    });
+
+    const result = await registry.call("noop_pipeline", {}, createExtra());
+    const summary = result.structuredContent as { steps: Array<Record<string, unknown>> };
+    expect(summary.steps).to.have.lengthOf(1);
+    const [step] = summary.steps;
+    expect(Object.prototype.hasOwnProperty.call(step, "structured"), "structured should stay absent").to.equal(false);
+    expect(Object.prototype.hasOwnProperty.call(step, "content"), "content should stay absent").to.equal(false);
+  });
+
   it("reloads persisted manifests from disk", async () => {
     await registry.register(
       { name: "base_tool", title: "Base", kind: "dynamic" },

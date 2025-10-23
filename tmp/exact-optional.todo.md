@@ -27,71 +27,77 @@ Diagnostic collecté via `npm run typecheck -- --extendedDiagnostics --pretty fa
 
 ### Coordination & raisonnement
 
-- [ ] src/coord/consensus.ts
-- [ ] src/coord/stigmergy.ts
-- [ ] src/learning/lessons.ts
-- [ ] src/reasoning/thoughtCoordinator.ts
-- [ ] src/strategies/hypotheses.ts
+- [x] src/coord/consensus.ts
+- [x] src/coord/stigmergy.ts
+- [x] src/learning/lessons.ts
+- [x] src/reasoning/thoughtCoordinator.ts
+- [x] src/strategies/hypotheses.ts
 
 ### Graphes & rewriting
 
-- [ ] src/graph/adaptive.ts
-- [ ] src/graph/hierarchy.ts
-- [ ] src/graph/hypergraph.ts
-- [ ] src/graph/invariants.ts
-- [ ] src/graph/patch.ts
-- [ ] src/graph/rewrite.ts
-- [ ] src/graph/state.ts
-- [ ] src/graph/tx.ts
-- [ ] src/graph/validate.ts
-- [ ] src/tools/graph/query.ts
-- [ ] src/tools/graph/snapshot.ts
+- [x] src/graph/adaptive.ts
+- [x] src/graph/hierarchy.ts
+- [x] src/graph/hypergraph.ts
+- [x] src/graph/invariants.ts
+- [x] src/graph/patch.ts
+- [x] src/graph/rewrite.ts
+- [x] src/graph/state.ts
+- [x] src/graph/tx.ts
+- [x] src/graph/validate.ts
+- [x] src/tools/graph/query.ts
+- [x] src/tools/graph/snapshot.ts
 
 ### Infrastructure & observabilité
 
-- [ ] src/events/bus.ts
-- [ ] src/events/cognitive.ts
-- [ ] src/infra/budget.ts
-- [ ] src/infra/graphWorkerThread.ts
-- [ ] src/infra/runtime.ts
-- [ ] src/monitor/dashboard.ts
-- [ ] src/monitor/replay.ts
-- [ ] src/server/toolErrors.ts
+- [x] src/events/bus.ts
+- [x] src/events/cognitive.ts
+- [x] src/infra/budget.ts
+- [x] src/infra/graphWorkerThread.ts
+- [x] src/infra/runtime.ts
+- [x] src/monitor/dashboard.ts
+- [x] src/monitor/replay.ts
+- [x] src/server/toolErrors.ts
 
 ### Orchestrateur & enfants
 
 - [x] src/agents/autoscaler.ts
-- [ ] src/agents/supervisor.ts
-- [ ] src/children/api.ts
-- [ ] src/children/supervisionStrategy.ts
-- [ ] src/children/supervisor.ts
-- [ ] src/gateways/childProcess.ts
-- [ ] src/orchestrator/controller.ts
-- [ ] src/orchestrator/runtime.ts
+- [x] src/agents/supervisor.ts
+- [x] src/children/api.ts
+- [x] src/children/supervisionStrategy.ts
+- [x] src/children/supervisor.ts
+- [x] src/gateways/childProcess.ts
+- [x] src/orchestrator/controller.ts
+- [x] src/orchestrator/runtime.ts
+  - [x] Normaliser la balise de transport JSON-RPC et le journal scheduler pour éviter les `undefined` (helper `normaliseTransportTag`).
+  - [x] Assainir les contextes outils, l'émission autoscaler, les métriques qualité et les options logger pour supprimer les champs `undefined`.
+  - [x] Omettre les `weightKey`/`include_*` indéfinis dans Graph Forge et l'agrégateur de transcripts puis couvrir la normalisation via `tests/orchestrator/runtime.optional-contexts.test.ts`.
+  - [x] Retirer `sessionId` implicite et filtrer les métadonnées de corrélation JSON-RPC pour éviter les valeurs `undefined` (couverture dédiée dans `tests/orchestrator/runtime.optional-contexts.test.ts`).
+  - [x] Nettoyer `child_transcript`/`child_kill` pour purger les options `undefined` avant d'appeler le superviseur enfant.
+  - [x] Garantir que `child_collect` publie `jobId: null` plutôt que `undefined` dans les événements cognitifs et couvrir la régression.
 
 ### Planification & exécution
 
-- [ ] src/executor/bt/compiler.ts
-- [ ] src/executor/bt/interpreter.ts
-- [ ] src/executor/bt/nodes.ts
-- [ ] src/executor/bt/types.ts
-- [ ] src/executor/loop.ts
-- [ ] src/executor/planLifecycle.ts
-- [ ] src/executor/reactiveScheduler.ts
-- [ ] src/planner/domain.ts
-- [ ] src/planner/schedule.ts
-- [ ] src/tools/planTools.ts
+- [x] src/executor/bt/compiler.ts
+- [x] src/executor/bt/interpreter.ts
+- [x] src/executor/bt/nodes.ts
+- [x] src/executor/bt/types.ts
+- [x] src/executor/loop.ts
+- [x] src/executor/planLifecycle.ts
+- [x] src/executor/reactiveScheduler.ts
+- [x] src/planner/domain.ts
+- [x] src/planner/schedule.ts
+- [x] src/tools/planTools.ts
 
 ### Registres MCP & conformité
 
-- [ ] src/mcp/deprecations.ts
-- [ ] src/mcp/registry.ts
+- [x] src/mcp/deprecations.ts
+- [x] src/mcp/registry.ts
 
 ### Runtime enfant & passerelles
 
-- [ ] src/tools/child_orchestrate.ts
+- [x] src/tools/child_orchestrate.ts
 
 ### Évaluation & scénarios
 
-- [ ] src/eval/runner.ts
-- [ ] src/eval/scenario.ts
+- [x] src/eval/runner.ts
+- [x] src/eval/scenario.ts

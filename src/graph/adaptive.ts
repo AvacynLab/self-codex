@@ -1,5 +1,6 @@
 import { applyAll, createInlineSubgraphRule, createRerouteAvoidRule, createSplitParallelRule, type RewriteApplicationResult, type RewriteRule } from "./rewrite.js";
 import { NormalisedGraph } from "./types.js";
+import { omitUndefinedEntries } from "../utils/object.js";
 
 /**
  * Record summarising reinforcement statistics collected for a specific edge in
@@ -188,7 +189,24 @@ export function evaluateAdaptiveGraph(
   state: AdaptiveGraphState,
   options: AdaptiveEvaluationOptions = {},
 ): AdaptiveEvaluationResult {
-  const mergedOptions = { ...DEFAULT_OPTIONS, ...options };
+  // Merge caller-provided overrides while removing explicit `undefined` so the
+  // default weights keep their numeric values even when schema-generated
+  // option objects contain sparse keys. Without this guard the spread
+  // assignment would overwrite the defaults with `undefined`, producing `NaN`
+  // reinforcement scores once strict optional typing is enabled.
+  const mergedOptions = {
+    ...DEFAULT_OPTIONS,
+    ...omitUndefinedEntries({
+      targetDurationMs: options.targetDurationMs,
+      successWeight: options.successWeight,
+      durationWeight: options.durationWeight,
+      rewardWeight: options.rewardWeight,
+      minSamplesForConfidence: options.minSamplesForConfidence,
+      decayMs: options.decayMs,
+      boostThreshold: options.boostThreshold,
+      pruneThreshold: options.pruneThreshold,
+    }),
+  };
   const now = options.now ?? Date.now();
   const insights: EdgeReinforcementInsight[] = [];
   const edgesToPrune: string[] = [];
@@ -351,12 +369,15 @@ export function applyAdaptiveRewrites(
     baseRules.push(createSplitParallelRule());
   }
   baseRules.push(createInlineSubgraphRule());
-  baseRules.push(
-    createRerouteAvoidRule({
-      avoidNodeIds: pruneTargets.size > 0 ? pruneTargets : undefined,
-      avoidLabels,
-    }),
-  );
+  // Avoid surfacing explicit `undefined` placeholders when forwarding the
+  // avoidance hints to the rewrite rule: sparse option objects are common when
+  // callers serialize user choices via JSON. By dropping undefined keys we keep
+  // the pipeline compliant with `exactOptionalPropertyTypes`.
+  const rerouteAvoidOptions = omitUndefinedEntries({
+    avoidNodeIds: pruneTargets.size > 0 ? pruneTargets : undefined,
+    avoidLabels,
+  });
+  baseRules.push(createRerouteAvoidRule(rerouteAvoidOptions));
   const rules = baseRules.concat(options.additionalRules ?? []);
   return applyAll(graph, rules, options.stopOnNoChange ?? true);
 }

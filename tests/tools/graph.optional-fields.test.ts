@@ -1,10 +1,13 @@
 import { strict as assert } from "node:assert";
 
 import {
+  handleGraphGenerate,
   handleGraphMutate,
   type GraphMutateResult,
 } from "../../src/tools/graph/mutate.js";
 import {
+  handleGraphOptimize,
+  handleGraphOptimizeMoo,
   handleGraphPathsConstrained,
   handleGraphPathsKShortest,
 } from "../../src/tools/graph/query.js";
@@ -56,6 +59,21 @@ describe("graph tooling optional fields", () => {
     assert.ok(addedEdge, "the new edge should connect alpha to delta");
     assert.strictEqual(Object.hasOwn(addedEdge!, "label"), false);
     assert.strictEqual(Object.hasOwn(addedEdge!, "weight"), false);
+  });
+
+  it("omits optional fields when generating graphs from textual tasks", () => {
+    const generateResult = handleGraphGenerate({
+      name: "textual", // Provide textual tasks without labels to trigger sanitisation.
+      tasks: "alpha\nbeta->alpha",
+    });
+
+    const alpha = generateResult.graph.nodes.find((node) => node.id === "alpha");
+    assert.ok(alpha, "alpha should be present after generation");
+    assert.strictEqual(Object.hasOwn(alpha!, "label"), false);
+
+    const beta = generateResult.graph.nodes.find((node) => node.id === "beta");
+    assert.ok(beta, "beta should be present after generation");
+    assert.strictEqual(Object.hasOwn(beta!, "label"), false);
   });
 
   it("preserves existing labels when updates omit them", () => {
@@ -133,6 +151,40 @@ describe("graph tooling optional fields", () => {
     assert.strictEqual(Object.hasOwn(result.graph.nodes[0], "label"), false);
     assert.strictEqual(Object.hasOwn(result.graph.edges[0], "label"), false);
     assert.strictEqual(Object.hasOwn(result.graph.edges[0], "weight"), false);
-    assert.strictEqual(Object.hasOwn(result.graph, "graph_version"), false);
+    // The hyper export helper defaults `graph_version` to `1` rather than leaving
+    // it undefined, ensuring downstream clients never observe explicit
+    // `undefined` placeholders once strict optional typing is enabled.
+    assert.strictEqual(Object.hasOwn(result.graph, "graph_version"), true);
+    assert.strictEqual(result.graph.graph_version, 1);
+  });
+
+  it("omits the objective attribute when optimising purely for makespan", () => {
+    const baseline = buildBaselineGraph();
+
+    const optimiseResult = handleGraphOptimize({
+      graph: baseline,
+      parallelism: 1,
+      max_parallelism: 2,
+      objective: { type: "makespan" },
+    });
+
+    assert.strictEqual(optimiseResult.objective.type, "makespan");
+    assert.strictEqual(Object.hasOwn(optimiseResult.objective, "attribute"), false);
+  });
+
+  it("omits scalarization details when no weighting scheme is provided", () => {
+    const baseline = buildBaselineGraph();
+
+    const mooResult = handleGraphOptimizeMoo({
+      graph: baseline,
+      parallelism_candidates: [1, 2],
+      objectives: [
+        { type: "makespan" },
+        { type: "cost", attribute: "cost" },
+      ],
+    });
+
+    assert.strictEqual(Object.hasOwn(mooResult, "scalarization"), false);
+    assert.ok(mooResult.pareto_front.length >= 1, "a Pareto frontier should be produced");
   });
 });

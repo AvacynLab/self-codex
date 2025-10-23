@@ -1,6 +1,7 @@
 import { BudgetTracker, type BudgetLimits } from "./budget.js";
 import type { ToolBudgets, ToolManifest } from "../mcp/registry.js";
 import { normaliseTimeoutBudget, type RpcTimeoutBudget } from "../rpc/timeouts.js";
+import { omitUndefinedEntries } from "../utils/object.js";
 
 /**
  * Lightweight descriptor mirroring the subset of {@link ToolRegistry} required to
@@ -85,6 +86,23 @@ export interface RuntimeAssemblyResult {
 }
 
 /**
+ * Clones the inbound JSON-RPC context while dropping any `undefined` metadata.
+ *
+ * The helper intentionally removes the `budget` reference so nested
+ * invocations never leak parent trackers. Returning a fresh object keeps the
+ * runtime compliant with `exactOptionalPropertyTypes` by avoiding explicit
+ * `undefined` assignments in the cloned context.
+ */
+function cloneContext(input: JsonRpcRouteContext | undefined): JsonRpcRouteContext {
+  const sanitised = omitUndefinedEntries({
+    ...(input ?? {}),
+    // Ensure downstream handlers never observe an inherited tool tracker.
+    budget: undefined,
+  });
+  return sanitised as JsonRpcRouteContext;
+}
+
+/**
  * Converts manifest-defined tool budgets into the structure understood by the
  * {@link BudgetTracker}. Undefined or negative limits are ignored so optional
  * manifest fields are treated as unbounded dimensions.
@@ -141,11 +159,7 @@ export function assembleJsonRpcRuntime(
   deps: RuntimeAssemblyDependencies,
   input: RuntimeAssemblyInput,
 ): RuntimeAssemblyResult {
-  const baseContext = input.context ? { ...input.context } : {};
-
-  // Always reset the tool budget to avoid leaking parent trackers when nested
-  // invocations reuse the AsyncLocalStorage context.
-  baseContext.budget = undefined;
+  const baseContext = cloneContext(input.context);
 
   const requestBudget = new BudgetTracker(deps.requestLimits);
   baseContext.requestBudget = requestBudget;
