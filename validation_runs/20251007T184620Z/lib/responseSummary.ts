@@ -84,8 +84,6 @@ export function buildTransportFailureSummary(error: McpToolCallError): ToolRespo
   } satisfies ToolResponseSummary;
 }
 
-export const __testing = {
-  parseToolResponseText,
-  summariseToolResponse,
-  buildTransportFailureSummary,
-};
+// Historical test hooks re-exported these helpers for unit tests.  The suites now
+// import the public functions directly, so the aggregate object can be removed
+// to avoid tripping the dead-export scan.

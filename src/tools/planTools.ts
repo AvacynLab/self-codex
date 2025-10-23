@@ -819,8 +819,6 @@ export const PlanCompileExecuteInputSchema = z
   .strict();
 
 export type PlanCompileExecuteInput = z.infer<typeof PlanCompileExecuteInputSchema>;
-export const PlanCompileExecuteInputShape = PlanCompileExecuteInputSchema.shape;
-
 /** Result returned by {@link handlePlanCompileExecute}. */
 export interface PlanCompileExecuteResult extends Record<string, unknown> {
   run_id: string;

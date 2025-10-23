@@ -23,6 +23,7 @@ export async function getGraphForge(): Promise<Awaited<ReturnType<typeof loadGra
  * This mirrors the `__resetGraphForgeLoaderForTests` hook but keeps the helper
  * encapsulated under the `tests/helpers` namespace.
  */
-export function resetGraphForgeCache(): void {
-  graphForgePromise = null;
-}
+// A previous iteration exported a reset helper for specialised suites.  The
+// hook no longer has callers, so we keep the cache private to avoid surfacing
+// dead exports. Future suites can invalidate the cache by setting
+// `graphForgePromise = null` within their local scope.

@@ -177,13 +177,7 @@ export function readEnum<T extends string>(
   return candidate ?? defaultValue;
 }
 
-/**
- * Exposed for unit tests so they can rely on the same literal sets without
- * needing to re-implement them.
- */
-export const __envInternals = {
-  normaliseEnvValue,
-  TRUE_LITERALS,
-  FALSE_LITERALS,
-};
+// Tests previously relied on the literal sets to mirror runtime behaviour. The
+// new sanitised helpers exercise the public API directly, so the extra export
+// is no longer required.
 
