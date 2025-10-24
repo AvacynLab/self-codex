@@ -36,7 +36,8 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p artifacts
-          npm run test | tee artifacts/tap.txt
+          # Capture the full test transcript for debugging while preserving the TAP stream.
+          npm run test 2>&1 | tee /tmp/self-codex.test.log | tee artifacts/tap.txt
 
       - name: Upload TAP report
         if: always()

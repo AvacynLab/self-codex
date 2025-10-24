@@ -85,4 +85,29 @@ describe("event store retention", function () {
     ).to.deep.equal([4]);
     expect(store.listForJob("job-a", { minSeq: 5 })).to.deep.equal([]);
   });
+
+  it("enforces per-kind retention windows", () => {
+    const store = new EventStore({ maxHistory: 3 });
+
+    // Inject a mix of INFO and WARN events so the INFO bucket receives four
+    // entries. The per-kind retention should evict the oldest INFO entry while
+    // still exposing the intermediate value even though it fell out of the
+    // global window once the history limit was exceeded.
+    store.emit({ kind: "INFO", jobId: "job-a" }); // seq 1
+    store.emit({ kind: "INFO", jobId: "job-b" }); // seq 2
+    store.emit({ kind: "WARN", jobId: "job-b" }); // seq 3
+    store.emit({ kind: "INFO", jobId: "job-c" }); // seq 4
+    store.emit({ kind: "INFO", jobId: "job-d" }); // seq 5
+
+    expect(store.list().map((event) => event.seq)).to.deep.equal([3, 4, 5]);
+
+    // The INFO bucket retains the three latest INFO events even though only the
+    // last two remain in the global buffer.
+    expect(store.getEventsByKind("INFO").map((event) => event.seq)).to.deep.equal([2, 4, 5]);
+    expect(store.getEventsByKind("WARN").map((event) => event.seq)).to.deep.equal([3]);
+
+    // Filtering by kind against the global window still honours the retention
+    // ordering and only yields the entries visible in the bounded snapshot.
+    expect(store.list({ kinds: ["INFO"], reverse: true }).map((event) => event.seq)).to.deep.equal([5, 4]);
+  });
 });

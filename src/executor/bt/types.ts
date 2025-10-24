@@ -28,6 +28,13 @@ export interface BehaviorTickResult {
 export type ToolInvoker = (toolName: string, input: unknown) => Promise<unknown>;
 
 /**
+ * Nominal type describing the shape expected from Behaviour Tree task schemas.
+ * Using `unknown` keeps validation strict without widening to `any` while still
+ * allowing each task to expose its precise contract.
+ */
+export type BehaviorTaskSchema = z.ZodType<unknown>;
+
+/**
  * Runtime services injected while ticking a Behaviour Tree. The methods are
  * intentionally simple so tests can provide deterministic fake implementations.
  */
@@ -265,7 +272,7 @@ export const BehaviorNodeDefinitionSchema: z.ZodType<BehaviorNodeDefinition> = z
     })
     .transform((value) => omitUndefinedDeep(value));
 
-  return schema as unknown as z.ZodType<BehaviorNodeDefinition>;
+  return schema as z.ZodType<BehaviorNodeDefinition>;
 });
 
 /** Schema validating an entire compiled Behaviour Tree payload. */

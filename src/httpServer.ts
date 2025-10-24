@@ -22,7 +22,7 @@ import type { HttpReadinessReport } from "./http/readiness.js";
 export type { HttpReadinessReport } from "./http/readiness.js";
 import { buildIdempotencyCacheKey } from "./infra/idempotency.js";
 import { IdempotencyConflictError, type IdempotencyStore } from "./infra/idempotencyStore.js";
-import { readBool } from "./config/env.js";
+import { readBool, readOptionalString } from "./config/env.js";
 import {
   runWithRpcTrace,
   annotateTraceContext,
@@ -465,10 +465,15 @@ async function handleReadyCheck(
   }
 }
 
+/** Returns the trimmed HTTP bearer token configured in the environment. */
+function getConfiguredHttpToken(): string | undefined {
+  return readOptionalString("MCP_HTTP_TOKEN");
+}
+
 /**
- * Ensures the bearer token advertised via {@link process.env.MCP_HTTP_TOKEN}
- * is present on incoming HTTP requests. A `401` JSON-RPC error response is
- * returned when the header is missing or does not match.
+ * Ensures the bearer token advertised via {@code MCP_HTTP_TOKEN} is present on
+ * incoming HTTP requests. A `401` JSON-RPC error response is returned when the
+ * header is missing or does not match.
  */
 function shouldAllowUnauthenticatedRequests(): boolean {
   return readBool("MCP_HTTP_ALLOW_NOAUTH", false);
@@ -482,11 +487,10 @@ function enforceBearerToken(
   meta: HttpErrorMeta = {},
 ): boolean {
   const allowNoAuth = shouldAllowUnauthenticatedRequests();
-  const configuredTokenRaw = process.env.MCP_HTTP_TOKEN;
-  const requiredToken = typeof configuredTokenRaw === "string" ? configuredTokenRaw.trim() : "";
+  const requiredToken = getConfiguredHttpToken();
   const token = resolveHttpAuthToken(req.headers);
   const hasValidToken =
-    requiredToken.length > 0 && typeof token === "string" && checkToken(token, requiredToken);
+    typeof requiredToken === "string" && requiredToken.length > 0 && typeof token === "string" && checkToken(token, requiredToken);
 
   if (hasValidToken) {
     return true;
@@ -500,7 +504,7 @@ function enforceBearerToken(
     return true;
   }
 
-  const rejectionReason = requiredToken.length === 0 ? "token_not_configured" : "missing_or_invalid_token";
+  const rejectionReason = requiredToken ? "missing_or_invalid_token" : "token_not_configured";
   logger.warn("http_auth_rejected", { reason: rejectionReason, request_id: requestId });
   void respondWithJsonRpcError(res, 401, "AUTH_REQUIRED", "Authentication required", logger, requestId, meta, {
     // Keep the legacy E-MCP-AUTH marker in metadata so downstream scrapers and
@@ -589,24 +593,25 @@ async function tryHandleJsonRpc(
       message,
       request_id: requestId,
     });
-
-    const errorDetails =
-      status === 413
-        ? createJsonRpcError("VALIDATION_ERROR", "Payload Too Large", { code: -32600, requestId: jsonrpcId })
-        : createJsonRpcError("VALIDATION_ERROR", "Parse error", { code: -32700, requestId: jsonrpcId });
-    const payload = toJsonRpc(null, errorDetails);
-    const bytesOut = await sendJson(res, status, payload, false, logger, requestId, undefined, idempotency);
-    logJsonRpcOutcome(logger, "warn", {
-      httpRequestId: requestId,
-      startedAt,
-      bytesIn: requestBytes,
-      bytesOut,
-      method: methodName,
-      jsonrpcId,
+    const errorCode = status === 413 ? -32600 : -32700;
+    await respondWithJsonRpcError(
+      res,
       status,
-      cacheStatus: "bypass",
-      errorCode: typeof payload.error?.code === "number" ? payload.error.code : null,
-    });
+      "VALIDATION_ERROR",
+      status === 413 ? "Payload Too Large" : "Parse error",
+      logger,
+      requestId,
+      {
+        startedAt,
+        bytesIn: requestBytes,
+        method: methodName,
+        jsonrpcId,
+      },
+      {
+        code: errorCode,
+        status,
+      },
+    );
     return true;
   }
 
@@ -623,12 +628,11 @@ async function tryHandleJsonRpc(
       await Promise.resolve(idempotency.store.assertKeySemantics?.(cacheKey));
     } catch (assertionError) {
       if (assertionError instanceof IdempotencyConflictError || (assertionError as { status?: number })?.status === 409) {
-        const conflict = createJsonRpcError("IDEMPOTENCY_CONFLICT", "Idempotency conflict", {
+        registerIdempotencyConflict();
+        const payload = jsonRpcError(jsonrpcId, "IDEMPOTENCY_CONFLICT", "Idempotency conflict", {
           requestId: jsonrpcId,
           hint: "Idempotency key was reused with different parameters.",
         });
-        registerIdempotencyConflict();
-        const payload = toJsonRpc(jsonrpcId, conflict);
         const bytesOut = await sendJson(res, 409, payload, false, logger, requestId, undefined, idempotency);
         logJsonRpcOutcome(logger, "warn", {
           httpRequestId: requestId,
@@ -639,7 +643,7 @@ async function tryHandleJsonRpc(
           jsonrpcId,
           status: 409,
           cacheStatus: "conflict",
-          errorCode: conflict.code,
+          errorCode: typeof payload.error?.code === "number" ? payload.error.code : null,
         });
         return true;
       }
@@ -835,6 +839,7 @@ export const __httpServerInternals = {
     noAuthBypassLogged = false;
   },
   publishHttpAccessEvent,
+  jsonRpcError,
   respondWithJsonRpcError,
 };
 
@@ -851,6 +856,24 @@ interface JsonRpcOutcomeDetails extends HttpErrorMeta {
   cacheStatus?: "hit" | "miss" | "bypass" | "conflict";
   /** Optional JSON-RPC error code when an error is returned. */
   errorCode?: number | null;
+}
+
+/**
+ * Builds a JSON-RPC error response payload while automatically injecting the JSON-RPC identifier
+ * into the metadata when callers omit an explicit `requestId`. Having a single helper keeps every
+ * error response aligned with the taxonomy defined in `rpc/errors.ts` and avoids ad hoc casts.
+ */
+function jsonRpcError(
+  id: string | number | null,
+  category: JsonRpcErrorCategory,
+  message: string,
+  options: JsonRpcErrorOptions = {},
+): ReturnType<typeof toJsonRpc> {
+  const shouldInjectRequestId =
+    options.requestId === undefined && (typeof id === "string" || typeof id === "number");
+  const enrichedOptions = shouldInjectRequestId ? { ...options, requestId: id } : options;
+  const error = createJsonRpcError(category, message, enrichedOptions);
+  return toJsonRpc(id, error);
 }
 
 /**
@@ -876,8 +899,7 @@ async function respondWithJsonRpcError(
     requestId: jsonId,
     status: errorOptions.status ?? status,
   };
-  const error = createJsonRpcError(category, message, enrichedOptions);
-  const payload = toJsonRpc(jsonId, error);
+  const payload = jsonRpcError(jsonId, category, message, enrichedOptions);
   const shouldPersist = cacheKey !== null && cacheKey !== undefined;
   const bytesOut = await sendJson(
     res,
@@ -896,7 +918,7 @@ async function respondWithJsonRpcError(
     status,
     bytesOut,
     cacheStatus,
-    errorCode: error.code,
+    errorCode: typeof payload.error?.code === "number" ? payload.error.code : null,
   });
   return bytesOut;
 }

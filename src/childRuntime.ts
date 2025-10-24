@@ -1,3 +1,8 @@
+/**
+ * Coordinates the lifecycle of sandboxed MCP child processes. The runtime wraps
+ * Node.js subprocess handles with strongly typed helpers for messaging,
+ * logging, shutdown orchestration and manifest persistence.
+ */
 import type { ChildProcess, ChildProcessWithoutNullStreams, SpawnOptions } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { createWriteStream, type WriteStream } from "node:fs";
@@ -330,6 +335,8 @@ export class ChildRuntime extends EventEmitter {
   private closed = false;
   private readonly startedAt: number;
   private lastHeartbeatAt: number | null = null;
+  /** Registered listeners cleaned up once the runtime stops tracking the child. */
+  private readonly listenerDisposers: Array<() => void> = [];
 
   constructor(params: ChildRuntimeParams) {
     super();
@@ -687,7 +694,12 @@ export class ChildRuntime extends EventEmitter {
     } catch (err) {
       this.forcedKill = true;
       this.recordInternal("lifecycle", "shutdown-timeout");
-      this.child.kill("SIGKILL");
+      try {
+        this.child.kill("SIGKILL");
+      } catch (error) {
+        this.recordInternal("lifecycle", `kill-error:${(error as Error).message}`);
+        throw error;
+      }
       exit = await this.waitForExit();
     }
 
@@ -773,43 +785,89 @@ export class ChildRuntime extends EventEmitter {
    * Releases resources (listeners and log stream).
    */
   private cleanup(): void {
-    if (!this.closed) {
-      this.closed = true;
-      if (this.child.stdout) {
-        this.child.stdout.removeAllListeners();
-      }
-      if (this.child.stderr) {
-        this.child.stderr.removeAllListeners();
-      }
-      if (this.child.stdin) {
-        this.child.stdin.removeAllListeners();
-      }
-      this.logStream.end();
+    if (this.closed) {
+      return;
     }
+
+    const disposeErrors: string[] = [];
+    while (this.listenerDisposers.length > 0) {
+      const dispose = this.listenerDisposers.pop();
+      try {
+        dispose?.();
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : inspect(error);
+        disposeErrors.push(reason);
+      }
+    }
+
+    this.child.stdout.removeAllListeners();
+    this.child.stderr.removeAllListeners();
+    this.child.stdin.removeAllListeners();
+
+    for (const reason of disposeErrors) {
+      this.recordInternal("lifecycle", `listener-dispose-error:${reason}`);
+    }
+
+    this.closed = true;
+    this.logStream.end();
   }
 
   private setupListeners(): void {
-    if (this.child.stdout) {
-      this.child.stdout.setEncoding("utf8");
-      this.child.stdout.on("data", (chunk: string) => {
-        this.consumeStdout(chunk);
-      });
-      this.child.stdout.on("end", () => {
-        this.flushStdout();
-      });
-    }
+    const stdout = this.child.stdout;
+    stdout.setEncoding("utf8");
+    const onStdoutData = (chunk: string) => {
+      this.consumeStdout(chunk);
+    };
+    const onStdoutEnd = () => {
+      this.flushStdout();
+    };
+    const onStdoutError = (error: Error) => {
+      this.recordInternal("stdout-error", error.message);
+    };
+    stdout.on("data", onStdoutData);
+    stdout.on("end", onStdoutEnd);
+    stdout.on("error", onStdoutError);
+    this.listenerDisposers.push(() => {
+      stdout.off("data", onStdoutData);
+      stdout.off("end", onStdoutEnd);
+      stdout.off("error", onStdoutError);
+    });
 
-    if (this.child.stderr) {
-      this.child.stderr.setEncoding("utf8");
-      this.child.stderr.on("data", (chunk: string) => {
-        this.consumeStderr(chunk);
-      });
-      this.child.stderr.on("end", () => {
-        this.flushStderr();
-      });
-    }
+    const stderr = this.child.stderr;
+    stderr.setEncoding("utf8");
+    const onStderrData = (chunk: string) => {
+      this.consumeStderr(chunk);
+    };
+    const onStderrEnd = () => {
+      this.flushStderr();
+    };
+    const onStderrError = (error: Error) => {
+      this.recordInternal("stderr-error", error.message);
+    };
+    stderr.on("data", onStderrData);
+    stderr.on("end", onStderrEnd);
+    stderr.on("error", onStderrError);
+    this.listenerDisposers.push(() => {
+      stderr.off("data", onStderrData);
+      stderr.off("end", onStderrEnd);
+      stderr.off("error", onStderrError);
+    });
 
-    this.child.once("spawn", () => {
+    const stdin = this.child.stdin;
+    const onStdinError = (error: Error) => {
+      this.recordInternal("stdin-error", error.message);
+    };
+    const onStdinClose = () => {
+      this.recordInternal("stdin", "closed");
+    };
+    stdin.on("error", onStdinError);
+    stdin.on("close", onStdinClose);
+    this.listenerDisposers.push(() => {
+      stdin.off("error", onStdinError);
+      stdin.off("close", onStdinClose);
+    });
+
+    const onSpawn = () => {
       this.spawnSettled = true;
       const at = Date.now();
       this.lastHeartbeatAt = at;
@@ -822,9 +880,13 @@ export class ChildRuntime extends EventEmitter {
         reason: null,
       } satisfies ChildRuntimeLifecycleEvent);
       this.spawnResolve?.();
+    };
+    this.child.once("spawn", onSpawn);
+    this.listenerDisposers.push(() => {
+      this.child.off("spawn", onSpawn);
     });
 
-    this.child.on("error", (error: Error) => {
+    const onChildError = (error: Error) => {
       if (!this.spawnSettled) {
         this.spawnSettled = true;
         this.spawnReject?.(error);
@@ -850,9 +912,13 @@ export class ChildRuntime extends EventEmitter {
         reason: error.message,
       } satisfies ChildRuntimeLifecycleEvent);
       this.cleanup();
+    };
+    this.child.on("error", onChildError);
+    this.listenerDisposers.push(() => {
+      this.child.off("error", onChildError);
     });
 
-    this.child.once("exit", (code, signal) => {
+    const onExit = (code: number | null, signal: NodeJS.Signals | null) => {
       const at = Date.now();
       const event: ChildRuntimeExitEvent = {
         code,
@@ -874,6 +940,42 @@ export class ChildRuntime extends EventEmitter {
         reason: null,
       } satisfies ChildRuntimeLifecycleEvent);
       this.cleanup();
+    };
+    this.child.once("exit", onExit);
+    this.listenerDisposers.push(() => {
+      this.child.off("exit", onExit);
+    });
+
+    const onClose = (code: number | null, signal: NodeJS.Signals | null) => {
+      const at = Date.now();
+      this.flushStdout();
+      this.flushStderr();
+      if (!this.exitEvent) {
+        const event: ChildRuntimeExitEvent = {
+          code,
+          signal,
+          at,
+          forced: this.forcedKill,
+          error: null,
+        };
+        this.exitEvent = event;
+        this.exitResolve?.(event);
+        this.emit("lifecycle", {
+          phase: "exit",
+          at,
+          pid: this.pid,
+          forced: this.forcedKill,
+          code,
+          signal,
+          reason: null,
+        } satisfies ChildRuntimeLifecycleEvent);
+      }
+      this.recordInternal("lifecycle", `close:${code ?? "null"}:${signal ?? "null"}`);
+      this.cleanup();
+    };
+    this.child.once("close", onClose);
+    this.listenerDisposers.push(() => {
+      this.child.off("close", onClose);
     });
   }
 

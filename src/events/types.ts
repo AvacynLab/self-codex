@@ -494,11 +494,26 @@ export interface PlanCompiledEventPayload {
 /** Union describing every PLAN payload surfaced on the event bus. */
 export type PlanEventPayload = PlanFanoutEventPayload | PlanCompiledEventPayload;
 
-/** Payload embedded when lessons alter an outgoing prompt. */
-export interface PromptEventPayload {
+/** Lessons prompt payload emitted when the orchestrator injects recall results. */
+export interface PromptLessonsEventPayload {
   readonly operation: string;
   readonly lessons_prompt: LessonsPromptPayload;
 }
+
+/** Child prompt payload indicating how many transcript entries were appended. */
+export interface PromptAppendEventPayload {
+  readonly appended: number;
+}
+
+/** Chat hand-off payload emitted when a one-shot request targets a child. */
+export interface PromptOneShotEventPayload {
+  readonly oneShot: true;
+}
+
+export type PromptEventPayload =
+  | PromptLessonsEventPayload
+  | PromptAppendEventPayload
+  | PromptOneShotEventPayload;
 
 /** Aggregation summary emitted when the plan reduce helper completes. */
 export interface PlanAggregateReducerPayload extends EventCorrelationPayload {

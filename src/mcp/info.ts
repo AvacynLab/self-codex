@@ -286,7 +286,7 @@ const FEATURE_LABELS: Record<keyof FeatureToggles, string> = {
   enableAssist: "assist",
 };
 
-interface ToolIntrospectionEntry {
+export interface ToolIntrospectionEntry {
   name: string;
   inputSchema?: ZodTypeAny;
   enabled: boolean;

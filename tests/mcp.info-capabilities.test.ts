@@ -201,6 +201,25 @@ describe("mcp introspection helpers", () => {
     expect(toolSummaries.get("kg_insert")).to.be.a("string").and.to.have.length.greaterThan(0);
   });
 
+  it("réconcilie les schémas d'entrée introspectés avec le registre runtime", () => {
+    const registry = getRegisteredToolMap(server);
+    expect(registry, "registered tools map").to.be.an("object");
+
+    const capabilityTools = getMcpCapabilities().tools;
+    const capabilityIndex = new Map(capabilityTools.map((tool) => [tool.name, tool]));
+
+    for (const [name, tool] of Object.entries(registry ?? {})) {
+      const capability = capabilityIndex.get(name);
+      if (!capability) {
+        continue;
+      }
+
+      if (tool.inputSchema) {
+        expect(capability.inputSchemaSummary, `introspection summary for ${name}`).to.be.a("string").and.not.empty;
+      }
+    }
+  });
+
   it("garde l'accès aux outils MCP derrière le flag enableMcpIntrospection", async () => {
     configureRuntimeFeatures({ ...originalFeatures, enableMcpIntrospection: false });
 

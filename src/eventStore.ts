@@ -1,3 +1,8 @@
+/**
+ * Centralised in-memory journal retaining a bounded view of orchestration
+ * events. The store enforces FIFO eviction globally, per job, and per kind while
+ * keeping log serialisation deterministic so replay artefacts remain diffable.
+ */
 import { StructuredLogger } from "./logger.js";
 import { coerceNullToUndefined, omitUndefinedEntries } from "./utils/object.js";
 import { normaliseProvenanceList, type Provenance } from "./types/provenance.js";
@@ -199,6 +204,10 @@ export class EventStore {
       provenance: normaliseProvenanceList(input.provenance),
     };
 
+    // FIFO eviction happens on every write so the global buffer never grows
+    // beyond {@link maxHistory}. Downstream buckets mirror the same limit to
+    // guarantee bounded memory usage even when callers query per-job or
+    // per-kind slices after the global window has advanced.
     this.events.push(event);
     if (this.events.length > this.maxHistory) {
       const evicted = this.events.shift();

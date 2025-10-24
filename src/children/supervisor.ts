@@ -158,6 +158,100 @@ export interface ChildSupervisorSafetySnapshot {
   cpuPercent: number | null;
 }
 
+/** Lightweight record guard reused when decoding arbitrary child payloads. */
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+/**
+ * Extracts the semantic type advertised by a child runtime message.
+ *
+ * The helper leans on structural checks so untrusted payloads cannot trip
+ * runtime errors while the supervisor keeps relying on the same heuristics as
+ * before. Returning `null` for unknown shapes preserves the existing
+ * behaviour.
+ */
+function readChildMessageType(message: ChildRuntimeMessage): string | null {
+  const { parsed } = message;
+  if (!isRecord(parsed) || !("type" in parsed)) {
+    return null;
+  }
+  const candidate = parsed.type;
+  return typeof candidate === "string" ? candidate : null;
+}
+
+/**
+ * Attempts to coerce arbitrary identifiers emitted by children into strings
+ * before attaching them to correlation hints.
+ */
+function readCorrelationIdentifier(value: unknown): string | undefined {
+  if (typeof value === "string" && value.length > 0) {
+    return value;
+  }
+  return undefined;
+}
+
+/**
+ * Enriches correlation hints with metadata provided directly by the child
+ * runtime payload. The helper ignores falsy values so sparse resolvers can
+ * override specific identifiers without wiping previously inferred hints.
+ */
+function mergeCorrelationFromPayload(
+  payload: unknown,
+  hints: EventCorrelationHints,
+): void {
+  if (!isRecord(payload)) {
+    return;
+  }
+
+  const runId = "runId" in payload ? readCorrelationIdentifier(payload.runId) : undefined;
+  if (runId) {
+    hints.runId = runId;
+  }
+
+  const opId = "opId" in payload ? readCorrelationIdentifier(payload.opId) : undefined;
+  if (opId) {
+    hints.opId = opId;
+  }
+
+  const jobId = "jobId" in payload ? readCorrelationIdentifier(payload.jobId) : undefined;
+  if (jobId) {
+    hints.jobId = jobId;
+  }
+
+  const graphId = "graphId" in payload ? readCorrelationIdentifier(payload.graphId) : undefined;
+  if (graphId) {
+    hints.graphId = graphId;
+  }
+
+  const nodeId = "nodeId" in payload ? readCorrelationIdentifier(payload.nodeId) : undefined;
+  if (nodeId) {
+    hints.nodeId = nodeId;
+  }
+}
+
+/** Timer handles expose an optional `.unref()` implementation in Node.js. */
+function unrefTimerIfSupported(handle: IntervalHandle): void {
+  if (typeof handle === "object" && handle !== null && "unref" in handle) {
+    const candidate = handle as { unref?: () => void };
+    if (typeof candidate.unref === "function") {
+      candidate.unref();
+    }
+  }
+}
+
+/**
+ * Shared base envelope applied to every supervision event published on the bus.
+ * Explicitly typing the literal category avoids reaching for `as const` casts
+ * further down in the implementation.
+ */
+interface ChildSupervisorEventBase {
+  cat: "child";
+  component: string;
+  stage: string;
+  childId: string | null;
+}
+
 /** Customises the exponential backoff applied after child crashes. */
 export interface ChildSupervisionBackoffOptions {
   /** Delay applied immediately after the first failure. */
@@ -708,8 +802,7 @@ export class ChildSupervisor implements ChildSupervisorContract {
     runtime.on("message", (message: ChildRuntimeMessage) => {
       this.index.updateHeartbeat(childId, message.receivedAt);
 
-      const parsed = message.parsed as { type?: string } | null;
-      const type = parsed?.type;
+      const type = readChildMessageType(message);
       if (type === "ready") {
         this.index.updateState(childId, "ready");
       } else if (type === "response" || type === "pong") {
@@ -734,29 +827,7 @@ export class ChildSupervisor implements ChildSupervisorContract {
         // When the child surfaces structured payloads we opportunistically
         // reuse the embedded identifiers to correlate stdout/stderr events
         // with their originating run/operation.
-        const payload = context.message.parsed as Record<string, unknown> | null;
-        if (payload && typeof payload === "object") {
-          const runId = payload.runId;
-          const opId = payload.opId;
-          const jobId = payload.jobId;
-          const graphId = payload.graphId;
-          const nodeId = payload.nodeId;
-          if (typeof runId === "string" && runId.length > 0) {
-            hints.runId = runId;
-          }
-          if (typeof opId === "string" && opId.length > 0) {
-            hints.opId = opId;
-          }
-          if (typeof jobId === "string" && jobId.length > 0) {
-            hints.jobId = jobId;
-          }
-          if (typeof graphId === "string" && graphId.length > 0) {
-            hints.graphId = graphId;
-          }
-          if (typeof nodeId === "string" && nodeId.length > 0) {
-            hints.nodeId = nodeId;
-          }
-        }
+        mergeCorrelationFromPayload(context.message.parsed, hints);
       }
 
       const extra = this.resolveChildCorrelation?.(context);
@@ -847,12 +918,13 @@ export class ChildSupervisor implements ChildSupervisorContract {
           durationMs: 0,
         };
         this.exitEvents.set(childId, fallback);
+        const reason = error instanceof Error ? error.message : String(error);
         this.index.recordExit(childId, {
           code: null,
           signal: null,
           at: Date.now(),
           forced: true,
-          reason: `exit-promise-error:${(error as Error).message}`,
+          reason: `exit-promise-error:${reason}`,
         });
         const supervisionKey = this.supervisionKeyByChild.get(childId);
         if (supervisionKey) {
@@ -904,10 +976,7 @@ export class ChildSupervisor implements ChildSupervisorContract {
             const handle = runtimeTimers.setTimeout(() => {
               resolve();
             }, retryDelay);
-            const maybeHandle = handle as { unref?: () => void };
-            if (typeof maybeHandle.unref === "function") {
-              maybeHandle.unref();
-            }
+            unrefTimerIfSupported(handle);
           });
         }
         supervisionTicket = await this.runtimeSupervisor.acquire(supervisionKey);
@@ -969,10 +1038,7 @@ export class ChildSupervisor implements ChildSupervisorContract {
       if (waitForReady) {
         const readyType = options.readyType ?? "ready";
         readyMessage = await runtime.waitForMessage(
-          (message) => {
-            const parsed = message.parsed as { type?: string } | null;
-            return parsed?.type === readyType;
-          },
+          (message) => readChildMessageType(message) === readyType,
           options.readyTimeoutMs ?? 2000,
         );
         this.index.updateHeartbeat(childId, readyMessage.receivedAt);
@@ -1015,12 +1081,12 @@ export class ChildSupervisor implements ChildSupervisorContract {
         }
 
         if (shutdownErrors.length > 0 && error instanceof Error) {
-          const existing = (error as Error & { cause?: unknown }).cause;
+          const existing = error.cause;
           if (existing === undefined && shutdownErrors.length === 1) {
-            (error as Error & { cause?: unknown }).cause = shutdownErrors[0];
+            error.cause = shutdownErrors[0];
           } else {
             const aggregated = new AggregateError(shutdownErrors, "child runtime teardown failures");
-            (error as Error & { cause?: unknown }).cause = existing ?? aggregated;
+            error.cause = existing ?? aggregated;
           }
         }
       }
@@ -1411,13 +1477,13 @@ export class ChildSupervisor implements ChildSupervisorContract {
     const manifest = {
       childId: session.childId,
       command: "http-loopback",
-      args: [] as string[],
+      args: [] satisfies string[],
       pid: -1,
       startedAt: new Date(session.startedAt).toISOString(),
       workdir: session.workdir,
       workspace: session.workdir,
       logs: { child: session.logPath },
-      envKeys: [] as string[],
+      envKeys: [] satisfies string[],
       metadata: session.metadata,
       limits: session.limits,
       role: session.role,
@@ -1443,7 +1509,7 @@ export class ChildSupervisor implements ChildSupervisorContract {
       if (key === "role" || key === "limits") {
         continue;
       }
-      merged[key] = structuredClone(value) as unknown;
+      merged[key] = structuredClone(value);
     }
     session.manifestExtras = merged;
   }
@@ -1509,7 +1575,8 @@ export class ChildSupervisor implements ChildSupervisorContract {
     const resolved: ChildRuntimeLimits = this.baseLimitsTemplate ? { ...this.baseLimitsTemplate } : {};
 
     if (overrides) {
-      for (const [key, rawValue] of Object.entries(overrides)) {
+      for (const key of Object.keys(overrides)) {
+        const rawValue = overrides[key];
         if (rawValue === undefined || rawValue === null) {
           continue;
         }
@@ -1526,7 +1593,7 @@ export class ChildSupervisor implements ChildSupervisorContract {
           }
         }
 
-        resolved[key] = rawValue as ChildRuntimeLimits[keyof ChildRuntimeLimits];
+        resolved[key] = rawValue;
       }
     }
 
@@ -1582,9 +1649,7 @@ export class ChildSupervisor implements ChildSupervisorContract {
       }
     }, interval);
 
-    if (typeof timer.unref === "function") {
-      timer.unref();
-    }
+    unrefTimerIfSupported(timer);
 
     this.watchdogs.set(childId, timer);
   }
@@ -1611,14 +1676,14 @@ export class ChildSupervisor implements ChildSupervisorContract {
     if (!this.eventBus) {
       return;
     }
-    const relatedChildren = [] as string[];
+    const relatedChildren: string[] = [];
     for (const [childId, key] of this.supervisionKeyByChild.entries()) {
       if (key === normalisedEvent.key) {
         relatedChildren.push(childId);
       }
     }
-    const base = {
-      cat: "child" as const,
+    const base: ChildSupervisorEventBase = {
+      cat: "child",
       component: "child_supervisor",
       stage: "supervision",
       childId: relatedChildren.length === 1 ? relatedChildren[0] : null,

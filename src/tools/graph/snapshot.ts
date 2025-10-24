@@ -11,6 +11,7 @@ import {
 import type { GraphEdgeRecord, GraphNodeRecord, NormalisedGraph } from "../../graph/types.js";
 import { resolveOperationId } from "../operationIds.js";
 import { omitUndefinedEntries } from "../../utils/object.js";
+import { withOptionalProperty } from "../shared.js";
 
 /** Allowed attribute value stored on nodes/edges. */
 export const GraphAttributeValueSchema = z.union([
@@ -247,18 +248,13 @@ export function serialiseDescriptor(descriptor: NormalisedGraph): GraphDescripto
       return payload;
     }),
     edges: descriptor.edges.map((edge) => {
-      const payload: GraphDescriptorPayload["edges"][number] = {
+      return {
         from: edge.from,
         to: edge.to,
         attributes: sortAttributes(edge.attributes),
-      };
-      if (edge.label !== undefined) {
-        payload.label = edge.label;
-      }
-      if (edge.weight !== undefined) {
-        payload.weight = edge.weight;
-      }
-      return payload;
+        ...withOptionalProperty("label", edge.label),
+        ...withOptionalProperty("weight", edge.weight),
+      } satisfies GraphDescriptorPayload["edges"][number];
     }),
     metadata: sortAttributes(descriptor.metadata),
   } satisfies GraphDescriptorPayload;
@@ -266,21 +262,17 @@ export function serialiseDescriptor(descriptor: NormalisedGraph): GraphDescripto
 
 export function normaliseDescriptor(graph: z.infer<typeof GraphDescriptorSchema>): NormalisedGraph {
   const nodes = graph.nodes.map((node) => {
-    const descriptor: GraphNodeRecord = {
+    return {
       id: node.id,
       attributes: filterAttributes({
         ...node.attributes,
         ...(node.label ? { label: node.label } : {}),
       }),
-    };
-    if (node.label !== undefined) {
-      // With `exactOptionalPropertyTypes`, optional fields must be omitted when absent.
-      descriptor.label = node.label;
-    }
-    return descriptor;
+      ...withOptionalProperty("label", node.label),
+    } satisfies GraphNodeRecord;
   });
   const edges = graph.edges.map((edge) => {
-    const descriptor: GraphEdgeRecord = {
+    return {
       from: edge.from,
       to: edge.to,
       attributes: filterAttributes({
@@ -288,14 +280,9 @@ export function normaliseDescriptor(graph: z.infer<typeof GraphDescriptorSchema>
         ...(edge.label ? { label: edge.label } : {}),
         ...(typeof edge.weight === "number" ? { weight: edge.weight } : {}),
       }),
-    };
-    if (edge.label !== undefined) {
-      descriptor.label = edge.label;
-    }
-    if (edge.weight !== undefined) {
-      descriptor.weight = edge.weight;
-    }
-    return descriptor;
+      ...withOptionalProperty("label", edge.label),
+      ...withOptionalProperty("weight", edge.weight),
+    } satisfies GraphEdgeRecord;
   });
   const metadata = filterAttributes(graph.metadata ?? {});
   const descriptor: NormalisedGraph = {
@@ -322,30 +309,20 @@ export function adoptGraphDescriptor(target: NormalisedGraph, source: Normalised
   target.graphId = source.graphId;
   target.graphVersion = source.graphVersion;
   target.nodes = source.nodes.map((node) => {
-    const descriptor: GraphNodeRecord = {
+    return {
       id: node.id,
       attributes: { ...node.attributes },
-    };
-    if (node.label !== undefined) {
-      // Preserve labels only when callers explicitly provided one to avoid
-      // serialising `label: undefined` once strict optional semantics are enforced.
-      descriptor.label = node.label;
-    }
-    return descriptor;
+      ...withOptionalProperty("label", node.label),
+    } satisfies GraphNodeRecord;
   });
   target.edges = source.edges.map((edge) => {
-    const descriptor: GraphEdgeRecord = {
+    return {
       from: edge.from,
       to: edge.to,
       attributes: { ...edge.attributes },
-    };
-    if (edge.label !== undefined) {
-      descriptor.label = edge.label;
-    }
-    if (edge.weight !== undefined) {
-      descriptor.weight = edge.weight;
-    }
-    return descriptor;
+      ...withOptionalProperty("label", edge.label),
+      ...withOptionalProperty("weight", edge.weight),
+    } satisfies GraphEdgeRecord;
   });
   target.metadata = { ...source.metadata };
 }

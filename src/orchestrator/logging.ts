@@ -1,3 +1,10 @@
+/**
+ * Centralises the log enrichment helpers used by the orchestrator runtime.
+ *
+ * Isolating the category resolution and tag normalisation logic keeps
+ * `runtime.ts` focused on composition while offering tests a single location to
+ * exercise logging behaviour without bootstrapping the entire runtime.
+ */
 import { EVENT_CATEGORIES, type EventCategory } from "../events/bus.js";
 import { assertValidEventMessage, type EventMessage } from "../events/types.js";
 import type { EventKind } from "../eventStore.js";

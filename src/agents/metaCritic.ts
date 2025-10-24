@@ -75,6 +75,31 @@ interface CriterionComputation {
   suggestions: string[];
 }
 
+/**
+ * Identifiers of heuristics built in the critic. The explicit union keeps the
+ * handler registry typed which avoids silent fallbacks when new identifiers are
+ * introduced without wiring a computation.
+ */
+const KNOWN_CRITERIA = [
+  "completeness",
+  "clarity",
+  "testing",
+  "risk",
+  "quality",
+  "maintainability",
+] as const;
+
+type KnownCriterionId = (typeof KNOWN_CRITERIA)[number];
+
+type CriterionHandler = (ctx: EvaluationContext) => CriterionComputation;
+
+const KNOWN_CRITERIA_SET = new Set<string>(KNOWN_CRITERIA);
+
+/** Runtime guard verifying whether a criterion identifier is natively handled. */
+function isKnownCriterionId(value: string): value is KnownCriterionId {
+  return KNOWN_CRITERIA_SET.has(value);
+}
+
 /** Counts the number of non-empty lines in the evaluation context. */
 function countNonEmptyLines(ctx: EvaluationContext): number {
   return ctx.lines.reduce((total, line) => (line.trim().length > 0 ? total + 1 : total), 0);
@@ -402,7 +427,7 @@ function defaultCriteriaFor(kind: ReviewKind): ReviewCriterion[] {
 /**
  * Central registry mapping criterion identifiers to heuristic implementations.
  */
-const CRITERION_HANDLERS: Record<string, (ctx: EvaluationContext) => CriterionComputation> = {
+const CRITERION_HANDLERS: Record<KnownCriterionId, CriterionHandler> = {
   completeness: computeCompleteness,
   clarity: computeClarity,
   testing: computeTestingDiscipline,
@@ -410,6 +435,18 @@ const CRITERION_HANDLERS: Record<string, (ctx: EvaluationContext) => CriterionCo
   quality: computeCodeQuality,
   maintainability: computeCodeQuality,
 };
+
+/**
+ * Resolves the appropriate heuristic for a criterion identifier. Unknown
+ * identifiers intentionally fall back to clarity analysis to maintain backwards
+ * compatibility with older orchestrator versions that may send arbitrary ids.
+ */
+function resolveCriterionHandler(identifier: string): CriterionHandler {
+  if (isKnownCriterionId(identifier)) {
+    return CRITERION_HANDLERS[identifier];
+  }
+  return computeClarity;
+}
 
 /**
  * Lightweight rule-based critic producing structured reviews for orchestrator
@@ -432,7 +469,7 @@ export class MetaCritic {
     let totalWeight = 0;
 
     for (const criterion of selectedCriteria) {
-      const handler = CRITERION_HANDLERS[criterion.id] ?? computeClarity;
+      const handler = resolveCriterionHandler(criterion.id);
       const { score, feedback, suggestions } = handler(context);
       const weight = criterion.weight ?? 1;
 

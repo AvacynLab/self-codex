@@ -8,14 +8,10 @@ import { StructuredLogger } from "../src/logger.js";
 import { StigmergyField } from "../src/coord/stigmergy.js";
 import { ContractNetWatcherTelemetryRecorder } from "../src/coord/contractNetWatchers.js";
 import { BehaviorTreeStatusRegistry } from "../src/monitor/btStatusRegistry.js";
-import { setTimeout as delay } from "node:timers/promises";
 import type { SupervisorSchedulerSnapshot } from "../src/agents/supervisor.js";
-import {
-  DashboardSnapshot,
-  createDashboardRouter,
-  type DashboardHttpResponse,
-} from "../src/monitor/dashboard.js";
+import { DashboardSnapshot, createDashboardRouter } from "../src/monitor/dashboard.js";
 import { createHttpRequest } from "./helpers/http.js";
+import { StreamResponse, waitForSseEvents } from "./monitor/helpers/streamResponse.js";
 
 /**
  * Minimal supervisor stub exposing the cancellation contract exercised by the
@@ -38,114 +34,6 @@ class StubSupervisorAgent {
 }
 
 /** Lightweight response mock capturing SSE payloads for assertions. */
-class StreamResponse implements DashboardHttpResponse {
-  public statusCode: number | null = null;
-  public headersSent = false;
-  public finished = false;
-  public readonly headers: Record<string, string> = {};
-  private readonly chunks: Buffer[] = [];
-  /**
-   * Minimal event registry so the stub mirrors Node's EventEmitter surface for
-   * the `ServerResponse`. The dashboard router relies on `on`, `off`, and
-   * `removeListener` when wiring SSE lifecycle hooks, hence the dedicated map.
-   */
-  private readonly listeners = new Map<string, Set<(...args: unknown[]) => void>>();
-
-  writeHead(status: number, headers?: Record<string, string | number | readonly string[]>): this {
-    this.statusCode = status;
-    if (headers) {
-      for (const [key, value] of Object.entries(headers)) {
-        this.headers[key.toLowerCase()] = String(value);
-      }
-    }
-    this.headersSent = true;
-    return this;
-  }
-
-  write(chunk: string | Uint8Array): boolean {
-    const buffer = typeof chunk === "string" ? Buffer.from(chunk, "utf8") : Buffer.from(chunk);
-    this.chunks.push(buffer);
-    this.headersSent = true;
-    return true;
-  }
-
-  setHeader(name: string, value: string | number | readonly string[]): void {
-    this.headers[name.toLowerCase()] = Array.isArray(value) ? value.join(",") : String(value);
-  }
-
-  end(chunk?: string | Uint8Array): void {
-    if (chunk) {
-      this.write(chunk);
-    }
-    this.finished = true;
-    this.emit("close");
-  }
-
-  /** Registers an event listener mirroring Node's {@link EventEmitter.on}. */
-  on(event: string, listener: (...args: unknown[]) => void): this {
-    let handlers = this.listeners.get(event);
-    if (!handlers) {
-      handlers = new Set();
-      this.listeners.set(event, handlers);
-    }
-    handlers.add(listener);
-    return this;
-  }
-
-  /** Removes an event listener, supporting both `off` and `removeListener`. */
-  off(event: string, listener: (...args: unknown[]) => void): this {
-    const handlers = this.listeners.get(event);
-    handlers?.delete(listener);
-    return this;
-  }
-
-  removeListener(event: string, listener: (...args: unknown[]) => void): this {
-    return this.off(event, listener);
-  }
-
-  /** Emits an event to all registered handlers. */
-  emit(event: string, ...args: unknown[]): boolean {
-    const handlers = this.listeners.get(event);
-    if (!handlers || handlers.size === 0) {
-      return false;
-    }
-    for (const handler of Array.from(handlers)) {
-      try {
-        handler(...args);
-      } catch {
-        // Test stubs swallow listener exceptions to keep assertions focused.
-      }
-    }
-    return true;
-  }
-
-  /** Returns the concatenated SSE body for convenience. */
-  get body(): string {
-    return Buffer.concat(this.chunks).toString("utf8");
-  }
-
-  /**
-   * Extracts the JSON payloads emitted through `data:` SSE lines. Recent
-   * refactors include `id`/`event` headers per frame, hence the explicit scan
-   * of each line rather than assuming the chunk begins with `data:`.
-   */
-  get dataEvents(): string[] {
-    const events: string[] = [];
-    const frames = this.body.split("\n\n");
-    for (const frame of frames) {
-      if (!frame.trim()) {
-        continue;
-      }
-      for (const line of frame.split("\n")) {
-        if (line.startsWith("data: ")) {
-          events.push(line.slice("data: ".length));
-        }
-      }
-    }
-    return events;
-  }
-}
-
 /** Builds a mocked HTTP request accepted by the dashboard router. */
 function createRequest(method: string, path: string, body?: unknown): IncomingMessage {
   const headers = {
@@ -162,26 +50,6 @@ function createRequest(method: string, path: string, body?: unknown): IncomingMe
   }
 
   return createHttpRequest(method, path, headers);
-}
-
-/**
- * Awaits until the SSE response has emitted at least {@link minCount} events or the timeout elapses.
- * The helper mirrors the asynchronous flushing behaviour introduced by the bounded SSE buffer.
- */
-async function waitForSseEvents(
-  response: StreamResponse,
-  minCount: number,
-  timeoutMs = 1_000,
-): Promise<string[]> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() <= deadline) {
-    const events = response.dataEvents;
-    if (events.length >= minCount) {
-      return events;
-    }
-    await delay(10);
-  }
-  return response.dataEvents;
 }
 
 describe("monitor/dashboard streams", () => {
@@ -231,7 +99,7 @@ describe("monitor/dashboard streams", () => {
       await router.handleRequest(createRequest("GET", "/stream"), response);
 
       expect(response.statusCode).to.equal(200);
-      expect(response.headers["content-type"]).to.equal("text/event-stream");
+      expect(response.headers["content-type"]).to.equal("text/event-stream; charset=utf-8");
 
       const initialEvents = await waitForSseEvents(response, 1);
       expect(initialEvents).to.have.lengthOf.at.least(1);

@@ -8,6 +8,8 @@ import {
   requestCancellation,
   resetCancellationRegistry,
   CancellationNotFoundError,
+  subscribeCancellationEvents,
+  type CancellationEventPayload,
 } from "../../src/executor/cancel.js";
 
 /**
@@ -58,5 +60,71 @@ describe("executor cancellation registry handle exposure", () => {
     // Follow-up cancellation requests should surface the structured
     // not-found error to mirror the production behaviour.
     expect(() => requestCancellation(opId)).to.throw(CancellationNotFoundError);
+  });
+
+  it("broadcasts structured lifecycle events for requested and idempotent cancellations", () => {
+    const opId = "op-emits-events";
+    const runId = "run-emits-events";
+    const jobId = "job-emits-events";
+    const graphId = "graph-emits-events";
+    const nodeId = "node-emits-events";
+    const childId = "child-emits-events";
+    const recordedEvents: CancellationEventPayload[] = [];
+
+    // Subscribe to the registry before registering the operation so the test
+    // captures the entire lifecycle emitted by the handle.
+    const unsubscribe = subscribeCancellationEvents((event) => {
+      recordedEvents.push(event);
+    });
+
+    registerCancellation(opId, {
+      createdAt: 0,
+      runId,
+      jobId,
+      graphId,
+      nodeId,
+      childId,
+    });
+
+    const firstAt = 101;
+    const firstOutcome = requestCancellation(opId, { reason: "maintenance", at: firstAt });
+
+    expect(firstOutcome).to.equal("requested");
+    expect(recordedEvents).to.have.length(1);
+    expect(recordedEvents[0]).to.deep.equal({
+      opId,
+      runId,
+      jobId,
+      graphId,
+      nodeId,
+      childId,
+      reason: "maintenance",
+      at: firstAt,
+      outcome: "requested",
+    });
+
+    const secondAt = 202;
+    const secondOutcome = requestCancellation(opId, { at: secondAt });
+
+    expect(secondOutcome).to.equal("already_cancelled");
+    expect(recordedEvents).to.have.length(2);
+    expect(recordedEvents[1]).to.deep.equal({
+      opId,
+      runId,
+      jobId,
+      graphId,
+      nodeId,
+      childId,
+      reason: "maintenance",
+      at: secondAt,
+      outcome: "already_cancelled",
+    });
+
+    unsubscribe();
+
+    // Subsequent cancellations should no longer notify the disposed listener.
+    const thirdOutcome = requestCancellation(opId, { at: 303 });
+    expect(thirdOutcome).to.equal("already_cancelled");
+    expect(recordedEvents).to.have.length(2);
   });
 });

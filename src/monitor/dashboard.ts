@@ -1,3 +1,8 @@
+/**
+ * Dashboard HTTP server exposing HTML pages, JSON endpoints, and SSE streams for
+ * the orchestrator monitor. The module centralises snapshot computation and
+ * streaming lifecycles so tests exercise the same codepath as the production server.
+ */
 import { Buffer } from "node:buffer";
 import { createServer, IncomingMessage, ServerResponse } from "node:http";
 import type { OutgoingHttpHeaders } from "node:http";
@@ -12,6 +17,7 @@ import type { ChildRuntimeLimits } from "../childRuntime.js";
 import { ChildSupervisor } from "../children/supervisor.js";
 import { StructuredLogger } from "../logger.js";
 import { serialiseForSse } from "../events/sse.js";
+import { SseBuffer, type SseMessage } from "../events/sseBuffer.js";
 import { reportOpenSseStreams } from "../infra/tracing.js";
 import type {
   ContractNetWatcherTelemetryRecorder,
@@ -431,6 +437,9 @@ export interface DashboardHttpResponse {
   end(chunk?: string | Uint8Array): void;
   /** Registers a listener mirroring the Node.js EventEmitter API. */
   on(event: string, listener: (...args: unknown[]) => void): this;
+  /** Optional removal helpers exposed by Node.js streams; stubs may omit them. */
+  off?(event: string, listener: (...args: unknown[]) => void): this;
+  removeListener?(event: string, listener: (...args: unknown[]) => void): this;
 }
 
 export interface DashboardRouter {
@@ -438,6 +447,149 @@ export interface DashboardRouter {
   handleRequest(req: IncomingMessage, res: DashboardHttpResponse): Promise<void>;
   broadcast(): void;
   close(): Promise<void>;
+}
+
+/** SSE event name used by the dashboard EventSource bridge. */
+type DashboardSseEventName = "message";
+
+type DashboardSseMessage = SseMessage<DashboardSseEventName>;
+
+interface DashboardSseClient {
+  id: string;
+  res: DashboardHttpResponse;
+  buffer: SseBuffer<DashboardSseEventName>;
+  draining: Promise<void> | null;
+  released: boolean;
+  cleanupHandlers: Array<() => void>;
+}
+
+type EventEmitterLike = {
+  on(event: string, listener: (...args: unknown[]) => void): unknown;
+  off?(event: string, listener: (...args: unknown[]) => void): unknown;
+  removeListener?(event: string, listener: (...args: unknown[]) => void): unknown;
+};
+
+let nextDashboardClientId = 1;
+
+function allocateDashboardClientId(): string {
+  const id = `dashboard-client-${nextDashboardClientId}`;
+  nextDashboardClientId += 1;
+  return id;
+}
+
+function addEventListener(
+  emitter: EventEmitterLike,
+  event: string,
+  listener: (...args: unknown[]) => void,
+): () => void {
+  emitter.on(event, listener);
+  return () => {
+    if (typeof emitter.off === "function") {
+      emitter.off(event, listener);
+      return;
+    }
+    if (typeof emitter.removeListener === "function") {
+      emitter.removeListener(event, listener);
+    }
+  };
+}
+
+function releaseDashboardClient(
+  clients: Set<DashboardSseClient>,
+  client: DashboardSseClient,
+): void {
+  if (client.released) {
+    return;
+  }
+  client.released = true;
+  for (const cleanup of client.cleanupHandlers.splice(0)) {
+    try {
+      cleanup();
+    } catch {
+      // Cleanup is best-effort; failing to remove a listener should not throw.
+    }
+  }
+  clients.delete(client);
+  client.buffer.clear();
+  client.draining = null;
+  reportOpenSseStreams(clients.size);
+}
+
+async function waitForResponseDrain(res: DashboardHttpResponse): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    let settled = false;
+    const disposers: Array<() => void> = [];
+    const cleanup = () => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      while (disposers.length > 0) {
+        try {
+          const dispose = disposers.pop();
+          dispose?.();
+        } catch {
+          // Ignore disposal failures to mirror Node's EventEmitter semantics.
+        }
+      }
+    };
+    const handleResolve = () => {
+      cleanup();
+      resolve();
+    };
+    const handleReject = (error: unknown) => {
+      cleanup();
+      reject(error instanceof Error ? error : new Error(String(error)));
+    };
+
+    disposers.push(addEventListener(res, "drain", handleResolve));
+    disposers.push(addEventListener(res, "finish", handleResolve));
+    disposers.push(addEventListener(res, "close", handleResolve));
+    disposers.push(addEventListener(res, "error", handleReject));
+  });
+}
+
+function flushDashboardClient(
+  clients: Set<DashboardSseClient>,
+  client: DashboardSseClient,
+  logger: StructuredLogger,
+): void {
+  if (client.released || client.draining) {
+    return;
+  }
+  client.draining = (async () => {
+    try {
+      await client.buffer.drain(async (frame) => {
+        if (client.released) {
+          return;
+        }
+        const canContinue = client.res.write(frame);
+        if (!canContinue) {
+          await waitForResponseDrain(client.res);
+        }
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      logger.warn("dashboard_stream_flush_failed", { clientId: client.id, message });
+      releaseDashboardClient(clients, client);
+      logger.warn("dashboard_stream_disconnected", {
+        clientId: client.id,
+        reason: "flush_failed",
+        clients: clients.size,
+        message,
+      });
+    } finally {
+      client.draining = null;
+    }
+  })();
+}
+
+function createDashboardSseMessage(snapshot: DashboardSnapshot, data: string): DashboardSseMessage {
+  return {
+    id: String(snapshot.timestamp),
+    event: "message",
+    data,
+  };
 }
 
 /**
@@ -459,7 +611,7 @@ export function createDashboardRouter(options: DashboardRouterOptions): Dashboar
   const supervisorAgent = options.supervisorAgent ?? null;
   const contractNetWatcherTelemetry = options.contractNetWatcherTelemetry ?? null;
   const streamIntervalMs = Math.max(250, options.streamIntervalMs ?? 2_000);
-  const clients = new Set<DashboardHttpResponse>();
+  const clients = new Set<DashboardSseClient>();
   const autoBroadcast = options.autoBroadcast ?? true;
   const logJournal = options.logJournal ?? null;
   let interval: IntervalHandle | null = null;
@@ -563,6 +715,7 @@ export function createDashboardRouter(options: DashboardRouterOptions): Dashboar
 
       if (req.method === "GET" && pathname === "/stream") {
         handleStreamRequest(
+          req,
           res,
           clients,
           graphState,
@@ -660,16 +813,16 @@ export function createDashboardRouter(options: DashboardRouterOptions): Dashboar
         runtimeTimers.clearInterval(interval);
         interval = null;
       }
-      for (const client of clients) {
+      for (const client of Array.from(clients)) {
+        releaseDashboardClient(clients, client);
         try {
-          client.end();
+          client.res.end();
         } catch (error) {
           logger.warn("dashboard_client_close_error", {
             message: error instanceof Error ? error.message : String(error),
           });
         }
       }
-      clients.clear();
     },
   };
 }
@@ -947,8 +1100,9 @@ async function handlePrioritiseRequest(
 
 /** Configures the HTTP response to behave as an SSE stream and pushes a snapshot. */
 function handleStreamRequest(
+  req: IncomingMessage,
   res: DashboardHttpResponse,
-  clients: Set<DashboardHttpResponse>,
+  clients: Set<DashboardSseClient>,
   graphState: GraphState,
   eventStore: EventStore,
   stigmergy: StigmergyField,
@@ -959,24 +1113,56 @@ function handleStreamRequest(
   streamIntervalMs: number,
 ): void {
   res.writeHead(200, {
-    "Content-Type": "text/event-stream",
+    "Content-Type": "text/event-stream; charset=utf-8",
     "Cache-Control": "no-store",
     Connection: "keep-alive",
+    "X-Accel-Buffering": "no",
   });
   res.write(`retry: ${streamIntervalMs}\n\n`);
-  clients.add(res);
+
+  const clientId = allocateDashboardClientId();
+  const buffer = new SseBuffer<DashboardSseEventName>({ clientId, logger });
+  const client: DashboardSseClient = {
+    id: clientId,
+    res,
+    buffer,
+    draining: null,
+    released: false,
+    cleanupHandlers: [],
+  };
+
+  clients.add(client);
   reportOpenSseStreams(clients.size);
-  let released = false;
-  const release = () => {
-    if (released) {
+
+  const release = (
+    reason: string,
+    severity: "debug" | "warn" = "debug",
+    context: Record<string, unknown> = {},
+  ) => {
+    if (client.released) {
       return;
     }
-    released = true;
-    clients.delete(res);
-    reportOpenSseStreams(clients.size);
+    releaseDashboardClient(clients, client);
+    const payload = { clientId, reason, clients: clients.size, ...context };
+    if (severity === "warn") {
+      logger.warn("dashboard_stream_disconnected", payload);
+    } else {
+      logger.debug("dashboard_stream_disconnected", payload);
+    }
   };
-  res.on("close", release);
-  res.on("error", release);
+
+  client.cleanupHandlers.push(addEventListener(res, "close", () => release("response_close")));
+  client.cleanupHandlers.push(addEventListener(res, "finish", () => release("response_finish")));
+  client.cleanupHandlers.push(
+    addEventListener(res, "error", (error) =>
+      release("response_error", "warn", {
+        message: error instanceof Error ? error.message : String(error),
+      }),
+    ),
+  );
+  client.cleanupHandlers.push(addEventListener(req, "close", () => release("request_close")));
+  client.cleanupHandlers.push(addEventListener(req, "aborted", () => release("request_aborted")));
+
   const snapshot = buildSnapshot(
     graphState,
     eventStore,
@@ -985,14 +1171,16 @@ function handleStreamRequest(
     supervisorAgent,
     contractNetWatcherTelemetry,
   );
-  const payload = serialiseForSse(snapshot);
-  res.write(`data: ${payload}\n\n`);
-  logger.debug("dashboard_stream_connected", { clients: clients.size });
+  const serialised = serialiseForSse(snapshot);
+  client.buffer.enqueue([createDashboardSseMessage(snapshot, serialised)]);
+  flushDashboardClient(clients, client, logger);
+
+  logger.debug("dashboard_stream_connected", { clientId, clients: clients.size });
 }
 
 /** Pushes a fresh snapshot to every connected SSE client. */
 function broadcast(
-  clients: Set<DashboardHttpResponse>,
+  clients: Set<DashboardSseClient>,
   graphState: GraphState,
   eventStore: EventStore,
   stigmergy: StigmergyField,
@@ -1012,9 +1200,14 @@ function broadcast(
     supervisorAgent,
     contractNetWatcherTelemetry,
   );
-  const payload = `data: ${serialiseForSse(snapshot)}\n\n`;
-  for (const client of clients) {
-    client.write(payload);
+  const serialised = serialiseForSse(snapshot);
+  const message = createDashboardSseMessage(snapshot, serialised);
+  for (const client of Array.from(clients)) {
+    if (client.released) {
+      continue;
+    }
+    client.buffer.enqueue([message]);
+    flushDashboardClient(clients, client, logger);
   }
   logger.debug("dashboard_stream_broadcast", { clients: clients.size });
 }

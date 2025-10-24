@@ -1,7 +1,15 @@
+/**
+ * Composition root for the orchestrator runtime.
+ *
+ * The module wires dependencies (children supervision, memory stores, graph
+ * tools, JSON-RPC controller) and exposes the instances consumed by HTTP and
+ * CLI transports while keeping the orchestration logic decoupled across
+ * dedicated modules.
+ */
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { RequestHandlerExtra } from "@modelcontextprotocol/sdk/shared/protocol.js";
 import type { CallToolResult, ServerNotification, ServerRequest } from "@modelcontextprotocol/sdk/types.js";
-import { z, type ZodTypeAny } from "zod";
+import { z } from "zod";
 import { randomUUID } from "node:crypto";
 import { Buffer } from "node:buffer";
 import { readFile, writeFile } from "node:fs/promises";
@@ -33,7 +41,6 @@ import {
 // NOTE: Node built-in modules are imported with the explicit `node:` prefix to guarantee ESM resolution in Node.js.
   type EventBus,
   type EventFilter,
-  type EventInput,
   type EventLevel as BusEventLevel,
 } from "../events/bus.js";
 import {
@@ -43,13 +50,7 @@ import {
   mergeCorrelationHints,
   type EventCorrelationHints,
 } from "../events/correlation.js";
-import type {
-  JsonRpcEventMessage,
-  JsonRpcEventPayload,
-  JsonRpcEventPayloadByMessage,
-  JsonRpcEventSharedFields,
-  JsonRpcEventStatus,
-} from "../events/types.js";
+import type { EventStorePayload } from "../events/types.js";
 import { buildChildCognitiveEvents, type QualityAssessmentSnapshot } from "../events/cognitive.js";
 import { serialiseForSse } from "../events/sse.js";
 import { LogJournal, type LogStream } from "../monitor/log.js";
@@ -69,14 +70,12 @@ import { OrchestratorSupervisor, inferSupervisorIncidentCorrelation } from "../a
 import { MetaCritic, ReviewKind, ReviewResult } from "../agents/metaCritic.js";
 import { reflect, ReflectionResult } from "../agents/selfReflect.js";
 import { scoreCode, scorePlan, scoreText, ScoreCodeInput, ScorePlanInput, ScoreTextInput } from "../quality/scoring.js";
-import { appendWalEntry } from "../state/wal.js";
 import {
   ToolRegistry,
   ToolRegistrationError,
   getRegisteredToolMap,
   type CompositeRegistrationRequest,
 } from "../mcp/registry.js";
-import { evaluateToolDeprecation, logToolDeprecation } from "../mcp/deprecations.js";
 import {
   getMutableJsonRpcRequestHandlerRegistry,
   type InternalJsonRpcHandler,
@@ -116,18 +115,8 @@ import type { ValueFilterDecision } from "../values/valueGraph.js";
 import { ResourceRegistry, type ResourceWatchResult } from "../resources/registry.js";
 import { renderResourceWatchSseMessages, serialiseResourceWatchResultForSse } from "../resources/sse.js";
 import { IdempotencyRegistry, buildIdempotencyCacheKey } from "../infra/idempotency.js";
-import { runWithJsonRpcContext } from "../infra/jsonRpcContext.js";
-import { assembleJsonRpcRuntime, type JsonRpcRouteContext } from "../infra/runtime.js";
+import type { JsonRpcRouteContext } from "../infra/runtime.js";
 import { coerceNullToUndefined, omitUndefinedEntries } from "../utils/object.js";
-import {
-  runWithRpcTrace,
-  annotateTraceContext,
-  registerInboundBytes,
-  getActiveTraceContext,
-  registerRpcError,
-  registerRpcSuccess,
-  deriveMetricMethodLabel,
-} from "../infra/tracing.js";
 import {
   deriveEventCategory,
   deriveEventMessage,
@@ -149,24 +138,14 @@ import {
   resolveEventStage,
 } from "./logging.js";
 import { createOrchestratorEventBus } from "./eventBus.js";
-import {
-  BudgetTracker,
-  BudgetLimits,
-  BudgetExceededError,
-  estimateTokenUsage,
-  measureBudgetBytes,
-} from "../infra/budget.js";
+import { createOrchestratorController } from "./controller.js";
+import type { OrchestratorController } from "./controller.js";
+import { BudgetTracker, BudgetLimits } from "../infra/budget.js";
 import { GraphWorkerPool } from "../infra/workerPool.js";
 import { PlanLifecycleRegistry, PlanRunNotFoundError } from "../executor/planLifecycle.js";
 import type { PlanLifecycleSnapshot } from "../executor/planLifecycle.js";
 import { ensureParentDirectory, resolveWorkspacePath, PathResolutionError } from "../paths.js";
-import {
-  normaliseJsonRpcRequest,
-  JsonRpcError,
-  createJsonRpcError,
-  toJsonRpc,
-} from "../rpc/middleware.js";
-import { JsonRpcTimeoutError, resolveRpcTimeoutBudget, loadDefaultTimeoutOverride } from "../rpc/timeouts.js";
+import { loadDefaultTimeoutOverride } from "../rpc/timeouts.js";
 import { ToolComposeRegisterInputSchema, ToolComposeRegisterInputShape, ToolsListInputSchema, ToolsListInputShape } from "../rpc/schemas.js";
 import {
   ChildCancelInputShape,
@@ -511,6 +490,7 @@ import {
   getMcpCapabilities,
   getMcpInfo,
   bindToolIntrospectionProvider,
+  type ToolIntrospectionEntry,
   updateMcpRuntimeSnapshot,
 } from "../mcp/info.js";
 
@@ -1019,6 +999,19 @@ export function configureLogFileOverride(logFile: string | null | undefined): vo
   });
 }
 const eventStore = new EventStore({ maxHistory: 5000, logger });
+
+let orchestratorController: OrchestratorController | null = null;
+
+/**
+ * Guards access to the controller instance so transports fail fast when the
+ * runtime initialisation sequence has not completed yet.
+ */
+function ensureOrchestratorController(): OrchestratorController {
+  if (!orchestratorController) {
+    throw new Error("Orchestrator controller not initialised");
+  }
+  return orchestratorController;
+}
 /** Maximum number of recent job events inspected to derive final reply citations. */
 const FINAL_REPLY_EVENT_WINDOW = 200;
 /** Upper bound applied to the aggregated citation list propagated with final replies. */
@@ -2049,8 +2042,7 @@ function getGraphApplyChangeSetToolContext(): GraphApplyChangeSetToolContext {
  * be enabled safely.
  */
 function getGraphSnapshotToolContext(): GraphSnapshotTimeTravelToolContext {
-  const rawRunsRoot = typeof process.env.MCP_RUNS_ROOT === "string" ? process.env.MCP_RUNS_ROOT.trim() : undefined;
-  const runsRoot = rawRunsRoot && rawRunsRoot.length > 0 ? rawRunsRoot : undefined;
+  const runsRoot = readOptionalString("MCP_RUNS_ROOT");
   return {
     logger,
     transactions: graphTransactions,
@@ -2883,13 +2875,13 @@ function buildGraphSubgraphExtractOptions(
   };
 }
 
-interface PushEventInput {
-  kind: EventKind;
+interface PushEventInput<K extends EventKind = EventKind> {
+  kind: K;
   level?: EventLevel;
   source?: EventSource;
   jobId?: string | null;
   childId?: string | null;
-  payload?: unknown;
+  payload?: EventStorePayload<K>;
   correlation?: EventCorrelationHints | null;
   component?: string | null;
   stage?: string | null;
@@ -2897,7 +2889,7 @@ interface PushEventInput {
   provenance?: Provenance[];
 }
 
-function pushEvent(event: PushEventInput): OrchestratorEvent {
+function pushEvent<K extends EventKind>(event: PushEventInput<K>): OrchestratorEvent {
     const emitted = eventStore.emit({
       // Forward the semantic kind so downstream consumers can latch onto
       // PROMPT/PENDING/... identifiers without re-deriving them from payloads.
@@ -4083,15 +4075,25 @@ export const __rpcServerInternals = {
   },
 };
 
-  const runsRoot = process.env.MCP_RUNS_ROOT;
-  const toolRegistry = await ToolRegistry.create({
-    server,
-    logger,
-    clock: () => new Date(),
-    invokeTool: invokeToolForRegistry,
-    ...(runsRoot !== undefined ? { runsRoot } : {}),
-  });
+const runsRoot = readOptionalString("MCP_RUNS_ROOT");
+const toolRegistry = await ToolRegistry.create({
+  server,
+  logger,
+  clock: () => new Date(),
+  invokeTool: invokeToolForRegistry,
+  ...(runsRoot !== undefined ? { runsRoot } : {}),
+});
 process.once("exit", () => toolRegistry.close());
+
+orchestratorController = createOrchestratorController({
+  server,
+  toolRegistry,
+  logger,
+  eventBus,
+  logJournal,
+  requestBudgetLimits: REQUEST_BUDGET_LIMITS,
+  defaultTimeoutOverride: DEFAULT_RPC_TIMEOUT_OVERRIDE,
+});
 
 const toolsHelpManifest = await registerToolsHelpTool(toolRegistry, { logger });
 toolRouter.register(toolsHelpManifest);
@@ -4163,12 +4165,26 @@ bindToolIntrospectionProvider(() => {
   if (!registry) {
     return [];
   }
-    return Object.entries(registry).map(([name, tool]) => ({
+
+  return Object.entries(registry).map(([name, tool]): ToolIntrospectionEntry => {
+    const baseEntry: ToolIntrospectionEntry = {
       name,
       enabled: tool.enabled !== false,
-      ...(tool.inputSchema ? { inputSchema: tool.inputSchema as ZodTypeAny } : {}),
-    }));
+    };
+
+    if (!tool.inputSchema) {
+      return baseEntry;
+    }
+
+    // Copy the schema reference explicitly so TypeScript preserves the
+    // `ZodTypeAny` contract without resorting to casts that would hide typing
+    // regressions in the future.
+    return {
+      ...baseEntry,
+      inputSchema: tool.inputSchema,
+    };
   });
+});
 
 /**
  * Tool exposing the runtime metadata so MCP clients can negotiate transports
@@ -9564,286 +9580,28 @@ export interface JsonRpcResponse {
   error?: { code: number; message: string; data?: unknown };
 }
 
-/**
- * Normalises human-friendly method names (e.g. `mcp_info`) into actual MCP
- * requests understood by the underlying SDK. Tools are exposed via
- * `tools/call`, therefore we transparently translate direct tool invocations
- * into the canonical request form.
- */
-function normaliseJsonRpcInvocation(method: string, params: unknown): {
-  method: string;
-  params?: unknown;
-} {
-  const trimmed = method.trim();
-  if (trimmed.includes("/")) {
-    return { method: trimmed, params };
-  }
-
-  const toolArgs =
-    params && typeof params === "object" && params !== null ? { ...(params as Record<string, unknown>) } : {};
-  return {
-    method: "tools/call",
-    params: { name: trimmed, arguments: toolArgs },
-  };
-}
-
-/**
- * Ensures idempotency-aware tools observe the HTTP header forwarded by the bridge.
- *
- * The helper mirrors the behaviour expected by `child_*`, `tx_*`, and graph tools which
- * all accept an optional `idempotency_key` property. When HTTP clients rely on the
- * dedicated header instead of duplicating the field in the JSON body we transparently
- * inject it here so downstream validation keeps succeeding.
- */
-function injectIdempotencyKey(method: string, params: unknown, key: string): unknown {
-  if (!key || typeof key !== "string") {
-    return params;
-  }
-
-  if (!params || typeof params !== "object" || Array.isArray(params)) {
-    return params;
-  }
-
-  if (method === "tools/call") {
-    const payload = params as { arguments?: unknown };
-    if (!payload.arguments || typeof payload.arguments !== "object" || Array.isArray(payload.arguments)) {
-      return params;
-    }
-
-    const args = payload.arguments as Record<string, unknown>;
-    if (Object.prototype.hasOwnProperty.call(args, "idempotency_key")) {
-      return params;
-    }
-
-    return {
-      ...payload,
-      arguments: { ...args, idempotency_key: key },
-    };
-  }
-
-  const record = params as Record<string, unknown>;
-  if (Object.prototype.hasOwnProperty.call(record, "idempotency_key")) {
-    return params;
-  }
-
-  return { ...record, idempotency_key: key };
-}
-
-/**
- * Delegates the JSON-RPC method to the handler registered on the underlying
- * MCP server. The helper mirrors the transport layer implemented by the SDK
- * so tests and the FS-Bridge can issue requests without going through HTTP.
- */
 export async function routeJsonRpcRequest(
   method: string,
   params?: unknown,
   context: JsonRpcRouteContext = {},
 ): Promise<unknown> {
-  const originalMethod = method.trim();
-  const handlers = getMutableRequestHandlerRegistry();
-
-  let invocation = normaliseJsonRpcInvocation(method, params);
-  const handler = handlers.get(invocation.method);
-  if (!handler) {
-    throw new Error(`Unknown method: ${invocation.method}`);
-  }
-
-  const requestId = context.requestId ?? randomUUID();
-  const timeoutBudget =
-    typeof context.timeoutMs === "number" && Number.isFinite(context.timeoutMs)
-      ? Math.max(0, Math.trunc(context.timeoutMs))
-      : null;
-  const abort = new AbortController();
-
-  const headersSnapshot = { ...(context.headers ?? {}) };
-  if (context.transport) {
-    headersSnapshot["x-mcp-transport"] = context.transport;
-  }
-  if (context.childId) {
-    headersSnapshot["x-child-id"] = context.childId;
-  }
-  if (context.childLimits) {
-    headersSnapshot["x-child-limits"] = Buffer.from(JSON.stringify(context.childLimits), "utf8").toString("base64");
-  }
-  if (context.idempotencyKey) {
-    headersSnapshot["idempotency-key"] = context.idempotencyKey;
-  }
-  if (timeoutBudget && timeoutBudget > 0) {
-    headersSnapshot["x-timeout-ms"] = String(timeoutBudget);
-  }
-
-  if (context.idempotencyKey) {
-    invocation = {
-      method: invocation.method,
-      params: injectIdempotencyKey(invocation.method, invocation.params, context.idempotencyKey),
-    };
-  }
-
-  const extra = {
-    signal: abort.signal,
-    sendNotification: async () => {
-      // Notifications are not routed when using the in-process adapter. They are
-      // primarily used by streaming transports, therefore we simply swallow them
-      // to keep the call fire-and-forget while documenting the limitation.
-    },
-    sendRequest: async () => {
-      throw new Error("Nested requests are not supported via handleJsonRpc");
-    },
-    requestId,
-    ...(Object.keys(headersSnapshot).length > 0 ? { requestInfo: { headers: headersSnapshot } } : {}),
-  };
-
-  const executeInvocation = () =>
-    runWithJsonRpcContext(context, async () => {
-      const rawResult = await handler(
-        { jsonrpc: "2.0", id: requestId, method: invocation.method, params: invocation.params },
-        extra,
-      );
-      if (!originalMethod.includes("/") && invocation.method === "tools/call") {
-        return normaliseToolCallResult(rawResult);
-      }
-      return rawResult;
-    });
-
-  if (!timeoutBudget || timeoutBudget <= 0) {
-    try {
-      return await executeInvocation();
-    } finally {
-      abort.abort();
-    }
-  }
-
-  let timeoutHandle: IntervalHandle | null = null;
-  let timedOut = false;
-  const invocationPromise = executeInvocation();
-  const timeoutPromise = new Promise<never>((_, reject) => {
-    timeoutHandle = runtimeTimers.setTimeout(() => {
-      timedOut = true;
-      abort.abort();
-      reject(new JsonRpcTimeoutError(timeoutBudget));
-    }, timeoutBudget);
-  });
-
-  try {
-    return await Promise.race([invocationPromise, timeoutPromise]);
-  } catch (error) {
-    if (timedOut) {
-      invocationPromise.catch(() => undefined);
-    }
-    throw error;
-  } finally {
-    if (timeoutHandle) {
-      runtimeTimers.clearTimeout(timeoutHandle);
-    }
-    abort.abort();
-  }
+  return ensureOrchestratorController().routeJsonRpcRequest(method, params, context);
 }
 
-/**
- * Attempts to extract a structured payload from a tool response by leveraging
- * the `structuredContent` field or the canonical JSON blob stored in
- * `content[].text`. The helper keeps backward compatibility with clients that
- * expect the raw MCP response while presenting a friendlier payload to the
- * FS-Bridge and its tests.
- */
-function normaliseToolCallResult(result: unknown): unknown {
-  if (!result || typeof result !== "object") {
-    return result;
-  }
-
-  const payload = result as {
-    structuredContent?: unknown;
-    content?: Array<{ text?: string } | null | undefined>;
-  };
-
-  if (Object.prototype.hasOwnProperty.call(payload, "structuredContent")) {
-    return payload.structuredContent;
-  }
-
-  if (Array.isArray(payload.content)) {
-    for (const entry of payload.content) {
-      if (entry && typeof entry === "object" && typeof entry.text === "string") {
-        try {
-          const parsed = JSON.parse(entry.text);
-          if (parsed && typeof parsed === "object") {
-            const record = parsed as Record<string, unknown>;
-            if (record.result !== undefined) {
-              return record.result;
-            }
-            if (record.info !== undefined) {
-              return record.info;
-            }
-            return parsed;
-          }
-        } catch {
-          // Ignore parse failures and fall back to the raw response.
-        }
-        break;
-      }
-    }
-  }
-
-  return result;
-}
-
-/**
- * Validates and executes a JSON-RPC request using the in-process router. Errors
- * are serialised following the JSON-RPC 2.0 specification so callers receive a
- * deterministic payload whether the failure originates from validation or the
- * underlying handler.
- */
-/**
- * Determines whether the incoming JSON-RPC payload targets the `mcp_info`
- * tool either directly or via the canonical `tools/call` indirection.
- *
- * The helper keeps the transport helpers agnostic of how callers choose to
- * address the introspection tool, which allows tests to exercise both code
- * paths while sharing the same response normalisation logic.
- */
-function isMcpInfoInvocation(request: JsonRpcRequest): boolean {
-  const method = request?.method?.trim();
-  if (method === "mcp_info") {
-    return true;
-  }
-
-  if (method === "tools/call") {
-    const params = request?.params;
-    if (params && typeof params === "object" && !Array.isArray(params)) {
-      const name = (params as { name?: unknown }).name;
-      if (typeof name === "string" && name.trim() === "mcp_info") {
-        return true;
-      }
-    }
-  }
-
-  return false;
-}
-
-/**
- * Checks whether the fast-path HTTP transport should hydrate the `mcp_info`
- * response with the latest runtime snapshot. When introspection is disabled we
- * still serve a minimal descriptor so stateless HTTP clients can negotiate the
- * transport before toggling feature flags. Other transports (FS bridge, STDIO)
- * retain the stricter behaviour enforced by {@link ensureMcpIntrospectionEnabled}.
- */
-function shouldHydrateMcpInfo(
+export async function maybeRecordIdempotentWalEntry(
   request: JsonRpcRequest,
   context: JsonRpcRouteContext | undefined,
-  result: unknown,
-): boolean {
-  if (!context || context.transport !== "http" || !isMcpInfoInvocation(request)) {
-    return false;
-  }
-
-  if (!result || typeof result !== "object") {
-    return true;
-  }
-
-  const payload = result as { server?: { name?: unknown } };
-  return typeof payload.server?.name !== "string";
+  overrides: { method?: string; toolName?: string | null } = {},
+): Promise<void> {
+  return ensureOrchestratorController().maybeRecordIdempotentWalEntry(request, context, overrides);
 }
 
-
+export async function handleJsonRpc(
+  req: JsonRpcRequest,
+  context?: JsonRpcRouteContext,
+): Promise<JsonRpcResponse> {
+  return ensureOrchestratorController().handleJsonRpc(req, context);
+}
 
 type JsonRpcCorrelationSnapshot = {
   runId?: string | null;
@@ -9852,31 +9610,21 @@ type JsonRpcCorrelationSnapshot = {
   jobId?: string | null;
 };
 
-function normaliseCorrelationValue(value: unknown): string | null {
-  if (value === null || value === undefined) {
-    return null;
-  }
-  if (typeof value !== "string") {
-    return null;
-  }
-  const trimmed = value.trim();
-  return trimmed.length > 0 ? trimmed : null;
-}
-
 function mergeCorrelationSnapshots(
   base: JsonRpcCorrelationSnapshot,
   next: JsonRpcCorrelationSnapshot,
 ): JsonRpcCorrelationSnapshot {
   const merged: JsonRpcCorrelationSnapshot = { ...base };
   for (const key of ["runId", "opId", "childId", "jobId"] as const) {
-    if (Object.prototype.hasOwnProperty.call(next, key)) {
-      const value = next[key];
-      if (value !== undefined) {
-        merged[key] = value;
-      } else {
-        delete merged[key];
-      }
+    if (!Object.prototype.hasOwnProperty.call(next, key)) {
+      continue;
     }
+    const value = next[key];
+    if (value === undefined) {
+      delete merged[key];
+      continue;
+    }
+    merged[key] = value;
   }
   return merged;
 }
@@ -9885,111 +9633,6 @@ function mergeCorrelationSnapshots(
 export const __jsonRpcCorrelationInternals = {
   mergeCorrelationSnapshots,
 };
-
-function collectCorrelationFromContext(context?: JsonRpcRouteContext): JsonRpcCorrelationSnapshot {
-  const snapshot: JsonRpcCorrelationSnapshot = {};
-  if (context && Object.prototype.hasOwnProperty.call(context, "childId")) {
-    snapshot.childId = context.childId ?? null;
-  }
-  return snapshot;
-}
-
-function collectCorrelationFromPayload(payload: unknown): JsonRpcCorrelationSnapshot {
-  if (Array.isArray(payload)) {
-    return payload.reduce<JsonRpcCorrelationSnapshot>(
-      (acc, entry) => mergeCorrelationSnapshots(acc, collectCorrelationFromPayload(entry)),
-      {},
-    );
-  }
-  if (!payload || typeof payload !== "object") {
-    return {};
-  }
-  const record = payload as Record<string, unknown>;
-  let snapshot: JsonRpcCorrelationSnapshot = {};
-
-  const assign = (fields: readonly string[], key: keyof JsonRpcCorrelationSnapshot) => {
-    for (const field of fields) {
-      if (!Object.prototype.hasOwnProperty.call(record, field)) {
-        continue;
-      }
-      snapshot = { ...snapshot, [key]: normaliseCorrelationValue(record[field]) };
-      break;
-    }
-  };
-
-  assign(["run_id"], "runId");
-  assign(["op_id", "operation_id"], "opId");
-  assign(["child_id"], "childId");
-  assign(["job_id"], "jobId");
-
-  for (const nestedKey of ["result", "data", "payload"]) {
-    if (Object.prototype.hasOwnProperty.call(record, nestedKey)) {
-      snapshot = mergeCorrelationSnapshots(snapshot, collectCorrelationFromPayload(record[nestedKey]));
-    }
-  }
-
-  if (Object.prototype.hasOwnProperty.call(record, "structuredContent")) {
-    const structured = record.structuredContent;
-    if (structured !== undefined) {
-      // Structured tool responses mirror the textual JSON while surfacing fields such as
-      // `child_id` and `run_id`. Propagate those identifiers into the correlation snapshot so
-      // observability logs can attribute results even when callers rely on the richer payload.
-      snapshot = mergeCorrelationSnapshots(snapshot, collectCorrelationFromPayload(structured));
-    }
-  }
-
-  return snapshot;
-}
-
-function collectCorrelationFromUnknown(value: unknown): JsonRpcCorrelationSnapshot {
-  if (Array.isArray(value)) {
-    return value.reduce<JsonRpcCorrelationSnapshot>(
-      (acc, entry) => mergeCorrelationSnapshots(acc, collectCorrelationFromUnknown(entry)),
-      {},
-    );
-  }
-  if (value instanceof Error) {
-    const errorRecord = value as Error & { data?: unknown; cause?: unknown };
-    let snapshot = collectCorrelationFromPayload(errorRecord);
-    if (errorRecord.data !== undefined) {
-      snapshot = mergeCorrelationSnapshots(snapshot, collectCorrelationFromUnknown(errorRecord.data));
-    }
-    if (errorRecord.cause !== undefined) {
-      snapshot = mergeCorrelationSnapshots(snapshot, collectCorrelationFromUnknown(errorRecord.cause));
-    }
-    return snapshot;
-  }
-  if (!value || typeof value !== "object") {
-    return {};
-  }
-  return collectCorrelationFromPayload(value);
-}
-
-function extractInvocationArguments(method: string, params: unknown): unknown {
-  const trimmed = method.trim();
-  if (trimmed === "tools/call" && params && typeof params === "object" && !Array.isArray(params)) {
-    const record = params as { arguments?: unknown };
-    if (record.arguments && typeof record.arguments === "object") {
-      return record.arguments;
-    }
-  }
-  return params;
-}
-
-function resolveJsonRpcToolName(method: string, params: unknown): string | null {
-  const trimmed = method.trim();
-  if (trimmed && trimmed !== "tools/call") {
-    return trimmed;
-  }
-  if (trimmed === "tools/call" && params && typeof params === "object" && !Array.isArray(params)) {
-    const record = params as { name?: unknown };
-    if (typeof record.name === "string") {
-      const name = record.name.trim();
-      return name.length > 0 ? name : null;
-    }
-  }
-  return null;
-}
 
 type JsonRpcObservabilityStage = "request" | "response" | "error";
 
@@ -10043,745 +9686,6 @@ export function buildJsonRpcObservabilityInput(
     return base;
   }
   return { ...base, ...enriched };
-}
-
-interface JsonRpcErrorSnapshot {
-  readonly message: string | null;
-  readonly code: string | null;
-}
-
-function parseToolErrorPayload(raw: unknown): JsonRpcErrorSnapshot {
-  if (!raw || typeof raw !== "object") {
-    return { message: null, code: null };
-  }
-  let message: string | null = null;
-  let code: string | null = null;
-
-  if (typeof (raw as { message?: unknown }).message === "string") {
-    message = (raw as { message: string }).message;
-  }
-  if (typeof (raw as { error?: unknown }).error === "string") {
-    code = (raw as { error: string }).error;
-  }
-  if (message && code) {
-    return { message, code };
-  }
-
-  const details = raw as { content?: unknown };
-  if (Array.isArray(details.content)) {
-    for (const entry of details.content) {
-      if (!entry || typeof entry !== "object") {
-        continue;
-      }
-      const text = (entry as { text?: unknown }).text;
-      if (typeof text !== "string" || text.trim().length === 0) {
-        continue;
-      }
-      try {
-        const parsed = JSON.parse(text);
-        if (parsed && typeof parsed === "object") {
-          if (!message && typeof (parsed as { message?: unknown }).message === "string") {
-            message = (parsed as { message: string }).message;
-          }
-          if (!code && typeof (parsed as { error?: unknown }).error === "string") {
-            code = (parsed as { error: string }).error;
-          }
-        }
-      } catch {
-        // Ignore malformed JSON payloads and fall back to the raw message when available.
-      }
-      if (message && code) {
-        break;
-      }
-    }
-  }
-
-  return { message, code };
-}
-
-function detectJsonRpcErrorResult(result: unknown): JsonRpcErrorSnapshot | null {
-  if (!result || typeof result !== "object") {
-    return null;
-  }
-  const record = result as Record<string, unknown>;
-  const hasErrorFlag = record.isError === true;
-  const hasExplicitFailure = record.ok === false;
-  if (!hasErrorFlag && !hasExplicitFailure) {
-    return null;
-  }
-  return parseToolErrorPayload(record);
-}
-
-function recordJsonRpcObservability(input: JsonRpcObservabilityInput): void {
-  const trace = getActiveTraceContext();
-  const duration = typeof trace?.durationMs === "number" && Number.isFinite(trace.durationMs)
-    ? Math.max(0, trace.durationMs)
-    : null;
-  const bytesIn = typeof trace?.bytesIn === "number" && Number.isFinite(trace.bytesIn)
-    ? Math.max(0, trace.bytesIn)
-    : null;
-  const bytesOut = typeof trace?.bytesOut === "number" && Number.isFinite(trace.bytesOut)
-    ? Math.max(0, trace.bytesOut)
-    : null;
-  const metricMethod = deriveMetricMethodLabel(input.method, input.toolName ?? null);
-
-  annotateTraceContext({ method: metricMethod });
-  const jsonRpcMessage = `jsonrpc_${input.stage}` as JsonRpcEventMessage;
-
-  // Clamp optional numeric telemetry (elapsed, duration, bytes, timeout) to non-negative integers while
-  // preserving `null` for absent measurements so downstream serialisation stays deterministic.
-  const normaliseOptionalMetric = (value: number | null | undefined): number | null => {
-    if (typeof value !== "number" || !Number.isFinite(value)) {
-      return null;
-    }
-    if (value < 0) {
-      return 0;
-    }
-    return Math.round(value);
-  };
-
-  const elapsedMetric = normaliseOptionalMetric(input.elapsedMs ?? null);
-  const durationMetric = normaliseOptionalMetric(duration);
-  const inboundMetric = normaliseOptionalMetric(bytesIn);
-  const outboundMetric = normaliseOptionalMetric(bytesOut);
-  const timeoutMetric = normaliseOptionalMetric(input.timeoutMs ?? null);
-
-  // Ensure the emitted payload status matches the JSON-RPC stage; unexpected values are coerced to the
-  // documented lifecycle token so dashboards keep a stable contract.
-  const resolveStatus = <M extends JsonRpcEventMessage>(
-    message: M,
-    status: JsonRpcObservabilityInput["status"],
-  ): JsonRpcEventPayloadByMessage<M>["status"] => {
-    const fallback: JsonRpcEventStatus =
-      message === "jsonrpc_request" ? "pending" : message === "jsonrpc_response" ? "ok" : "error";
-    const candidate = status ?? fallback;
-    return (candidate === fallback ? candidate : fallback) as JsonRpcEventPayloadByMessage<M>["status"];
-  };
-
-  // The shared payload uses `omitUndefinedEntries` so optional metrics vanish
-  // entirely when missing. This keeps the runtime compliant with
-  // `exactOptionalPropertyTypes` while preserving backwards compatible `null`
-  // hints for correlation identifiers that remain intentionally explicit.
-  const sharedFields: JsonRpcEventSharedFields = {
-    method: input.method,
-    metric_method: metricMethod,
-    tool: input.toolName ?? null,
-    request_id: input.requestId ?? null,
-    run_id: input.correlation.runId ?? null,
-    op_id: input.correlation.opId ?? null,
-    child_id: input.correlation.childId ?? null,
-    job_id: input.correlation.jobId ?? null,
-    ...omitUndefinedEntries({
-      transport: coerceNullToUndefined(input.transport ?? null),
-      elapsed_ms: coerceNullToUndefined(elapsedMetric),
-      trace_id: coerceNullToUndefined(trace?.traceId ?? null),
-      span_id: coerceNullToUndefined(trace?.spanId ?? null),
-      duration_ms: coerceNullToUndefined(durationMetric),
-      bytes_in: coerceNullToUndefined(inboundMetric),
-      bytes_out: coerceNullToUndefined(outboundMetric),
-      idempotency_key: coerceNullToUndefined(input.idempotencyKey ?? null),
-      timeout_ms: coerceNullToUndefined(timeoutMetric),
-    }),
-  } satisfies JsonRpcEventSharedFields;
-
-  let payload: JsonRpcEventPayload;
-  switch (jsonRpcMessage) {
-    case "jsonrpc_request": {
-      const requestPayload = {
-        msg: "jsonrpc_request",
-        status: resolveStatus("jsonrpc_request", input.status),
-        error_message: null,
-        error_code: null,
-        ...sharedFields,
-      } satisfies JsonRpcEventPayloadByMessage<"jsonrpc_request">;
-      payload = requestPayload;
-      break;
-    }
-    case "jsonrpc_response": {
-      const responsePayload = {
-        msg: "jsonrpc_response",
-        status: resolveStatus("jsonrpc_response", input.status),
-        error_message: null,
-        error_code: null,
-        ...sharedFields,
-      } satisfies JsonRpcEventPayloadByMessage<"jsonrpc_response">;
-      payload = responsePayload;
-      break;
-    }
-    case "jsonrpc_error":
-    default: {
-      const errorPayload = {
-        msg: "jsonrpc_error",
-        status: resolveStatus("jsonrpc_error", input.status),
-        error_message: input.errorMessage ?? null,
-        error_code: input.errorCode ?? null,
-        ...sharedFields,
-      } satisfies JsonRpcEventPayloadByMessage<"jsonrpc_error">;
-      payload = errorPayload;
-      break;
-    }
-  }
-
-  if (input.stage === "error") {
-    registerRpcError(input.errorCode ?? null);
-  } else if (input.stage === "response") {
-    registerRpcSuccess();
-  }
-
-  try {
-    const elapsedForEvent = coerceNullToUndefined(payload.elapsed_ms ?? null);
-    const schedulerEvent: EventInput<typeof payload.msg> = {
-      cat: "scheduler",
-      level: input.stage === "error" ? "error" : "info",
-      runId: input.correlation.runId ?? null,
-      opId: input.correlation.opId ?? null,
-      childId: input.correlation.childId ?? null,
-      jobId: input.correlation.jobId ?? null,
-      component: "jsonrpc",
-      stage: jsonRpcMessage,
-      kind: `JSONRPC_${input.stage.toUpperCase()}`,
-      msg: payload.msg,
-      data: payload,
-      ...(elapsedForEvent !== undefined ? { elapsedMs: elapsedForEvent } : {}),
-    };
-    eventBus.publish<typeof payload.msg>(schedulerEvent);
-  } catch (error) {
-    const detail = error instanceof Error ? error.message : String(error);
-    process.stderr.write(
-      `${JSON.stringify({
-        ts: new Date().toISOString(),
-        level: "error",
-        message: "jsonrpc_event_publish_failed",
-        detail,
-      })}\n`,
-    );
-  }
-
-  const latestEnvelope = eventBus.list({ limit: 1 }).at(-1);
-  const seq = latestEnvelope?.seq;
-  const ts = latestEnvelope?.ts;
-  try {
-    const level = input.stage === "error" ? "error" : "info";
-    const baseEntry = {
-      level,
-      message: payload.msg,
-      data: payload,
-      jobId: input.correlation.jobId ?? null,
-      runId: input.correlation.runId ?? null,
-      opId: input.correlation.opId ?? null,
-      childId: input.correlation.childId ?? null,
-      component: "jsonrpc",
-      stage: payload.msg,
-      elapsedMs: payload.elapsed_ms ?? null,
-      ...omitUndefinedEntries({ ts, seq }),
-    } as const;
-
-    logJournal.record({ stream: "server", bucketId: "jsonrpc", ...baseEntry });
-    if (input.correlation.runId) {
-      logJournal.record({ stream: "run", bucketId: input.correlation.runId, ...baseEntry });
-    }
-    if (input.correlation.childId) {
-      logJournal.record({ stream: "child", bucketId: input.correlation.childId, ...baseEntry });
-    }
-  } catch (error) {
-    const detail = error instanceof Error ? error.message : String(error);
-    process.stderr.write(
-      `${JSON.stringify({
-        ts: new Date().toISOString(),
-        level: "error",
-        message: "jsonrpc_log_record_failed",
-        detail,
-      })}\n`,
-    );
-  }
-}
-/** Configuration describing how to persist a WAL entry for an idempotent mutation. */
-interface IdempotentWalConfig {
-  /** Logical channel receiving the append-only entry (tx, graph, child, ...). */
-  readonly topic: string;
-  /** Semantic label stored alongside the payload to ease replay filtering. */
-  readonly event: string;
-}
-
-/**
- * Lookup table enumerating JSON-RPC methods that must append an invocation to the
- * write-ahead log whenever an idempotent HTTP request is executed. The keys are
- * normalised to lowercase so callers can safely trim/transform method names
- * before querying the table.
- */
-const IDEMPOTENT_MUTATION_WAL_MAP = new Map<string, IdempotentWalConfig>([
-  ["graph_mutate", { topic: "graph", event: "graph_mutate" }],
-  ["graph_batch_mutate", { topic: "graph", event: "graph_batch_mutate" }],
-  ["graph_patch", { topic: "graph", event: "graph_patch" }],
-  ["graph_rewrite_apply", { topic: "graph", event: "graph_rewrite_apply" }],
-  ["tx_begin", { topic: "tx", event: "tx_begin" }],
-  ["tx_apply", { topic: "tx", event: "tx_apply" }],
-  ["tx_commit", { topic: "tx", event: "tx_commit" }],
-  ["tx_rollback", { topic: "tx", event: "tx_rollback" }],
-  ["child_create", { topic: "child", event: "child_create" }],
-  ["child_batch_create", { topic: "child", event: "child_batch_create" }],
-  ["child_spawn_codex", { topic: "child", event: "child_spawn_codex" }],
-  ["child_set_role", { topic: "child", event: "child_set_role" }],
-  ["child_set_limits", { topic: "child", event: "child_set_limits" }],
-  ["child_send", { topic: "child", event: "child_send" }],
-  ["child_cancel", { topic: "child", event: "child_cancel" }],
-  ["child_kill", { topic: "child", event: "child_kill" }],
-]);
-
-/** Normalises a method/tool name before probing {@link IDEMPOTENT_MUTATION_WAL_MAP}. */
-function normaliseWalMethodName(name: string | null | undefined): string | null {
-  if (typeof name !== "string") {
-    return null;
-  }
-  const trimmed = name.trim();
-  if (trimmed.length === 0) {
-    return null;
-  }
-  return trimmed.toLowerCase();
-}
-
-/**
- * Resolves the WAL configuration associated with the provided JSON-RPC
- * invocation. The helper first inspects the logical tool name (when available)
- * and falls back to the raw method, which keeps `tools/call` invocations
- * compatible with the lookup table.
- */
-function resolveIdempotentWalConfig(method: string, toolName: string | null): IdempotentWalConfig | null {
-  const byTool = normaliseWalMethodName(toolName);
-  if (byTool) {
-    const config = IDEMPOTENT_MUTATION_WAL_MAP.get(byTool);
-    if (config) {
-      return config;
-    }
-  }
-
-  const byMethod = normaliseWalMethodName(method);
-  if (!byMethod) {
-    return null;
-  }
-  return IDEMPOTENT_MUTATION_WAL_MAP.get(byMethod) ?? null;
-}
-
-/**
- * Best-effort serialisation guard used before persisting JSON-RPC parameters in
- * the WAL. Structured cloning keeps the payload compact while avoiding
- * accidental references to mutable objects shared with the live request.
- */
-function serialiseWalPayload(value: unknown): unknown {
-  try {
-    // Using JSON as an intermediary avoids pulling `structuredClone` into the
-    // runtime bundle while still guaranteeing deterministic snapshots.
-    return JSON.parse(JSON.stringify(value));
-  } catch (error) {
-    const reason = error instanceof Error ? error.message : String(error);
-    return { non_serialisable: true, reason };
-  }
-}
-
-/**
- * Appends an invocation snapshot to the WAL before executing the underlying
- * handler. Failures are logged but never propagated to keep the request flow
- * resilient: observability should not compromise availability.
- */
-async function recordIdempotentWalInvocation(
-  config: IdempotentWalConfig,
-  request: JsonRpcRequest,
-  context: JsonRpcRouteContext | undefined,
-  toolName: string | null,
-): Promise<void> {
-  const idempotencyKey = context?.idempotencyKey;
-  if (!idempotencyKey) {
-    return;
-  }
-
-  const rawMethod = typeof request.method === "string" ? request.method : String(request.method ?? "");
-  const cacheKey = buildIdempotencyCacheKey(rawMethod, idempotencyKey, request.params);
-
-  try {
-    await appendWalEntry(config.topic, config.event, {
-      cache_key: cacheKey,
-      method: rawMethod,
-      tool: toolName ?? null,
-      idempotency_key: idempotencyKey,
-      request_id: request.id ?? null,
-      http_request_id: context?.requestId ?? null,
-      transport: context?.transport ?? null,
-      child_id: context?.childId ?? null,
-      params: serialiseWalPayload(request.params ?? null),
-    });
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    logger.warn("wal_append_failed", {
-      topic: config.topic,
-      event: config.event,
-      method: rawMethod,
-      idempotency_key: idempotencyKey,
-      message,
-    });
-  }
-}
-
-/**
- * Convenience wrapper exposed to transports so they can append WAL entries when
- * the fast-path bypasses {@link handleJsonRpc}. Callers can optionally provide
- * the already normalised method/tool names to avoid duplicate computation.
- */
-export async function maybeRecordIdempotentWalEntry(
-  request: JsonRpcRequest,
-  context: JsonRpcRouteContext | undefined,
-  overrides: { method?: string; toolName?: string | null } = {},
-): Promise<void> {
-  const explicitMethod = overrides.method;
-  const method =
-    typeof explicitMethod === "string" && explicitMethod.trim().length > 0
-      ? explicitMethod
-      : typeof request.method === "string"
-        ? request.method
-        : "";
-  const toolName =
-    overrides.toolName !== undefined
-      ? overrides.toolName
-      : resolveJsonRpcToolName(method, request.params);
-  const config = resolveIdempotentWalConfig(method, toolName ?? null);
-  if (!config) {
-    return;
-  }
-  await recordIdempotentWalInvocation(config, request, context, toolName ?? null);
-}
-
-
-export async function handleJsonRpc(
-  req: JsonRpcRequest,
-  context?: JsonRpcRouteContext,
-): Promise<JsonRpcResponse> {
-  const rawId = req?.id ?? null;
-  const baseContext: JsonRpcRouteContext = context ? { ...context } : {};
-  const baseTransport = normaliseTransportTag(baseContext?.transport);
-  const requestIdHint = baseContext.requestId ?? rawId;
-  let sanitizedRequest: JsonRpcRequest;
-  let method = typeof req?.method === "string" ? req.method.trim() || "unknown" : "unknown";
-  let toolName: string | null = null;
-
-  try {
-    const normalised = normaliseJsonRpcRequest(req, { requestId: requestIdHint });
-    sanitizedRequest = normalised.request;
-    method = normalised.method.trim() || (normalised.method ? normalised.method : "unknown");
-    toolName = normalised.toolName ?? resolveJsonRpcToolName(normalised.request.method, normalised.request.params);
-  } catch (error) {
-    if (error instanceof JsonRpcError) {
-      recordJsonRpcObservability(
-        buildJsonRpcObservabilityInput(
-          {
-            stage: "error",
-            method,
-            toolName: resolveJsonRpcToolName(typeof req?.method === "string" ? req.method : "", req?.params),
-            requestId: rawId,
-            idempotencyKey: baseContext?.idempotencyKey ?? null,
-            correlation: collectCorrelationFromContext(baseContext),
-            status: "error",
-            errorMessage: error.data?.hint ?? error.message,
-            errorCode: error.code,
-          },
-          baseTransport,
-        ),
-      );
-      return toJsonRpc(rawId, error);
-    }
-    throw error;
-  }
-
-  const { context: runtimeContext, requestBudget, timeoutBudget } = assembleJsonRpcRuntime(
-    {
-      toolRegistry,
-      requestLimits: REQUEST_BUDGET_LIMITS,
-      resolveTimeoutBudget: (name, tool) => resolveRpcTimeoutBudget(name, tool ?? null),
-      defaultTimeoutOverride: DEFAULT_RPC_TIMEOUT_OVERRIDE,
-    },
-    { method, toolName, context: baseContext },
-  );
-
-  const id = sanitizedRequest.id ?? null;
-  const request = sanitizedRequest;
-  const rawMethod = typeof request.method === "string" ? request.method : "";
-  const invocationArgs = extractInvocationArguments(rawMethod, request.params);
-  let correlation = mergeCorrelationSnapshots(
-    collectCorrelationFromContext(runtimeContext),
-    collectCorrelationFromPayload(invocationArgs),
-  );
-  const transport = normaliseTransportTag(runtimeContext?.transport);
-  const deprecation = toolName ? evaluateToolDeprecation(toolName, undefined, new Date()) : null;
-  if (deprecation?.metadata && toolName) {
-    const logPayload = { name: toolName, metadata: deprecation.metadata, ageDays: deprecation.ageDays };
-    if (deprecation.forceRemoval) {
-      logToolDeprecation(logger, "warn", "tool_deprecated_blocked", logPayload);
-      const replacementHint = deprecation.metadata.replace_with
-        ? `utilise '${deprecation.metadata.replace_with}' à la place`
-        : "mets à jour ton intégration";
-      const removalError = createJsonRpcError("VALIDATION_ERROR", "Tool retired", {
-        requestId: id,
-        hint: `l'outil '${toolName}' est retiré (${deprecation.metadata.since}); ${replacementHint}.`,
-        status: 410,
-        meta: { tool: toolName, since: deprecation.metadata.since },
-      });
-        recordJsonRpcObservability(
-          buildJsonRpcObservabilityInput(
-            {
-              stage: "error",
-              method,
-              toolName,
-              requestId: id,
-              idempotencyKey: runtimeContext?.idempotencyKey ?? null,
-              correlation,
-              status: "error",
-              timeoutMs: null,
-              errorMessage: removalError.data?.hint ?? removalError.message,
-              errorCode: removalError.code,
-            },
-            transport,
-          ),
-        );
-        return toJsonRpc(id, removalError);
-      }
-      logToolDeprecation(logger, "warn", "tool_deprecated_invoked", logPayload);
-  }
-
-  const childId = runtimeContext?.childId ?? null;
-  const payloadBytes = runtimeContext?.payloadSizeBytes ?? 0;
-  const timeoutMs = timeoutBudget.timeoutMs;
-  const recordRuntimeObservability = (
-    payload: Omit<JsonRpcObservabilityInput, "transport">,
-  ): void => {
-    recordJsonRpcObservability(buildJsonRpcObservabilityInput(payload, transport));
-  };
-  const processRequest = async (): Promise<JsonRpcResponse> => {
-      try {
-        requestBudget.consume(
-        {
-          toolCalls: 1,
-          tokens: estimateTokenUsage(invocationArgs),
-          bytesIn: payloadBytes,
-        },
-        { actor: "transport", operation: method, stage: "ingress" },
-      );
-    } catch (error) {
-      if (error instanceof BudgetExceededError) {
-        const budgetError = createJsonRpcError("BUDGET_EXCEEDED", "Request budget exhausted", {
-          requestId: id,
-          hint: `request budget exceeded on ${error.dimension}`,
-          meta: {
-            dimension: error.dimension,
-            remaining: error.remaining,
-            attempted: error.attempted,
-            limit: error.limit,
-          },
-          status: 429,
-        });
-        recordRuntimeObservability({
-          stage: "error",
-          method,
-          toolName,
-          requestId: id,
-          idempotencyKey: runtimeContext?.idempotencyKey ?? null,
-          correlation,
-          status: "error",
-          timeoutMs,
-          errorMessage: budgetError.data?.hint ?? budgetError.message,
-          errorCode: budgetError.code,
-        });
-        return toJsonRpc(id, budgetError);
-      }
-      throw error;
-    }
-
-    recordRuntimeObservability({
-      stage: "request",
-      method,
-      toolName,
-      requestId: id,
-      idempotencyKey: runtimeContext?.idempotencyKey ?? null,
-      correlation,
-      status: "pending",
-      timeoutMs,
-    });
-
-    await maybeRecordIdempotentWalEntry(request, runtimeContext, { method, toolName });
-
-    const startedAt = Date.now();
-    try {
-      let result = await runWithJsonRpcContext(runtimeContext, async () =>
-        routeJsonRpcRequest(request.method, request.params, { ...runtimeContext, requestId: id, timeoutMs }),
-      );
-      correlation = mergeCorrelationSnapshots(correlation, collectCorrelationFromPayload(result));
-
-      if (shouldHydrateMcpInfo(request, runtimeContext, result)) {
-        result = getMcpInfo();
-        correlation = mergeCorrelationSnapshots(correlation, collectCorrelationFromPayload(result));
-      }
-
-      const elapsedMs = Date.now() - startedAt;
-      const errorSnapshot = detectJsonRpcErrorResult(result);
-
-      if (errorSnapshot) {
-        const normalisedErrorCode =
-          typeof errorSnapshot.code === "number" ? errorSnapshot.code : null;
-        recordRuntimeObservability({
-          stage: "error",
-          method,
-          toolName,
-          requestId: id,
-          idempotencyKey: runtimeContext?.idempotencyKey ?? null,
-          correlation,
-          status: "error",
-          elapsedMs,
-          errorMessage: errorSnapshot.message,
-          errorCode: normalisedErrorCode,
-          timeoutMs,
-        });
-      } else {
-        recordRuntimeObservability({
-          stage: "response",
-          method,
-          toolName,
-          requestId: id,
-          idempotencyKey: runtimeContext?.idempotencyKey ?? null,
-          correlation,
-          status: "ok",
-          elapsedMs,
-          timeoutMs,
-        });
-      }
-
-      try {
-        requestBudget.consume(
-          {
-            timeMs: elapsedMs,
-            bytesOut: measureBudgetBytes(result),
-            tokens: estimateTokenUsage(result),
-          },
-          {
-            actor: "transport",
-            operation: method,
-            stage: errorSnapshot ? "egress_error" : "egress",
-          },
-        );
-      } catch (error) {
-        if (error instanceof BudgetExceededError) {
-          const budgetError = createJsonRpcError("BUDGET_EXCEEDED", "Request budget exhausted", {
-            requestId: id,
-            hint: `response budget exceeded on ${error.dimension}`,
-            meta: {
-              dimension: error.dimension,
-              remaining: error.remaining,
-              attempted: error.attempted,
-              limit: error.limit,
-            },
-            status: 429,
-          });
-          recordRuntimeObservability({
-            stage: "error",
-            method,
-            toolName,
-            requestId: id,
-            idempotencyKey: runtimeContext?.idempotencyKey ?? null,
-            correlation,
-            status: "error",
-            elapsedMs,
-            errorMessage: budgetError.data?.hint ?? budgetError.message,
-            errorCode: budgetError.code,
-            timeoutMs,
-          });
-          return toJsonRpc(id, budgetError);
-        }
-        throw error;
-      }
-
-      return { jsonrpc: "2.0", id, result };
-    } catch (error) {
-      const elapsedMs = Date.now() - startedAt;
-      let message = error instanceof Error ? error.message : String(error);
-      let errorCode = -32000;
-      let errorData: Record<string, unknown> | undefined;
-      if (error instanceof JsonRpcTimeoutError) {
-        message = `JSON-RPC handler exceeded timeout after ${error.timeoutMs}ms`;
-        errorCode = -32001;
-        errorData = { timeout_ms: error.timeoutMs };
-      }
-      correlation = mergeCorrelationSnapshots(correlation, collectCorrelationFromUnknown(error));
-
-      recordRuntimeObservability({
-        stage: "error",
-        method,
-        toolName,
-        requestId: id,
-        idempotencyKey: runtimeContext?.idempotencyKey ?? null,
-        correlation,
-        status: "error",
-        elapsedMs,
-        errorMessage: message,
-        errorCode,
-        timeoutMs,
-      });
-
-      const errorPayload = { code: errorCode, message, data: errorData };
-      try {
-        requestBudget.consume(
-          {
-            timeMs: elapsedMs,
-            bytesOut: measureBudgetBytes(errorPayload),
-            tokens: estimateTokenUsage(errorPayload),
-          },
-          { actor: "transport", operation: method, stage: "egress_error" },
-        );
-      } catch (budgetError) {
-        if (budgetError instanceof BudgetExceededError) {
-          const jsonRpcError = createJsonRpcError("BUDGET_EXCEEDED", "Request budget exhausted", {
-            requestId: id,
-            hint: `response budget exceeded on ${budgetError.dimension}`,
-            meta: {
-              dimension: budgetError.dimension,
-              remaining: budgetError.remaining,
-              attempted: budgetError.attempted,
-              limit: budgetError.limit,
-            },
-            status: 429,
-          });
-          recordRuntimeObservability({
-            stage: "error",
-            method,
-            toolName,
-            requestId: id,
-            idempotencyKey: runtimeContext?.idempotencyKey ?? null,
-            correlation,
-            status: "error",
-            elapsedMs,
-            errorMessage: jsonRpcError.data?.hint ?? jsonRpcError.message,
-            errorCode: jsonRpcError.code,
-            timeoutMs,
-          });
-          return toJsonRpc(id, jsonRpcError);
-        }
-        throw budgetError;
-      }
-
-      return { jsonrpc: "2.0", id, error: errorPayload };
-    }
-  };
-
-  const activeTrace = getActiveTraceContext();
-  if (activeTrace) {
-    registerInboundBytes(payloadBytes);
-    annotateTraceContext({ method, requestId: id, childId, transport });
-    return processRequest();
-  }
-
-  return runWithRpcTrace(
-    { method, requestId: id, childId, transport, bytesIn: 0 },
-    async () => {
-      registerInboundBytes(payloadBytes);
-      annotateTraceContext({ method, requestId: id, childId, transport });
-      return processRequest();
-    },
-  );
 }
 
 // --- Transports ---
