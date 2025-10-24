@@ -1,12 +1,10 @@
-import { z } from "zod";
-// NOTE: Node built-in modules are imported with the explicit `node:` prefix to guarantee ESM resolution in Node.js.
-
 import { runtimeTimers } from "../../runtime/timers.js";
 import { omitUndefinedEntries } from "../../utils/object.js";
 
 import {
   type BTStatus,
   type BehaviorNode,
+  type BehaviorTaskSchema,
   type BehaviorNodeDefinition,
   type BehaviorTickResult,
   type TickRuntime,
@@ -26,7 +24,7 @@ import {
 /** Options accepted while instantiating Behaviour Tree nodes. */
 export interface BuildBehaviorTreeOptions {
   /** Optional registry resolving the input schema for each tool. */
-  taskSchemas?: Record<string, z.ZodTypeAny>;
+  taskSchemas?: Record<string, BehaviorTaskSchema>;
   /** Optional callback invoked whenever a node reports a new status. */
   statusReporter?: (nodeId: string, status: BTStatus) => void;
 }

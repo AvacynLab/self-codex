@@ -8,8 +8,9 @@ export const codeReflectionFixture: ReflectionInput = {
   input: "Implémente une fonction de parsing robuste et écris les tests.",
   output: [
     "export function parse(input) {",
-    // Assemble the TODO marker dynamically so repository hygiene checks still forbid literal markers
-    // while the reflection heuristics continue to receive realistic snippets containing TODO at runtime.
+    // Assemble the TODO marker dynamically so repository hygiene checks still forbid literal markers.
+    // usage test: the reflection heuristics must continue to ingest realistic snippets containing TODO
+    // while keeping the source tree free from literal TODO markers during hygiene scans.
     `  // ${"TODO"}: gérer les cas limites`,
     "  console.log('debug');",
     "  return JSON.parse(input);",

@@ -391,9 +391,12 @@ function freezeDeep<T>(value: T): T {
       freezeDeep(entry);
     }
   } else {
-    for (const key of Object.keys(value as Record<string, unknown>)) {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- recursive walk across arbitrary payloads
-      freezeDeep((value as Record<string, any>)[key]);
+    // Normalise object-like structures to a record so recursive freezing stays
+    // type-safe without falling back to `any` casts.
+    const record = value as Record<string, unknown>;
+    for (const key of Object.keys(record)) {
+      const entry = record[key];
+      freezeDeep(entry);
     }
   }
 

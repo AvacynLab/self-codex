@@ -31,7 +31,7 @@ import {
   serialiseDescriptor,
 } from "./snapshot.js";
 import { computationCache } from "./runtime.js";
-import { dedupeStrings, toTrimmedStringList, toTrimmedStringSet } from "../shared.js";
+import { dedupeStrings, toTrimmedStringList, toTrimmedStringSet, withOptionalProperty } from "../shared.js";
 
 /** Blueprint describing a single task when generating a graph. */
 const TaskDescriptorSchema = z.object({
@@ -120,7 +120,7 @@ function buildGraphNodeRecord(params: {
   const { id, label, attributes } = params;
   return {
     id,
-    ...(label !== undefined ? { label } : {}),
+    ...withOptionalProperty("label", label),
     attributes,
   };
 }
@@ -140,8 +140,8 @@ function buildGraphEdgeRecord(params: {
   return {
     from,
     to,
-    ...(label !== undefined ? { label } : {}),
-    ...(weight !== undefined ? { weight } : {}),
+    ...withOptionalProperty("label", label),
+    ...withOptionalProperty("weight", weight),
     attributes,
   };
 }

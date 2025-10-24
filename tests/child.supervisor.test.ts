@@ -100,6 +100,42 @@ describe("child supervisor", function () {
     }
   });
 
+  it("transitions children back to idle once pong heartbeats are observed", async () => {
+    const childrenRoot = await mkdtemp(path.join(tmpdir(), "supervisor-heartbeat-"));
+    const supervisor = new ChildSupervisor({
+      childrenRoot,
+      defaultCommand: process.execPath,
+      defaultArgs: mockRunnerArgs("--role", "friendly"),
+      idleTimeoutMs: 200,
+      idleCheckIntervalMs: 50,
+    });
+
+    try {
+      const created = await supervisor.createChild();
+      expect(created.readyMessage).to.not.equal(null);
+
+      const beforePing = supervisor.childrenIndex.getChild(created.childId);
+      expect(beforePing?.state).to.equal("ready");
+
+      await supervisor.send(created.childId, { type: "ping" });
+
+      await supervisor.waitForMessage(
+        created.childId,
+        (message) => message.stream === "stdout" && hasChildRuntimeMessageType(message, "pong"),
+        1000,
+      );
+
+      // Allow the asynchronous event listener to flush index updates before assertions.
+      await new Promise((resolve) => setTimeout(resolve, 10));
+
+      const afterPing = supervisor.childrenIndex.getChild(created.childId);
+      expect(afterPing?.state).to.equal("idle");
+    } finally {
+      await supervisor.disposeAll();
+      await rm(childrenRoot, { recursive: true, force: true });
+    }
+  });
+
   it("forces termination when the child ignores graceful shutdown", async () => {
     const childrenRoot = await mkdtemp(path.join(tmpdir(), "supervisor-stubborn-"));
     const supervisor = new ChildSupervisor({

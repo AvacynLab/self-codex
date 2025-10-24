@@ -1,3 +1,8 @@
+/**
+ * Hardened gateway responsible for spawning sandboxed child processes. The
+ * factory enforces argument validation, environment allow-listing and timeout
+ * propagation so supervisors interact with a predictable, fail-safe API.
+ */
 import { spawn as nodeSpawn, type ChildProcess, type SpawnOptions } from "node:child_process";
 
 import { omitUndefinedEntries } from "../utils/object.js";

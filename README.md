@@ -101,6 +101,10 @@ Ces limites s'appliquent à toutes les exécutions (STDIO, HTTP, évaluations sc
 ## Développement local
 
 - `npm run dev` démarre l'orchestrateur via `tsx --tsconfig tsconfig.json src/server.ts`. Le loader Typescript natif garantit que les résolutions `NodeNext` restent respectées tout en profitant du rechargement rapide proposé par `tsx`.
+- Consultez la section **Structure du dépôt** ci-dessus pour identifier rapidement où ajouter vos changements et quels tests ciblés relancer.
+- Avant toute revue, exécutez systématiquement `npm run build && npm run typecheck && npm run test` afin de reproduire localement la séquence CI.
+- Les imports des modules Node.js standards doivent utiliser le préfixe explicite `node:` (`import { readFileSync } from "node:fs"`). Le garde `npm run lint:node-builtins` échoue si des chemins implicites persistent.
+- Vérifiez qu'aucun export n'est orphelin via `npm run lint:dead-exports` : le script s'appuie sur `src/quality/deadCode.ts` pour détecter les symboles non référencés et éviter l'accumulation de code mort.
 
 ## Tests
 

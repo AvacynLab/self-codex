@@ -2,6 +2,7 @@ import { StructuredLogger } from "../logger.js";
 import type { CreateChildOptions } from "../children/supervisor.js";
 import type { ChildRecordSnapshot } from "../state/childrenIndex.js";
 import type { LoopReconciler, LoopTickContext } from "../executor/loop.js";
+import type { AutoscalerTelemetryPayload } from "../events/types.js";
 import {
   extractCorrelationHints,
   mergeCorrelationHints,
@@ -67,11 +68,8 @@ export interface AutoscalerOptions {
 /** Severity levels emitted by the autoscaler when publishing lifecycle events. */
 export type AutoscalerEventLevel = "info" | "warn" | "error";
 
-/** Structured payload attached to autoscaler events. */
-export interface AutoscalerEventPayload extends Record<string, unknown> {
-  /** Short code describing the autoscaler action (e.g. `scale_up`). */
-  msg: string;
-}
+/** Structured payload forwarded to the orchestrator event bus. */
+export type AutoscalerEventPayload = AutoscalerTelemetryPayload;
 
 /** Envelope emitted whenever the autoscaler reports an action or anomaly. */
 export interface AutoscalerEventInput {
@@ -300,10 +298,10 @@ export class Autoscaler implements AutoscalerContract {
       }
     }
 
-    const payload: AutoscalerEventPayload = { ...event.payload };
-    if (event.childId && payload.child_id === undefined) {
-      payload.child_id = event.childId;
-    }
+    const payload: AutoscalerEventPayload =
+      event.childId && event.payload.child_id === undefined
+        ? { ...event.payload, child_id: event.childId }
+        : { ...event.payload };
     const envelope: AutoscalerEventInput = {
       level: event.level,
       payload,

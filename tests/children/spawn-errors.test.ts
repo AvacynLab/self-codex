@@ -1,10 +1,12 @@
+/**
+ * Spawn failure handling for child runtimes. These regression tests ensure
+ * early crashes, gateway aborts and manifest logging remain observable while
+ * resources are reclaimed deterministically.
+ */
 import process from "node:process";
-import { EventEmitter } from "node:events";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { ChildProcessWithoutNullStreams } from "node:child_process";
-import { PassThrough } from "node:stream";
 import { setTimeout as delay } from "node:timers/promises";
 
 import { afterEach, beforeEach, describe, it } from "mocha";
@@ -18,71 +20,7 @@ import {
   type SpawnChildProcessOptions,
 } from "../../src/gateways/childProcess.js";
 import { childWorkspacePath } from "../../src/paths.js";
-
-/**
- * Lightweight child process double exposing the subset of the Node.js API that
- * {@link startChildRuntime} exercises during spawn. The stub allows tests to
- * deterministically trigger lifecycle events without creating real processes.
- */
-class StubChildProcess extends EventEmitter implements ChildProcessWithoutNullStreams {
-  public readonly stdin = new PassThrough();
-  public readonly stdout = new PassThrough();
-  public readonly stderr = new PassThrough();
-  public readonly stdio: [PassThrough, PassThrough, PassThrough];
-  public readonly pid = 4242;
-  public killed = false;
-  public connected = false;
-  public exitCode: number | null = null;
-  public signalCode: NodeJS.Signals | null = null;
-  public readonly spawnargs: string[];
-  public readonly spawnfile: string;
-  public readonly channel = null;
-
-  constructor(command: string, args: readonly string[] = []) {
-    super();
-    this.spawnargs = [command, ...args];
-    this.spawnfile = command;
-    this.stdio = [this.stdin, this.stdout, this.stderr];
-  }
-
-  override kill(signal?: NodeJS.Signals | number): boolean {
-    this.killed = true;
-    if (typeof signal === "string") {
-      this.signalCode = signal;
-    }
-    this.emit("exit", null, typeof signal === "string" ? signal : null);
-    this.emit("close", null, typeof signal === "string" ? signal : null);
-    return true;
-  }
-
-  // The IPC channel is not required for these tests.
-  override send(
-    message: unknown,
-    sendHandle?: unknown,
-    options?: unknown,
-    callback?: ((error: Error | null) => void) | undefined,
-  ): boolean {
-    // Deliberately mark every parameter as consumed to satisfy
-    // `noUnusedParameters` while keeping the runtime-compatible signature.
-    void message;
-    void sendHandle;
-    void options;
-    void callback;
-    throw new Error("IPC channel not available in StubChildProcess");
-  }
-
-  override disconnect(): void {
-    // No-op for the stub child process.
-  }
-
-  override ref(): this {
-    return this;
-  }
-
-  override unref(): this {
-    return this;
-  }
-}
+import { ControlledChildProcess } from "./stubs.js";
 
 describe("child runtime spawn error handling", () => {
   let tempRoot: string;
@@ -101,7 +39,7 @@ describe("child runtime spawn error handling", () => {
 
     const gateway: ChildProcessGateway = {
       spawn(options: SpawnChildProcessOptions) {
-        const child = new StubChildProcess(options.command, options.args ?? []);
+        const child = new ControlledChildProcess(options.command, options.args ?? []);
         queueMicrotask(() => {
           child.emit("error", crashError);
           child.emit("close", null, null);
@@ -148,7 +86,7 @@ describe("child runtime spawn error handling", () => {
     const gateway = createChildProcessGateway({
       spawnImpl(command, args, options) {
         const resolvedArgs = Array.isArray(args) ? [...args] : [];
-        const child = new StubChildProcess(command, resolvedArgs);
+        const child = new ControlledChildProcess(command, resolvedArgs);
 
         const signal = options?.signal as AbortSignal | undefined;
         if (signal) {

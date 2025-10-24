@@ -1,3 +1,11 @@
+/**
+ * Orchestrator controller centralising JSON-RPC handling and observability.
+ *
+ * The module keeps the orchestration runtime lightweight by encapsulating
+ * routing, idempotent WAL persistence, and structured event emission behind a
+ * small factory so transports can delegate requests without reimplementing the
+ * bookkeeping logic.
+ */
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { randomUUID } from "node:crypto";
 import { Buffer } from "node:buffer";
@@ -744,6 +752,7 @@ export function createOrchestratorController(
     params?: unknown,
     context: JsonRpcRouteContext = {},
   ): Promise<unknown> => {
+    // Étape A : Normaliser les paramètres et récupérer le handler MCP associé.
     const originalMethod = method.trim();
     let handlers: Map<string, InternalJsonRpcHandler>;
     try {
@@ -806,6 +815,7 @@ export function createOrchestratorController(
       );
     }
 
+    // Étape B : Exécuter la requête dans le contexte JSON-RPC adapté.
     const executeInvocation = () =>
       runWithJsonRpcContext(resolvedContext, async () => {
         const requestInfo =
@@ -833,6 +843,7 @@ export function createOrchestratorController(
         return rawResult;
       });
 
+    // Étape C : Gérer la temporisation éventuelle avant de renvoyer la réponse.
     if (!timeoutBudget || timeoutBudget <= 0) {
       try {
         return await executeInvocation();
@@ -871,6 +882,7 @@ export function createOrchestratorController(
     req: JsonRpcRequest,
     context?: JsonRpcRouteContext,
   ): Promise<JsonRpcResponse> => {
+    // Étape A : Valider la requête entrante et normaliser le contexte transport.
     const rawId = req?.id ?? null;
     const baseContext: JsonRpcRouteContext = context ? { ...context } : {};
     // Normalise the optional transport tag eagerly to keep downstream context clones consistent.
@@ -911,6 +923,7 @@ export function createOrchestratorController(
       throw error;
     }
 
+    // Étape B : Assembler le contexte d'exécution (budgets, timeouts, corrélations).
     const { context: runtimeContext, requestBudget, timeoutBudget } = assembleJsonRpcRuntime(
       {
         toolRegistry,
@@ -976,6 +989,7 @@ export function createOrchestratorController(
     const payloadBytes = runtimeContext?.payloadSizeBytes ?? 0;
     const timeoutMs = timeoutBudget.timeoutMs;
     const processRequest = async (): Promise<JsonRpcResponse> => {
+      // Étape C : Consommer les budgets et router la requête en capturant la télémétrie.
       try {
         requestBudget.consume(
           {

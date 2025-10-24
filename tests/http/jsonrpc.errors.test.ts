@@ -19,6 +19,23 @@ function expectRecord(value: unknown): Record<string, unknown> {
 }
 
 describe("http jsonrpc error helper", () => {
+  it("injects the JSON-RPC identifier into error metadata by default", () => {
+    const payload = __httpServerInternals.jsonRpcError("rpc-77", "VALIDATION_ERROR", "Invalid", {});
+
+    expect(payload).to.deep.equal({
+      jsonrpc: "2.0",
+      id: "rpc-77",
+      error: {
+        code: -32602,
+        message: "Invalid",
+        data: {
+          category: "VALIDATION_ERROR",
+          request_id: "rpc-77",
+        },
+      },
+    });
+  });
+
   it("serialises validation failures into JSON-RPC responses", async () => {
     const response = new MemoryHttpResponse();
     const logger = new RecordingLogger();

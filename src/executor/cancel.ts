@@ -4,6 +4,11 @@ import { EventEmitter } from "node:events";
 import { coerceNullToUndefined } from "../utils/object.js";
 
 /**
+ * Coordinates cancellation signals across the executor. The registry provides
+ * structured handles and strongly typed lifecycle events so callers can abort
+ * long-running operations without leaking bookkeeping state.
+ */
+/**
  * Outcome returned when requesting the cancellation of an operation. The enum
  * allows callers to differentiate between successful requests and idempotent
  * retries without resorting to exceptions.
@@ -34,7 +39,7 @@ interface CancellationEntry {
 }
 
 /** Event emitted whenever a cancellation is requested. */
-const EVENT_CANCELLED = "cancelled";
+const EVENT_CANCELLED = "cancelled" as const;
 
 /**
  * Structured payload describing the lifecycle of a cancellation request. The
@@ -62,8 +67,36 @@ export interface CancellationEventPayload {
   outcome: CancellationRequestOutcome;
 }
 
+/** Map of events emitted by the cancellation registry. */
+type CancellationEvents = {
+  [EVENT_CANCELLED]: [CancellationEventPayload];
+};
+
 /** Shared emitter used to fan-out cancellation notifications. */
-const cancellationEmitter = new EventEmitter();
+const cancellationEmitter = new EventEmitter<CancellationEvents>();
+
+/**
+ * Emits the structured cancellation lifecycle payload through the shared
+ * emitter. Wrapping the logic keeps both the type-checker and readers honest
+ * about the event contract enforced by the registry.
+ */
+function emitCancellationEvent(
+  entry: CancellationEntry,
+  outcome: CancellationRequestOutcome,
+  at: number,
+): void {
+  cancellationEmitter.emit(EVENT_CANCELLED, {
+    opId: entry.opId,
+    runId: entry.runId,
+    jobId: entry.jobId,
+    graphId: entry.graphId,
+    nodeId: entry.nodeId,
+    childId: entry.childId,
+    reason: entry.reason,
+    at,
+    outcome,
+  });
+}
 
 /** Registry storing the lifecycle of every cancellable operation. */
 const operations = new Map<string, CancellationEntry>();
@@ -328,17 +361,7 @@ export function requestCancellation(
     entry.cancelledAt = options.at ?? Date.now();
     entry.controller.abort();
     const at = entry.cancelledAt ?? Date.now();
-    cancellationEmitter.emit(EVENT_CANCELLED, {
-      opId: entry.opId,
-      runId: entry.runId,
-      jobId: entry.jobId,
-      graphId: entry.graphId,
-      nodeId: entry.nodeId,
-      childId: entry.childId,
-      reason: entry.reason,
-      at,
-      outcome: "requested",
-    } satisfies CancellationEventPayload);
+    emitCancellationEvent(entry, "requested", at);
     return "requested";
   }
 
@@ -346,17 +369,7 @@ export function requestCancellation(
     entry.reason = options.reason;
   }
   const at = options.at ?? Date.now();
-  cancellationEmitter.emit(EVENT_CANCELLED, {
-    opId: entry.opId,
-    runId: entry.runId,
-    jobId: entry.jobId,
-    graphId: entry.graphId,
-    nodeId: entry.nodeId,
-    childId: entry.childId,
-    reason: entry.reason,
-    at,
-    outcome: "already_cancelled",
-  } satisfies CancellationEventPayload);
+  emitCancellationEvent(entry, "already_cancelled", at);
   return "already_cancelled";
 }
 

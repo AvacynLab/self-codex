@@ -47,3 +47,31 @@ export function toTrimmedStringList(values?: Iterable<string>): string[] | null 
   return Array.from(set);
 }
 
+/**
+ * Helper used when building descriptor objects with optional fields. Returning
+ * an empty object when the value is undefined avoids leaking `undefined`
+ * placeholders while keeping call-sites expressive through spread syntax.
+ */
+export function withOptionalProperty<K extends string, V>(
+  key: K,
+  value: V | undefined,
+): Partial<Record<K, V>> {
+  if (value === undefined) {
+    return {};
+  }
+  return { [key]: value } as Record<K, V>;
+}
+
+/**
+ * Clone a record only when it exists to guarantee callers keep defensive copy
+ * semantics without paying allocations when inputs are absent.
+ */
+export function cloneDefinedRecord<T extends Record<string, unknown> | undefined>(
+  source: T,
+): T {
+  if (!source) {
+    return source;
+  }
+  return { ...source } as T;
+}
+

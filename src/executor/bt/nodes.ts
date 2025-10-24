@@ -1,10 +1,9 @@
-import { z } from "zod";
-
 import { runtimeTimers } from "../../runtime/timers.js";
 
 import {
   type BTStatus,
   type BehaviorNode,
+  type BehaviorTaskSchema,
   type BehaviorTickResult,
   type ParallelPolicy,
   type TickRuntime,
@@ -703,12 +702,12 @@ export class TaskLeaf implements BehaviorNode {
   /** Optional runtime variable key resolved before invoking the tool. */
   private readonly inputKey: string | undefined;
   /** Optional Zod schema validating the input payload. */
-  private readonly schema: z.ZodTypeAny | undefined;
+  private readonly schema: BehaviorTaskSchema | undefined;
 
   constructor(
     public readonly id: string,
     private readonly toolName: string,
-    options: { inputKey?: string; schema?: z.ZodTypeAny } = {},
+    options: { inputKey?: string; schema?: BehaviorTaskSchema } = {},
   ) {
     // Preserve the explicit `undefined` union so `exactOptionalPropertyTypes`
     // accepts constructors that receive `schema`/`inputKey` placeholders.

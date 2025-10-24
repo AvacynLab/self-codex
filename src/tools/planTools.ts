@@ -9,7 +9,7 @@ import { ChildCollectedOutputs, ChildRuntimeMessage } from "../childRuntime.js";
 import type { ChildSupervisorContract } from "../children/supervisor.js";
 import { compileHierGraphToBehaviorTree } from "../executor/bt/compiler.js";
 import { BehaviorTreeInterpreter, buildBehaviorTree } from "../executor/bt/interpreter.js";
-import { type BehaviorNodeDefinition, CompiledBehaviorTreeSchema, type BTStatus, type BehaviorTickResult, type CompiledBehaviorTree, type TickRuntime } from "../executor/bt/types.js";
+import { type BehaviorNodeDefinition, CompiledBehaviorTreeSchema, type BehaviorTaskSchema, type BTStatus, type BehaviorTickResult, type CompiledBehaviorTree, type TickRuntime } from "../executor/bt/types.js";
 import {
   ReactiveScheduler,
   type PheromoneBounds,
@@ -98,6 +98,14 @@ import { BehaviorTreeCancellationError } from "../executor/bt/nodes.js";
 import { GraphDescriptorSchema, normaliseDescriptor } from "./graphTools.js";
 import { ThoughtGraphCoordinator, type ThoughtBranchGuardSnapshot } from "../reasoning/thoughtCoordinator.js";
 import { omitUndefinedEntries } from "../utils/object.js";
+import { resolveChildrenPlans, type ResolvedChildPlan } from "./plan/choose.js";
+import {
+  extractPlanCorrelationHints,
+  normalisePlanImpact,
+  serialiseCorrelationForPayload,
+  toEventCorrelationHints,
+} from "./plan/validate.js";
+import { summariseForCausalMemory } from "./plan/summary.js";
 
 /**
  * Type used when emitting orchestration events. The server injects a concrete
@@ -283,48 +291,6 @@ export interface PlanToolContext {
 }
 
 /**
- * Produces a compact JSON-serialisable summary suitable for causal memory
- * storage. Large strings are truncated and deep objects are collapsed to keep
- * artefacts lightweight while preserving signal for diagnostics.
- */
-function summariseForCausalMemory(value: unknown, depth = 0): unknown {
-  if (value === null || typeof value === "number" || typeof value === "boolean") {
-    return value;
-  }
-  if (typeof value === "string") {
-    return value.length > 200 ? `${value.slice(0, 200)}…` : value;
-  }
-  if (Array.isArray(value)) {
-    if (depth >= 2) {
-      return `array(${value.length})`;
-    }
-    const window = value.slice(0, 5).map((item) => summariseForCausalMemory(item, depth + 1));
-    if (value.length > 5) {
-      window.push(`…${value.length - 5} more`);
-    }
-    return window;
-  }
-  if (typeof value === "object" && value !== undefined) {
-    if (depth >= 2) {
-      return "object";
-    }
-    const entries = Object.entries(value as Record<string, unknown>);
-    const summary: Record<string, unknown> = {};
-    for (const [key, entry] of entries.slice(0, 6)) {
-      summary[key] = summariseForCausalMemory(entry, depth + 1);
-    }
-    if (entries.length > 6) {
-      summary.__truncated__ = `${entries.length - 6} more`;
-    }
-    return summary;
-  }
-  if (typeof value === "undefined") {
-    return null;
-  }
-  return String(value);
-}
-
-/**
  * Await for a duration while respecting cooperative cancellation. The helper
  * removes listeners eagerly to keep fake timers based tests deterministic and
  * leak-free.
@@ -349,6 +315,19 @@ async function waitWithCancellation(handle: CancellationHandle, ms: number): Pro
     };
     handle.signal.addEventListener("abort", onAbort, { once: true });
   });
+}
+
+/**
+ * Waits for a duration using cooperative cancellation when a handle is
+ * available. The helper keeps the Behaviour Tree tool implementation concise
+ * while guaranteeing the historical semantics remain unchanged.
+ */
+async function waitForDuration(handle: CancellationHandle | null, ms: number): Promise<void> {
+  if (!handle) {
+    await delay(ms);
+    return;
+  }
+  await waitWithCancellation(handle, ms);
 }
 
 /**
@@ -483,6 +462,99 @@ export class ValueGuardRequiredError extends Error {
   }
 }
 
+interface FanoutFilteringOutcome {
+  acceptedPlans: ResolvedChildPlan[];
+  rejectedPlans: Array<{ name: string; decision: ValueFilterDecision }>;
+}
+
+/**
+ * Filters fan-out candidates against the value guard when enabled. The helper
+ * encapsulates the logging and rejection mechanics so the main fan-out flow can
+ * focus on correlation wiring and orchestration duties.
+ */
+function filterFanoutPlans(
+  context: PlanToolContext,
+  candidates: readonly ResolvedChildPlan[],
+  correlationLogFields: Record<string, unknown>,
+): FanoutFilteringOutcome {
+  if (!context.valueGuard) {
+    return { acceptedPlans: [...candidates], rejectedPlans: [] };
+  }
+
+  const acceptedPlans: ResolvedChildPlan[] = [];
+  const rejectedPlans: Array<{ name: string; decision: ValueFilterDecision }> = [];
+
+  for (const plan of candidates) {
+    if (!plan.valueImpacts?.length) {
+      plan.valueDecision = null;
+      acceptedPlans.push(plan);
+      continue;
+    }
+
+    const decision = context.valueGuard.graph.filter({
+      id: plan.name,
+      label: plan.name,
+      impacts: plan.valueImpacts,
+    });
+    plan.valueDecision = decision;
+
+    if (decision.allowed) {
+      acceptedPlans.push(plan);
+      continue;
+    }
+
+    rejectedPlans.push({ name: plan.name, decision });
+    context.logger.warn("plan_fanout_value_guard_reject", {
+      child_name: plan.name,
+      score: decision.score,
+      threshold: decision.threshold,
+      violations: decision.violations.length,
+      ...correlationLogFields,
+    });
+  }
+
+  if (acceptedPlans.length === 0) {
+    throw new ValueGuardRejectionError(rejectedPlans);
+  }
+
+  if (rejectedPlans.length > 0) {
+    context.logger.warn("plan_fanout_value_guard_filtered", {
+      rejected: rejectedPlans.length,
+      allowed: acceptedPlans.length,
+      ...correlationLogFields,
+    });
+  }
+
+  return { acceptedPlans, rejectedPlans };
+}
+
+/**
+ * Ensures the job entry associated with a fan-out run exists. The helper creates
+ * or updates the job record with a running status so dashboards reflect the
+ * latest progression without duplicating branching logic.
+ */
+function ensureFanoutJob(
+  context: PlanToolContext,
+  jobId: string,
+  goal: string | undefined,
+  createdAt: number,
+): void {
+  const existingJob = context.graphState.getJob(jobId);
+  if (!existingJob) {
+    context.graphState.createJob(jobId, {
+      createdAt,
+      state: "running",
+      ...omitUndefinedEntries({ goal }),
+    });
+    return;
+  }
+
+  context.graphState.patchJob(jobId, {
+    state: "running",
+    goal: goal ?? existingJob.goal ?? null,
+  });
+}
+
 /**
  * Error raised when consensus-based reducers cannot reach the required quorum.
  * The decision payload is embedded so operators can inspect tallies when
@@ -497,6 +569,33 @@ export class ConsensusNoQuorumError extends Error {
     this.name = "ConsensusNoQuorumError";
     this.details = { decision };
   }
+}
+
+interface QuorumEvaluationResult {
+  satisfied: boolean;
+  threshold: number | null;
+}
+
+/**
+ * Evaluates whether a quorum policy is satisfied while preserving the
+ * historical decision threshold. The computation mirrors the previous inline
+ * logic but removes the nested `if/else` branches for clarity.
+ */
+function evaluateQuorumJoinPolicy(
+  consensusDecision: ConsensusDecision | null | undefined,
+  successCount: number,
+  fallbackThreshold: number,
+): QuorumEvaluationResult {
+  if (!consensusDecision) {
+    return {
+      satisfied: successCount >= fallbackThreshold,
+      threshold: fallbackThreshold,
+    };
+  }
+
+  const appliedThreshold = consensusDecision.threshold ?? fallbackThreshold;
+  const satisfied = consensusDecision.outcome === "success" && consensusDecision.satisfied;
+  return { satisfied, threshold: appliedThreshold };
 }
 
 /**
@@ -1065,15 +1164,16 @@ export type PlanResumeInput = z.infer<typeof PlanResumeInputSchema>;
 export const PlanResumeInputShape = PlanResumeInputSchema.shape;
 
 /** Default schema registry used by the Behaviour Tree interpreter. */
-const BehaviorTaskSchemas: Record<string, z.ZodTypeAny> = {
-  noop: z.any(),
+const BehaviorTaskSchemas = {
+  /** No-op tasks accept any structured payload but ignore it at runtime. */
+  noop: z.unknown(),
   bb_set: BbSetInputSchema,
   wait: z
     .object({
       duration_ms: z.number().int().min(1).max(60_000).default(100),
     })
     .strict(),
-};
+} satisfies Record<string, BehaviorTaskSchema>;
 
 /** Estimate the amount of work a Behaviour Tree represents for progress heuristics. */
 function estimateBehaviorTreeWorkload(definition: BehaviorNodeDefinition): number {
@@ -1275,33 +1375,13 @@ const BehaviorToolHandlers: Record<string, BehaviorToolHandler> = {
   wait: async (context, input) => {
     const payload = BehaviorTaskSchemas.wait.parse(input ?? {});
     const handle = context.activeCancellation ?? null;
-    if (handle) {
-      await waitWithCancellation(handle, payload.duration_ms);
-    } else {
-      await delay(payload.duration_ms);
-    }
+    await waitForDuration(handle, payload.duration_ms);
     context.logger.info("bt_wait", { duration_ms: payload.duration_ms });
     return null;
   },
 };
 
 /** Internal representation of a child plan resolved from the input payload. */
-interface ResolvedChildPlan {
-  name: string;
-  runtime: string;
-  system?: string;
-  goals?: string[];
-  command?: string;
-  args?: string[];
-  env?: Record<string, string>;
-  metadata?: Record<string, unknown>;
-  manifestExtras?: Record<string, unknown>;
-  promptVariables: Record<string, string | number | boolean>;
-  ttlSeconds?: number;
-  valueImpacts?: ValueImpactInput[];
-  valueDecision?: ValueFilterDecision | null;
-}
-
 /** Result returned after spawning a child runtime. */
 interface SpawnedChildInfo {
   childId: string;
@@ -1316,77 +1396,7 @@ interface SpawnedChildInfo {
   valueGuard: ValueGuardSnapshot | null;
 }
 
-function resolveChildrenPlans(
-  input: PlanFanoutInput,
-  defaultRuntime: string,
-): ResolvedChildPlan[] {
-  if (input.children_spec) {
-    if ("list" in input.children_spec) {
-      return input.children_spec.list.map((child) => ({
-        name: child.name,
-        runtime: child.runtime ?? defaultRuntime,
-        promptVariables: { ...(child.prompt_variables ?? {}) },
-        // NOTE: keep optional fields absent rather than `undefined` so the
-        // object remains compatible with `exactOptionalPropertyTypes`.
-        ...omitUndefinedEntries({
-          system: child.system,
-          goals: child.goals,
-          command: child.command,
-          args: child.args,
-          env: child.env,
-          metadata: child.metadata,
-          manifestExtras: child.manifest_extras,
-          ttlSeconds: child.ttl_s,
-          valueImpacts: child.value_impacts?.map((impact) => ({ ...impact })),
-        }),
-      }));
-    }
 
-    const plans: ResolvedChildPlan[] = [];
-    const base = input.children_spec;
-    for (let index = 0; index < base.count; index += 1) {
-      plans.push({
-        name: `${base.name_prefix}-${index + 1}`,
-        runtime: base.runtime ?? defaultRuntime,
-        promptVariables: {
-          ...(base.prompt_variables ?? {}),
-          child_index: index + 1,
-        },
-        ...omitUndefinedEntries({
-          system: base.system,
-          goals: base.goals,
-          metadata: base.metadata,
-          manifestExtras: base.manifest_extras,
-          valueImpacts: base.value_impacts?.map((impact) => ({ ...impact })),
-        }),
-      });
-    }
-    return plans;
-  }
-
-  if (input.children?.length) {
-    return input.children.map((child) => ({
-      name: child.name,
-      runtime: child.runtime ?? defaultRuntime,
-      promptVariables: { ...(child.prompt_variables ?? {}) },
-      ...omitUndefinedEntries({
-        system: child.system,
-        goals: child.goals,
-        command: child.command,
-        args: child.args,
-        env: child.env,
-        metadata: child.metadata,
-        manifestExtras: child.manifest_extras,
-        ttlSeconds: child.ttl_s,
-        valueImpacts: child.value_impacts?.map((impact) => ({ ...impact })),
-      }),
-    }));
-  }
-
-  throw new Error(
-    "plan_fanout requires either children_spec or children to describe the clones",
-  );
-}
 
 function renderPromptForChild(
   template: PromptTemplate,
@@ -1764,9 +1774,6 @@ export async function handlePlanFanout(
       throw new ValueGuardRequiredError(riskyPlans);
     }
   }
-  const rejectedPlans: Array<{ name: string; decision: ValueFilterDecision }> = [];
-
-  const plans: ResolvedChildPlan[] = [];
   const providedCorrelation = extractPlanCorrelationHints(input);
   const opId = resolveOperationId(input.op_id ?? providedCorrelation?.opId, "plan_fanout_op");
   const runId = providedCorrelation?.runId ?? input.run_label ?? `run-${Date.now()}`;
@@ -1786,45 +1793,11 @@ export async function handlePlanFanout(
   const eventCorrelation = toEventCorrelationHints(mergedCorrelation);
   const correlationPayload = serialiseCorrelationForPayload(eventCorrelation);
   const correlationLogFields = { ...correlationPayload };
-  if (context.valueGuard) {
-    for (const plan of resolvedPlans) {
-      if (!plan.valueImpacts?.length) {
-        plan.valueDecision = null;
-        plans.push(plan);
-        continue;
-      }
-      const decision = context.valueGuard.graph.filter({
-        id: plan.name,
-        label: plan.name,
-        impacts: plan.valueImpacts,
-      });
-      plan.valueDecision = decision;
-      if (!decision.allowed) {
-        rejectedPlans.push({ name: plan.name, decision });
-        context.logger.warn("plan_fanout_value_guard_reject", {
-          child_name: plan.name,
-          score: decision.score,
-          threshold: decision.threshold,
-          violations: decision.violations.length,
-          ...correlationLogFields,
-        });
-        continue;
-      }
-      plans.push(plan);
-    }
-    if (plans.length === 0) {
-      throw new ValueGuardRejectionError(rejectedPlans);
-    }
-    if (rejectedPlans.length > 0) {
-      context.logger.warn("plan_fanout_value_guard_filtered", {
-        rejected: rejectedPlans.length,
-        allowed: plans.length,
-        ...correlationLogFields,
-      });
-    }
-  } else {
-    plans.push(...resolvedPlans);
-  }
+  const { acceptedPlans: plans, rejectedPlans } = filterFanoutPlans(
+    context,
+    resolvedPlans,
+    correlationLogFields,
+  );
 
   const promptTemplate: PromptTemplate = {
     system: input.prompt_template.system,
@@ -1834,19 +1807,7 @@ export async function handlePlanFanout(
 
   const createdAt = Date.now();
 
-  const existingJob = context.graphState.getJob(jobId);
-  if (!existingJob) {
-    context.graphState.createJob(jobId, {
-      createdAt,
-      state: "running",
-      ...omitUndefinedEntries({ goal: input.goal }),
-    });
-  } else {
-    context.graphState.patchJob(jobId, {
-      state: "running",
-      goal: input.goal ?? existingJob.goal ?? null,
-    });
-  }
+  ensureFanoutJob(context, jobId, input.goal, createdAt);
 
   context.logger.info("plan_fanout", {
     job_id: jobId,
@@ -2213,13 +2174,13 @@ export async function handlePlanJoin(
       threshold = 1;
       break;
     case "quorum": {
-      threshold = consensusDecision?.threshold ?? baseQuorum;
-      if (consensusDecision) {
-        satisfied =
-          consensusDecision.outcome === "success" && consensusDecision.satisfied;
-      } else {
-        satisfied = successes.length >= (threshold ?? baseQuorum);
-      }
+      const quorumOutcome = evaluateQuorumJoinPolicy(
+        consensusDecision,
+        successes.length,
+        baseQuorum,
+      );
+      satisfied = quorumOutcome.satisfied;
+      threshold = quorumOutcome.threshold;
       break;
     }
     default:
@@ -4072,100 +4033,6 @@ export async function handlePlanResume(
  * Normalises an impact payload so it matches {@link ValueImpactInput} while
  * preserving any correlation metadata declared on the plan node.
  */
-function normalisePlanImpact(
-  impact: z.infer<typeof PlanNodeImpactSchema>,
-  fallbackNodeId: string | undefined,
-): ValueImpactInput {
-  const derivedNodeId = impact.nodeId ?? impact.node_id ?? fallbackNodeId;
-  const sanitisedImpact: ValueImpactInput = {
-    value: impact.value,
-    impact: impact.impact,
-    ...(impact.severity !== undefined ? { severity: impact.severity } : {}),
-    ...(impact.rationale !== undefined ? { rationale: impact.rationale } : {}),
-    ...(impact.source !== undefined ? { source: impact.source } : {}),
-  };
-
-  if (derivedNodeId !== undefined) {
-    // Preserve explicit node correlations while avoiding `nodeId: undefined`
-    // entries so value guard payloads stay compatible with
-    // `exactOptionalPropertyTypes`.
-    sanitisedImpact.nodeId = derivedNodeId;
-  }
-
-  return sanitisedImpact;
-}
-
-/**
- * Extract correlation hints supplied to the dry-run tool. Returning `null`
- * keeps downstream consumers tidy when no metadata is provided while ensuring
- * value guard events still expose the identifiers when they exist.
- */
-type PlanCorrelationHintsInput = z.infer<typeof PlanCorrelationHintsSchema>;
-
-/**
- * Convert correlation hints provided by plan tooling into the camel-cased
- * structure consumed by downstream value guard and event bus helpers.
- */
-function extractPlanCorrelationHints(
-  input: Partial<PlanCorrelationHintsInput>,
-): ValueGraphCorrelationHints | null {
-  const hints: ValueGraphCorrelationHints = {};
-  if (input.run_id !== undefined) hints.runId = input.run_id;
-  if (input.op_id !== undefined) hints.opId = input.op_id;
-  if (input.job_id !== undefined) hints.jobId = input.job_id;
-  if (input.graph_id !== undefined) hints.graphId = input.graph_id;
-  if (input.node_id !== undefined) hints.nodeId = input.node_id;
-  if (input.child_id !== undefined) hints.childId = input.child_id;
-
-  return Object.keys(hints).length > 0 ? hints : null;
-}
-
-/**
- * Convert plan-level correlation hints into the event-centric structure consumed by
- * the unified MCP bus. Keeping the mapping centralised ensures every tool uses the
- * same normalisation (notably the preservation of explicit `null` values).
- */
-function toEventCorrelationHints(
-  hints: ValueGraphCorrelationHints | null | undefined,
-): EventCorrelationHints {
-  const correlation: EventCorrelationHints = {};
-  if (!hints) {
-    return correlation;
-  }
-  if (hints.runId !== undefined) correlation.runId = hints.runId;
-  if (hints.opId !== undefined) correlation.opId = hints.opId;
-  if (hints.jobId !== undefined) correlation.jobId = hints.jobId;
-  if (hints.graphId !== undefined) correlation.graphId = hints.graphId;
-  if (hints.nodeId !== undefined) correlation.nodeId = hints.nodeId;
-  if (hints.childId !== undefined) correlation.childId = hints.childId;
-  return correlation;
-}
-
-/**
- * Serialise correlation hints with snake_case keys for event payloads and logs.
- * The helper mirrors {@link toEventCorrelationHints} so call sites can reuse the
- * same structure without hand-crafting objects repeatedly.
- */
-function serialiseCorrelationForPayload(
-  hints: EventCorrelationHints,
-): {
-  run_id: string | null;
-  op_id: string | null;
-  job_id: string | null;
-  graph_id: string | null;
-  node_id: string | null;
-  child_id: string | null;
-} {
-  return {
-    run_id: hints.runId ?? null,
-    op_id: hints.opId ?? null,
-    job_id: hints.jobId ?? null,
-    graph_id: hints.graphId ?? null,
-    node_id: hints.nodeId ?? null,
-    child_id: hints.childId ?? null,
-  };
-}
-
 /**
  * @internal Aggregates helper functions that are exclusively used in tests.
  * Keeping the sanitiser exported ensures optional-field regressions can assert
