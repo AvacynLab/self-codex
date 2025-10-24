@@ -1,293 +1,325 @@
 ----------
-Voici la **feuille de route exhaustive** à destination de **l’agent** pour **consolider la version actuelle** (sans ajouter de nouvelles fonctionnalités).
-Tu dois exécuter ces tâches **dans l’ordre**. À chaque bloc, lance `npm run build && npm run typecheck && npm run test`. N’opère **aucun** changement de comportement métier : refactor et durcissement seulement.
+Voici la **feuille de route détaillée** (à cocher) destinée **à toi, agent**, pour **consolider** la version actuelle — sans ajouter de nouvelles fonctionnalités.
+Travaille **dans cet ordre**. Après **chaque** bloc, exécute `npm run build && npm run typecheck && npm run test`. Tu ne modifies **jamais** le comportement métier (refactor/typage/robustesse uniquement).
 
 ---
 
-BRIEF À L’AGENT — objectifs, contraintes, réussite attendue
+## BRIEF — objectifs, contraintes, critères de réussite
 
-* Objectifs : code **plus robuste, lisible, typé, cohérent et testable**, en conservant exactement la même surface fonctionnelle.
-* Contraintes :
+**Objectifs.** Obtenir un code **plus robuste, lisible, typé, cohérent et testable**, en conservant exactement la même surface fonctionnelle (mêmes exports/outils/endpoints, mêmes messages d’erreur attendus par les tests).
 
-  1. **Build** compile **uniquement `src/**`** (`tsconfig.json`).
-  2. **Tests** en **TypeScript** uniquement, collectés avec Mocha via **tsx** limité aux `.ts`.
-  3. **Aucune régression** sur les tests existants (comportement identique).
-  4. **Node 20.x** (respect de `"engines"`).
-* Réussite :
-
-  * `npm run build` passe sans erreurs TS (avec options strictes).
-  * `npm run typecheck` passe.
-  * `npm run test` affiche TAP complet, taux de couverture ≥ existant, logs propres, pas de secret en clair.
-  * Démarrage HTTP : 401 sans token (sauf `ALLOW_NOAUTH=1`), rate-limit effectif.
-
----
-
-1. Typage strict : éliminer `any` et double casts (sans changer la logique)
-
-* Objectif : réduire la dette de typage pour bénéficier pleinement du mode strict.
-* Règles : préférer `unknown` + **type guards** et **unions discriminées**. Supprimer les `as unknown as`.
-* Fichiers ciblés (ordre de priorité) :
-
-  * [x] `src/orchestrator/runtime.ts`
-
-    * [x] Remplacer les `any` (≈4) par des types précis ou `unknown` + predicates (`isX()`), selon la donnée.
-    * [x] Supprimer le double cast identifié (1).
-    * [x] Ajouter des types internes pour les événements si nécessaire (union discriminée `type: "..."`).
-  * [x] `src/children/supervisor.ts` (≈4 `any`)
-
-    * [x] `any` → `unknown` + raffinements ou interfaces locales.
-  * [x] `src/executor/bt/nodes.ts` (≈4 `any`)
-
-    * [x] Typage explicite des nœuds et contextes.
-  * [x] `src/executor/bt/types.ts` (≈3 `any`, 1 double cast)
-
-    * [x] Remplacer `any`, supprimer double cast, consolider les types des nœuds/états.
-  * [x] `src/agents/metaCritic.ts` (≈3 `any`)
-
-    * [x] Remplacer `any` par un type contractuel des entrées/sorties (interfaces locales).
-  * [x] `src/executor/cancel.ts` (≈3 `any`) — même travail.
-  * [x] `src/sim/sandbox.ts` (≈3 `any`) — même travail.
-  * [x] `src/tools/planTools.ts` (≈3 `any`) — mêmes principes.
-* Tests :
-
-  * [x] Lancer `npm run typecheck` pour valider l’absence de nouvelles erreurs.
-  * [x] `npm run test` doit rester inchangé en comportement (TAP identique).
-
-2. TODO/FIXME : nettoyer le code source (pas les fixtures de tests)
-
-* Objectif : aucun TODO/FIXME résiduel en **source**.
-* Fichiers :
-
-  * [x] `src/agents/metaCritic.ts` (~5 TODO/FIXME) — [x] résoudre ou créer des issues GitHub, puis supprimer du code.
-  * [x] `src/agents/selfReflect.ts` (~2) — [x] idem.
-* Tests/fixtures (ex. `src/agents/__tests__/selfReflect.fixtures.ts`) :
-
-* [x] Conserver les marqueurs s’ils servent à tester la détection. Annoter clairement “usage test”.
-
-3. Refactor structurel (sans modifier l’API ni le comportement)
-
-* Objectif : réduire la complexité cyclomatique et clarifier les responsabilités.
-* Règles : garder **exactement** la même API publique (exports), déplacer uniquement l’interne et corriger les chemins d’import.
-* Fichiers à découper :
-
-  * [x] `src/orchestrator/runtime.ts`
-
-    * [x] Extraire :
-
-      * [x] `src/orchestrator/eventBus.ts` (abonnements/émissions, types d’événements).
-      * [x] `src/orchestrator/controller.ts` (boucle d’orchestration, transitions d’état).
-      * [x] `src/orchestrator/logging.ts` (formatage log, enrichissements).
-    * [x] Remplacer dans `runtime.ts` par des imports des nouveaux modules.
-    * [x] **Sous-étapes** :
-
-      * [x] Introduire des fonctions pures et **early returns** pour aérer.
-      * [x] Ajouter des commentaires “Étape A/B/C” en tête de fonctions longues.
-  * [x] `src/tools/graphTools.ts`
-
-    * [x] Scinder en : `src/tools/graph/query.ts`, `src/tools/graph/mutate.ts`, `src/tools/graph/snapshot.ts`.
-    * [x] Créer `src/tools/shared.ts` si duplication d’utilitaires de bas niveau.
-    * [ ] `src/tools/planTools.ts`
-
-    * [x] Scinder en : `src/tools/plan/validate.ts`, `src/tools/plan/choose.ts`.
-    * [x] Réécrire longs `if/else` en fonctions dédiées (même logique).
-  * [x] `src/tools/childTools.ts`
-
-    * [x] Déplacer l’interaction récurrente avec les enfants dans `src/children/api.ts`.
-* Tests :
-
-  * [ ] Mettre à jour **uniquement** les chemins d’import dans les tests existants.
-  * [ ] Interdire toute modification de scénario/attente.
-
-4. Centralisation ENV (homogénéiser la lecture des variables)
-
-* Objectif : lecture ENV uniforme (booléens, entiers, enums) avec valeurs par défaut **identiques** à l’existant.
-* Ajout technique (refactor) :
-
-  * [x] Créer `src/config/env.ts` avec :
-
-    * [x] `readBool(name, def)` acceptant `"1"|"true"|"yes"` / `"0"|"false"|"no"`.
-    * [x] `readInt(name, def)` (borné, `Number.isSafeInteger`).
-    * [x] `readEnum(name, allowed, def)` (valeurs autorisées).
-  * [x] Utiliser ces helpers à la place des parsings locaux dans :
-
-    * [x] `src/httpServer.ts` (token, noauth, stateless, JSON, rate-limit).
-    * [x] `src/orchestrator/*.ts` (timeouts, budgets).
-    * [x] `src/monitor/dashboard.ts` (SSE buffers).
-* Tests :
-
-  * [x] Ajouter/adapter `tests/config/env.parse.test.ts` (table-driven) pour garantir la **même** interprétation que l’actuelle.
-  * [x] `npm run test` doit rester vert (même comportement externe).
-
-5. HTTP/JSON-RPC : cohérence d’erreur et logs d’accès
-
-* Objectif : réponses d’erreur JSON-RPC uniformes et observable utiles en log.
-* Fichier : `src/httpServer.ts`
-
-  * [x] Introduire une petite fonction locale `jsonRpcError(code, message, data?)` **ou** utiliser celle déjà existante si présente ; remplacer les créations ad hoc.
-  * [x] Vérifier `enforceBearerToken()` + `shouldAllowUnauthenticatedRequests()` : garder le 401 par défaut (sauf `ALLOW_NOAUTH=1`).
-  * [x] S’assurer que chaque requête HTTP produit un log structuré (route, status, latence, client).
-* Tests :
-
-  * [x] `tests/http/http_auth.test.ts` — sans token → 401 ; avec token → 200 ; avec `ALLOW_NOAUTH=1` → 200.
-  * [x] `tests/http/http_rate_limit.test.ts` — rafale vs flux régulier → 429/200 attendus.
-  * [x] `tests/http/jsonrpc.errors.test.ts` — formes d’erreur (code, message).
-
-6. Enfants & robustesse process
-
-* Objectif : fail-safe, sans fuite ni zombie.
-* Fichiers : `src/gateways/childProcess.ts`, `src/childRuntime.ts`
-
-  * [x] Entourer spawn et IPC : handlers `error`, `exit`, `close` partout.
-  * [x] Timeouts cohérents (reprendre EXACTES valeurs actuelles, appliquer selon helpers ENV).
-  * [x] Nettoyer streams/handles dans tous les chemins d’échec (try/finally).
-  * [x] Arrêt gracieux + **forcé** (kill) après délai dépassé.
-* Tests :
-
-  * [x] `tests/children/spawn-errors.test.ts` — crash simulé : cleanup + signalement.
-  * [x] `tests/children/graceful-shutdown.test.ts` — arrêt ordonné puis forcé après timeout.
-
-7. EventStore & mémoire
-
-* Objectif : pas de croissance non bornée, sérialisation stable.
-* Fichier : `src/events/eventStore.ts`
-
-  * [x] Vérifier et documenter la politique d’éviction (si implémentée) ; sinon l’appliquer à l’identique à l’existant (pas de changement de valeurs).
-  * [x] S’assurer d’une sérialisation stable (ordre de champs) pour des diffs lisibles.
-* Tests :
-
-  * [x] `tests/events/eventStore.retention.test.ts` — dépassement de N → éviction attendue.
-
-8. Dashboard/Monitor (HTTP/SSE)
-
-* Objectif : robustesse streaming et en-têtes.
-* Fichier : `src/monitor/dashboard.ts`
-
-  * [x] Vérifier en-têtes SSE, keep-alive, respect `MCP_SSE_MAX_BUFFER`.
-  * [x] Gestion déconnexion client sans fuite.
-* Tests :
-
-  * [x] `tests/monitor/dashboard.http.test.ts` — readyz/metrics/SSE ; multiples clients ; buffer plein.
-
-9. Registry & Tools (contrats et erreurs)
-
-* Objectif : retours typés et erreurs explicites.
-* Fichiers :
-
-  * [x] `src/resources/registry.ts` — pas de `any`, erreurs claires si ressource inconnue.
-  * [x] `src/tools/*` — normaliser la forme des retours et des erreurs (sans changer leur contenu attendu).
-* Tests :
-
-  * [x] `tests/resources/registry.test.ts` — chemins heureux/erreurs.
-
-10. Imports Node et outillage
-
-* Objectif : maintenir la propreté atteinte.
-* Faits (à conserver) : aucun import Node sans `node:` dans `src/**`.
-* Tâches :
-
-  * [x] Lancer `npm run lint:node-builtins` et corriger si de nouveaux hits apparaissent.
-  * [x] Lancer `npm run lint:dead-exports` et supprimer exports morts (ou justifier par commentaire).
-
-11. Graph-Forge (vendored)
-
-* Objectif : pas de bruit de build ; tests distincts si requis.
-* Fichier : `graph-forge/tsconfig.json`
-
-  * [x] S’assurer qu’il compile **son** sous-arbre en `graph-forge/dist`.
-* Arbo : `.gitignore` exclut `graph-forge/test/**/*.js` — **OK**, à conserver.
-* Tâches :
-
-  * [x] Vérifier qu’aucun `.js` compilé de test n’est committé ; supprimer si présent.
-
-12. Scripts d’environnement (Codex Cloud)
-
-* Fichier principal : `scripts/setup-agent-env.sh`
-
-  * [x] Conserver les `unset` des proxies NPM (haut du script).
-  * [x] Conserver le **guard** `START_HTTP=1` + token/noauth.
-  * [x] Conserver le `trap cleanup EXIT`.
-  * [x] Passer `shellcheck` et corriger warnings si signalés.
-* Validation :
-
-  * [x] `env | grep -i npm_config | sort` — ne doit pas montrer de `http(s)_proxy`.
-  * [x] Lancer install/build/tests : pas de warnings “Unknown env config http-proxy”.
-
-13. CI et artefacts (stabilité et traçabilité)
-
-* Objectif : exécution rapide et logs exploitables.
-* Tâches :
-
-  * [x] Runner Node 20.x.
-  * [x] Cache npm basé sur `package-lock.json`.
-  * [x] Étapes : `npm ci` → `npm run build` → `npm run typecheck` → `npm run test`.
-  * [x] Stocker artefacts :
-
-    * [x] TAP (`tap.txt` via `| tee artifacts/tap.txt`).
-    * [x] Log unifié (`self-codex.test.log`).
-
-14. Documentation courte de dev (sans ajouter de docs publiques)
-
-* Objectif : faciliter la maintenance interne.
-* Tâches :
-
-  * [x] En tête de **chaque fichier refactorisé**, ajouter 2–3 lignes de commentaire décrivant le rôle.
-  * [x] Mentionner dans `README` (section dev) : structure dossiers, commande de test, règles `node:` et dead-exports.
-
-15. Conventions et hygiène
-
-* Objectif : homogénéité durable.
-* Tâches :
-
-  * [x] `npm run lint` (ESLint flat) → fixer tous les warnings applicables.
-  * [x] Confirmer que `.gitignore` contient `dist/`, `runs/`, `children/`, `graph-forge/dist/`, `graph-forge/test/**/*.js`.
-  * [x] Supprimer tout code/commentaire mort et `console.log` résiduels.
-  * [x] Commits small & atomic, messages **Conventional Commits** (`refactor:`, `test:`, `build:`…).
-
----
-
-Ce qu’il faut savoir et respecter concernant **tests** et **build**
+**Contraintes build/tests.**
 
 * Build : **uniquement `src/**`** via `tsconfig.json` (strict + options strictes).
-* Tests : **TS only**, collectés par Mocha via `tsx` avec `TSX_EXTENSIONS=ts`. Aucun `.test.js`.
-* Typecheck : `tsconfig.tests.json` (noEmit) couvre `tests/**` + `src/**`.
-* Interdits : changement d’API publique, ajout de nouveaux endpoints, modification des messages d’erreur attendus.
-* À chaque refactor, **ne jamais** modifier les assertions ; adapter seule la **localisation** des imports.
+* Tests : **TypeScript uniquement**, collectés par Mocha via **tsx** limité aux `.ts` (`TSX_EXTENSIONS=ts`).
+* Type-check des tests via `tsconfig.tests.json` (`noEmit: true`).
+* Node 20.x (conforme à `engines`).
+
+**Réussite.**
+
+* `npm run build` OK sans erreur TypeScript.
+* `npm run typecheck` OK.
+* `npm run test` (TAP) OK, couverture ≥ actuelle, aucune fuite de secrets, logs lisibles.
+* Serveur HTTP : 401 sans token (sauf `MCP_HTTP_ALLOW_NOAUTH=1`), 429 si dépassement du débit, logs d’accès structurés.
 
 ---
 
-Critères d’acceptation finaux
+## 0) Préambule & hygiène de repo
 
-* `npm run build` **OK**, zéro erreur TS.
-* `npm run typecheck` **OK**, zéro erreur.
-* `npm run test` **OK**, liste TAP complète et identique en comportement, couverture ≥ existant.
-* **Aucun** `any` non justifié dans les fichiers listés ; **zéro** double cast `as unknown as`.
-* **Aucun** TODO/FIXME en source.
-* Serveur HTTP : 401 sans token (sauf `ALLOW_NOAUTH=1`), 429 quand le débit est dépassé ; logs d’accès présents et propres.
-* Pas de `.js` compilés dans `graph-forge/test/`, pas d’import Node sans `node:`.
-
-Exécute ces tâches **dans l’ordre**. Ne change pas la logique métier, seulement la structure, le typage et la robustesse.
+* [x] Supprimer toute extraction/artefact local antérieur (dossier d’analyse), conserver le dépôt propre.
+* [x] Vérifier présence de `package-lock.json`, `package.json`, `tsconfig.json`, `tsconfig.tests.json`, `eslint.config.js`, `.gitignore`.
+* [x] Node 20.x actif (CI/Cloud et local).
 
 ---
 
+## 1) Build & TS — vérifier/renforcer la config
+
+**Fichier : `tsconfig.json`**
+
+* [x] Confirmer :
+
+  * `compilerOptions`: `"module":"ESNext"`, `"target":"ES2022"`, `"moduleResolution":"Bundler"`, `"strict":true`, `"skipLibCheck":true`, `"rootDir":"src"`, `"outDir":"dist"`.
+  * Options strictes **activées** : `"noUnusedLocals":true`, `"noUnusedParameters":true`, `"noImplicitReturns":true`, `"noFallthroughCasesInSwitch":true`, `"exactOptionalPropertyTypes":true`.
+  * `include:["src/**/*.ts"]`, `exclude:["tests","**/*.test.*","**/*.spec.*","dist","node_modules"]`.
+* [x] Corriger **le code** si ces options révèlent des erreurs (ne **désactive** rien).
+
+**Fichier : `tsconfig.tests.json`**
+
+* [x] Confirmer :
+
+  ```json
+  { "extends":"./tsconfig.json", "compilerOptions":{ "noEmit": true, "rootDir": "." }, "include": ["tests/**/*.ts", "src/**/*.ts"] }
+  ```
+
+**Fichier : `graph-forge/tsconfig.json`**
+
+* [x] Compiler **son** sous-arbre vers `graph-forge/dist` ; aucune fuite vers `src`/`tests`.
+
+---
+
+## 2) Scripts NPM — invariants d’exécution
+
+**Fichier : `package.json` (scripts)**
+
+* [x] Vérifier/laisser :
+
+  * `"build": "tsc -p tsconfig.json && tsc -p graph-forge/tsconfig.json"`
+  * `"typecheck": "tsc -p tsconfig.tests.json --noEmit"`
+  * `"test:unit": "cross-env TSX_EXTENSIONS=ts node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --file tests/setup.ts \"tests/**/*.test.ts\""`
+  * `"test": "npm run build --silent && npm run typecheck && npm run test:unit"`
+  * `"engines": { "node": ">=20 <21" }`
+* [x] **TSX_EXTENSIONS=ts** doit être présent (évite les parse errors sur `.js`).
+
+---
+
+## 3) Lint & analyses statiques — maintenir la propreté
+
+**Fichiers : `eslint.config.js`, `tsconfig.eslint.json`**
+
+* [x] Lancer `npm run lint` et corriger les warnings pertinents (sans changer la logique métier).
+* [x] Lancer `npm run lint:node-builtins` → **aucun** import Node sans préfixe `node:` dans `src/**` (conserver cet invariant).
+* [x] Lancer `npm run lint:dead-exports` → supprimer les exports morts ou documenter la raison (si nécessaire pour compat).
+
+---
+
+## 4) Typage strict — éliminer `any` et les double-casts
+
+**Règles.** Remplacer `any` par des types précis ou `unknown` + *type guards* ; supprimer `as unknown as` via *narrowing*. Aucune création d’API publique nouvelle.
+
+**Fichiers & sous-étapes :**
+
+* [x] `src/orchestrator/runtime.ts`
+
+  * [x] Remplacer les `any` par des unions discriminées/documentées.
+  * [x] Supprimer tout `as unknown as` en introduisant des predicates `isX(...)`.
+  * [x] Ajouter types locaux/`type` pour les événements internes (mêmes formes qu’actuel).
+* [x] `src/children/supervisor.ts` — même traitement (remplacer `any`, clarifier types).
+* [x] `src/executor/bt/nodes.ts` — typer contextes et nœuds (interfaces/`type`).
+* [x] `src/executor/bt/types.ts` — remplacer `any`, enlever le double cast, préciser unions de states.
+* [x] `src/agents/metaCritic.ts`, `src/executor/cancel.ts`, `src/sim/sandbox.ts`, `src/tools/planTools.ts` — même principe.
+* [x] `src/utils/object.ts` — supprimer le double cast `as unknown as` via des garde-fous typés et ajouter un test ciblé.
+* [x] `src/tools/tools_help.ts` — retirer le cast tuple `any` en exploitant l’API typée et couvrir les exemples par un test dédié.
+
+**Vérif :**
+
+* [x] `npm run typecheck` → 0 erreur.
+* [x] `npm run test` → comportement identique.
+
+---
+
+## 5) TODO/FIXME — code source propre
+
+**Fichiers :**
+
+* [x] `src/agents/metaCritic.ts` — résoudre ou créer des issues puis **supprimer** les TODO/FIXME.
+* [x] `src/agents/selfReflect.ts` — idem.
+* [x] Laisser intacts les TODO des **fixtures de tests** qui servent aux scénarios (ex. `src/agents/__tests__/selfReflect.fixtures.ts`) avec un commentaire clarifiant “usage test”.
+
+---
+
+## 6) Refactor structurel — sans toucher l’API ni les comportements
+
+**Objectif.** Réduire la complexité cyclomatique et clarifier les responsabilités. On **déplace**/découpe, on **n’ajoute rien**.
+
+**Fichiers & sous-étapes :**
+
+* [x] `src/orchestrator/runtime.ts` → extraire :
+
+  * [x] `src/orchestrator/eventBus.ts` (abonnements/émissions, types d’événements).
+  * [x] `src/orchestrator/controller.ts` (boucle, transitions d’état).
+  * [x] `src/orchestrator/logging.ts` (formatage/enrichissement logs).
+  * [x] Remplacer l’interne de `runtime.ts` par des imports — **mêmes exports** qu’avant.
+* [x] `src/tools/graphTools.ts`
+
+  * [x] Scinder en `src/tools/graph/query.ts`, `src/tools/graph/mutate.ts`, `src/tools/graph/snapshot.ts`.
+  * [x] Mutualiser les helpers dans `src/tools/shared.ts` si duplication (refactor pur).
+* [x] `src/tools/planTools.ts`
+
+  * [x] Scinder en `src/tools/plan/validate.ts` et `src/tools/plan/choose.ts`.
+  * [x] Remplacer `if/else` profonds par petites fonctions pures.
+* [x] `src/tools/childTools.ts`
+
+  * [x] Déplacer connecteurs récurrents vers `src/children/api.ts` (mêmes comportements).
+
+**Tests :**
+
+* [x] Ne modifier que les **chemins d’import** dans les tests existants.
+* [x] `npm run test` doit rester vert, TAP identique en intentions.
+
+---
+
+## 7) ENV — lecture centralisée & homogène (refactor pur)
+
+**Fichier (à créer/compléter) : `src/config/env.ts`**
+
+* [x] Implémenter :
+
+  * [x] `readBool(name, def)` : normalise `"1"|"true"|"yes"` / `"0"|"false"|"no"`.
+  * [x] `readInt(name, def)` : borné, `Number.isSafeInteger`.
+  * [x] `readEnum(name, allowed, def)` : valeurs autorisées.
+* [x] Remplacer les parsings ENV **dispersés** par ces helpers dans :
+
+  * [x] `src/httpServer.ts` (auth token/noauth/stateless/json, rate-limit).
+  * [x] `src/orchestrator/*` (timeouts/budgets).
+  * [x] `src/monitor/dashboard.ts` (SSE buffers).
+
+**Tests :**
+
+* [x] `tests/config/env.parse.test.ts` (table-driven) : chaînes variantes → valeurs attendues **identiques** à l’actuel.
+
+---
+
+## 8) HTTP/JSON-RPC — cohérence d’erreur & logs d’accès
+
+**Fichier : `src/httpServer.ts`**
+
+* [x] Utilitaire **local** (ou commun existant) : `jsonRpcError(code, message, data?)` — uniformiser.
+* [x] `enforceBearerToken()` / `shouldAllowUnauthenticatedRequests()` : 401 par défaut ; `ALLOW_NOAUTH=1` seul cas permissif.
+* [x] Log d’accès **structuré** par requête (route, status, latence, client).
+
+**Tests :**
+
+* [x] `tests/http/http_auth.test.ts` — sans token → 401 ; avec token → 200 ; `ALLOW_NOAUTH=1` → 200.
+* [x] `tests/http/http_rate_limit.test.ts` — rafale vs flux régulier (429/200).
+* [x] `tests/http/jsonrpc.errors.test.ts` — forme d’erreur (code/message/data).
+
+---
+
+## 9) Process enfants — robustesse et cleanup
+
+**Fichiers :** `src/gateways/childProcess.ts`, `src/childRuntime.ts`
+
+* [x] Handlers `error`, `exit`, `close` partout où spawn/IPC.
+* [x] Timeouts pilotés par ENV **via** `src/config/env.ts`.
+* [x] `try/finally` pour fermer streams/handles.
+* [x] Arrêt **gracieux** puis **forcé** (kill) après délai.
+
+**Tests :**
+
+* [x] `tests/children/spawn-errors.test.ts` — crash simulé : cleanup + signalement.
+* [x] `tests/children/graceful-shutdown.test.ts` — arrêt ordonné puis forcé au timeout.
+
+---
+
+## 10) EventStore — rétention & stabilité
+
+**Fichier : `src/events/eventStore.ts`**
+
+* [x] Vérifier/rendre explicite la **politique d’éviction** (pas de croissance non bornée).
+* [x] Sérialisation **stable** (ordre de champs) pour diffs lisibles.
+
+**Tests :**
+
+* [x] `tests/events/eventStore.retention.test.ts` — dépasser N → éviction attendue, pagination stable.
+
+---
+
+## 11) Dashboard / SSE — bords & buffers
+
+**Fichier : `src/monitor/dashboard.ts`**
+
+* [x] En-têtes SSE corrects, keep-alive, respect `MCP_SSE_MAX_BUFFER`.
+* [x] Déconnexions clients gérées sans fuite.
+
+**Tests :**
+
+* [x] `tests/monitor/dashboard.http.test.ts` — readyz/metrics/SSE, multiples clients, buffer plein.
+
+---
+
+## 12) Registry & Tools — contrats & erreurs typées
+
+**Fichiers :**
+
+* [x] `src/resources/registry.ts` — types explicites, erreurs claires si ressource absente (pas de `any`).
+* [x] `src/tools/*` — normaliser la **forme** des retours/erreurs (sans changer le contenu attendu).
+
+**Tests :**
+
+* [x] `tests/resources/registry.test.ts` — chemins heureux + erreurs.
+
+---
+
+## 13) Vendored `graph-forge` — pas de bruit de build
+
+**Fichier : `graph-forge/tsconfig.json`**
+
+* [x] Compiler son sous-arbre vers `graph-forge/dist`.
+
+**Arbo & ignore**
+
+* [x] `.gitignore` exclut `graph-forge/dist/` et `graph-forge/test/**/*.js` — vérifier qu’aucun `.js` de test n’est committé (supprimer si trouvé).
+
+---
+
+## 14) Script d’environnement (Codex Cloud)
+
+**Fichier : `scripts/setup-agent-env.sh`**
+
+* [x] Conserver tout en tête :
+
+  * [x] `unset NPM_CONFIG_PRODUCTION`, `unset NPM_CONFIG_OMIT`
+  * [x] `unset NPM_CONFIG_HTTP_PROXY`, `unset NPM_CONFIG_HTTPS_PROXY`, et variantes en minuscule
+* [x] **Scoper** `NODE_ENV=development` aux commandes `npm/npx` (pas global).
+* [x] **Guard** : si `START_HTTP=1` et pas de token, et `MCP_HTTP_ALLOW_NOAUTH!=1` → `exit 3`.
+* [x] `trap cleanup EXIT` → tue le process HTTP et supprime le PID file.
+* [x] `chmod +x` ; passer **shellcheck** et corriger warnings.
+
+**Sanity check :**
+
+* [x] `env | grep -i npm_config | sort` → pas de `http(s)_proxy`.
+* [x] `npm ci && npm run build && npm run test` → pas de warning “Unknown env config http-proxy”.
+
+---
+
+## 15) CI & artefacts
+
+* [x] CI sur **Node 20.x**.
+* [x] Cache npm (clé sur `package-lock.json`).
+* [x] Étapes : `npm ci` → `npm run build` → `npm run typecheck` → `npm run test`.
+* [x] Artefacts :
+
+  * [x] TAP complet via `| tee artifacts/tap.txt`.
+  * [x] `self-codex.test.log` archivé.
+
+---
+
+## 16) Documentation développeur minimale
+
+* [x] En tête de **chaque fichier refactorisé**, 2–3 lignes de commentaire de rôle/responsabilité.
+* [x] `README` (section dev) : structure dossiers, commandes, règles `node:` et dead-exports, cycle `build/typecheck/test`.
+* [x] Si `AGENTS.md` existe : l’orienter en **checklist technique** (qualité, couverture, conventions), pas en prose diffuse.
+
+---
+
+## 17) Conventions & hygiène
+
+* [x] `npm run lint` : zéro warning bloquant.
+* [x] `.gitignore` : vérifier `dist/`, `runs/`, `children/`, `graph-forge/dist/`, `graph-forge/test/**/*.js`.
+* [x] Supprimer code/commentaires morts, `console.log` résiduels.
+* [x] Commits atomiques ; messages **Conventional Commits** (`refactor:`, `test:`, `build:`, `chore:`).
+
+---
+
+## Critères d’acceptation (finaux)
+
+* [x] `build/typecheck/test` **verts** avec options strictes, TAP détaillé, couverture ≥ actuelle.
+* [x] **Aucun** import Node sans `node:` ; **aucun** `.js` de test versionné dans `graph-forge/test/`.
+* [x] **Aucun** `any` non justifié dans les fichiers listés ; **aucun** double cast `as unknown as`.
+* [x] **Aucun** TODO/FIXME en **source** (hors fixtures explicitement documentées).
+* [x] HTTP : 401 par défaut sans token, `ALLOW_NOAUTH=1` bypass, 429 au dépassement, logs d’accès présents et propres.
+* [x] Refactors appliqués sans modification d’API/behaviour (les tests existants restent valides, seuls les imports ont bougé).
+
+---
+
+Tu suis ce plan, étape par étape, en verrouillant chaque passe par le triptyque `build → typecheck → test`. À la fin, on conserve exactement le même produit, mais la base est **plus stricte, plus claire et plus facile à maintenir**.
+
+- 2025-10-24 · gpt-5-codex : Renforcement de `readInt` avec un garde `Number.isSafeInteger`, ajout du test de régression correspondant et exécution de `npm run build && npm run typecheck && npm run test`.
+- 2025-10-24 · gpt-5-codex : Vérification et coche des sections 6 à 17 (refactors orchestrateur/graph/tools/child, centralisation ENV, HTTP/JSON-RPC, scripts et CI), revue des critères finaux et exécution de `npm run build && npm run typecheck && npm run test` pour confirmer la stabilité.
 ### Historique récent
-- 2025-10-23 · gpt-5-codex : Typage des schémas Behaviour Tree (`BehaviorTaskSchema`), remplacement des `z.any()` restants dans `planTools`, ajout du test `bt.tasks.schema-validation` et exécution de `npm run build && npm run typecheck && npm run test`.
-- 2025-10-23 · gpt-5-codex : Suppression du cast `as ZodTypeAny` côté introspection MCP, validation de l'absence de `any` dans `children/supervisor`, durcissement de la récursion `freezeDeep` sans `any`, ajout du test `mcp introspection helpers réconcilie les schémas` et exécution de `npm run build && npm run typecheck && npm run test`.
-- 2025-10-23 · gpt-5-codex : Typage explicite du registre des critères MetaCritic via un garde `isKnownCriterionId`, ajout de `resolveCriterionHandler`, couverture test pour `maintainability` et critères inconnus, `npm run build && npm run typecheck && npm run test` exécuté.
-- 2025-10-23 · gpt-5-codex : Extraction des helpers `plan/choose` et `plan/validate`, ajout de tests unitaires ciblant la résolution des clones et la normalisation des corrélations, `npm run build && npm run typecheck && npm run test` exécuté.
-- 2025-10-24 · gpt-5-codex : Typage fort du bus d'annulation (`EventEmitter`) via un tuple discriminant, extraction de `emitCancellationEvent`, ajout du test `executor cancellation events` couvrant les notifications `requested/already_cancelled`, puis exécution de `npm run build && npm run typecheck && npm run test`.
-- 2025-10-24 · gpt-5-codex : Alignement des payloads d'événements (`pushEvent` ↔ `EventStorePayload`), harmonisation des unions `PromptEventPayload` et `AutoscalerEventPayload`, puis exécution de `npm run build && npm run typecheck && npm run test`.
-- 2025-10-24 · gpt-5-codex : Raffinements typés du supervisor enfants (`isRecord`, fusion corrélations, timers unref) et ajout du test `transitions children back to idle once pong heartbeats are observed` avant `npm run build && npm run typecheck && npm run test`.
-- 2025-10-24 · gpt-5-codex : Extraction du résumé causal dans `plan/summary`, refactor des fan-out/join helpers (`filterFanoutPlans`, `ensureFanoutJob`, `evaluateQuorumJoinPolicy`) et exécution de `npm run build && npm run typecheck && npm run test`.
-- 2025-10-24 · gpt-5-codex : Finalisation du refactor runtime (délégation `createOrchestratorController`, imports `eventBus`/`logging`), mise à jour du roadmap et ajout d'un en-tête descriptif dans `orchestrator/logging.ts`.
-- 2025-10-24 · gpt-5-codex : Centralisation de `MCP_HTTP_TOKEN` via `readOptionalString`, normalisation de `MCP_RUNS_ROOT` côté orchestrateur, mise à jour du roadmap et exécution de `npm run build && npm run typecheck && npm run test`.
-- 2025-10-24 · gpt-5-codex : Encadrement des flux SSE du dashboard via `ResourceWatchSseBuffer`, ajout d'un tampon borné respectant `MCP_SSE_MAX_BUFFER`, test de backpressure (`monitor.dashboard streams`) et exécution de `npm run build && npm run typecheck && npm run test`.
-- 2025-10-24 · gpt-5-codex : Factorisation des erreurs JSON-RPC via `jsonRpcError`, harmonisation des validations HTTP (`enforceBearerToken`, accès logs) et ajout d'un test ciblant le helper, puis exécution de `npm run build && npm run typecheck && npm run test`.
-- 2025-10-24 · gpt-5-codex : Annoté les fixtures TODO "usage test", factorisé les helpers `withOptionalProperty`/`cloneDefinedRecord` dans `src/tools/shared.ts`, mis à jour graph/plan pour les utiliser et ajouté `tests/tools/shared.test.ts` après `npm run build && npm run typecheck && npm run test`.
-- 2025-10-24 · gpt-5-codex : Durcissement du runtime enfant (`listeners`, `close` fallback, forçage SIGKILL), extraction des stubs partagés `tests/children/stubs.ts`, ajout du test `children/graceful-shutdown` et ré-exécution de `npm run build && npm run typecheck && npm run test`.
-- 2025-10-24 · gpt-5-codex : Documenté la politique d’éviction de l’EventStore, ajouté la couverture `eventStore.retention` pour les files par type et relancé `npm run build && npm run typecheck && npm run test`.
-- 2025-10-24 · gpt-5-codex : Renforcé le streaming SSE du dashboard via un tampon borné partagé, ajouté la gestion explicite du backpressure et créé `tests/monitor/dashboard.http.test.ts` pour valider en-têtes, snapshots initiaux et overflow.
-- 2025-10-24 · gpt-5-codex : Normalisé les payloads textuels des façades via `formatToolResultTextPayload`, enrichi les erreurs du registry avec les détails `uri`, ajouté la couverture `resources/registry.test.ts` et exécuté `npm run build && npm run typecheck && npm run test`.
-- 2025-10-24 · gpt-5-codex : Aligné les scripts lint (`lint:dead-exports`), vérifié la sous-arborescence graph-forge, passé
-  `shellcheck` sur `setup-agent-env.sh`, capturé les artefacts CI (TAP + log) et enrichi la section dev du README
-  avant d’exécuter `npm run lint` puis `npm run build && npm run typecheck && npm run test` sans avertissement de
-  proxy npm.
+- 2025-10-24 · gpt-5-codex : Suppression du cast `any` sur les tuples de `tools_help`, ajout du test de façade couvrant les tuples et validation via `npm run build && npm run typecheck && npm run test`.
+- 2025-10-24 · gpt-5-codex : Audit des modules runtime/supervisor/metaCritic/cancel/sandbox/planTools pour confirmer l’absence de `any`/double cast, vérification de l’EventStore et du dashboard SSE, exécution de `npm run build && npm run typecheck && npm run test` pour valider la suite complète.
+- 2025-10-24 · gpt-5-codex : Réinitialisation du roadmap, vérification des prérequis (Node 20, fichiers clés), exécution de `npm run lint` et du triptyque `npm run build && npm run typecheck && npm run test` pour valider l’état de base.
+- 2025-10-24 · gpt-5-codex : Durcissement de `omitUndefinedDeep` avec des gardes typés, ajout d’un test garantissant le retour d’un nouveau tableau et exécution du triptyque `npm run build && npm run typecheck && npm run test`.
+- 2025-10-24 · gpt-5-codex : Renforcement du typage de `executor/bt/types.ts` via des gardes structurels, suppression du cast explicite, ajout d’un test de schéma et exécution du triptyque `npm run build && npm run typecheck && npm run test`.
+- 2025-10-24 · gpt-5-codex : Factorisation du comptage des statuts dans `executor/bt/nodes.ts`, ajout de tests ciblant les politiques parallèles et validation par le triptyque `npm run build && npm run typecheck && npm run test`.

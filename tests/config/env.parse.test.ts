@@ -92,6 +92,12 @@ describe("config/env helpers", () => {
 
     setEnv("TEST_INT", "5");
     expect(readOptionalInt("TEST_INT", { min: 10 })).to.equal(undefined);
+
+    // Values beyond Number.MAX_SAFE_INTEGER would previously slip through due to
+    // string parsing; confirm the helper now rejects them to avoid precision
+    // loss.
+    setEnv("TEST_INT", String(Number.MAX_SAFE_INTEGER + 10));
+    expect(readOptionalInt("TEST_INT")).to.equal(undefined);
   });
 
   it("accepts enum values using case-insensitive matching", () => {

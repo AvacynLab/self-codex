@@ -1,5 +1,7 @@
 /**
  * Utility helpers operating on plain JavaScript objects.
+ * Centralises sanitisation helpers reused by the orchestrator and the tests.
+ * Every function remains pure so callers can rely on deterministic behaviour.
  */
 
 /**
@@ -33,12 +35,25 @@ export function omitUndefinedEntries<
  * their identity semantics whereas array entries with `undefined` values are
  * simply removed to preserve dense sequences for downstream consumers.
  */
+/**
+ * Type guard mirroring `Array.isArray` while keeping the type-system away from
+ * `any[]`. Returning `unknown[]` ensures downstream transformations stay typed.
+ */
+function isArray(value: unknown): value is unknown[] {
+  return Array.isArray(value);
+}
+
+/** Predicate used to remove undefined entries from array traversals. */
+function isDefined<T>(value: T): value is Exclude<T, undefined> {
+  return value !== undefined;
+}
+
 export function omitUndefinedDeep<T>(value: T): T {
-  if (Array.isArray(value)) {
+  if (isArray(value)) {
     const compacted = value
       .map((entry) => omitUndefinedDeep(entry))
-      .filter((entry) => entry !== undefined);
-    return compacted as unknown as T;
+      .filter(isDefined);
+    return compacted as typeof value;
   }
 
   if (!value || typeof value !== "object") {

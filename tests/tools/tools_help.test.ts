@@ -188,4 +188,57 @@ describe("tools_help facade", () => {
       errors.some((entry) => entry.includes("payload.config.kind") && entry.includes("variante supportée")),
     );
   });
+
+  it("derives tuple examples without resorting to untyped casts", async () => {
+    const nowIso = new Date("2025-01-01T00:00:00Z").toISOString();
+    const manifest: ToolManifest = {
+      name: "trajectory_plan",
+      title: "Plan de trajectoire",
+      description: "Calcule des waypoints coordonnés et une commande associée",
+      kind: "dynamic",
+      version: 1,
+      createdAt: nowIso,
+      updatedAt: nowIso,
+      category: "plan",
+      tags: ["facade"],
+      hidden: false,
+      budgets: { time_ms: 1_000, tool_calls: 1, bytes_out: 8_192 },
+    };
+    const schema = z
+      .object({
+        coordinates: z.tuple([z.number().int().min(1), z.number().int().max(5)]),
+        command: z
+          .tuple([
+            z.literal("move"),
+            z
+              .object({
+                axis: z.enum(["x", "y"]),
+                distance: z.number().int().min(2),
+              })
+              .strict(),
+          ])
+          .describe("Instruction de mouvement"),
+      })
+      .strict();
+    const registry = createRegistryView([manifest], { [manifest.name]: schema });
+    const logger = new StructuredLogger();
+    const handler = createToolsHelpHandler({ registry, logger });
+
+    const result = await handler({}, createExtras("req-tools-help-tuple"));
+    const structured = result.structuredContent as Record<string, any>;
+    const [tool] = structured.details.tools as Array<Record<string, any>>;
+
+    const coordinates = tool.example.coordinates as unknown[];
+    expect(Array.isArray(coordinates)).to.equal(true);
+    expect(coordinates).to.have.lengthOf(2);
+    expect(coordinates[0]).to.be.a("number").that.is.at.least(1);
+    expect(coordinates[1]).to.be.a("number");
+
+    const command = tool.example.command as unknown[];
+    expect(Array.isArray(command)).to.equal(true);
+    expect(command[0]).to.equal("move");
+    expect(command[1]).to.deep.equal({ axis: "x", distance: 2 });
+
+    expect(() => schema.parse(tool.example)).to.not.throw();
+  });
 });
