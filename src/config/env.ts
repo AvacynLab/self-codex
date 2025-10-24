@@ -90,6 +90,12 @@ export function readOptionalInt(name: string, options?: NumberOptions): number |
   }
 
   const value = Number.parseInt(normalised, 10);
+  // Reject literals that overflow JavaScript's precise integer range to avoid
+  // silently rounding extremely large values (e.g. > Number.MAX_SAFE_INTEGER).
+  if (!Number.isSafeInteger(value)) {
+    return undefined;
+  }
+
   return withinBounds(value, options) ? value : undefined;
 }
 

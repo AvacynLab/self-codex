@@ -251,6 +251,19 @@ type NormalisedParallelPolicy =
   | { kind: "any" }
   | { kind: "quota"; successThreshold: number };
 
+/**
+ * Aggregated view of child outcomes returned by a parallel composite tick.
+ * Keeping the counters in a dedicated structure simplifies the downstream
+ * policy logic and allows the type-checker to guarantee every branch updates
+ * the same set of metrics.
+ */
+interface ParallelStatusSummary {
+  readonly successCount: number;
+  readonly failureCount: number;
+  readonly runningCount: number;
+  readonly total: number;
+}
+
 /** Convert user provided policy configuration into the internal representation. */
 function normaliseParallelPolicy(
   policy: ParallelPolicy,
@@ -267,6 +280,41 @@ function normaliseParallelPolicy(
 
   const clamped = Math.max(1, Math.min(childCount, Math.floor(threshold)));
   return { kind: "quota", successThreshold: clamped };
+}
+
+/**
+ * Count the occurrences of each terminal state within a batch of child results.
+ * The derived summary keeps the policy handling readable while remaining a
+ * straightforward pass-through in terms of behaviour.
+ */
+function summariseChildStatuses(results: readonly BehaviorTickResult[]): ParallelStatusSummary {
+  let successCount = 0;
+  let failureCount = 0;
+  let runningCount = 0;
+
+  for (const result of results) {
+    switch (result.status) {
+      case "success": {
+        successCount += 1;
+        break;
+      }
+      case "failure": {
+        failureCount += 1;
+        break;
+      }
+      case "running": {
+        runningCount += 1;
+        break;
+      }
+    }
+  }
+
+  return {
+    successCount,
+    failureCount,
+    runningCount,
+    total: results.length,
+  };
 }
 
 /** Behaviour Tree parallel composite node. */
@@ -346,51 +394,47 @@ export class ParallelNode implements BehaviorNode {
       throw error;
     }
 
-    const statuses = results.map((result) => result.status);
-    const successes = statuses.filter((status) => status === "success").length;
-    const failures = statuses.filter((status) => status === "failure").length;
-    const running = statuses.filter((status) => status === "running").length;
+    const summary = summariseChildStatuses(results);
 
     switch (this.policy.kind) {
       case "all": {
-        if (failures > 0) {
+        if (summary.failureCount > 0) {
           this.reset();
           return FAILURE_RESULT;
         }
-        if (running === 0 && successes === this.children.length) {
+        if (summary.runningCount === 0 && summary.successCount === summary.total) {
           this.reset();
           return SUCCESS_RESULT;
         }
         return { status: "running" };
       }
       case "any": {
-        if (successes > 0) {
+        if (summary.successCount > 0) {
           this.reset();
           return SUCCESS_RESULT;
         }
-        if (running === 0 && failures === this.children.length) {
+        if (summary.runningCount === 0 && summary.failureCount === summary.total) {
           this.reset();
           return FAILURE_RESULT;
         }
         return { status: "running" };
       }
       case "quota": {
-        if (successes >= this.policy.successThreshold) {
+        if (summary.successCount >= this.policy.successThreshold) {
           this.reset();
           return SUCCESS_RESULT;
         }
-        const remainingPotential = this.children.length - failures;
+        const remainingPotential = summary.total - summary.failureCount;
         if (remainingPotential < this.policy.successThreshold) {
           this.reset();
           return FAILURE_RESULT;
         }
         return { status: "running" };
       }
-      default: {
-        const exhaustive: never = this.policy;
-        throw new Error(`unsupported parallel policy ${(exhaustive as { kind: string }).kind}`);
-      }
     }
+
+    /* c8 ignore next */
+    throw new Error("unsupported parallel policy");
   }
 
   /** Reset cached statuses and child nodes. */

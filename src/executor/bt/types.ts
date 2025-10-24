@@ -1,6 +1,104 @@
+/**
+ * Behaviour Tree type system centralising runtime contracts and serialisation schemas.
+ * The shared definitions keep the interpreter strongly typed across runtime and persistence.
+ */
 import { z } from "zod";
 
 import { omitUndefinedDeep } from "../../utils/object.js";
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function hasOptionalString(record: Record<string, unknown>, key: string): boolean {
+  return !(key in record) || typeof record[key] === "string";
+}
+
+function hasOptionalNumber(record: Record<string, unknown>, key: string, predicate?: (value: number) => boolean): boolean {
+  if (!(key in record)) {
+    return true;
+  }
+  const value = record[key];
+  if (typeof value !== "number" || Number.isNaN(value)) {
+    return false;
+  }
+  return predicate ? predicate(value) : true;
+}
+
+function isParallelPolicyValue(value: unknown): value is ParallelPolicy {
+  if (value === "all" || value === "any") {
+    return true;
+  }
+  if (isRecord(value) && value.mode === "quota" && typeof value.threshold === "number" && Number.isFinite(value.threshold)) {
+    return true;
+  }
+  return false;
+}
+
+function isBehaviorNodeDefinition(value: unknown): value is BehaviorNodeDefinition {
+  if (!isRecord(value) || typeof value.type !== "string") {
+    return false;
+  }
+
+  switch (value.type) {
+    case "sequence":
+    case "selector": {
+      return (
+        Array.isArray(value.children) &&
+        value.children.every(isBehaviorNodeDefinition) &&
+        hasOptionalString(value, "id")
+      );
+    }
+    case "parallel": {
+      return (
+        Array.isArray(value.children) &&
+        value.children.every(isBehaviorNodeDefinition) &&
+        hasOptionalString(value, "id") &&
+        isParallelPolicyValue(value.policy)
+      );
+    }
+    case "retry": {
+      return (
+        typeof value.max_attempts === "number" &&
+        Number.isInteger(value.max_attempts) &&
+        value.max_attempts >= 1 &&
+        isBehaviorNodeDefinition(value.child) &&
+        hasOptionalString(value, "id") &&
+        hasOptionalNumber(value, "backoff_ms", (candidate) => Number.isInteger(candidate) && candidate >= 0) &&
+        hasOptionalNumber(value, "backoff_jitter_ms", (candidate) => Number.isInteger(candidate) && candidate >= 0)
+      );
+    }
+    case "timeout": {
+      return (
+        isBehaviorNodeDefinition(value.child) &&
+        hasOptionalString(value, "id") &&
+        hasOptionalNumber(value, "timeout_ms", (candidate) => Number.isInteger(candidate) && candidate >= 1) &&
+        hasOptionalString(value, "timeout_category") &&
+        hasOptionalNumber(value, "complexity_score", (candidate) => Number.isFinite(candidate) && candidate > 0)
+      );
+    }
+    case "guard": {
+      return (
+        typeof value.condition_key === "string" &&
+        hasOptionalString(value, "id") &&
+        isBehaviorNodeDefinition(value.child)
+      );
+    }
+    case "cancellable": {
+      return hasOptionalString(value, "id") && isBehaviorNodeDefinition(value.child);
+    }
+    case "task": {
+      return (
+        typeof value.node_id === "string" &&
+        typeof value.tool === "string" &&
+        hasOptionalString(value, "id") &&
+        hasOptionalString(value, "input_key")
+      );
+    }
+    default:
+      return false;
+  }
+}
 
 /**
  * Status returned by every Behaviour Tree node after a tick.
@@ -270,7 +368,13 @@ export const BehaviorNodeDefinitionSchema: z.ZodType<BehaviorNodeDefinition> = z
         });
       }
     })
-    .transform((value) => omitUndefinedDeep(value));
+    .transform((value): BehaviorNodeDefinition => {
+      const sanitised = omitUndefinedDeep(value);
+      if (!isBehaviorNodeDefinition(sanitised)) {
+        throw new Error("invalid behavior node definition");
+      }
+      return sanitised;
+    });
 
   return schema as z.ZodType<BehaviorNodeDefinition>;
 });

@@ -248,8 +248,18 @@ function buildExampleValue(schema: ZodTypeAny, depth = 0): unknown {
       return element === undefined ? [] : [element];
     }
     case ZodFirstPartyTypeKind.ZodTuple: {
-      const tupleDef = schema as z.ZodTuple<any>;
-      return tupleDef._def.items.map((item: ZodTypeAny) => buildExampleValue(item, depth + 1));
+      // Use the strongly typed `items` accessor rather than `_def.items` so the
+      // implementation stays within the public API surface and avoids `any`
+      // casts when iterating over tuple elements. The helper still skips the
+      // optional `rest` entries because examples focus on the minimal happy
+      // path required to satisfy the schema.
+      const tupleDef = schema as z.ZodTuple<[ZodTypeAny, ...ZodTypeAny[]] | [], ZodTypeAny | null>;
+      const items = tupleDef.items;
+      if (items.length === 0) {
+        return [];
+      }
+
+      return items.map((item) => buildExampleValue(item, depth + 1));
     }
     case ZodFirstPartyTypeKind.ZodObject: {
       const objectDef = schema as z.ZodObject<Record<string, ZodTypeAny>>;

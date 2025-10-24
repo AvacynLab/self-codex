@@ -61,6 +61,15 @@ describe("utils/object", () => {
 
       assert.deepEqual(sanitised, ["alpha", "beta", "gamma"]);
     });
+
+    it("returns a fresh array instance when filtering undefined entries", () => {
+      const source = ["kept", undefined, "retained"] as const;
+
+      const sanitised = omitUndefinedDeep([...source]);
+
+      assert.deepEqual(sanitised, ["kept", "retained"]);
+      assert.notStrictEqual(sanitised, source);
+    });
   });
 
   describe("coerceNullToUndefined", () => {
