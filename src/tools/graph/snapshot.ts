@@ -1,3 +1,9 @@
+/**
+ * Provides snapshotting utilities that convert normalised graphs into stable
+ * descriptors, hashes, and serialised payloads. This keeps the persistence
+ * boundary separate from mutation/query logic so each concern can evolve
+ * independently.
+ */
 import { createHash } from "node:crypto";
 // NOTE: Node built-in modules are imported with the explicit `node:` prefix to guarantee ESM resolution in Node.js.
 

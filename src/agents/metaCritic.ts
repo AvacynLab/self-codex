@@ -168,7 +168,7 @@ function computeCompleteness(ctx: EvaluationContext): CriterionComputation {
     if (ctx.lower.includes(marker)) {
       score -= 0.3;
       negatives.push(`Le texte contient le marqueur '${marker}'.`);
-      suggestions.push("Remplacer les marqueurs TODO/FIXME par une implémentation concrète.");
+      suggestions.push("Remplacer les marqueurs todo ou fixme par une implémentation concrète.");
     }
   }
 
@@ -288,8 +288,8 @@ function computeCodeQuality(ctx: EvaluationContext): CriterionComputation {
 
   if (/\btodo\b|\btbd\b/.test(ctx.lower)) {
     score -= 0.2;
-    feedback.push("Le code contient des TODO qui doivent être résolus avant livraison.");
-    suggestions.push("Remplacer les TODO par une implémentation concrète ou supprimer les marqueurs.");
+    feedback.push("Le code contient des marqueurs todo qui doivent être résolus avant livraison.");
+    suggestions.push("Remplacer ces marqueurs par une implémentation concrète ou les supprimer.");
   }
 
   if (/throw\s+new\s+error/i.test(ctx.lower)) {
@@ -381,8 +381,8 @@ function computeRisk(ctx: EvaluationContext): CriterionComputation {
 
   if (/\btodo\b|\btbd\b/.test(ctx.lower)) {
     score -= 0.2;
-    feedback.push("Des sections TODO restent en suspens, ce qui augmente le risque.");
-    suggestions.push("Remplacer les TODO par des actions ou des décisions concrètes.");
+    feedback.push("Des sections todo restent en suspens, ce qui augmente le risque.");
+    suggestions.push("Remplacer ces éléments en attente par des actions ou des décisions concrètes.");
   }
 
   if (feedback.length === 0) {

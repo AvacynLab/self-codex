@@ -1,3 +1,8 @@
+/**
+ * Encapsulates graph mutations and rewrite orchestration. By gathering the
+ * higher-level helpers outside `graphTools.ts`, callers can compose adaptive
+ * rewrites without re-importing the full toolkit.
+ */
 import { z } from "zod";
 
 import { applyAdaptiveRewrites, type AdaptiveEvaluationResult } from "../../graph/adaptive.js";
