@@ -20,6 +20,46 @@ describe("repository hygiene", () => {
   const IGNORED_DIRECTORIES = new Set(["node_modules", "dist", ".git", "tmp", "playground_codex_demo", "tmp_before.txt"]);
   const CODE_EXTENSIONS = new Set([".ts", ".tsx", ".js", ".mjs", ".cjs", ".mts", ".cts"]);
   const COMMENT_MARKER_PATTERN = /\/\/\s*(?:TODO|FIXME)|\/\*\s*(?:TODO|FIXME)/g;
+  const hygieneConfigPath = path.resolve(repoRoot, "config", "hygiene.config.json");
+  let todoAllowlist = new Set<string>();
+  let normalizeRelativePath: (input: string) => string = (input) => path.posix.normalize(input.replace(/\\/g, "/"));
+  type HygieneHelpers = typeof import("../scripts/hygiene/checker.mjs");
+  type NormalizeAllowlistEntryResult = ReturnType<HygieneHelpers["normalizeAllowlistEntry"]>;
+  let normalizeAllowlistEntry: (entry: unknown) => NormalizeAllowlistEntryResult = (entry) => {
+    if (typeof entry !== "string") {
+      return { ok: false, reason: "empty" } as NormalizeAllowlistEntryResult;
+    }
+    const normalized = normalizeRelativePath(entry);
+    if (normalized.length === 0) {
+      return { ok: false, reason: "empty" } as NormalizeAllowlistEntryResult;
+    }
+    return { ok: true, value: normalized } as NormalizeAllowlistEntryResult;
+  };
+
+  before(async () => {
+    const hygieneHelpers = await import("../scripts/hygiene/checker.mjs");
+    normalizeRelativePath = hygieneHelpers.normalizeRelativePath;
+    normalizeAllowlistEntry = hygieneHelpers.normalizeAllowlistEntry;
+    try {
+      const rawConfig = await readFile(hygieneConfigPath, "utf8");
+      const parsed = JSON.parse(rawConfig);
+      if (Array.isArray(parsed.todoAllowlist)) {
+        const entries: string[] = [];
+        for (const entry of parsed.todoAllowlist) {
+          const normalization = normalizeAllowlistEntry(entry);
+          if (normalization.ok) {
+            entries.push(normalization.value);
+          }
+        }
+        todoAllowlist = new Set(entries);
+      }
+    } catch (error) {
+      const errno = error as ErrnoException;
+      if (errno.code !== "ENOENT") {
+        throw error;
+      }
+    }
+  });
 
   async function collectFiles(relativeDir: string): Promise<string[]> {
     const absoluteDir = path.resolve(repoRoot, relativeDir);
@@ -63,6 +103,10 @@ describe("repository hygiene", () => {
       const candidateFiles = await collectFiles(directory);
       for (const relativePath of candidateFiles) {
         const absolutePath = path.resolve(repoRoot, relativePath);
+        const normalizedRelativePath = normalizeRelativePath(relativePath);
+        if (todoAllowlist.has(normalizedRelativePath)) {
+          continue;
+        }
         const content = await readFile(absolutePath, "utf8");
         const matches = content.matchAll(COMMENT_MARKER_PATTERN);
         for (const match of matches) {

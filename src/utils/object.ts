@@ -36,8 +36,9 @@ export function omitUndefinedEntries<
  * simply removed to preserve dense sequences for downstream consumers.
  */
 /**
- * Type guard mirroring `Array.isArray` while keeping the type-system away from
- * `any[]`. Returning `unknown[]` ensures downstream transformations stay typed.
+ * Type guard mirroring `Array.isArray` while deliberately avoiding permissive
+ * array typings. Returning `unknown[]` asserts our preference for a safe
+ * hand-off to downstream transformations.
  */
 function isArray(value: unknown): value is unknown[] {
   return Array.isArray(value);
