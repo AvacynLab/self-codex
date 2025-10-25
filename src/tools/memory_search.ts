@@ -23,6 +23,7 @@ import {
   MemorySearchInputSchema,
   MemorySearchOutputSchema,
 } from "../rpc/schemas.js";
+import { buildToolErrorResult, buildToolSuccessResult } from "./shared.js";
 
 /** Canonical façade identifier exposed in the manifest catalogue. */
 export const MEMORY_SEARCH_TOOL_NAME = "memory_search" as const;
@@ -127,11 +128,7 @@ export function createMemorySearchHandler(context: MemorySearchToolContext): Too
             remaining: error.remaining,
             limit: error.limit,
           });
-          return {
-            isError: true,
-            content: [{ type: "text", text: asJsonPayload(degraded) }],
-            structuredContent: degraded,
-          };
+          return buildToolErrorResult(asJsonPayload(degraded), degraded);
         }
         throw error;
       }
@@ -177,11 +174,7 @@ export function createMemorySearchHandler(context: MemorySearchToolContext): Too
         trace_id: traceContext?.traceId ?? null,
         message: error instanceof Error ? error.message : String(error),
       });
-      return {
-        isError: true,
-        content: [{ type: "text", text: asJsonPayload(degraded) }],
-        structuredContent: degraded,
-      };
+      return buildToolErrorResult(asJsonPayload(degraded), degraded);
     }
 
     const structured = MemorySearchOutputSchema.parse({
@@ -209,10 +202,7 @@ export function createMemorySearchHandler(context: MemorySearchToolContext): Too
       rpcContext.budget.snapshot();
     }
 
-    return {
-      content: [{ type: "text", text: asJsonPayload(structured) }],
-      structuredContent: structured,
-    };
+    return buildToolSuccessResult(asJsonPayload(structured), structured);
   };
 }
 

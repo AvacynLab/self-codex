@@ -28,6 +28,7 @@ import {
   type IntentRouteOutput,
   type IntentRouteRecommendation as IntentRouteRecommendationPayload,
 } from "../rpc/schemas.js";
+import { buildToolErrorResult, buildToolSuccessResult } from "./shared.js";
 
 /**
  * Describes the structured payload returned by the intent routing façade.
@@ -567,11 +568,7 @@ export function createIntentRouteHandler(
         trace_id: traceContext?.traceId ?? null,
       });
       const structured = buildRouterDisabledResult(idempotencyKey);
-      return {
-        isError: true,
-        content: [{ type: "text", text: asJsonPayload(structured) }],
-        structuredContent: structured,
-      };
+      return buildToolErrorResult(asJsonPayload(structured), structured);
     }
 
     let charge: BudgetCharge | null = null;
@@ -597,11 +594,7 @@ export function createIntentRouteHandler(
           limit: error.limit,
         });
         const structured = buildBudgetExceededResult(idempotencyKey, error);
-        return {
-          isError: true,
-          content: [{ type: "text", text: asJsonPayload(structured) }],
-          structuredContent: structured,
-        };
+        return buildToolErrorResult(asJsonPayload(structured), structured);
       }
       throw error;
     }
@@ -687,10 +680,7 @@ export function createIntentRouteHandler(
       rpcContext.budget.snapshot();
     }
 
-    return {
-      content: [{ type: "text", text: asJsonPayload(structured) }],
-      structuredContent: structured,
-    };
+    return buildToolSuccessResult(asJsonPayload(structured), structured);
   };
 }
 

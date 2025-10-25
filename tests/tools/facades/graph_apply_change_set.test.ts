@@ -15,7 +15,7 @@ import { GraphTransactionManager } from "../../../src/graph/tx.js";
 import { GraphLockManager } from "../../../src/graph/locks.js";
 import { ResourceRegistry } from "../../../src/resources/registry.js";
 import { IdempotencyRegistry } from "../../../src/infra/idempotency.js";
-import { normaliseGraphPayload } from "../../../src/tools/graphTools.js";
+import { normaliseGraphPayload } from "../../../src/tools/graph/snapshot.js";
 import {
   createGraphApplyChangeSetHandler,
   GRAPH_APPLY_CHANGE_SET_TOOL_NAME,
@@ -113,7 +113,7 @@ describe("graph_apply_change_set facade", () => {
         await runWithJsonRpcContext({ requestId: extras.requestId, budget }, () => handler(input, extras)),
     );
 
-    expect(result.isError).to.not.equal(true);
+    expect(result.isError).to.equal(false);
     const structured = result.structuredContent as Record<string, any>;
     expect(structured.ok).to.equal(true);
     expect(structured.details.graph_id).to.equal(graphId);
@@ -161,7 +161,7 @@ describe("graph_apply_change_set facade", () => {
         await runWithJsonRpcContext({ requestId: extras.requestId, budget }, () => handler(input, extras)),
     );
 
-    expect(result.isError).to.not.equal(true);
+    expect(result.isError).to.equal(false);
     const structured = result.structuredContent as Record<string, any>;
     expect(structured.details).to.not.have.property("rationale");
     const stats = workerPool.getStatistics();

@@ -24,10 +24,8 @@ import {
   handleGraphBatchMutate,
   type GraphBatchToolContext,
 } from "../src/tools/graphBatchTools.js";
-import {
-  handleGraphGenerate,
-  normaliseGraphPayload,
-} from "../src/tools/graphTools.js";
+import { handleGraphGenerate } from "../src/tools/graph/mutate.js";
+import { normaliseGraphPayload } from "../src/tools/graph/snapshot.js";
 import { ChildSupervisor } from "../src/children/supervisor.js";
 import {
   ChildBatchCreateInputSchema,

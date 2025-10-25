@@ -71,7 +71,7 @@ describe("project_scaffold_run facade", () => {
         ),
     );
 
-    expect(result.isError).to.not.equal(true);
+    expect(result.isError).to.equal(false);
     const structured = result.structuredContent as Record<string, any>;
     expect(structured.ok).to.equal(true);
     expect(structured.details.run_id).to.equal("validation_2025-10-14");

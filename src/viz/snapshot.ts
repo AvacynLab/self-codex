@@ -1,4 +1,4 @@
-import { GraphDescriptorPayload } from "../tools/graphTools.js";
+import { GraphDescriptorPayload } from "../tools/graph/snapshot.js";
 
 /** Snapshot emitted by {@link GraphState.serialize}. */
 export interface GraphStateSnapshot {

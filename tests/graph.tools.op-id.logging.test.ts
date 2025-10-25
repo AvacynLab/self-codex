@@ -4,7 +4,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 
 import { server, logJournal } from "../src/server.js";
-import type { GraphDescriptorPayload } from "../src/tools/graphTools.js";
+import type { GraphDescriptorPayload } from "../src/tools/graph/snapshot.js";
 
 /**
  * Integration checks ensuring the graph tool MCP handlers log correlation metadata (`op_id`) that matches the

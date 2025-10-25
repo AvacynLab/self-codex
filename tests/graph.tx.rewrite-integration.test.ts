@@ -5,10 +5,9 @@ import { GraphTransactionManager } from "../src/graph/tx.js";
 import {
   GraphRewriteApplyInputSchema,
   handleGraphRewriteApply,
-  normaliseGraphPayload,
-  serialiseNormalisedGraph,
-} from "../src/tools/graphTools.js";
-import type { GraphDescriptorPayload } from "../src/tools/graphTools.js";
+} from "../src/tools/graph/mutate.js";
+import { normaliseGraphPayload, serialiseNormalisedGraph } from "../src/tools/graph/snapshot.js";
+import type { GraphDescriptorPayload } from "../src/tools/graph/snapshot.js";
 
 /** Utility restoring the global clock after deterministic timer overrides. */
 function restoreNow(original: () => number): void {

@@ -29,6 +29,7 @@ import {
   resolveMaxArtifactBytes,
   sanitizeArtifactPath,
 } from "./artifact_paths.js";
+import { buildToolErrorResult, buildToolSuccessResult } from "./shared.js";
 
 /** Canonical name advertised by the façade manifest. */
 export const ARTIFACT_WRITE_TOOL_NAME = "artifact_write" as const;
@@ -224,11 +225,7 @@ export function createArtifactWriteHandler(context: ArtifactWriteToolContext): T
         error: error instanceof Error ? error.message : String(error),
       });
       const degraded = buildInvalidPathResult(idempotencyKey, parsed.child_id, parsed.path, metadata);
-      return {
-        isError: true,
-        content: [{ type: "text", text: asJsonPayload(degraded) }],
-        structuredContent: degraded,
-      };
+      return buildToolErrorResult(asJsonPayload(degraded), degraded);
     }
 
     const pathLogFields = buildPathLogFields(sanitizedPath);
@@ -260,11 +257,7 @@ export function createArtifactWriteHandler(context: ArtifactWriteToolContext): T
             metadata,
             error,
           );
-          return {
-            isError: true,
-            content: [{ type: "text", text: asJsonPayload(degraded) }],
-            structuredContent: degraded,
-          };
+          return buildToolErrorResult(asJsonPayload(degraded), degraded);
         }
         throw error;
       }
@@ -290,11 +283,7 @@ export function createArtifactWriteHandler(context: ArtifactWriteToolContext): T
         maxArtifactBytes,
         metadata,
       );
-      return {
-        isError: true,
-        content: [{ type: "text", text: asJsonPayload(degraded) }],
-        structuredContent: degraded,
-      };
+      return buildToolErrorResult(asJsonPayload(degraded), degraded);
     }
 
     const fingerprint = {
@@ -353,11 +342,7 @@ export function createArtifactWriteHandler(context: ArtifactWriteToolContext): T
           metadata,
           error,
         );
-        return {
-          isError: true,
-          content: [{ type: "text", text: asJsonPayload(degraded) }],
-          structuredContent: degraded,
-        };
+        return buildToolErrorResult(asJsonPayload(degraded), degraded);
       }
     } else {
       try {
@@ -370,11 +355,7 @@ export function createArtifactWriteHandler(context: ArtifactWriteToolContext): T
           metadata,
           error,
         );
-        return {
-          isError: true,
-          content: [{ type: "text", text: asJsonPayload(degraded) }],
-          structuredContent: degraded,
-        };
+        return buildToolErrorResult(asJsonPayload(degraded), degraded);
       }
     }
 
@@ -409,10 +390,7 @@ export function createArtifactWriteHandler(context: ArtifactWriteToolContext): T
       rpcContext.budget.snapshot();
     }
 
-    return {
-      content: [{ type: "text", text: asJsonPayload(structured) }],
-      structuredContent: structured,
-    };
+    return buildToolSuccessResult(asJsonPayload(structured), structured);
   };
 }
 

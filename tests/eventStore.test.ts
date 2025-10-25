@@ -272,4 +272,64 @@ describe("EventStore", () => {
     expect(middle).to.not.be.undefined;
     expect(Object.keys(middle ?? {})).to.deep.equal(["alpha", "beta"]);
   });
+
+  it("clone les charges utiles avant de les enregistrer", () => {
+    const logger = new RecordingLogger();
+    const store = new EventStore({ maxHistory: 5, logger });
+
+    const payload = {
+      status: "queued",
+      nested: { step: 1 },
+      tags: ["initial", "setup"],
+    };
+
+    store.emit({ kind: "INFO", payload });
+
+    // Mutations appliquées après l'émission ne doivent pas affecter l'instantané conservé.
+    payload.status = "mutated";
+    payload.nested.step = 99;
+    payload.tags.push("extra");
+
+    const snapshot = store.getSnapshot();
+    expect(snapshot).to.have.length(1);
+    const stored = snapshot[0]!.payload as {
+      status: string;
+      nested: { step: number };
+      tags: string[];
+    };
+
+    expect(stored).to.not.equal(payload);
+    expect(stored).to.deep.equal({ status: "queued", nested: { step: 1 }, tags: ["initial", "setup"] });
+    expect(Object.keys(stored)).to.deep.equal(["nested", "status", "tags"]);
+
+    const listed = store.list()[0];
+    expect(listed?.payload).to.deep.equal({ status: "queued", nested: { step: 1 }, tags: ["initial", "setup"] });
+  });
+
+  it("préserve les fonctions lorsque structuredClone échoue", () => {
+    const logger = new RecordingLogger();
+    const store = new EventStore({ maxHistory: 5, logger });
+
+    const originalHandler = () => "ok";
+    const payload: { handler: () => string; name: string } = {
+      handler: originalHandler,
+      name: "task",
+    };
+
+    store.emit({ kind: "INFO", payload });
+
+    payload.handler = () => "mutated";
+    payload.name = "changed";
+
+    const [event] = store.getSnapshot();
+    expect(event?.payload).to.not.equal(payload);
+
+    const stored = event?.payload as { handler: () => string; name: string } | undefined;
+    if (!stored) {
+      throw new Error("expected payload snapshot");
+    }
+    expect(stored.name).to.equal("task");
+    expect(stored.handler()).to.equal("ok");
+    expect(Object.keys(stored)).to.deep.equal(["handler", "name"]);
+  });
 });

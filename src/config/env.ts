@@ -57,6 +57,10 @@ interface NumberOptions {
 
 /** Determines whether the provided value fits the numeric constraints. */
 function withinBounds(value: number, options: NumberOptions | undefined): boolean {
+  // The helpers intentionally reject `Infinity` and `NaN` so downstream callers do
+  // not have to guard against arithmetic explosions when an operator supplies an
+  // exotic literal such as "Infinity". Returning `false` triggers the default
+  // value path in the public readers, keeping behaviour predictable.
   if (!Number.isFinite(value)) {
     return false;
   }
@@ -164,14 +168,20 @@ export function readOptionalString(name: string, options?: StringOptions): strin
  * Reads an enum-like string while validating that the value is part of the
  * allowed set. Comparison is case-insensitive to make CLI usage forgiving.
  */
-export function readEnum<T extends string>(
+/**
+ * Reads an enum-like environment variable while validating that the literal belongs to the
+ * supplied allow-list. The helper tolerates mixed-case inputs and ignores surrounding whitespace.
+ *
+ * Returning `undefined` when the variable is absent or invalid gives callers the flexibility to
+ * fall back to context-dependent defaults (e.g. propagate `null` when no override is configured).
+ */
+export function readOptionalEnum<T extends string>(
   name: string,
   allowed: readonly T[],
-  defaultValue: T,
-): T {
+): T | undefined {
   const normalised = normaliseEnvValue(process.env[name]);
   if (!normalised) {
-    return defaultValue;
+    return undefined;
   }
 
   const lookup = new Map<string, T>();
@@ -180,7 +190,20 @@ export function readEnum<T extends string>(
   }
 
   const candidate = lookup.get(normalised.toLowerCase());
-  return candidate ?? defaultValue;
+  return candidate;
+}
+
+/**
+ * Returns a canonical enum value, defaulting to {@link defaultValue} whenever the environment
+ * variable is not set or fails validation. The helper builds on {@link readOptionalEnum} so the
+ * coercion logic stays consistent across required and optional call sites.
+ */
+export function readEnum<T extends string>(
+  name: string,
+  allowed: readonly T[],
+  defaultValue: T,
+): T {
+  return readOptionalEnum(name, allowed) ?? defaultValue;
 }
 
 // Tests previously relied on the literal sets to mirror runtime behaviour. The

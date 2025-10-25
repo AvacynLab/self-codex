@@ -78,13 +78,13 @@ Les principaux paramètres décrits dans `.env.example` sont regroupés par bloc
 | Transport HTTP | `MCP_HTTP_HOST`, `MCP_HTTP_PORT`, `MCP_HTTP_PATH`, `MCP_HTTP_TOKEN`, `MCP_HTTP_ALLOW_NOAUTH` | Active ou sécurise l'API JSON-RPC/SSE. Token obligatoire par défaut, `ALLOW_NOAUTH` réservé au développement. |
 | Limiteur HTTP | `MCP_HTTP_RATE_LIMIT_RPS`, `MCP_HTTP_RATE_LIMIT_BURST`, `MCP_HTTP_RATE_LIMIT_DISABLE` | Configure le seau à jetons exposé dans `src/http/rateLimit.ts`. |
 | Répertoires persistés | `MCP_RUNS_ROOT`, `MCP_CHILDREN_ROOT`, `MCP_FS_IPC_DIR` | Redirigent logs, snapshots et espaces enfants vers des volumes dédiés. |
-| Flux SSE | `MCP_SSE_MAX_CHUNK_BYTES`, `MCP_SSE_MAX_BUFFER`, `MCP_SSE_EMIT_TIMEOUT_MS` | Bornent la taille et la latence des événements streamés. |
+| Flux SSE | `MCP_SSE_MAX_CHUNK_BYTES`, `MCP_SSE_MAX_BUFFER`, `MCP_SSE_EMIT_TIMEOUT_MS`, `MCP_SSE_KEEPALIVE_MS` | Bornent la taille, la latence et les heartbeats envoyés sur les flux streamés. |
 | Pool graphe & mémoire | `MCP_GRAPH_WORKERS`, `MCP_GRAPH_POOL_THRESHOLD`, `MCP_GRAPH_WORKER_TIMEOUT_MS`, `MCP_GRAPH_SNAPSHOT_*`, `MCP_MEMORY_VECTOR_MAX_DOCS`, `MEM_BACKEND`, `MEM_URL` | Ajustent la parallélisation des traitements graphe et les backends mémoire/RAG. L'index vectoriel reste plafonné à **4 096** documents même lorsque `MCP_MEMORY_VECTOR_MAX_DOCS` est surdimensionné afin d'éviter une consommation mémoire imprévisible. |
 | Outils & budgets | `MCP_TOOLS_MODE`, `MCP_TOOL_PACK`, `TOOLROUTER_TOPK`, `IDEMPOTENCY_TTL_MS`, `MCP_TOOLS_BUDGET_*` | Gouvernent les façades MCP exposées et leurs plafonds (temps, appels, octets). |
 | Observabilité | `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_EXPORTER_OTLP_HEADERS` | Connectent l'orchestrateur à un collecteur OpenTelemetry. |
 | Journalisation | `MCP_LOG_REDACT`, `MCP_LOG_FILE`, `MCP_LOG_ROTATE_SIZE`, `MCP_LOG_ROTATE_KEEP` | Contrôlent le log structuré et sa rotation par défaut. |
 | Qualité & réflexion | `MCP_ENABLE_REFLECTION`, `MCP_QUALITY_GATE`, `MCP_QUALITY_THRESHOLD`, `LESSONS_MAX` | Active les garde-fous qualité et la quantité de leçons injectées dans les prompts. |
-| Enfants MCP | `MCP_CHILD_COMMAND`, `MCP_CHILD_ARGS`, `MCP_CHILD_SANDBOX_PROFILE`, `MCP_CHILD_ENV_ALLOW` | Spécifient comment les sous-processus Codex sont lancés et confinés. |
+| Enfants MCP | `MCP_CHILD_COMMAND`, `MCP_CHILD_ARGS`, `MCP_CHILD_SANDBOX_PROFILE`, `MCP_CHILD_ENV_ALLOW`, `MCP_CHILD_SPAWN_TIMEOUT_MS`, `MCP_CHILD_READY_TIMEOUT_MS`, `MCP_CHILD_SHUTDOWN_GRACE_MS`, `MCP_CHILD_SHUTDOWN_FORCE_MS` | Spécifient comment les sous-processus Codex sont lancés, sécurisés et arrêtés. |
 | Budgets entrants | `MCP_REQUEST_BUDGET_*` | Appliquent des limites globales (temps, tokens, octets) aux requêtes entrantes. |
 
 Les valeurs par défaut renseignées dans `.env.example` correspondent à un usage local sécurisé. Ajustez chaque section de manière atomique et versionnez les explications dans `docs/` lorsque vous introduisez de nouvelles variables.
@@ -193,7 +193,10 @@ Ces limites s'appliquent à toutes les exécutions (STDIO, HTTP, évaluations sc
   - `MCP_SSE_*` : pilote les flux Server-Sent Events. `MCP_SSE_MAX_CHUNK_BYTES`
     borne la taille d'un événement individuel tandis que `MCP_SSE_MAX_BUFFER`
     (1 048 576 octets par défaut) impose un seuil de backpressure avant de
-    ralentir ou supprimer des messages.
+    ralentir ou supprimer des messages. `MCP_SSE_EMIT_TIMEOUT_MS` garde
+    l'émission de snapshots bornée et `MCP_SSE_KEEPALIVE_MS` force la cadence
+    des heartbeats SSE (plancher à 1 000 ms) pour garder les proxys en éveil sans
+    saturer la boucle d'événements.
   - `IDEMPOTENCY_TTL_MS` : contrôle la rétention des clés d'idempotence côté
     serveur pour éviter les replays accidentels (5 minutes par défaut).
   - `MCP_LOG_*` : positionne le chemin du log structuré (`MCP_LOG_FILE`), la

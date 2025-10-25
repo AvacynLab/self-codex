@@ -75,6 +75,8 @@ describe("child runtime spawn error handling", () => {
     const spawnError = caught as ChildSpawnError;
     expect(spawnError.attempts).to.equal(1);
     expect(spawnError.cause).to.equal(crashError);
+    // The spawn handle must be released once readiness completes to avoid
+    // leaking timeout listeners across long-lived child processes.
     expect(disposeCount).to.equal(1);
 
     const logPath = childWorkspacePath(tempRoot, childId, "logs", "child.log");
@@ -129,6 +131,99 @@ describe("child runtime spawn error handling", () => {
     expect(caught).to.be.instanceOf(ChildSpawnError);
     const spawnError = caught as ChildSpawnError;
     expect(spawnError.cause).to.be.instanceOf(ChildProcessTimeoutError);
+  });
+
+  it("injects environment-configured spawn timeouts when no explicit override is provided", async () => {
+    const originalEnv = process.env.MCP_CHILD_SPAWN_TIMEOUT_MS;
+    process.env.MCP_CHILD_SPAWN_TIMEOUT_MS = "150";
+
+    const observedTimeouts: Array<number | undefined> = [];
+    const gateway: ChildProcessGateway = {
+      spawn(options: SpawnChildProcessOptions) {
+        observedTimeouts.push(options.timeoutMs);
+        const child = new ControlledChildProcess(options.command, options.args ?? []);
+        queueMicrotask(() => {
+          child.emit("error", new Error("spawn aborted"));
+          child.emit("close", null, null);
+        });
+        return {
+          child,
+          signal: undefined,
+          dispose() {
+            // No-op for the stubbed handle.
+          },
+        };
+      },
+    };
+
+    let caught: unknown;
+    try {
+      await startChildRuntime({
+        childId: "env-timeout",
+        childrenRoot: tempRoot,
+        command: "/usr/bin/false",
+        args: [],
+        env: {},
+        metadata: {},
+        processGateway: gateway,
+        spawnRetry: { attempts: 1 },
+      });
+    } catch (error) {
+      caught = error;
+    } finally {
+      if (originalEnv === undefined) {
+        delete process.env.MCP_CHILD_SPAWN_TIMEOUT_MS;
+      } else {
+        process.env.MCP_CHILD_SPAWN_TIMEOUT_MS = originalEnv;
+      }
+    }
+
+    expect(caught).to.be.instanceOf(ChildSpawnError);
+    expect(observedTimeouts).to.deep.equal([150]);
+  });
+
+  it("disposes the spawn handle once the runtime becomes ready", async () => {
+    const childId = "successful-disposal";
+    const child = new ControlledChildProcess(process.execPath, ["-e", "setTimeout(()=>{}, 20);"]);
+    let disposeCount = 0;
+
+    const gateway: ChildProcessGateway = {
+      spawn(options: SpawnChildProcessOptions) {
+        queueMicrotask(() => {
+          child.emitSpawn();
+        });
+        return {
+          child,
+          signal: undefined,
+          dispose() {
+            disposeCount += 1;
+          },
+        };
+      },
+    };
+
+    const runtime = await startChildRuntime({
+      childId,
+      childrenRoot: tempRoot,
+      command: process.execPath,
+      args: ["-e", "setTimeout(()=>{}, 20);"],
+      env: {},
+      metadata: {},
+      processGateway: gateway,
+      spawnRetry: { attempts: 1 },
+    });
+
+    expect(disposeCount).to.equal(1);
+
+    child.killHandler = (signal) => {
+      const exitSignal = typeof signal === "string" ? signal : null;
+      queueMicrotask(() => {
+        child.emitExit(0, exitSignal);
+        child.emitClose(0, exitSignal);
+      });
+    };
+
+    await runtime.shutdown({ force: true, timeoutMs: 50 });
   });
 });
 

@@ -54,6 +54,57 @@ function stabiliseForStableJson(value: unknown, stack = new Set<object>()): unkn
   }
 }
 
+/**
+ * Determines whether a value is a plain object (i.e. created via object literal
+ * or with a null prototype). The helper avoids cloning complex instances such
+ * as Map/Set/Date where preserving prototype semantics is critical.
+ */
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  if (value === null || typeof value !== "object") {
+    return false;
+  }
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
+/**
+ * Clones payloads before they are stored in the event journal so downstream
+ * consumers observe immutable snapshots even when emitters mutate their inputs
+ * afterwards. The function favours `structuredClone` for deep copies and falls
+ * back to the `stabiliseForStableJson` walk for plain objects/arrays when
+ * `structuredClone` rejects (e.g. functions). Exotic instances (Map/Set/Date)
+ * reuse the original reference as they are safe to clone via `structuredClone`
+ * and must preserve their prototype semantics.
+ */
+function clonePayloadForStorage(payload: unknown): unknown {
+  if (payload === undefined) {
+    return undefined;
+  }
+
+  if (typeof structuredClone === "function") {
+    try {
+      const cloned = structuredClone(payload);
+      try {
+        return stabiliseForStableJson(cloned);
+      } catch {
+        return cloned;
+      }
+    } catch {
+      // Fall through to the manual clone for plain objects/arrays.
+    }
+  }
+
+  if (Array.isArray(payload) || isPlainObject(payload)) {
+    try {
+      return stabiliseForStableJson(payload);
+    } catch {
+      return payload;
+    }
+  }
+
+  return payload;
+}
+
 export type EventKind =
   | "PLAN"
   | "START"
@@ -199,7 +250,7 @@ export class EventStore {
       ...omitUndefinedEntries({
         jobId: coerceNullToUndefined(input.jobId),
         childId: coerceNullToUndefined(input.childId),
-        payload: input.payload,
+        payload: clonePayloadForStorage(input.payload),
       }),
       provenance: normaliseProvenanceList(input.provenance),
     };

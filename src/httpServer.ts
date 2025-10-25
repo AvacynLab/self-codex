@@ -11,18 +11,14 @@ import { handleJsonRpc, maybeRecordIdempotentWalEntry, type JsonRpcRequest } fro
 import type { JsonRpcRouteContext } from "./infra/runtime.js";
 import { HttpRuntimeOptions, createHttpSessionId } from "./serverOptions.js";
 import { applySecurityHeaders, ensureRequestId } from "./http/headers.js";
-import {
-  parseRateLimitEnvBoolean,
-  parseRateLimitEnvNumber,
-  rateLimitOk,
-} from "./http/rateLimit.js";
+import { rateLimitOk } from "./http/rateLimit.js";
 import { readJsonBody } from "./http/body.js";
 import { checkToken, resolveHttpAuthToken } from "./http/auth.js";
 import type { HttpReadinessReport } from "./http/readiness.js";
 export type { HttpReadinessReport } from "./http/readiness.js";
 import { buildIdempotencyCacheKey } from "./infra/idempotency.js";
 import { IdempotencyConflictError, type IdempotencyStore } from "./infra/idempotencyStore.js";
-import { readBool, readOptionalString } from "./config/env.js";
+import { readBool, readOptionalBool, readOptionalNumber, readOptionalString } from "./config/env.js";
 import {
   runWithRpcTrace,
   annotateTraceContext,
@@ -113,9 +109,28 @@ function coerceFiniteNumber(value: number | undefined, fallback: number): number
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
 }
 
-/** Reads a rate-limit tuning parameter from `process.env`, tolerating garbage values. */
-function parseEnvRateLimitSetting(name: string): number | undefined {
-  return parseRateLimitEnvNumber(name);
+/**
+ * Snapshot of the rate limiter overrides supplied via environment variables.
+ * The helper leans on the shared `config/env` readers so every consumer applies
+ * the same coercion rules (trimming, finite number checks, tolerant booleans).
+ */
+interface RateLimitEnvOverrides {
+  readonly disabled?: boolean;
+  readonly rps?: number;
+  readonly burst?: number;
+}
+
+/** Reads environment-sourced overrides while ignoring malformed values. */
+function readRateLimitOverridesFromEnv(): RateLimitEnvOverrides {
+  const disabled = readOptionalBool("MCP_HTTP_RATE_LIMIT_DISABLE");
+  const rps = readOptionalNumber("MCP_HTTP_RATE_LIMIT_RPS");
+  const burst = readOptionalNumber("MCP_HTTP_RATE_LIMIT_BURST");
+
+  return {
+    ...(disabled !== undefined ? { disabled } : {}),
+    ...(rps !== undefined ? { rps } : {}),
+    ...(burst !== undefined ? { burst } : {}),
+  };
 }
 
 /**
@@ -138,20 +153,14 @@ function configureRateLimiter(overrides: Partial<RateLimiterConfig>): RateLimite
 
 /** Refreshes the limiter configuration from environment variables. */
 function refreshRateLimiterFromEnv(): RateLimiterConfig {
-  const envDisabledFlag = parseRateLimitEnvBoolean("MCP_HTTP_RATE_LIMIT_DISABLE");
-  const envRps = parseEnvRateLimitSetting("MCP_HTTP_RATE_LIMIT_RPS");
-  const envBurst = parseEnvRateLimitSetting("MCP_HTTP_RATE_LIMIT_BURST");
+  const envOverrides = readRateLimitOverridesFromEnv();
 
-  // Only override the disable flag when the environment exposes a concrete
-  // boolean. This keeps the configuration compatible with
-  // `exactOptionalPropertyTypes` by avoiding `{ disabled: undefined }` spreads
-  // while still allowing explicit `false` to re-enable throttling.
   const overrides: Partial<RateLimiterConfig> = {
-    rps: coerceFiniteNumber(envRps, DEFAULT_RATE_LIMIT_CONFIG.rps),
-    burst: coerceFiniteNumber(envBurst, DEFAULT_RATE_LIMIT_CONFIG.burst),
+    rps: coerceFiniteNumber(envOverrides.rps, DEFAULT_RATE_LIMIT_CONFIG.rps),
+    burst: coerceFiniteNumber(envOverrides.burst, DEFAULT_RATE_LIMIT_CONFIG.burst),
   };
-  if (envDisabledFlag !== undefined) {
-    overrides.disabled = envDisabledFlag;
+  if (envOverrides.disabled !== undefined) {
+    overrides.disabled = envOverrides.disabled;
   }
 
   return configureRateLimiter(overrides);
@@ -227,6 +236,10 @@ export async function startHttpServer(
     const requestStartedAt = process.hrtime.bigint();
     const requestUrl = request.url ? new URL(request.url, `http://${request.headers.host ?? "localhost"}`) : null;
     const requestId = ensureRequestId(request, response);
+    // Preserve the original User-Agent string so access logs can be correlated with clients
+    // without re-parsing headers when the request completes.
+    const userAgentHeader = request.headers["user-agent"];
+    const userAgent = typeof userAgentHeader === "string" ? userAgentHeader : null;
     const remoteAddress = request.socket?.remoteAddress ?? "unknown";
     const route = requestUrl?.pathname ?? request.url ?? "/";
     const method = request.method ?? "UNKNOWN";
@@ -249,6 +262,8 @@ export async function startHttpServer(
         status,
         requestStartedAt,
         completedAt,
+        requestId,
+        userAgent,
       );
     };
 
@@ -476,6 +491,10 @@ function getConfiguredHttpToken(): string | undefined {
  * header is missing or does not match.
  */
 function shouldAllowUnauthenticatedRequests(): boolean {
+  // The helper deliberately defaults to `false` so production deployments remain locked down
+  // unless operators opt into the development-only bypass (`MCP_HTTP_ALLOW_NOAUTH=1`). Allowing
+  // the shared boolean reader to interpret a small set of truthy literals keeps CLI usage
+  // ergonomic without opening accidental holes for "0"/"false" typos.
   return readBool("MCP_HTTP_ALLOW_NOAUTH", false);
 }
 
@@ -862,11 +881,15 @@ interface JsonRpcOutcomeDetails extends HttpErrorMeta {
  * Builds a JSON-RPC error response payload while automatically injecting the JSON-RPC identifier
  * into the metadata when callers omit an explicit `requestId`. Having a single helper keeps every
  * error response aligned with the taxonomy defined in `rpc/errors.ts` and avoids ad hoc casts.
+ *
+ * The `message` parameter is optional to mirror the ergonomics of `createJsonRpcError`; omitting
+ * it causes the canonical taxonomy message to be selected automatically so transports can focus on
+ * status codes while still delivering human-friendly diagnostics.
  */
 function jsonRpcError(
   id: string | number | null,
   category: JsonRpcErrorCategory,
-  message: string,
+  message?: string,
   options: JsonRpcErrorOptions = {},
 ): ReturnType<typeof toJsonRpc> {
   const shouldInjectRequestId =
@@ -894,10 +917,11 @@ async function respondWithJsonRpcError(
 ): Promise<number> {
   const jsonId = typeof meta.jsonrpcId === "string" || typeof meta.jsonrpcId === "number" ? meta.jsonrpcId : null;
   const { cacheKey, idempotency, ...errorOptions } = options;
+  const resolvedRequestId = errorOptions.requestId !== undefined ? errorOptions.requestId : jsonId;
   const enrichedOptions: JsonRpcErrorOptions = {
     ...errorOptions,
-    requestId: jsonId,
     status: errorOptions.status ?? status,
+    ...(resolvedRequestId !== undefined ? { requestId: resolvedRequestId } : {}),
   };
   const payload = jsonRpcError(jsonId, category, message, enrichedOptions);
   const shouldPersist = cacheKey !== null && cacheKey !== undefined;
@@ -987,6 +1011,10 @@ async function sendJson(
  * mirroring the same payload into the orchestrator event store. Centralising
  * the logic guarantees that all transports emit consistent metadata for
  * operators and automated diagnostics.
+ *
+ * The helper now captures the request identifier and original User-Agent so
+ * operators can correlate per-client activity without stitching information
+ * from multiple log streams.
  */
 function publishHttpAccessEvent(
   logger: StructuredLogger,
@@ -997,6 +1025,8 @@ function publishHttpAccessEvent(
   status: number,
   startedAt: bigint,
   completedAt: bigint,
+  requestId: string | undefined,
+  userAgent: string | null,
 ): void {
   const latencyNs = completedAt - startedAt;
   const latencyMs = Number(latencyNs) / 1_000_000;
@@ -1006,6 +1036,8 @@ function publishHttpAccessEvent(
     method,
     status,
     latency_ms: Number.isFinite(latencyMs) && latencyMs >= 0 ? latencyMs : 0,
+    request_id: requestId ?? null,
+    user_agent: userAgent ?? null,
   };
 
   logger.info("http_access", payload);

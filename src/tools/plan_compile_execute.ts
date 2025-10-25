@@ -30,6 +30,7 @@ import {
   type PlanCompileExecuteFacadeInput,
   type PlanCompileExecuteFacadeOutput,
 } from "../rpc/schemas.js";
+import { buildToolErrorResult, buildToolSuccessResult } from "./shared.js";
 import {
   PlanSpecificationError,
   type PlannerPlan,
@@ -535,11 +536,7 @@ export function createPlanCompileExecuteHandler(
             limit: error.limit,
           });
           const degraded = buildBudgetExceededOutput(idempotencyKey, parsed, error);
-          return {
-            isError: true,
-            structuredContent: degraded,
-            content: [{ type: "text", text: asJsonPayload(degraded) }],
-          };
+          return buildToolErrorResult(asJsonPayload(degraded), degraded);
         }
         throw error;
       }
@@ -622,10 +619,10 @@ export function createPlanCompileExecuteHandler(
         });
       }
 
-      return {
-        structuredContent: structured,
-        content: [{ type: "text", text: asJsonPayload(structured) }],
-      };
+      const payload = asJsonPayload(structured);
+      return structured.ok
+        ? buildToolSuccessResult(payload, structured)
+        : buildToolErrorResult(payload, structured);
     } catch (error) {
       if (rpcContext?.budget && charge) {
         rpcContext.budget.refund(charge);

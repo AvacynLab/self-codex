@@ -51,7 +51,10 @@ import { TxBeginInputSchema, TxApplyInputSchema, TxCommitInputSchema, TxRollback
 import {
   GraphGenerateInputSchema,
   GraphMutateInputSchema,
-  GraphHyperExportInputSchema,
+  GraphRewriteApplyInputSchema,
+} from "../tools/graph/mutate.js";
+import { GraphHyperExportInputSchema } from "../tools/graph/snapshot.js";
+import {
   GraphValidateInputSchema,
   GraphSummarizeInputSchema,
   GraphPathsKShortestInputSchema,
@@ -63,8 +66,7 @@ import {
   GraphOptimizeInputSchema,
   GraphOptimizeMooInputSchema,
   GraphCausalAnalyzeInputSchema,
-  GraphRewriteApplyInputSchema,
-} from "../tools/graphTools.js";
+} from "../tools/graph/query.js";
 import {
   ValuesSetInputSchema,
   ValuesScoreInputSchema,

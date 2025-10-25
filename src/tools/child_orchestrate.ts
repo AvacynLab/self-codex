@@ -35,6 +35,7 @@ import {
   type ChildOrchestrateInput,
   type ChildOrchestrateSuccessDetails,
 } from "../rpc/schemas.js";
+import { buildToolErrorResult, buildToolSuccessResult } from "./shared.js";
 
 /** Canonical façade identifier exposed in the manifest catalogue. */
 export const CHILD_ORCHESTRATE_TOOL_NAME = "child_orchestrate" as const;
@@ -58,6 +59,11 @@ export const ChildOrchestrateManifestDraft: ToolManifestDraft = {
     bytes_out: 32_768,
   },
 };
+
+/** Serialises a structured façade result for the textual MCP channel. */
+function asJsonPayload(result: unknown): string {
+  return JSON.stringify({ tool: CHILD_ORCHESTRATE_TOOL_NAME, result }, null, 2);
+}
 
 /** Dependencies required by {@link createChildOrchestrateHandler}. */
 export interface ChildOrchestrateToolContext {
@@ -562,11 +568,7 @@ export function createChildOrchestrateHandler(
             remaining: error.remaining,
             limit: error.limit,
           });
-          return {
-            isError: true,
-            content: [{ type: "text", text: JSON.stringify({ tool: CHILD_ORCHESTRATE_TOOL_NAME, result: degraded }, null, 2) }],
-            structuredContent: degraded,
-          };
+          return buildToolErrorResult(asJsonPayload(degraded), degraded);
         }
         throw error;
       }
@@ -772,11 +774,7 @@ export function createChildOrchestrateHandler(
         trace_id: traceContext?.traceId ?? null,
         message: error instanceof Error ? error.message : String(error),
       });
-      return {
-        isError: true,
-        content: [{ type: "text", text: JSON.stringify({ tool: CHILD_ORCHESTRATE_TOOL_NAME, result: degraded }, null, 2) }],
-        structuredContent: degraded,
-      };
+      return buildToolErrorResult(asJsonPayload(degraded), degraded);
     }
 
     const successDetails: ChildOrchestrateSuccessDetails = {
@@ -812,15 +810,7 @@ export function createChildOrchestrateHandler(
       rpcContext.budget.snapshot();
     }
 
-    const textPayload = JSON.stringify({ tool: CHILD_ORCHESTRATE_TOOL_NAME, result: structured }, null, 2);
-
-    return {
-      // Explicitly signal a successful invocation to align with CallToolResult
-      // semantics and keep tests/assertions deterministic.
-      isError: false,
-      content: [{ type: "text", text: textPayload }],
-      structuredContent: structured,
-    };
+    return buildToolSuccessResult(asJsonPayload(structured), structured);
   };
 }
 

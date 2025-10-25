@@ -1,10 +1,7 @@
 import { expect } from "chai";
 
-import {
-  GraphDescriptorPayload,
-  GraphOptimizeInputSchema,
-  handleGraphOptimize,
-} from "../src/tools/graphTools.js";
+import { GraphOptimizeInputSchema, handleGraphOptimize } from "../src/tools/graph/query.js";
+import type { GraphDescriptorPayload } from "../src/tools/graph/snapshot.js";
 
 describe("graph_optimize", () => {
   const GRAPH: GraphDescriptorPayload = {

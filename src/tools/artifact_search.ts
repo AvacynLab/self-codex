@@ -22,6 +22,7 @@ import {
   ArtifactSearchOutputSchema,
   type ArtifactSearchOutput,
 } from "../rpc/schemas.js";
+import { buildToolErrorResult, buildToolSuccessResult } from "./shared.js";
 
 /** Canonical name advertised by the façade manifest. */
 export const ARTIFACT_SEARCH_TOOL_NAME = "artifact_search" as const;
@@ -169,11 +170,7 @@ export function createArtifactSearchHandler(context: ArtifactSearchToolContext):
             limit: error.limit,
           });
           const degraded = buildBudgetExceededResult(idempotencyKey, parsed.child_id, metadata, filters, error);
-          return {
-            isError: true,
-            content: [{ type: "text", text: asJsonPayload(degraded) }],
-            structuredContent: degraded,
-          };
+          return buildToolErrorResult(asJsonPayload(degraded), degraded);
         }
         throw error;
       }
@@ -193,11 +190,7 @@ export function createArtifactSearchHandler(context: ArtifactSearchToolContext):
         error: error instanceof Error ? error.message : String(error),
       });
       const degraded = buildIoErrorResult(idempotencyKey, parsed.child_id, metadata, filters, error);
-      return {
-        isError: true,
-        content: [{ type: "text", text: asJsonPayload(degraded) }],
-        structuredContent: degraded,
-      };
+      return buildToolErrorResult(asJsonPayload(degraded), degraded);
     }
 
     const normalisedQuery = parsed.query ? parsed.query.toLowerCase() : null;
@@ -234,11 +227,7 @@ export function createArtifactSearchHandler(context: ArtifactSearchToolContext):
             limit: error.limit,
           });
           const degraded = buildBudgetExceededResult(idempotencyKey, parsed.child_id, metadata, filters, error);
-          return {
-            isError: true,
-            content: [{ type: "text", text: asJsonPayload(degraded) }],
-            structuredContent: degraded,
-          };
+          return buildToolErrorResult(asJsonPayload(degraded), degraded);
         }
         throw error;
       }
@@ -279,10 +268,7 @@ export function createArtifactSearchHandler(context: ArtifactSearchToolContext):
       rpcContext.budget.snapshot();
     }
 
-    return {
-      content: [{ type: "text", text: asJsonPayload(structured) }],
-      structuredContent: structured,
-    };
+    return buildToolSuccessResult(asJsonPayload(structured), structured);
   };
 }
 

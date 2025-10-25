@@ -10,7 +10,7 @@ import {
   type HttpEnvironmentSummary,
 } from "./runSetup.js";
 
-import type { GraphDescriptorPayload } from "../tools/graphTools.js";
+import type { GraphDescriptorPayload } from "../tools/graph/snapshot.js";
 
 /**
  * Relative artefact targets dedicated to the transaction & graph validation

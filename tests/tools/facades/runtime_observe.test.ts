@@ -90,7 +90,7 @@ describe("runtime_observe facade", () => {
         await runWithJsonRpcContext({ requestId: "req-runtime-default", budget }, () => handler({}, extras)),
     );
 
-    expect(result.isError).to.not.equal(true);
+    expect(result.isError).to.equal(false);
     const structured = result.structuredContent as Record<string, any>;
     expect(structured.ok).to.equal(true);
     expect(structured.details.sections).to.include.members(["snapshot", "metrics"]);

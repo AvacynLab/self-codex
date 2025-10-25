@@ -27,6 +27,7 @@ import {
   redactPathForLogs,
   sanitizeArtifactPath,
 } from "./artifact_paths.js";
+import { buildToolErrorResult, buildToolSuccessResult } from "./shared.js";
 
 /** Canonical name advertised by the façade manifest. */
 export const ARTIFACT_READ_TOOL_NAME = "artifact_read" as const;
@@ -203,11 +204,7 @@ export function createArtifactReadHandler(context: ArtifactReadToolContext): Too
         error: error instanceof Error ? error.message : String(error),
       });
       const degraded = buildInvalidPathResult(idempotencyKey, parsed.child_id, parsed.path, metadata);
-      return {
-        isError: true,
-        content: [{ type: "text", text: asJsonPayload(degraded) }],
-        structuredContent: degraded,
-      };
+      return buildToolErrorResult(asJsonPayload(degraded), degraded);
     }
 
     const pathLogFields = buildPathLogFields(sanitizedPath);
@@ -238,11 +235,7 @@ export function createArtifactReadHandler(context: ArtifactReadToolContext): Too
             metadata,
             error,
           );
-          return {
-            isError: true,
-            content: [{ type: "text", text: asJsonPayload(degraded) }],
-            structuredContent: degraded,
-          };
+          return buildToolErrorResult(asJsonPayload(degraded), degraded);
         }
         throw error;
       }
@@ -273,11 +266,7 @@ export function createArtifactReadHandler(context: ArtifactReadToolContext): Too
           sanitizedPath.relative,
           metadata,
         );
-        return {
-          isError: true,
-          content: [{ type: "text", text: asJsonPayload(degraded) }],
-          structuredContent: degraded,
-        };
+        return buildToolErrorResult(asJsonPayload(degraded), degraded);
       }
       if (rpcContext?.budget && toolCallCharge) {
         rpcContext.budget.refund(toolCallCharge);
@@ -296,11 +285,7 @@ export function createArtifactReadHandler(context: ArtifactReadToolContext): Too
         metadata,
         error,
       );
-      return {
-        isError: true,
-        content: [{ type: "text", text: asJsonPayload(degraded) }],
-        structuredContent: degraded,
-      };
+      return buildToolErrorResult(asJsonPayload(degraded), degraded);
     }
 
     const size = buffer.length;
@@ -334,11 +319,7 @@ export function createArtifactReadHandler(context: ArtifactReadToolContext): Too
             metadata,
             error,
           );
-          return {
-            isError: true,
-            content: [{ type: "text", text: asJsonPayload(degraded) }],
-            structuredContent: degraded,
-          };
+          return buildToolErrorResult(asJsonPayload(degraded), degraded);
         }
         throw error;
       }
@@ -383,10 +364,7 @@ export function createArtifactReadHandler(context: ArtifactReadToolContext): Too
       rpcContext.budget.snapshot();
     }
 
-    return {
-      content: [{ type: "text", text: asJsonPayload(structured) }],
-      structuredContent: structured,
-    };
+    return buildToolSuccessResult(asJsonPayload(structured), structured);
   };
 }
 

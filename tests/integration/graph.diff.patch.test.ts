@@ -11,7 +11,7 @@ import {
   GraphPatchInputSchema,
   type GraphDiffToolContext,
 } from "../../src/tools/graphDiffTools.js";
-import { serialiseNormalisedGraph } from "../../src/tools/graphTools.js";
+import { serialiseNormalisedGraph } from "../../src/tools/graph/snapshot.js";
 import type { NormalisedGraph } from "../../src/graph/types.js";
 import { GraphInvariantError } from "../../src/graph/invariants.js";
 

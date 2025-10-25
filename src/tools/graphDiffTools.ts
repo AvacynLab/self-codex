@@ -21,7 +21,7 @@ import {
   normaliseGraphPayload,
   serialiseNormalisedGraph,
   type GraphDescriptorPayload,
-} from "./graphTools.js";
+} from "./graph/snapshot.js";
 import { resolveOperationId } from "./operationIds.js";
 
 /** Context injected in the diff/patch tool handlers. */

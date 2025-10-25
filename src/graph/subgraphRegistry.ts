@@ -1,6 +1,6 @@
 import type { HierGraph } from "./hierarchy.js";
 import type { NormalisedGraph, GraphAttributeValue } from "./types.js";
-import type { GraphDescriptorPayload } from "../tools/graphTools.js";
+import type { GraphDescriptorPayload } from "../tools/graph/snapshot.js";
 
 /**
  * Metadata key storing the registry of hierarchical sub-graphs referenced by

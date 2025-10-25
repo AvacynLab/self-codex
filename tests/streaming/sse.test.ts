@@ -8,7 +8,7 @@ import { Buffer } from "node:buffer";
 import { afterEach, describe, it } from "mocha";
 import { expect } from "chai";
 
-import type { ResourceWatchResult } from "../../src/resources/registry.js";
+import type { ResourceRunEvent, ResourceWatchResult } from "../../src/resources/registry.js";
 import {
   ResourceWatchSseBuffer,
   renderResourceWatchSseMessages,
@@ -50,7 +50,7 @@ describe("resource SSE streaming", () => {
           stage: "chunk",
           elapsedMs: null,
           payload: { body: "x".repeat(payloadSize) },
-        },
+        } satisfies ResourceRunEvent,
       ],
     };
 
@@ -91,7 +91,7 @@ describe("resource SSE streaming", () => {
           stage: "env",
           elapsedMs: null,
           payload: { body: "x".repeat(payloadSize) },
-        },
+        } satisfies ResourceRunEvent,
       ],
     };
 
@@ -128,7 +128,7 @@ describe("resource SSE streaming", () => {
           stage: "buffer",
           elapsedMs: null,
           payload: { seq },
-        },
+        } satisfies ResourceRunEvent,
       ],
     });
 
@@ -200,7 +200,7 @@ describe("resource SSE streaming", () => {
           stage: "timeout",
           elapsedMs: null,
           payload: { message: "slow" },
-        },
+        } satisfies ResourceRunEvent,
       ],
     };
 

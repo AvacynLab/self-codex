@@ -20,7 +20,7 @@ import { GraphLockManager } from "../../../src/graph/locks.js";
 import type { NormalisedGraph } from "../../../src/graph/types.js";
 import { ResourceRegistry } from "../../../src/resources/registry.js";
 import { IdempotencyRegistry } from "../../../src/infra/idempotency.js";
-import { normaliseGraphPayload } from "../../../src/tools/graphTools.js";
+import { normaliseGraphPayload } from "../../../src/tools/graph/snapshot.js";
 import {
   createGraphSnapshotTimeTravelHandler,
   GRAPH_SNAPSHOT_TIME_TRAVEL_TOOL_NAME,
@@ -169,7 +169,7 @@ describe("graph_snapshot_time_travel facade", () => {
       async () => await runWithJsonRpcContext({ requestId: extras.requestId, budget }, () => handler(input, extras)),
     );
 
-    expect(result.isError).to.not.equal(true);
+    expect(result.isError).to.equal(false);
     const structured = result.structuredContent as Record<string, any>;
     expect(structured.ok).to.equal(true);
     expect(structured.details.snapshots).to.be.an("array").that.is.not.empty;
@@ -207,7 +207,7 @@ describe("graph_snapshot_time_travel facade", () => {
         ),
     );
 
-    expect(result.isError).to.not.equal(true);
+    expect(result.isError).to.equal(false);
     const structured = result.structuredContent as Record<string, any>;
     expect(structured.ok).to.equal(true);
     expect(structured.details.snapshot_id).to.equal(snapshotId);
@@ -242,7 +242,7 @@ describe("graph_snapshot_time_travel facade", () => {
         ),
     );
 
-    expect(result.isError).to.not.equal(true);
+    expect(result.isError).to.equal(false);
     const structured = result.structuredContent as Record<string, any>;
     expect(structured.ok).to.equal(true);
     expect(structured.details.restored_version).to.be.a("number").greaterThan(structured.details.base_version);

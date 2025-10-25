@@ -13,6 +13,7 @@ import {
   readOptionalInt,
   readNumber,
   readOptionalNumber,
+  readOptionalEnum,
   readEnum,
   readString,
   readOptionalString,
@@ -83,6 +84,17 @@ describe("config/env helpers", () => {
     expect(readOptionalNumber("TEST_NUMBER")).to.equal(undefined);
   });
 
+  it("rejects infinite literals so callers fall back to defaults", () => {
+    // Operators occasionally attempt to disable limits by setting the variable
+    // to "Infinity". The helpers deliberately treat that value as invalid to
+    // avoid leaking infinities into rate limit calculations.
+    setEnv("TEST_NUMBER", "Infinity");
+    expect(readOptionalNumber("TEST_NUMBER")).to.equal(undefined);
+
+    setEnv("TEST_NUMBER", "-Infinity");
+    expect(readNumber("TEST_NUMBER", 13)).to.equal(13);
+  });
+
   it("reads integers while filtering floats and out-of-range values", () => {
     setEnv("TEST_INT", "42");
     expect(readInt("TEST_INT", 0)).to.equal(42);
@@ -106,6 +118,20 @@ describe("config/env helpers", () => {
 
     setEnv("TEST_ENUM", "unknown");
     expect(readEnum("TEST_ENUM", ["alpha", "beta"] as const, "alpha")).to.equal("alpha");
+  });
+
+  it("returns undefined for optional enums when unset or invalid", () => {
+    delete process.env.TEST_ENUM;
+    expect(readOptionalEnum("TEST_ENUM", ["north", "south"] as const)).to.equal(undefined);
+
+    setEnv("TEST_ENUM", "south");
+    expect(readOptionalEnum("TEST_ENUM", ["north", "south"] as const)).to.equal("south");
+
+    setEnv("TEST_ENUM", "  NORTH  ");
+    expect(readOptionalEnum("TEST_ENUM", ["north", "south"] as const)).to.equal("north");
+
+    setEnv("TEST_ENUM", "sideways");
+    expect(readOptionalEnum("TEST_ENUM", ["north", "south"] as const)).to.equal(undefined);
   });
 
   it("trims strings and treats blanks as unset", () => {

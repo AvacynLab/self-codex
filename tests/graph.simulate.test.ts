@@ -1,10 +1,7 @@
 import { expect } from "chai";
 
-import {
-  GraphDescriptorPayload,
-  GraphSimulateInputSchema,
-  handleGraphSimulate,
-} from "../src/tools/graphTools.js";
+import { GraphSimulateInputSchema, handleGraphSimulate } from "../src/tools/graph/query.js";
+import type { GraphDescriptorPayload } from "../src/tools/graph/snapshot.js";
 
 describe("graph_simulate", () => {
   it("resolves durations with fallbacks and reports schedule metrics", () => {

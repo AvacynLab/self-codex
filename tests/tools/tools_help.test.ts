@@ -79,7 +79,7 @@ describe("tools_help facade", () => {
     const handler = createToolsHelpHandler({ registry, logger });
     const result = await handler({}, createExtras("req-tools-help-1"));
 
-    expect(result.isError).to.not.equal(true);
+    expect(result.isError).to.equal(false);
     const structured = result.structuredContent as Record<string, any>;
     expect(structured.ok).to.equal(true);
     expect(structured.summary).to.equal("1 outil correspondant");

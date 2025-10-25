@@ -9,7 +9,12 @@ import { expect } from "chai";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 
-import type { ResourceWatchResult } from "../src/resources/registry.js";
+import type {
+  ResourceBlackboardEvent,
+  ResourceChildLogEntry,
+  ResourceRunEvent,
+  ResourceWatchResult,
+} from "../src/resources/registry.js";
 import {
   renderResourceWatchSseMessages,
   serialiseResourceWatchResultForSse,
@@ -41,7 +46,7 @@ describe("resources_watch SSE serialisation", () => {
           payload: {
             note: "line1\nline2\rline3\u2028line4",
           },
-        },
+        } satisfies ResourceRunEvent,
       ],
     };
 
@@ -104,7 +109,7 @@ describe("resources_watch SSE serialisation", () => {
           childId: "child-escape",
           raw: "raw line1\nraw line2",
           parsed: { structured: true },
-        },
+        } satisfies ResourceChildLogEntry,
       ],
     };
 
@@ -168,7 +173,7 @@ describe("resources_watch SSE serialisation", () => {
           },
           previous: null,
           reason: null,
-        },
+        } satisfies ResourceBlackboardEvent,
       ],
     };
 

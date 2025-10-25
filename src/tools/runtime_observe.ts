@@ -19,6 +19,7 @@ import {
   type RuntimeObserveInput,
   type RuntimeObserveOutput,
 } from "../rpc/schemas.js";
+import { buildToolErrorResult, buildToolSuccessResult } from "./shared.js";
 
 /** Canonical façade identifier exposed through the manifest catalogue. */
 export const RUNTIME_OBSERVE_TOOL_NAME = "runtime_observe" as const;
@@ -178,11 +179,7 @@ export function createRuntimeObserveHandler(context: RuntimeObserveToolContext):
           limit: error.limit,
         });
         const structured = buildBudgetExceededResult(idempotencyKey, parsed.sections, metadata, error);
-        return {
-          isError: true,
-          content: [{ type: "text", text: asJsonPayload(structured) }],
-          structuredContent: structured,
-        };
+        return buildToolErrorResult(asJsonPayload(structured), structured);
       }
       throw error;
     }
@@ -231,10 +228,7 @@ export function createRuntimeObserveHandler(context: RuntimeObserveToolContext):
       rpcContext.budget.snapshot();
     }
 
-    return {
-      content: [{ type: "text", text: asJsonPayload(structured) }],
-      structuredContent: structured,
-    };
+    return buildToolSuccessResult(asJsonPayload(structured), structured);
   };
 }
 

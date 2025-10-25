@@ -370,20 +370,63 @@ export interface ResourceWatchBlackboardFilters {
   untilTs?: number;
 }
 
-/** Result returned by {@link ResourceRegistry.watch}. */
-export interface ResourceWatchResult {
-  uri: string;
-  kind: ResourceKind;
-  events: Array<ResourceRunEvent | ResourceChildLogEntry | ResourceBlackboardEvent | ResourceToolRouterDecision>;
-  nextSeq: number;
-  /** Optional filters applied when collecting the page. */
-  filters?: {
-    keys?: string[];
-    blackboard?: ResourceWatchBlackboardFilters;
-    run?: ResourceWatchRunFilters;
-    child?: ResourceWatchChildFilters;
-  };
+/** Optional filters echoed alongside watch results for introspection. */
+export interface ResourceWatchFilters {
+  /** Canonical list of keys derived from the URI when watching blackboard namespaces. */
+  keys?: string[];
+  /** Descriptor applied to blackboard mutations (kinds, tags, time bounds). */
+  blackboard?: ResourceWatchBlackboardFilters;
+  /** Descriptor applied when slicing run events. */
+  run?: ResourceWatchRunFilters;
+  /** Descriptor applied when slicing child runtime logs. */
+  child?: ResourceWatchChildFilters;
 }
+
+interface BaseResourceWatchResult<K extends ResourceKind, TEvents> {
+  /** Fully qualified MCP URI used to collect the page. */
+  uri: string;
+  /** Kind of resource being streamed. */
+  kind: K;
+  /** Monotonic slice of events/logs/decisions associated with the resource. */
+  events: TEvents;
+  /** Cursor pointing to the next sequence number to resume from. */
+  nextSeq: number;
+}
+
+/** Watch result produced when slicing run events. */
+export interface ResourceWatchRunEventsResult
+  extends BaseResourceWatchResult<"run_events", ResourceRunEvent[]> {
+  /** Optional run filters echoed back to consumers. */
+  filters?: ResourceWatchFilters;
+}
+
+/** Watch result produced when slicing child runtime logs. */
+export interface ResourceWatchChildLogsResult
+  extends BaseResourceWatchResult<"child_logs", ResourceChildLogEntry[]> {
+  /** Optional child log filters echoed back to consumers. */
+  filters?: ResourceWatchFilters;
+}
+
+/** Watch result produced when slicing blackboard mutations. */
+export interface ResourceWatchBlackboardResult
+  extends BaseResourceWatchResult<"blackboard_namespace", ResourceBlackboardEvent[]> {
+  /** Optional blackboard filters echoed back to consumers. */
+  filters?: ResourceWatchFilters;
+}
+
+/** Watch result produced when slicing tool router decisions. */
+export interface ResourceWatchToolRouterResult
+  extends BaseResourceWatchResult<"tool_router_decisions", ResourceToolRouterDecision[]> {
+  /** Tool router pages do not carry filters; property omitted for clarity. */
+  filters?: undefined;
+}
+
+/** Result returned by {@link ResourceRegistry.watch}. */
+export type ResourceWatchResult =
+  | ResourceWatchRunEventsResult
+  | ResourceWatchChildLogsResult
+  | ResourceWatchBlackboardResult
+  | ResourceWatchToolRouterResult;
 
 /** Base error emitted by the resource registry. */
 export class ResourceRegistryError extends Error {
@@ -484,18 +527,15 @@ interface BlackboardNamespaceHistory {
 }
 
 /** Internal context passed when creating an async watch stream. */
-interface WatchStreamContext {
+interface WatchStreamContext<T extends ResourceWatchResult> {
   uri: string;
-  kind: "run_events" | "child_logs" | "blackboard_namespace" | "tool_router_decisions";
+  kind: T["kind"];
   emitter: EventEmitter;
   fromSeq: number;
   limit: number;
   signal: AbortSignal | null | undefined;
-  filters?: ResourceWatchResult["filters"];
-  slice: (fromSeq: number, limit: number) => {
-    events: Array<ResourceRunEvent | ResourceChildLogEntry | ResourceBlackboardEvent | ResourceToolRouterDecision>;
-    nextSeq: number;
-  };
+  filters: ResourceWatchFilters | undefined;
+  slice: (fromSeq: number, limit: number) => { events: T["events"]; nextSeq: number };
 }
 
 /** Utility ensuring limits remain sane. */
@@ -989,13 +1029,11 @@ function cloneChildFilterDescriptor(
   return Object.keys(snapshot).length > 0 ? snapshot : undefined;
 }
 
-function cloneWatchFilters(
-  filters: ResourceWatchResult["filters"] | undefined,
-): ResourceWatchResult["filters"] | undefined {
+function cloneWatchFilters(filters: ResourceWatchFilters | undefined): ResourceWatchFilters | undefined {
   if (!filters) {
     return undefined;
   }
-  const snapshot: ResourceWatchResult["filters"] = {};
+  const snapshot: ResourceWatchFilters = {};
   if (filters.keys && filters.keys.length > 0) {
     snapshot.keys = filters.keys.map((key) => key);
   }
@@ -2026,13 +2064,9 @@ export class ResourceRegistry {
           events: page.events,
           nextSeq: page.nextSeq,
         };
-        const filters: ResourceWatchResult["filters"] = {};
         const runDescriptor = cloneRunFilterDescriptor(runFilter);
         if (runDescriptor) {
-          filters.run = runDescriptor;
-        }
-        if (filters.run) {
-          result.filters = filters;
+          result.filters = { run: runDescriptor };
         }
         return result;
       }
@@ -2046,13 +2080,9 @@ export class ResourceRegistry {
           events: page.events,
           nextSeq: page.nextSeq,
         };
-        const filters: ResourceWatchResult["filters"] = {};
         const childDescriptor = cloneChildFilterDescriptor(childFilter);
         if (childDescriptor) {
-          filters.child = childDescriptor;
-        }
-        if (filters.child) {
-          result.filters = filters;
+          result.filters = { child: childDescriptor };
         }
         return result;
       }
@@ -2068,11 +2098,11 @@ export class ResourceRegistry {
         };
         const blackboardDescriptor = cloneBlackboardFilterDescriptor(filter);
         if (blackboardDescriptor) {
-          result.filters = {};
+          const filters: ResourceWatchFilters = { blackboard: blackboardDescriptor };
           if (blackboardDescriptor.keys && blackboardDescriptor.keys.length > 0) {
-            result.filters.keys = blackboardDescriptor.keys.map((key) => key);
+            filters.keys = blackboardDescriptor.keys.map((key) => key);
           }
-          result.filters.blackboard = blackboardDescriptor;
+          result.filters = filters;
         }
         return result;
       }
@@ -2099,7 +2129,7 @@ export class ResourceRegistry {
         const history = this.getRunHistoryOrThrow(uri, parsed.runId);
         const runFilter = normaliseRunEventFilter(options.run);
         const runFilters = cloneRunFilterDescriptor(runFilter);
-        return this.createWatchStream({
+        return this.createWatchStream<ResourceWatchRunEventsResult>({
           uri,
           kind: "run_events",
           emitter: history.emitter,
@@ -2114,7 +2144,7 @@ export class ResourceRegistry {
         const history = this.getChildHistoryOrThrow(uri, parsed.childId);
         const childFilter = normaliseChildLogFilter(options.child);
         const childFilters = cloneChildFilterDescriptor(childFilter);
-        return this.createWatchStream({
+        return this.createWatchStream<ResourceWatchChildLogsResult>({
           uri,
           kind: "child_logs",
           emitter: history.emitter,
@@ -2129,7 +2159,7 @@ export class ResourceRegistry {
         const history = this.getBlackboardHistoryOrThrow(uri, parsed.namespace);
         const filter = normaliseBlackboardFilter(parsed.namespace, options.keys, options.blackboard);
         const descriptor = cloneBlackboardFilterDescriptor(filter);
-        return this.createWatchStream({
+        return this.createWatchStream<ResourceWatchBlackboardResult>({
           uri,
           kind: "blackboard_namespace",
           emitter: history.emitter,
@@ -2150,13 +2180,14 @@ export class ResourceRegistry {
       }
       case "tool_router_decisions": {
         const history = this.toolRouterHistory;
-        return this.createWatchStream({
+        return this.createWatchStream<ResourceWatchToolRouterResult>({
           uri,
           kind: "tool_router_decisions",
           emitter: history.emitter,
           fromSeq,
           limit,
           signal: options.signal ?? null,
+          filters: undefined,
           slice: (cursor, pageLimit) => this.sliceToolRouterHistory(history, cursor, pageLimit),
         });
       }
@@ -2284,7 +2315,9 @@ export class ResourceRegistry {
     return { events, nextSeq };
   }
 
-  private createWatchStream(context: WatchStreamContext): AsyncIterable<ResourceWatchResult> {
+  private createWatchStream<T extends ResourceWatchResult>(
+    context: WatchStreamContext<T>,
+  ): AsyncIterable<T> {
     return {
       [Symbol.asyncIterator]: () => {
         let currentSeq = context.fromSeq;
@@ -2346,25 +2379,18 @@ export class ResourceRegistry {
           }
         };
 
-        const buildResult = (
-          page: {
-            events: Array<
-              ResourceRunEvent | ResourceChildLogEntry | ResourceBlackboardEvent | ResourceToolRouterDecision
-            >;
-            nextSeq: number;
-          },
-        ): ResourceWatchResult => {
-          const result: ResourceWatchResult = {
+        const buildResult = (page: { events: T["events"]; nextSeq: number }): T => {
+          const baseResult = {
             uri: context.uri,
             kind: context.kind,
             events: page.events,
             nextSeq: page.nextSeq,
-          };
+          } as T;
           const filters = cloneWatchFilters(context.filters);
           if (filters) {
-            result.filters = filters;
+            return { ...baseResult, filters } as T;
           }
-          return result;
+          return baseResult;
         };
 
         return {

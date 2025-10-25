@@ -1,11 +1,8 @@
 import { expect } from "chai";
 
-import {
-  GraphPartitionInputSchema,
-  handleGraphPartition,
-} from "../src/tools/graphTools.js";
+import { GraphPartitionInputSchema, handleGraphPartition } from "../src/tools/graph/query.js";
 
-import type { GraphDescriptorPayload } from "../src/tools/graphTools.js";
+import type { GraphDescriptorPayload } from "../src/tools/graph/snapshot.js";
 
 describe("graph_partition tool", () => {
   const baseGraph: GraphDescriptorPayload = {

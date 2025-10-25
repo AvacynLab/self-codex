@@ -5,7 +5,7 @@ import path from "node:path";
 
 import { ensureDirectory } from "../paths.js";
 import { safePath } from "../gateways/fsArtifacts.js";
-import type { GraphDescriptorPayload } from "../tools/graphTools.js";
+import type { GraphDescriptorPayload } from "../tools/graph/snapshot.js";
 import {
   SUBGRAPH_REGISTRY_KEY,
   collectMissingSubgraphDescriptors,

@@ -173,21 +173,65 @@ const ResourceWatchInput = z.object({
   format: z.enum(["json", "sse"]).optional(),
 }).strict();
 
-interface ResourceWatchResult {
-  uri: string;
-  kind: ResourceKind;
-  events: Array<ResourceRunEvent | ResourceChildLogEntry>;
-  next_seq: number; // pointeur pour l'appel suivant
-  format?: "json" | "sse";
-  messages?: ResourceWatchSseMessage[]; // présent quand format === "sse"
-  stream?: string; // concaténation SSE prête à l'emploi
+interface ResourceWatchFilters {
+  keys?: string[];
+  blackboard?: ResourceWatchBlackboardFilters;
+  run?: ResourceWatchRunFilters;
+  child?: ResourceWatchChildFilters;
 }
+
+type ResourceWatchResult =
+  | {
+      uri: string;
+      kind: "run_events";
+      events: ResourceRunEvent[];
+      next_seq: number;
+      filters?: ResourceWatchFilters;
+      format?: "json" | "sse";
+      messages?: ResourceWatchSseMessage[];
+      stream?: string;
+    }
+  | {
+      uri: string;
+      kind: "child_logs";
+      events: ResourceChildLogEntry[];
+      next_seq: number;
+      filters?: ResourceWatchFilters;
+      format?: "json" | "sse";
+      messages?: ResourceWatchSseMessage[];
+      stream?: string;
+    }
+  | {
+      uri: string;
+      kind: "blackboard_namespace";
+      events: ResourceBlackboardEvent[];
+      next_seq: number;
+      filters?: ResourceWatchFilters;
+      format?: "json" | "sse";
+      messages?: ResourceWatchSseMessage[];
+      stream?: string;
+    }
+  | {
+      uri: string;
+      kind: "tool_router_decisions";
+      events: ResourceToolRouterDecision[];
+      next_seq: number;
+      filters?: undefined;
+      format?: "json";
+    };
 ```
 
-Les événements sont ordonnés (seq croissant) et incluent les hints de
-corrélation (`jobId`, `runId`, `opId`, `graphId`, `nodeId`, `childId`). Pour un
-flux complet, bouclez tant que `events.length > 0` en rappelant
-`resources_watch` avec `from_seq = next_seq`.
+Les variantes `run_events`, `child_logs` et `blackboard_namespace` conservent un
+tableau homogène d'événements déjà normalisés côté serveur et, lorsqu'elles sont
+filtrées, renvoient un snapshot des filtres appliqués (`filters`). Toutes les
+entrées sont ordonnées (seq croissant) et incluent les hints de corrélation
+(`jobId`, `runId`, `opId`, `graphId`, `nodeId`, `childId`). Pour un flux complet,
+bouclez tant que `events.length > 0` en rappelant `resources_watch` avec
+`from_seq = next_seq`.
+
+> ℹ️ Les pages `tool_router_decisions` sont uniquement disponibles en JSON. Elles
+> servent de journal diagnostique et lèvent une erreur si `format = "sse"` est
+> demandé : cela évite d'émettre des frames SSE inconsistantes.
 
 > ℹ️ En passant `format = "sse"`, la réponse inclut `messages` (`id`, `event`,
 > `data`) et `stream` prêts à l'emploi. Les payloads sont encodés via
@@ -544,6 +588,13 @@ guidés par le graphe de connaissances.
   planificateur afin d'éviter tout calcul implicite côté consommateurs.
 * Les charges JSON Lines et SSE sont strictement alignées champ par champ ; un
   écart détecté par un client doit être considéré comme un bug et signalé.
+
+> ℹ️ **Heartbeats SSE** — l'orchestrateur envoie des commentaires `: keep-alive`
+> tant que la connexion reste ouverte. Le rythme est dérivé
+> `resolveDashboardKeepAliveInterval()` et peut être forcé via
+> `MCP_SSE_KEEPALIVE_MS` (plancher 1 000 ms, valeur par défaut 15 000 ms). Les
+> intervalles plus courts sont automatiquement relevés pour éviter de saturer la
+> boucle d'événements ou de réveiller inutilement les proxys intermédiaires.
 
 ```ts
 const GraphBatchMutateInput = z

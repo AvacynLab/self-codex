@@ -31,6 +31,7 @@ import {
   type ToolsHelpOutput,
   type ToolsHelpToolSummary,
 } from "../rpc/schemas.js";
+import { buildToolErrorResult, buildToolSuccessResult } from "./shared.js";
 
 /** Canonical name advertised by the façade manifest. */
 export const TOOLS_HELP_TOOL_NAME = "tools_help" as const;
@@ -626,11 +627,7 @@ export function createToolsHelpHandler(context: ToolsHelpToolContext): ToolImple
           metadata,
           error,
         );
-        return {
-          isError: true,
-          content: [{ type: "text", text: asJsonPayload(structured) }],
-          structuredContent: structured,
-        };
+        return buildToolErrorResult(asJsonPayload(structured), structured);
       }
       throw error;
     }
@@ -702,10 +699,7 @@ export function createToolsHelpHandler(context: ToolsHelpToolContext): ToolImple
       rpcContext.budget.snapshot();
     }
 
-    return {
-      content: [{ type: "text", text: asJsonPayload(validated) }],
-      structuredContent: validated,
-    };
+    return buildToolSuccessResult(asJsonPayload(validated), validated);
   };
 }
 

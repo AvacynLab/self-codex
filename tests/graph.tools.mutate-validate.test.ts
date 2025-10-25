@@ -3,13 +3,15 @@ import { expect } from "chai";
 
 import {
   GraphMutateInputSchema,
-  GraphSummarizeInputSchema,
   handleGraphGenerate,
   handleGraphMutate,
+} from "../src/tools/graph/mutate.js";
+import {
+  GraphSummarizeInputSchema,
   handleGraphSummarize,
   handleGraphValidate,
-} from "../src/tools/graphTools.js";
-import type { GraphDescriptorPayload } from "../src/tools/graphTools.js";
+} from "../src/tools/graph/query.js";
+import type { GraphDescriptorPayload } from "../src/tools/graph/snapshot.js";
 
 describe("graph tools", () => {
   describe("graph_generate", () => {

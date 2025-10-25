@@ -1,12 +1,8 @@
 import { describe, it } from "mocha";
 import { expect } from "chai";
 
-import {
-  GraphGenerateInputSchema,
-  GraphSummarizeInputSchema,
-  handleGraphGenerate,
-  handleGraphSummarize,
-} from "../src/tools/graphTools.js";
+import { GraphGenerateInputSchema, handleGraphGenerate } from "../src/tools/graph/mutate.js";
+import { GraphSummarizeInputSchema, handleGraphSummarize } from "../src/tools/graph/query.js";
 
 /**
  * Regression tests dedicated to the `graph_generate` and `graph_summarize`

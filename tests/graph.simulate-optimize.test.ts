@@ -7,8 +7,8 @@ import {
   handleGraphCriticalPath,
   handleGraphOptimize,
   handleGraphSimulate,
-} from "../src/tools/graphTools.js";
-import type { GraphDescriptorPayload } from "../src/tools/graphTools.js";
+} from "../src/tools/graph/query.js";
+import type { GraphDescriptorPayload } from "../src/tools/graph/snapshot.js";
 
 describe("graph simulate & optimize", () => {
   it("computes schedules, critical path flags, and queue metrics", () => {
