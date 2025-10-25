@@ -1,3 +1,8 @@
+/**
+ * Lazily wires the Graph Forge adapters shared by querying and mutation
+ * modules. The runtime-level cache keeps expensive computations warm while
+ * offering typed exports for downstream helpers.
+ */
 import { GraphComputationCache } from "../../graph/cache.js";
 import { loadGraphForge } from "../../graph/forgeLoader.js";
 import type { NormalisedGraph } from "../../graph/types.js";

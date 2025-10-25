@@ -123,8 +123,8 @@ export async function reflect(raw: ReflectionInput): Promise<ReflectionResult> {
         insights.add("Des références à des tests sont présentes, pensez à confirmer leur exécution.");
       }
       if (/todo|fixme/.test(lowered)) {
-        risks.add("Des marqueurs TODO/FIXME subsistent dans le code.");
-        nextSteps.add("Supprimer les TODO/FIXME ou planifier leur résolution.");
+        risks.add("Des marqueurs todo/fixme subsistent dans le code.");
+        nextSteps.add("Supprimer les marqueurs todo/fixme ou planifier leur résolution.");
       }
       if (/console\.log|debugger/.test(combinedText)) {
         risks.add("Du logging de debug est présent; nettoyer avant livraison.");

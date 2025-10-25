@@ -1,3 +1,9 @@
+/**
+ * Houses the read-only graph tooling exposed over MCP (validation, summaries,
+ * analytics). Keeping the querying logic isolated from mutating operations
+ * makes the responsibilities explicit and reduces the surface area touched by
+ * orchestration changes.
+ */
 import { z } from "zod";
 
 import { buildGraphAttributeIndex } from "../../graph/index.js";

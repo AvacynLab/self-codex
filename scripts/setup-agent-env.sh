@@ -7,6 +7,14 @@
 
 set -euo pipefail
 
+# Neutralisation immédiate des variables npm pour éviter les surprises (proxies, devDeps omis).
+unset NPM_CONFIG_PRODUCTION || true
+unset NPM_CONFIG_OMIT || true
+unset NPM_CONFIG_HTTP_PROXY   || true
+unset NPM_CONFIG_HTTPS_PROXY  || true
+unset npm_config_http_proxy   || true   # variantes en minuscule parfois injectées
+unset npm_config_https_proxy  || true
+
 # Emplacement standard du fichier PID utilisé par le serveur HTTP optionnel.
 SERVER_PID_FILE="/tmp/mcp_http.pid"
 SERVER_PID=""
@@ -34,13 +42,24 @@ trap cleanup EXIT INT TERM
 echo "🔎 Vérification Node/npm"
 node -v
 
-# Neutraliser toute configuration NPM susceptible de filtrer les devDeps ou de forcer un proxy.
-unset NPM_CONFIG_PRODUCTION || true
-unset NPM_CONFIG_OMIT || true
-unset NPM_CONFIG_HTTP_PROXY   || true
-unset NPM_CONFIG_HTTPS_PROXY  || true
-unset npm_config_http_proxy   || true   # variantes en minuscule parfois injectées
-unset npm_config_https_proxy  || true
+# Validation supplémentaire : vérifie qu'aucune variable npm_config proxy n'est restée active.
+ensure_no_npm_proxy_env() {
+  local snapshot
+  snapshot="$(mktemp)"
+  # Sauvegarde ciblée pour diagnostic en cas d'échec.
+  if env | grep -i '^npm_config' >"${snapshot}" 2>/dev/null; then
+    if grep -Eqi 'https?_proxy=' "${snapshot}"; then
+      echo "❌ Variables npm_config proxy détectées après neutralisation. Nettoyez votre environnement." >&2
+      cat "${snapshot}" >&2
+      rm -f "${snapshot}"
+      exit 4
+    fi
+  fi
+
+  rm -f "${snapshot}"
+}
+
+ensure_no_npm_proxy_env
 
 # Vérification npm après nettoyage des variables pour garantir que l'exécutable consulté
 # respecte l'environnement neutralisé (premier appel à `npm`).
