@@ -64,6 +64,67 @@ export interface EvaluationCampaignOptions {
 }
 
 /**
+ * Minimal set of directories produced by the validation harness. The
+ * evaluation orchestrator only relies on the report path but surfacing the full
+ * structure keeps the type faithful to the runtime contract.
+ */
+export interface EvaluationRunDirectories {
+  readonly inputs: string;
+  readonly outputs: string;
+  readonly events: string;
+  readonly logs: string;
+  readonly artifacts: string;
+  readonly report: string;
+  readonly [key: string]: string;
+}
+
+/**
+ * Runtime context shared across validation stages. The structure mirrors the
+ * JavaScript implementation while remaining permissive enough for tests to
+ * stub only the required properties.
+ */
+export interface EvaluationRunContext {
+  readonly runId: string;
+  readonly rootDir: string;
+  readonly directories: EvaluationRunDirectories;
+  readonly createTraceId: () => string;
+  readonly [key: string]: unknown;
+}
+
+/**
+ * Artefact recorder abstraction injected by the CLI. Tests commonly stub the
+ * interface with lightweight objects, hence the index signature.
+ */
+export interface EvaluationRecorder {
+  readonly [key: string]: unknown;
+}
+
+/**
+ * Runtime guard ensuring the validation harness returns the expected run
+ * context shape. The guard keeps the TypeScript compiler honest while providing
+ * a fail-fast error when the JavaScript helpers drift from the documented
+ * contract.
+ */
+function isEvaluationRunContext(value: unknown): value is EvaluationRunContext {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+  const candidate = value as Record<string, unknown>;
+  if (typeof candidate.runId !== "string" || typeof candidate.rootDir !== "string") {
+    return false;
+  }
+  if (typeof candidate.createTraceId !== "function") {
+    return false;
+  }
+  const directories = candidate.directories;
+  if (!directories || typeof directories !== "object") {
+    return false;
+  }
+  const report = (directories as Record<string, unknown>).report;
+  return typeof report === "string";
+}
+
+/**
  * Dependencies required to execute an evaluation campaign. Tests supply stub
  * implementations to exercise orchestration logic without touching the real
  * MCP runtime, while the CLI wires the concrete implementations at runtime.
@@ -76,16 +137,16 @@ export interface EvaluationCampaignDependencies {
   /** Loads scenarios either from explicit paths or by scanning the workspace. */
   loadScenarios(input: { scenarioPaths: readonly string[]; tags: readonly string[] }): Promise<readonly EvaluationScenario[]>;
   /** Creates the recorder-friendly run context used to persist artefacts. */
-  createRunContext(params: { runId: string; runRoot?: string; traceSeed?: string }): Promise<any>;
+  createRunContext(params: { runId: string; runRoot?: string; traceSeed?: string }): Promise<EvaluationRunContext>;
   /** Instantiates the artefact recorder tied to the current run context. */
-  createRecorder(runContext: any): Promise<any>;
+  createRecorder(runContext: EvaluationRunContext): Promise<EvaluationRecorder>;
   /**
    * Connects to the MCP runtime for a given scenario. The helper receives the
    * scenario definition so tests can provide deterministic clients per case.
    */
   createMcpClient(params: {
-    runContext: any;
-    recorder: any;
+    runContext: EvaluationRunContext;
+    recorder: EvaluationRecorder;
     featureOverrides: Record<string, unknown>;
     scenario: EvaluationScenario;
   }): Promise<
@@ -95,14 +156,14 @@ export interface EvaluationCampaignDependencies {
   >;
   /** Persists per-scenario JSON reports for later inspection. */
   writeScenarioReport(
-    runContext: any,
+    runContext: EvaluationRunContext,
     index: number,
     summary: ScenarioEvaluationSummary,
     scenario: EvaluationScenario,
   ): Promise<string>;
   /** Writes the aggregated campaign summary and returns its path. */
   writeCampaignSummary(
-    runContext: any,
+    runContext: EvaluationRunContext,
     runId: string,
     summaries: readonly ScenarioEvaluationSummary[],
     overallMetrics: CampaignMetrics,
@@ -321,26 +382,34 @@ async function loadScenarioDefinitions(input: {
   return loadScenariosFromDirectory(DEFAULT_SCENARIO_DIR, { tags: input.tags });
 }
 
-async function createRunContext(params: { runId: string; runRoot?: string; traceSeed?: string }) {
-  const { createRunContext } = await import("./lib/validation/run-context.mjs");
+async function createRunContext(params: {
+  runId: string;
+  runRoot?: string;
+  traceSeed?: string;
+}): Promise<EvaluationRunContext> {
+  const { createRunContext: createValidationRunContext } = await import("./lib/validation/run-context.mjs");
   const runRoot = params.runRoot ?? join(WORKSPACE_ROOT, "evaluation_runs", params.runId);
-  return createRunContext({
+  const context: unknown = await createValidationRunContext({
     runId: params.runId,
     workspaceRoot: WORKSPACE_ROOT,
     runRoot,
     traceSeed: params.traceSeed,
   });
+  if (!isEvaluationRunContext(context)) {
+    throw new TypeError("Validation run context is missing required properties.");
+  }
+  return context;
 }
 
-async function createRecorder(runContext: any) {
+async function createRecorder(runContext: EvaluationRunContext): Promise<EvaluationRecorder> {
   const { ArtifactRecorder } = await import("./lib/validation/artifact-recorder.mjs");
   await mkdir(runContext.directories.report, { recursive: true });
-  return new ArtifactRecorder(runContext);
+  return new ArtifactRecorder(runContext) as EvaluationRecorder;
 }
 
 async function createMcpClient(params: {
-  runContext: any;
-  recorder: any;
+  runContext: EvaluationRunContext;
+  recorder: EvaluationRecorder;
   featureOverrides: Record<string, unknown>;
   scenario: EvaluationScenario;
 }) {
@@ -384,7 +453,7 @@ function selectGateSummaries(
 }
 
 async function writeScenarioReport(
-  runContext: any,
+  runContext: EvaluationRunContext,
   index: number,
   summary: ScenarioEvaluationSummary,
   scenario: EvaluationScenario,
@@ -400,7 +469,7 @@ async function writeScenarioReport(
 }
 
 async function writeCampaignSummary(
-  runContext: any,
+  runContext: EvaluationRunContext,
   runId: string,
   summaries: readonly ScenarioEvaluationSummary[],
   overallMetrics: ReturnType<typeof aggregateCampaignMetrics>,

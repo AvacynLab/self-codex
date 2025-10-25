@@ -6,6 +6,7 @@
  * CLI transports while keeping the orchestration logic decoupled across
  * dedicated modules.
  */
+// Règle hygiène : expliquer les doubles assertions TypeScript via descriptions sans écrire le motif littéral (unknown→T).
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { RequestHandlerExtra } from "@modelcontextprotocol/sdk/shared/protocol.js";
 import type { CallToolResult, ServerNotification, ServerRequest } from "@modelcontextprotocol/sdk/types.js";
@@ -3674,9 +3675,9 @@ type ChildChatToolResult = {
 
 /**
  * Ensures tool handlers only emit structured payloads compatible with the MCP
- * schema without relying on unsafe `as unknown as` casts.  The generic keeps
- * the domain specific type (`T`) intact for callers while letting TypeScript
- * verify that it matches the JSON object contract expected by
+ * schema without relying on the unsafe double assertion motif (unknown→T).
+ * The generic keeps the domain specific type (`T`) intact for callers while
+ * letting TypeScript verify that it matches the JSON object contract expected by
  * {@link CallToolResult#structuredContent}.
  */
 function toStructuredContent<T extends NonNullable<CallToolResult["structuredContent"]>>(value: T): T {
