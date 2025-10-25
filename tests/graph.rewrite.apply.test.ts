@@ -1,11 +1,8 @@
 import { describe, it } from "mocha";
 import { expect } from "chai";
 
-import {
-  GraphRewriteApplyInputSchema,
-  handleGraphRewriteApply,
-} from "../src/tools/graphTools.js";
-import type { GraphDescriptorPayload } from "../src/tools/graphTools.js";
+import { GraphRewriteApplyInputSchema, handleGraphRewriteApply } from "../src/tools/graph/mutate.js";
+import type { GraphDescriptorPayload } from "../src/tools/graph/snapshot.js";
 
 /**
  * Unit test suite covering the rewrite application tool. The scenarios exercise

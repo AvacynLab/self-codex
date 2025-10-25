@@ -9,7 +9,7 @@ import { Buffer } from "node:buffer";
 import { afterEach, beforeEach, describe, it } from "mocha";
 import { expect } from "chai";
 
-import type { ResourceWatchResult } from "../../src/resources/registry.js";
+import type { ResourceRunEvent, ResourceWatchResult } from "../../src/resources/registry.js";
 import {
   ResourceWatchSseBuffer,
   renderResourceWatchSseMessages,
@@ -50,7 +50,7 @@ describe("http sse backpressure", () => {
           stage: "backpressure",
           elapsedMs: null,
           payload: { seq },
-        },
+        } satisfies ResourceRunEvent,
       ],
     });
 

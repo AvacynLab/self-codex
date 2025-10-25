@@ -24,6 +24,7 @@ import {
   ChildSpawnRetryOptions,
   startChildRuntime,
 } from "../childRuntime.js";
+import { resolveChildGracefulShutdownTimeout, resolveChildReadyTimeout } from "./timeouts.js";
 import type { EventBus } from "../events/bus.js";
 import type { ChildSupervisorEventPayload } from "../events/types.js";
 import { bridgeChildRuntimeEvents, type ChildRuntimeBridgeContext } from "../events/bridges.js";
@@ -1003,6 +1004,7 @@ export class ChildSupervisor implements ChildSupervisorContract {
     let runtime: ChildRuntime | null = null;
     let readyMessage: ChildRuntimeMessage | null = null;
 
+    const readyTimeout = resolveChildReadyTimeout(options.readyTimeoutMs);
     try {
       runtime = await startChildRuntime({
         childId,
@@ -1039,7 +1041,7 @@ export class ChildSupervisor implements ChildSupervisorContract {
         const readyType = options.readyType ?? "ready";
         readyMessage = await runtime.waitForMessage(
           (message) => readChildMessageType(message) === readyType,
-          options.readyTimeoutMs ?? 2000,
+          readyTimeout,
         );
         this.index.updateHeartbeat(childId, readyMessage.receivedAt);
         this.index.updateState(childId, "ready");
@@ -1068,7 +1070,7 @@ export class ChildSupervisor implements ChildSupervisorContract {
 
         const shutdownErrors: unknown[] = [];
         const gracefulSignal: Signal = "SIGTERM";
-        const gracefulTimeout = Math.min(2000, options.readyTimeoutMs ?? 2000);
+        const gracefulTimeout = Math.min(resolveChildGracefulShutdownTimeout(), readyTimeout);
         try {
           await runtime.shutdown({ signal: gracefulSignal, timeoutMs: gracefulTimeout });
         } catch (shutdownError) {

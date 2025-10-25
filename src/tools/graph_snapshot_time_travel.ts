@@ -32,6 +32,7 @@ import {
 import { snapshotList, snapshotLoad, type SnapshotMetadata, type SnapshotRecord } from "../state/snapshot.js";
 import { recordGraphWal } from "../graph/wal.js";
 import { recordOperation } from "../graph/oplog.js";
+import { buildToolErrorResult, buildToolSuccessResult } from "./shared.js";
 
 /** Canonical façade identifier exposed through the registry. */
 export const GRAPH_SNAPSHOT_TIME_TRAVEL_TOOL_NAME = "graph_snapshot_time_travel" as const;
@@ -390,11 +391,7 @@ export function createGraphSnapshotTimeTravelHandler(
           limit: error.limit,
         });
         const degraded = buildBudgetExceededOutput(parsed.graph_id, mode, idempotencyKey, error, metadata);
-        return {
-          isError: true,
-          content: [{ type: "text", text: asJsonPayload(degraded) }],
-          structuredContent: degraded,
-        };
+        return buildToolErrorResult(asJsonPayload(degraded), degraded);
       }
       throw error;
     }
@@ -691,10 +688,7 @@ export function createGraphSnapshotTimeTravelHandler(
     }
 
     const payload = asJsonPayload(structured);
-    return {
-      content: [{ type: "text", text: payload }],
-      structuredContent: structured,
-    };
+    return buildToolSuccessResult(payload, structured);
   };
 }
 

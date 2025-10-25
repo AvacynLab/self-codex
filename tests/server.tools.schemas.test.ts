@@ -11,7 +11,8 @@ import {
   ValuesFilterInputSchema,
   ValuesSetInputSchema,
 } from "../src/tools/valueTools.js";
-import { GraphHyperExportInputSchema, handleGraphGenerate } from "../src/tools/graphTools.js";
+import { GraphHyperExportInputSchema } from "../src/tools/graph/snapshot.js";
+import { handleGraphGenerate } from "../src/tools/graph/mutate.js";
 import { ConsensusVoteInputSchema } from "../src/tools/coordTools.js";
 import { GraphSubgraphExtractInputSchema } from "../src/server.js";
 

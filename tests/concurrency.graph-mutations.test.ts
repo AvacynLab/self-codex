@@ -12,7 +12,7 @@ import {
   handleGraphPatch,
   type GraphDiffToolContext,
 } from "../src/tools/graphDiffTools.js";
-import { serialiseNormalisedGraph } from "../src/tools/graphTools.js";
+import { serialiseNormalisedGraph } from "../src/tools/graph/snapshot.js";
 
 /**
  * Utility returning a deterministic base graph used by the concurrency scenarios.

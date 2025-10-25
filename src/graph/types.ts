@@ -26,7 +26,7 @@ export interface GraphEdgeRecord {
 
 /**
  * Graph descriptor used once a payload has been validated by the zod schemata
- * in {@link src/tools/graphTools.ts}. The `graphId`/`graphVersion` fields allow
+ * in {@link src/tools/graph/snapshot.ts}. The `graphId`/`graphVersion` fields allow
  * caches to invalidate their content deterministically when a mutation occurs.
  */
 export interface NormalisedGraph {

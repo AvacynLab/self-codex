@@ -121,4 +121,91 @@ describe("child runtime shutdown", () => {
     expect(exit.code).to.equal(0);
     expect(exit.signal).to.equal(null);
   });
+
+  it("uses environment overrides when shutting down without explicit options", async () => {
+    const originalGrace = process.env.MCP_CHILD_SHUTDOWN_GRACE_MS;
+    const originalForce = process.env.MCP_CHILD_SHUTDOWN_FORCE_MS;
+    process.env.MCP_CHILD_SHUTDOWN_GRACE_MS = "25";
+    process.env.MCP_CHILD_SHUTDOWN_FORCE_MS = "50";
+
+    try {
+      const childId = "env-shutdown";
+      const childRoot = await createChildWorkspace(tempRoot, childId);
+      const child = new ControlledChildProcess(process.execPath, ["-e", "setTimeout(()=>{}, 10);"]);
+      const runtime = createRuntime({ childRoot, childId, child });
+      child.emitSpawn();
+
+      child.killHandler = (signal) => {
+        if (signal === "SIGKILL") {
+          queueMicrotask(() => {
+            child.emitExit(null, "SIGKILL");
+            child.emitClose(null, "SIGKILL");
+          });
+        }
+      };
+
+      const result = await runtime.shutdown();
+
+      expect(child.killInvocations).to.deep.equal(["SIGINT", "SIGKILL"]);
+      expect(result.forced).to.equal(true);
+      expect(result.signal).to.equal("SIGKILL");
+    } finally {
+      if (originalGrace === undefined) {
+        delete process.env.MCP_CHILD_SHUTDOWN_GRACE_MS;
+      } else {
+        process.env.MCP_CHILD_SHUTDOWN_GRACE_MS = originalGrace;
+      }
+      if (originalForce === undefined) {
+        delete process.env.MCP_CHILD_SHUTDOWN_FORCE_MS;
+      } else {
+        process.env.MCP_CHILD_SHUTDOWN_FORCE_MS = originalForce;
+      }
+    }
+  });
+
+  it("rejects when the child ignores SIGKILL beyond the forced timeout", async () => {
+    const originalGrace = process.env.MCP_CHILD_SHUTDOWN_GRACE_MS;
+    const originalForce = process.env.MCP_CHILD_SHUTDOWN_FORCE_MS;
+    process.env.MCP_CHILD_SHUTDOWN_GRACE_MS = "10";
+    process.env.MCP_CHILD_SHUTDOWN_FORCE_MS = "25";
+
+    try {
+      const childId = "force-timeout";
+      const childRoot = await createChildWorkspace(tempRoot, childId);
+      const child = new ControlledChildProcess(process.execPath, ["-e", "setTimeout(()=>{}, 1000);"]);
+      const runtime = createRuntime({ childRoot, childId, child });
+      child.emitSpawn();
+
+      child.killHandler = () => {
+        // Intentionally ignore all signals so both the graceful and forced
+        // waits expire, exercising the timeout path.
+      };
+
+      let caught: unknown;
+      try {
+        await runtime.shutdown({ signal: "SIGTERM", timeoutMs: 5 });
+      } catch (error) {
+        caught = error;
+      }
+
+      expect(child.killInvocations).to.deep.equal(["SIGTERM", "SIGKILL"]);
+      expect(caught).to.be.instanceOf(Error);
+      expect((caught as Error).message).to.equal("Timed out waiting for child exit");
+
+      // Manually release listeners so the runtime can flush buffers before the test tears down.
+      child.emitExit(null, "SIGKILL");
+      child.emitClose(null, "SIGKILL");
+    } finally {
+      if (originalGrace === undefined) {
+        delete process.env.MCP_CHILD_SHUTDOWN_GRACE_MS;
+      } else {
+        process.env.MCP_CHILD_SHUTDOWN_GRACE_MS = originalGrace;
+      }
+      if (originalForce === undefined) {
+        delete process.env.MCP_CHILD_SHUTDOWN_FORCE_MS;
+      } else {
+        process.env.MCP_CHILD_SHUTDOWN_FORCE_MS = originalForce;
+      }
+    }
+  });
 });

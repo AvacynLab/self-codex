@@ -10,10 +10,10 @@ import { BlackboardStore } from "../src/coord/blackboard.js";
 import {
   ResourceRegistry,
   ResourceWatchAbortedError,
-  type ResourceWatchResult,
+  type ResourceRunEvent,
 } from "../src/resources/registry.js";
 
-function collectRunEvent(seq: number, overrides: Partial<ResourceWatchResult["events"][number]> = {}) {
+function collectRunEvent(seq: number, overrides: Partial<ResourceRunEvent> = {}): ResourceRunEvent {
   return {
     seq,
     ts: 1_000 + seq,
@@ -30,7 +30,7 @@ function collectRunEvent(seq: number, overrides: Partial<ResourceWatchResult["ev
     elapsedMs: null,
     payload: { note: `step-${seq}` },
     ...overrides,
-  } satisfies ResourceWatchResult["events"][number];
+  } satisfies ResourceRunEvent;
 }
 
 describe("ResourceRegistry.watchStream", () => {

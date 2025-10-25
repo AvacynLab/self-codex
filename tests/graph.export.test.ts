@@ -5,7 +5,7 @@ import { readFile, rm } from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 
-import { GraphDescriptorPayload } from "../src/tools/graphTools.js";
+import { GraphDescriptorPayload } from "../src/tools/graph/snapshot.js";
 import {
   adoptGraphDescriptor,
   normaliseGraphPayload,

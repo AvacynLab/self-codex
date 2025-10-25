@@ -8,8 +8,12 @@ import {
 } from "../graph/tx.js";
 import type { GraphLockManager } from "../graph/locks.js";
 import { IdempotencyRegistry, buildIdempotencyCacheKey } from "../infra/idempotency.js";
-import { normaliseGraphPayload, serialiseNormalisedGraph, GraphDescriptorSchema, GraphMutateInputSchema, handleGraphMutate } from "./graphTools.js";
-import type { GraphMutateInput } from "./graphTools.js";
+import {
+  GraphMutateInputSchema,
+  handleGraphMutate,
+  type GraphMutateInput,
+} from "./graph/mutate.js";
+import { normaliseGraphPayload, serialiseNormalisedGraph, GraphDescriptorSchema } from "./graph/snapshot.js";
 import type { ResourceGraphPayload, ResourceRegistry } from "../resources/registry.js";
 import type { NormalisedGraph } from "../graph/types.js";
 import { GraphValidationError, validateGraph, assertValidGraph } from "../graph/validate.js";

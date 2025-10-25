@@ -39,6 +39,7 @@ import type { OrchestratorSupervisorContract } from "../agents/supervisor.js";
 import { buildReplayPage } from "./replay.js";
 import type { ThoughtNodeStatus } from "../reasoning/thoughtGraph.js";
 import { LogJournal, type LogStream, type LogTailFilters } from "./log.js";
+import { readOptionalInt, readOptionalString } from "../config/env.js";
 
 /**
  * Descriptor returned by the dashboard streaming endpoints.
@@ -334,6 +335,8 @@ export interface DashboardServerOptions {
   port?: number;
   /** Interval (ms) used to refresh SSE clients. */
   streamIntervalMs?: number;
+  /** Interval (ms) used to emit SSE keep-alive comments. */
+  keepAliveIntervalMs?: number;
   /** Shared in-memory graph state. */
   graphState: GraphState;
   /** Child supervisor exposing lifecycle controls (cancel, etc.). */
@@ -352,6 +355,78 @@ export interface DashboardServerOptions {
   contractNetWatcherTelemetry?: ContractNetWatcherTelemetryRecorder;
   /** Correlated log journal mirrored to the dashboard API. */
   logJournal?: LogJournal;
+}
+
+const DEFAULT_DASHBOARD_HOST = "127.0.0.1";
+const DEFAULT_DASHBOARD_PORT = 4100;
+const DEFAULT_DASHBOARD_STREAM_INTERVAL_MS = 2_000;
+const MIN_DASHBOARD_STREAM_INTERVAL_MS = 250;
+const DEFAULT_DASHBOARD_KEEPALIVE_INTERVAL_MS = 15_000;
+const MIN_DASHBOARD_KEEPALIVE_INTERVAL_MS = 1_000;
+
+/**
+ * Resolves the dashboard HTTP host by prioritising explicit overrides, then environment
+ * variables, and finally the documented default. The helper trims whitespace so operators
+ * can safely export values such as `" 0.0.0.0 "` without leaving stray spaces in logs.
+ */
+export function resolveDashboardHost(explicit?: string): string {
+  if (typeof explicit === "string" && explicit.trim().length > 0) {
+    return explicit.trim();
+  }
+  const envHost = readOptionalString("MCP_DASHBOARD_HOST");
+  return envHost ?? DEFAULT_DASHBOARD_HOST;
+}
+
+/**
+ * Resolves the dashboard HTTP port following the same precedence order as {@link resolveDashboardHost}.
+ * The helper permits `0` so the OS can allocate an ephemeral port when requested.
+ */
+export function resolveDashboardPort(explicit?: number): number {
+  if (explicit !== undefined) {
+    return explicit;
+  }
+  const envPort = readOptionalInt("MCP_DASHBOARD_PORT", { min: 0, max: 65_535 });
+  return envPort ?? DEFAULT_DASHBOARD_PORT;
+}
+
+/**
+ * Resolves the SSE broadcast interval while enforcing the documented lower bound (250ms).
+ * Explicit overrides are clamped to avoid starving the event loop with extremely small delays.
+ */
+export function resolveDashboardStreamInterval(explicit?: number): number {
+  if (explicit !== undefined) {
+    return Math.max(MIN_DASHBOARD_STREAM_INTERVAL_MS, explicit);
+  }
+  const envInterval = readOptionalInt("MCP_DASHBOARD_INTERVAL_MS", { min: MIN_DASHBOARD_STREAM_INTERVAL_MS });
+  return envInterval ?? DEFAULT_DASHBOARD_STREAM_INTERVAL_MS;
+}
+
+/**
+ * Resolves the SSE keep-alive cadence by prioritising explicit overrides, then environment
+ * variables, and finally a heuristic derived from the broadcast interval.
+ *
+ * The calculation intentionally clamps the interval between 1s and 15s so operators receive
+ * frequent enough heartbeats to keep intermediaries (reverse proxies/CDNs) from closing the
+ * connection while avoiding excessive chatter when the broadcast loop already emits snapshots
+ * more frequently than once per second. Tests can pass smaller overrides to exercise edge cases
+ * without waiting for long delays.
+ */
+export function resolveDashboardKeepAliveInterval(
+  streamIntervalMs: number,
+  explicit?: number,
+): number {
+  if (explicit !== undefined) {
+    // Explicit overrides are clamped to the documented floor so operators cannot
+    // accidentally request sub-second keep-alive frames that would keep the event
+    // loop busy without adding meaningful resiliency for upstream proxies.
+    return Math.max(MIN_DASHBOARD_KEEPALIVE_INTERVAL_MS, explicit);
+  }
+  const envInterval = readOptionalInt("MCP_SSE_KEEPALIVE_MS", { min: MIN_DASHBOARD_KEEPALIVE_INTERVAL_MS });
+  if (envInterval !== null && envInterval !== undefined) {
+    return envInterval;
+  }
+  const cappedByDefault = Math.min(streamIntervalMs, DEFAULT_DASHBOARD_KEEPALIVE_INTERVAL_MS);
+  return Math.max(MIN_DASHBOARD_KEEPALIVE_INTERVAL_MS, cappedByDefault);
 }
 
 /** Zod schema validating client log payloads forwarded by the dashboard UI. */
@@ -414,6 +489,7 @@ export interface DashboardRouterOptions {
   eventStore: EventStore;
   logger?: StructuredLogger;
   streamIntervalMs?: number;
+  keepAliveIntervalMs?: number;
   autoBroadcast?: boolean;
   stigmergy: StigmergyField;
   btStatusRegistry: BehaviorTreeStatusRegistry;
@@ -435,6 +511,8 @@ export interface DashboardHttpResponse {
   write(chunk: string | Uint8Array): boolean;
   /** Finalises the response, optionally flushing a trailing chunk. */
   end(chunk?: string | Uint8Array): void;
+  /** Optional helper disabling timeouts on the underlying HTTP response. */
+  setTimeout?(msecs: number, callback?: (...args: unknown[]) => void): this | void;
   /** Registers a listener mirroring the Node.js EventEmitter API. */
   on(event: string, listener: (...args: unknown[]) => void): this;
   /** Optional removal helpers exposed by Node.js streams; stubs may omit them. */
@@ -610,7 +688,8 @@ export function createDashboardRouter(options: DashboardRouterOptions): Dashboar
   // through SSE payloads or JSON responses.
   const supervisorAgent = options.supervisorAgent ?? null;
   const contractNetWatcherTelemetry = options.contractNetWatcherTelemetry ?? null;
-  const streamIntervalMs = Math.max(250, options.streamIntervalMs ?? 2_000);
+  const streamIntervalMs = resolveDashboardStreamInterval(options.streamIntervalMs);
+  const keepAliveIntervalMs = resolveDashboardKeepAliveInterval(streamIntervalMs, options.keepAliveIntervalMs);
   const clients = new Set<DashboardSseClient>();
   const autoBroadcast = options.autoBroadcast ?? true;
   const logJournal = options.logJournal ?? null;
@@ -705,10 +784,10 @@ export function createDashboardRouter(options: DashboardRouterOptions): Dashboar
           writeJson(res, 400, { error: "INVALID_INPUT", message: "cursor must be a non-negative integer" });
           return;
         }
-          const page = buildReplayPage(eventStore, jobId, {
-            ...(parsedLimit !== undefined ? { limit: parsedLimit } : {}),
-            ...(parsedCursor !== undefined ? { cursor: parsedCursor } : {}),
-          });
+        const page = buildReplayPage(eventStore, jobId, {
+          ...(parsedLimit !== undefined ? { limit: parsedLimit } : {}),
+          ...(parsedCursor !== undefined ? { cursor: parsedCursor } : {}),
+        });
         writeJson(res, 200, page);
         return;
       }
@@ -726,6 +805,7 @@ export function createDashboardRouter(options: DashboardRouterOptions): Dashboar
           contractNetWatcherTelemetry,
           logger,
           streamIntervalMs,
+          keepAliveIntervalMs,
         );
         return;
       }
@@ -833,24 +913,27 @@ export function createDashboardRouter(options: DashboardRouterOptions): Dashboar
  * from the same request handling logic as the tests.
  */
 export async function startDashboardServer(options: DashboardServerOptions): Promise<DashboardServerHandle> {
-  const host = options.host ?? "127.0.0.1";
-  const port = options.port ?? 0;
+  const host = resolveDashboardHost(options.host);
+  const port = resolveDashboardPort(options.port);
   const logger = options.logger ?? new StructuredLogger();
-    const router = createDashboardRouter({
-      graphState: options.graphState,
-      eventStore: options.eventStore,
-      supervisor: options.supervisor,
-      logger,
-      autoBroadcast: true,
-      stigmergy: options.stigmergy,
-      btStatusRegistry: options.btStatusRegistry,
-      ...(options.streamIntervalMs !== undefined ? { streamIntervalMs: options.streamIntervalMs } : {}),
-      ...(options.supervisorAgent !== undefined ? { supervisorAgent: options.supervisorAgent } : {}),
-      ...(options.contractNetWatcherTelemetry
-        ? { contractNetWatcherTelemetry: options.contractNetWatcherTelemetry }
-        : {}),
-      ...(options.logJournal ? { logJournal: options.logJournal } : {}),
-    });
+  const streamIntervalMs = resolveDashboardStreamInterval(options.streamIntervalMs);
+  const keepAliveIntervalMs = resolveDashboardKeepAliveInterval(streamIntervalMs, options.keepAliveIntervalMs);
+  const router = createDashboardRouter({
+    graphState: options.graphState,
+    eventStore: options.eventStore,
+    supervisor: options.supervisor,
+    logger,
+    autoBroadcast: true,
+    stigmergy: options.stigmergy,
+    btStatusRegistry: options.btStatusRegistry,
+    streamIntervalMs,
+    keepAliveIntervalMs,
+    ...(options.supervisorAgent !== undefined ? { supervisorAgent: options.supervisorAgent } : {}),
+    ...(options.contractNetWatcherTelemetry
+      ? { contractNetWatcherTelemetry: options.contractNetWatcherTelemetry }
+      : {}),
+    ...(options.logJournal ? { logJournal: options.logJournal } : {}),
+  });
 
   const server = createServer((req, res) => {
     void router.handleRequest(req, res);
@@ -863,7 +946,12 @@ export async function startDashboardServer(options: DashboardServerOptions): Pro
   const address = server.address();
   const resolvedPort = typeof address === "object" && address ? address.port : port;
 
-  logger.info("dashboard_started", { host, port: resolvedPort, streamIntervalMs: router.streamIntervalMs });
+  logger.info("dashboard_started", {
+    host,
+    port: resolvedPort,
+    streamIntervalMs: router.streamIntervalMs,
+    keepAliveIntervalMs,
+  });
 
   return {
     host,
@@ -1111,12 +1199,18 @@ function handleStreamRequest(
   contractNetWatcherTelemetry: ContractNetWatcherTelemetryRecorder | null,
   logger: StructuredLogger,
   streamIntervalMs: number,
+  keepAliveIntervalMs: number,
 ): void {
+  // Round the heartbeat cadence to seconds so the Keep-Alive header aligns with HTTP semantics while
+  // ensuring intermediaries never wait less than the actual timer interval.
+  const keepAliveSeconds = Math.max(1, Math.ceil(keepAliveIntervalMs / 1_000));
+
   res.writeHead(200, {
     "Content-Type": "text/event-stream; charset=utf-8",
     "Cache-Control": "no-store",
     Connection: "keep-alive",
     "X-Accel-Buffering": "no",
+    "Keep-Alive": `timeout=${keepAliveSeconds}`,
   });
   res.write(`retry: ${streamIntervalMs}\n\n`);
 
@@ -1162,6 +1256,37 @@ function handleStreamRequest(
   );
   client.cleanupHandlers.push(addEventListener(req, "close", () => release("request_close")));
   client.cleanupHandlers.push(addEventListener(req, "aborted", () => release("request_aborted")));
+
+  if (req.socket && typeof req.socket.setKeepAlive === "function" && !req.socket.destroyed) {
+    // Allow the TCP socket to remain open indefinitely so reverse proxies do not close idle connections.
+    req.socket.setKeepAlive(true);
+  }
+
+  if (typeof res.setTimeout === "function") {
+    // Disable the implicit HTTP server timeout; SSE responses remain active until clients disconnect.
+    res.setTimeout(0);
+  }
+
+  const keepAliveHandle = runtimeTimers.setInterval(() => {
+    if (client.released) {
+      return;
+    }
+    const frame = `: keep-alive ${Date.now()}\n\n`;
+    const canContinue = res.write(frame);
+    if (!canContinue) {
+      void (async () => {
+        try {
+          await waitForResponseDrain(res);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          logger.warn("dashboard_stream_keepalive_failed", { clientId, message });
+          release("keepalive_drain_failed", "warn", { message });
+        }
+      })();
+    }
+  }, keepAliveIntervalMs);
+
+  client.cleanupHandlers.push(() => runtimeTimers.clearInterval(keepAliveHandle));
 
   const snapshot = buildSnapshot(
     graphState,

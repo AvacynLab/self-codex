@@ -241,7 +241,10 @@ describe("child runtime lifecycle", () => {
           child,
           signal: undefined,
           dispose() {
-            child.removeAllListeners();
+            // Mimic the gateway removing only the spawn instrumentation it
+            // registered, leaving the runtime's lifecycle listeners intact so
+            // shutdown and exit handling continue to function after success.
+            child.removeAllListeners("spawn");
           },
         };
       },

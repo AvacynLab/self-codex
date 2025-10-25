@@ -1,10 +1,7 @@
 import { expect } from "chai";
 
-import {
-  GraphCriticalPathInputSchema,
-  GraphDescriptorPayload,
-  handleGraphCriticalPath,
-} from "../src/tools/graphTools.js";
+import { GraphCriticalPathInputSchema, handleGraphCriticalPath } from "../src/tools/graph/query.js";
+import type { GraphDescriptorPayload } from "../src/tools/graph/snapshot.js";
 
 describe("graph_critical_path", () => {
   it("returns critical path information for a DAG", () => {

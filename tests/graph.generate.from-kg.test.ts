@@ -2,7 +2,7 @@ import { describe, it } from "mocha";
 import { expect } from "chai";
 
 import { KnowledgeGraph } from "../src/knowledge/knowledgeGraph.js";
-import { handleGraphGenerate } from "../src/tools/graphTools.js";
+import { handleGraphGenerate } from "../src/tools/graph/mutate.js";
 
 /**
  * Ensures that graph generation can leverage knowledge graph patterns when no

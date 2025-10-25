@@ -13,7 +13,7 @@ import {
   handleGraphPatch,
   type GraphDiffToolContext,
 } from "../src/tools/graphDiffTools.js";
-import { serialiseNormalisedGraph } from "../src/tools/graphTools.js";
+import { serialiseNormalisedGraph } from "../src/tools/graph/snapshot.js";
 
 /** Build a deterministic base graph exercising the diff/patch helpers. */
 function createBaseGraph(): NormalisedGraph {

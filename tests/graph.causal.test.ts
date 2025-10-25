@@ -1,9 +1,6 @@
 import { expect } from "chai";
-import {
-  GraphDescriptorPayload,
-  GraphCausalAnalyzeInputSchema,
-  handleGraphCausalAnalyze,
-} from "../src/tools/graphTools.js";
+import { GraphCausalAnalyzeInputSchema, handleGraphCausalAnalyze } from "../src/tools/graph/query.js";
+import type { GraphDescriptorPayload } from "../src/tools/graph/snapshot.js";
 
 describe("graph_causal_analyze", () => {
   it("computes topological order, ancestors, and minimal cut for a DAG", () => {

@@ -1,9 +1,6 @@
 import { expect } from "chai";
-import {
-  GraphDescriptorPayload,
-  GraphOptimizeMooInputSchema,
-  handleGraphOptimizeMoo,
-} from "../src/tools/graphTools.js";
+import { GraphOptimizeMooInputSchema, handleGraphOptimizeMoo } from "../src/tools/graph/query.js";
+import type { GraphDescriptorPayload } from "../src/tools/graph/snapshot.js";
 
 const BASE_GRAPH: GraphDescriptorPayload = {
   name: "parallel_fan_in",

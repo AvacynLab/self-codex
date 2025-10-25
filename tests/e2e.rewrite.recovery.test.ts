@@ -27,8 +27,8 @@ import type { HierGraph } from "../src/graph/hierarchy.js";
 import { compileHierGraphToBehaviorTree } from "../src/executor/bt/compiler.js";
 import { BehaviorTreeInterpreter, buildBehaviorTree } from "../src/executor/bt/interpreter.js";
 import type { BehaviorTickResult } from "../src/executor/bt/types.js";
-import type { GraphDescriptorPayload } from "../src/tools/graphTools.js";
-import { GraphRewriteApplyInputSchema, handleGraphRewriteApply } from "../src/tools/graphTools.js";
+import type { GraphDescriptorPayload } from "../src/tools/graph/snapshot.js";
+import { GraphRewriteApplyInputSchema, handleGraphRewriteApply } from "../src/tools/graph/mutate.js";
 import type { GraphAttributeValue } from "../src/graph/types.js";
 import { createSpyPlanLogger } from "./helpers/planContext.js";
 

@@ -36,10 +36,11 @@ import {
   type GraphApplyChangeSetInput,
   type GraphApplyChangeSetOutput,
 } from "../rpc/schemas.js";
-import { serialiseNormalisedGraph } from "./graphTools.js";
+import { serialiseNormalisedGraph } from "./graph/snapshot.js";
 import { resolveOperationId } from "./operationIds.js";
 import { coerceNullToUndefined } from "../utils/object.js";
 import { ERROR_CODES } from "../types.js";
+import { buildToolErrorResult, buildToolSuccessResult } from "./shared.js";
 
 /** Canonical façade name surfaced through the MCP registry. */
 export const GRAPH_APPLY_CHANGE_SET_TOOL_NAME = "graph_apply_change_set" as const;
@@ -484,11 +485,7 @@ export function createGraphApplyChangeSetHandler(
           graph_id: parsed.graph_id,
         });
         const degraded = buildBudgetExceededOutput(opId, idempotencyKey, parsed.graph_id, error);
-        return {
-          isError: true,
-          content: [{ type: "text", text: asJsonPayload(degraded) }],
-          structuredContent: degraded,
-        };
+        return buildToolErrorResult(asJsonPayload(degraded), degraded);
       }
       throw error;
     }
@@ -574,11 +571,10 @@ export function createGraphApplyChangeSetHandler(
         rpcContext.budget.snapshot();
       }
 
-      return {
-        isError: structured.ok ? undefined : true,
-        content: [{ type: "text", text: asJsonPayload(structured) }],
-        structuredContent: structured,
-      };
+      const payload = asJsonPayload(structured);
+      return structured.ok
+        ? buildToolSuccessResult(payload, structured)
+        : buildToolErrorResult(payload, structured);
     } catch (error) {
       if (rpcContext?.budget && charge) {
         rpcContext.budget.refund(charge);

@@ -3,9 +3,7 @@ import type {
   ResourceChildLogEntry,
   ResourceRunEvent,
   ResourceWatchResult,
-  ResourceWatchChildFilters,
-  ResourceWatchBlackboardFilters,
-  ResourceWatchRunFilters,
+  ResourceWatchFilters,
 } from "./registry.js";
 import { serialiseForSse } from "../events/sse.js";
 import {
@@ -115,12 +113,7 @@ function buildPayload(
       | ReturnType<typeof normaliseChildLog>
       | ReturnType<typeof normaliseBlackboardEvent>
       | { type: "keep_alive" };
-    filters?: {
-      keys?: string[];
-      blackboard?: ResourceWatchBlackboardFilters;
-      run?: ResourceWatchRunFilters;
-      child?: ResourceWatchChildFilters;
-    };
+    filters?: ResourceWatchFilters;
   } = {
     uri: result.uri,
     kind: result.kind,
@@ -129,7 +122,7 @@ function buildPayload(
   };
   const filters = result.filters;
   if (filters) {
-    const snapshot: NonNullable<typeof payload.filters> = {};
+    const snapshot: ResourceWatchFilters = {};
     if (filters.keys && filters.keys.length > 0) {
       snapshot.keys = filters.keys.map((key) => key);
     }
@@ -166,32 +159,39 @@ export function serialiseResourceWatchResultForSse(result: ResourceWatchResult):
     ];
   }
 
-  return result.events.map((event) => {
-    if (result.kind === "run_events") {
-      const payload = buildPayload(result, normaliseRunEvent(event as ResourceRunEvent));
-      return {
-        id: `${result.uri}:${(event as ResourceRunEvent).seq}`,
-        event: "resource_run_event" as const,
-        data: serialiseForSse(payload),
-      };
-    }
-
-    if (result.kind === "blackboard_namespace") {
-      const payload = buildPayload(result, normaliseBlackboardEvent(event as ResourceBlackboardEvent));
-      return {
-        id: `${result.uri}:${(event as ResourceBlackboardEvent).seq}`,
-        event: "resource_blackboard_event" as const,
-        data: serialiseForSse(payload),
-      };
-    }
-
-    const payload = buildPayload(result, normaliseChildLog(event as ResourceChildLogEntry));
-    return {
-      id: `${result.uri}:${(event as ResourceChildLogEntry).seq}`,
-      event: "resource_child_log" as const,
-      data: serialiseForSse(payload),
-    };
-  });
+  switch (result.kind) {
+    case "run_events":
+      return result.events.map((event) => {
+        const payload = buildPayload(result, normaliseRunEvent(event));
+        return {
+          id: `${result.uri}:${event.seq}`,
+          event: "resource_run_event" as const,
+          data: serialiseForSse(payload),
+        };
+      });
+    case "child_logs":
+      return result.events.map((entry) => {
+        const payload = buildPayload(result, normaliseChildLog(entry));
+        return {
+          id: `${result.uri}:${entry.seq}`,
+          event: "resource_child_log" as const,
+          data: serialiseForSse(payload),
+        };
+      });
+    case "blackboard_namespace":
+      return result.events.map((event) => {
+        const payload = buildPayload(result, normaliseBlackboardEvent(event));
+        return {
+          id: `${result.uri}:${event.seq}`,
+          event: "resource_blackboard_event" as const,
+          data: serialiseForSse(payload),
+        };
+      });
+    case "tool_router_decisions":
+      // Tool router snapshots are diagnostic by nature and currently surface via JSON
+      // responses only. Failing fast prevents silently emitting malformed SSE frames.
+      throw new Error("tool router decisions cannot be serialised to SSE messages");
+  }
 }
 
 /**

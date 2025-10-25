@@ -24,6 +24,7 @@ import type {
   ToolRegistry,
 } from "../mcp/registry.js";
 import { MemoryUpsertInputSchema, MemoryUpsertOutputSchema } from "../rpc/schemas.js";
+import { buildToolErrorResult, buildToolSuccessResult } from "./shared.js";
 
 /** Canonical façade identifier exposed to the MCP catalogue. */
 export const MEMORY_UPSERT_TOOL_NAME = "memory_upsert" as const;
@@ -158,11 +159,7 @@ export function createMemoryUpsertHandler(context: MemoryUpsertToolContext): Too
             remaining: error.remaining,
             limit: error.limit,
           });
-          return {
-            isError: true,
-            content: [{ type: "text", text: asJsonPayload(degraded) }],
-            structuredContent: degraded,
-          };
+          return buildToolErrorResult(asJsonPayload(degraded), degraded);
         }
         throw error;
       }
@@ -226,11 +223,7 @@ export function createMemoryUpsertHandler(context: MemoryUpsertToolContext): Too
           idempotencyKey,
           error instanceof Error ? error.message : String(error),
         );
-        return {
-          isError: true,
-          content: [{ type: "text", text: asJsonPayload(degraded) }],
-          structuredContent: degraded,
-        };
+        return buildToolErrorResult(asJsonPayload(degraded), degraded);
       }
     } else {
       try {
@@ -240,11 +233,7 @@ export function createMemoryUpsertHandler(context: MemoryUpsertToolContext): Too
           idempotencyKey,
           error instanceof Error ? error.message : String(error),
         );
-        return {
-          isError: true,
-          content: [{ type: "text", text: asJsonPayload(degraded) }],
-          structuredContent: degraded,
-        };
+        return buildToolErrorResult(asJsonPayload(degraded), degraded);
       }
     }
 
@@ -278,10 +267,7 @@ export function createMemoryUpsertHandler(context: MemoryUpsertToolContext): Too
       rpcContext.budget.snapshot();
     }
 
-    return {
-      content: [{ type: "text", text: asJsonPayload(structured) }],
-      structuredContent: structured,
-    };
+    return buildToolSuccessResult(asJsonPayload(structured), structured);
   };
 }
 

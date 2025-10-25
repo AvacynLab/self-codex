@@ -9,7 +9,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { afterEach, beforeEach, describe, it } from "mocha";
 import { expect } from "chai";
 
-import type { ResourceWatchResult } from "../../src/resources/registry.js";
+import type { ResourceRunEvent, ResourceWatchResult } from "../../src/resources/registry.js";
 import {
   ResourceWatchSseBuffer,
   renderResourceWatchSseMessages,
@@ -50,7 +50,7 @@ describe("http sse emit timeout", () => {
           stage: "emit-timeout",
           elapsedMs: null,
           payload: { seq },
-        },
+        } satisfies ResourceRunEvent,
       ],
     });
 
@@ -121,7 +121,7 @@ describe("http sse emit timeout", () => {
           stage: "emit-timeout-env",
           elapsedMs: null,
           payload: { seq },
-        },
+        } satisfies ResourceRunEvent,
       ],
     });
 

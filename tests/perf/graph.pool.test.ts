@@ -1,7 +1,7 @@
 import { expect } from "chai";
 
 import { GraphWorkerPool } from "../../src/infra/workerPool.js";
-import { normaliseGraphPayload } from "../../src/tools/graphTools.js";
+import { normaliseGraphPayload } from "../../src/tools/graph/snapshot.js";
 import type { NormalisedGraph } from "../../src/graph/types.js";
 import type { JsonPatchOperation } from "../../src/graph/diff.js";
 

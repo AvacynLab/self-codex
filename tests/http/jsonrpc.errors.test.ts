@@ -36,6 +36,25 @@ describe("http jsonrpc error helper", () => {
     });
   });
 
+  it("falls back to the taxonomy message when callers omit the message override", () => {
+    // Exercise the helper with only the required parameters to ensure transports can rely on the
+    // canonical taxonomy message without having to duplicate the strings at the callsite.
+    const payload = __httpServerInternals.jsonRpcError("rpc-88", "RATE_LIMITED");
+
+    expect(payload).to.deep.equal({
+      jsonrpc: "2.0",
+      id: "rpc-88",
+      error: {
+        code: -32002,
+        message: "Rate limit exceeded",
+        data: {
+          category: "RATE_LIMITED",
+          request_id: "rpc-88",
+        },
+      },
+    });
+  });
+
   it("serialises validation failures into JSON-RPC responses", async () => {
     const response = new MemoryHttpResponse();
     const logger = new RecordingLogger();
@@ -143,6 +162,36 @@ describe("http jsonrpc error helper", () => {
     const loggedPayload = expectRecord(entry?.payload);
     expect(loggedPayload.cache_status).to.equal("miss");
     expect(loggedPayload.status).to.equal(500);
+  });
+
+  it("respects an explicit request identifier provided via error options", async () => {
+    const response = new MemoryHttpResponse();
+    const logger = new RecordingLogger();
+    const startedAt = process.hrtime.bigint();
+
+    const bytes = await __httpServerInternals.respondWithJsonRpcError(
+      response,
+      401,
+      "AUTH_REQUIRED",
+      "Authentication required",
+      logger,
+      "req-3",
+      {
+        startedAt,
+        bytesIn: 0,
+        method: "mcp.secure",
+        jsonrpcId: "jsonrpc-explicit",
+      },
+      {
+        requestId: "explicit-request-id",
+      },
+    );
+
+    expect(bytes).to.equal(Buffer.byteLength(response.body));
+    const payload = JSON.parse(response.body) as Record<string, unknown>;
+    const data = expectRecord((payload.error as Record<string, unknown>).data);
+    expect(data.request_id).to.equal("explicit-request-id");
+    expect(payload.id).to.equal("jsonrpc-explicit");
   });
 
   it("omits optional route context fields when headers are absent", () => {

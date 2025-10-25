@@ -15,11 +15,10 @@ import { ERROR_CODES } from "../types.js";
 import {
   GraphMutateInputSchema,
   handleGraphMutate,
-  normaliseGraphPayload,
-  serialiseNormalisedGraph,
   type GraphMutateInput,
   type GraphMutationRecord,
-} from "./graphTools.js";
+} from "./graph/mutate.js";
+import { normaliseGraphPayload, serialiseNormalisedGraph } from "./graph/snapshot.js";
 import { resolveOperationId } from "./operationIds.js";
 
 /** Context injected in the graph batch mutation handler. */

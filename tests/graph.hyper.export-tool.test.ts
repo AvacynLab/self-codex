@@ -1,10 +1,7 @@
 import { describe, it } from "mocha";
 import { expect } from "chai";
 
-import {
-  GraphHyperExportInputSchema,
-  handleGraphHyperExport,
-} from "../src/tools/graphTools.js";
+import { GraphHyperExportInputSchema, handleGraphHyperExport } from "../src/tools/graph/snapshot.js";
 
 /**
  * Exercises the hyper-graph export tool to ensure the projection preserves

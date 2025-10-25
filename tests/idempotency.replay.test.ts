@@ -26,7 +26,7 @@ import {
   handleGraphBatchMutate,
   type GraphBatchToolContext,
 } from "../src/tools/graphBatchTools.js";
-import { normaliseGraphPayload, type GraphDescriptorPayload } from "../src/tools/graphTools.js";
+import { normaliseGraphPayload, type GraphDescriptorPayload } from "../src/tools/graph/snapshot.js";
 import { createPlanToolContext, createSpyPlanLogger } from "./helpers/planContext.js";
 import { createStubChildSupervisor } from "./helpers/childSupervisor.js";
 import { createStubChildRuntime } from "./helpers/childRuntime.js";

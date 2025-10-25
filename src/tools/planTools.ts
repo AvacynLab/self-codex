@@ -95,7 +95,7 @@ import {
   OperationCancelledError,
 } from "../executor/cancel.js";
 import { BehaviorTreeCancellationError } from "../executor/bt/nodes.js";
-import { GraphDescriptorSchema, normaliseDescriptor } from "./graphTools.js";
+import { GraphDescriptorSchema, normaliseDescriptor } from "./graph/snapshot.js";
 import { ThoughtGraphCoordinator, type ThoughtBranchGuardSnapshot } from "../reasoning/thoughtCoordinator.js";
 import { omitUndefinedEntries } from "../utils/object.js";
 import { resolveChildrenPlans, type ResolvedChildPlan } from "./plan/choose.js";

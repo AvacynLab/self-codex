@@ -3,6 +3,10 @@
  * so that graph and plan tooling can reuse common behaviours without depending
  * on giant files again.
  */
+import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
+
+/** Structured payload type surfaced by MCP tool responses. */
+type ToolStructuredContent = NonNullable<CallToolResult["structuredContent"]>;
 
 /** Deduplicate a list of strings while preserving the first occurrence order. */
 export function dedupeStrings(values: Iterable<string>): string[] {
@@ -73,5 +77,63 @@ export function cloneDefinedRecord<T extends Record<string, unknown> | undefined
     return source;
   }
   return { ...source } as T;
+}
+
+/**
+ * Parameters accepted by {@link buildToolResponse}. The helper expects callers
+ * to pre-render the textual payload so each façade can keep its existing
+ * `JSON.stringify` logic (tool name, indentation, localisation) without losing
+ * the guarantee that the resulting MCP envelope shares a consistent shape.
+ */
+interface BuildToolResponseParams<TStructured extends ToolStructuredContent> {
+  /** Pre-rendered textual payload exposed on the MCP textual channel. */
+  readonly text: string;
+  /** Structured JSON payload surfaced under `structuredContent`. */
+  readonly structured: TStructured;
+  /** Whether the invocation represents a transport-level error. */
+  readonly isError: boolean;
+}
+
+/**
+ * Normalises the `CallToolResult` emitted by façade handlers. Consolidating the
+ * helper in one place removes subtle discrepancies across tools (missing
+ * `isError`, shape variations in `content`) while keeping type-safety for the
+ * structured payload forwarded to downstream clients.
+ */
+export function buildToolResponse<TStructured extends ToolStructuredContent>({
+  text,
+  structured,
+  isError,
+}: BuildToolResponseParams<TStructured>): CallToolResult & { structuredContent: TStructured } {
+  return {
+    isError,
+    content: [{ type: "text", text }],
+    structuredContent: structured,
+  };
+}
+
+/**
+ * Convenience wrapper for {@link buildToolResponse} when the façade completed
+ * successfully. Explicitly setting `isError: false` keeps the MCP payload
+ * aligned across handlers and simplifies assertions in integration tests.
+ */
+export function buildToolSuccessResult<TStructured extends ToolStructuredContent>(
+  text: string,
+  structured: TStructured,
+): CallToolResult & { structuredContent: TStructured } {
+  return buildToolResponse({ text, structured, isError: false });
+}
+
+/**
+ * Convenience wrapper for {@link buildToolResponse} when the façade encountered
+ * an application-level failure. The helper guarantees that every error emitted
+ * by the orchestration layer sets `isError: true` and retains the structured
+ * diagnostics expected by observability tooling.
+ */
+export function buildToolErrorResult<TStructured extends ToolStructuredContent>(
+  text: string,
+  structured: TStructured,
+): CallToolResult & { structuredContent: TStructured } {
+  return buildToolResponse({ text, structured, isError: true });
 }
 

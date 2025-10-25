@@ -18,6 +18,8 @@ describe("http access logging", function () {
     // Capture the structured log emitted through the main logger so we can
     // assert that both the logger and event store observe the same payload.
     const logger = new RecordingLogger();
+    // Supply a synthetic request identifier and user-agent so the helper can mirror
+    // them into the log payload; assertions below verify the additional metadata.
     __httpServerInternals.publishHttpAccessEvent(
       logger,
       eventStore,
@@ -27,6 +29,8 @@ describe("http access logging", function () {
       200,
       startedAt,
       completedAt,
+      "req-access-1",
+      "TestSuite/1.0",
     );
     const accessEvents = eventStore.getEventsByKind("HTTP_ACCESS");
     expect(accessEvents.length).to.be.greaterThan(0);
@@ -39,6 +43,8 @@ describe("http access logging", function () {
     expect(typeof payload.latency_ms).to.equal("number");
     expect(payload.latency_ms as number).to.be.greaterThanOrEqual(0);
     expect(typeof payload.ip).to.equal("string");
+    expect(payload.request_id).to.equal("req-access-1");
+    expect(payload.user_agent).to.equal("TestSuite/1.0");
     const accessLogs = logger.entries.filter((entry) => entry.message === "http_access");
     expect(accessLogs).to.have.lengthOf(1);
     expect(accessLogs[0]?.payload).to.deep.equal(payload);
@@ -51,6 +57,8 @@ describe("http access logging", function () {
     // `http_access` log so operators retain visibility in development setups.
     const logger = new RecordingLogger();
 
+    // Exercise the helper without optional identifiers to ensure null placeholders
+    // are emitted consistently when data is unavailable.
     __httpServerInternals.publishHttpAccessEvent(
       logger,
       undefined,
@@ -60,6 +68,8 @@ describe("http access logging", function () {
       200,
       startedAt,
       completedAt,
+      undefined,
+      null,
     );
 
     const accessLogs = logger.entries.filter((entry) => entry.message === "http_access");
@@ -70,6 +80,8 @@ describe("http access logging", function () {
       method: "GET",
       status: 200,
       latency_ms: 2,
+      request_id: null,
+      user_agent: null,
     });
   });
 });

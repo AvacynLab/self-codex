@@ -19,7 +19,7 @@ import {
   handleTxCommit,
   type TxToolContext,
 } from "../src/tools/txTools.js";
-import { serialiseNormalisedGraph } from "../src/tools/graphTools.js";
+import { serialiseNormalisedGraph } from "../src/tools/graph/snapshot.js";
 
 function createGraph(): NormalisedGraph {
   return {

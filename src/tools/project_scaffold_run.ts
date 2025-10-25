@@ -20,6 +20,7 @@ import {
   type ProjectScaffoldRunInput,
   type ProjectScaffoldRunOutput,
 } from "../rpc/schemas.js";
+import { buildToolErrorResult, buildToolSuccessResult } from "./shared.js";
 
 /** Canonical façade identifier exposed through the manifest catalogue. */
 export const PROJECT_SCAFFOLD_RUN_TOOL_NAME = "project_scaffold_run" as const;
@@ -210,12 +211,14 @@ export function createProjectScaffoldRunHandler(context: ProjectScaffoldRunToolC
           workspace_root: parsed.workspace_root ?? context.workspaceRoot,
           error: error.message,
         });
-        const structured = buildWorkspaceErrorResult(idempotencyKey, runId, parsed.workspace_root ?? context.workspaceRoot, metadata, error);
-        return {
-          isError: true,
-          content: [{ type: "text", text: asJsonPayload(structured) }],
-          structuredContent: structured,
-        };
+        const structured = buildWorkspaceErrorResult(
+          idempotencyKey,
+          runId,
+          parsed.workspace_root ?? context.workspaceRoot,
+          metadata,
+          error,
+        );
+        return buildToolErrorResult(asJsonPayload(structured), structured);
       }
       throw error;
     }
@@ -239,11 +242,7 @@ export function createProjectScaffoldRunHandler(context: ProjectScaffoldRunToolC
           limit: error.limit,
         });
         const structured = buildBudgetExceededResult(idempotencyKey, runId, workspaceRoot, metadata, error);
-        return {
-          isError: true,
-          content: [{ type: "text", text: asJsonPayload(structured) }],
-          structuredContent: structured,
-        };
+        return buildToolErrorResult(asJsonPayload(structured), structured);
       }
       throw error;
     }
@@ -279,11 +278,7 @@ export function createProjectScaffoldRunHandler(context: ProjectScaffoldRunToolC
           error: error instanceof Error ? error.message : String(error),
         });
         const structured = buildIoErrorResult(idempotencyKey, runId, workspaceRoot, metadata, error);
-        return {
-          isError: true,
-          content: [{ type: "text", text: asJsonPayload(structured) }],
-          structuredContent: structured,
-        };
+        return buildToolErrorResult(asJsonPayload(structured), structured);
       }
     } else {
       try {
@@ -295,11 +290,7 @@ export function createProjectScaffoldRunHandler(context: ProjectScaffoldRunToolC
           error: error instanceof Error ? error.message : String(error),
         });
         const structured = buildIoErrorResult(idempotencyKey, runId, workspaceRoot, metadata, error);
-        return {
-          isError: true,
-          content: [{ type: "text", text: asJsonPayload(structured) }],
-          structuredContent: structured,
-        };
+        return buildToolErrorResult(asJsonPayload(structured), structured);
       }
     }
 
@@ -333,10 +324,7 @@ export function createProjectScaffoldRunHandler(context: ProjectScaffoldRunToolC
       rpcContext.budget.snapshot();
     }
 
-    return {
-      content: [{ type: "text", text: asJsonPayload(structured) }],
-      structuredContent: structured,
-    };
+    return buildToolSuccessResult(asJsonPayload(structured), structured);
   };
 }
 

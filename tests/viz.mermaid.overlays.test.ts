@@ -2,7 +2,7 @@ import { describe, it } from "mocha";
 import { expect } from "chai";
 
 import { renderMermaidFromGraph } from "../src/viz/mermaid.js";
-import type { GraphDescriptorPayload } from "../src/tools/graphTools.js";
+import type { GraphDescriptorPayload } from "../src/tools/graph/snapshot.js";
 
 /**
  * Regression tests covering the overlay features applied during Mermaid export.

@@ -6,7 +6,7 @@ import path from "node:path";
 
 import { extractSubgraphToFile } from "../src/graph/subgraphExtract.js";
 import { SUBGRAPH_REGISTRY_KEY } from "../src/graph/subgraphRegistry.js";
-import type { GraphDescriptorPayload } from "../src/tools/graphTools.js";
+import type { GraphDescriptorPayload } from "../src/tools/graph/snapshot.js";
 
 async function withTempDir<T>(fn: (dir: string) => Promise<T>): Promise<T> {
   const root = await mkdtemp(path.join(os.tmpdir(), "subgraph-extract-"));

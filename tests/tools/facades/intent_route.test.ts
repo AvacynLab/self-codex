@@ -245,7 +245,7 @@ describe("intent_route facade", () => {
         ),
     );
 
-    expect(result.isError).to.not.equal(true);
+    expect(result.isError).to.equal(false);
     const structured = result.structuredContent as Record<string, any>;
     expect(structured.ok).to.equal(true);
     expect(structured.summary).to.equal("top recommandation : graph_apply_change_set");

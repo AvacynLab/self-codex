@@ -9,8 +9,8 @@ import {
   handleGraphPathsKShortest,
   handleGraphCentralityBetweenness,
   handleGraphCriticalPath,
-} from "../src/tools/graphTools.js";
-import type { GraphDescriptorPayload } from "../src/tools/graphTools.js";
+} from "../src/tools/graph/query.js";
+import type { GraphDescriptorPayload } from "../src/tools/graph/snapshot.js";
 
 describe("graph path tools", () => {
   const baseGraph: GraphDescriptorPayload = {

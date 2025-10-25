@@ -21,6 +21,7 @@ import {
   readInt,
   readNumber,
   readOptionalInt,
+  readOptionalEnum,
   readOptionalString,
   readString,
 } from "../config/env.js";
@@ -62,7 +63,7 @@ import {
   ChildSafetyOptions,
 } from "../serverOptions.js";
 import { ChildSupervisor, type ChildLogEventSnapshot } from "../children/supervisor.js";
-import { normaliseSandboxProfile } from "../children/sandbox.js";
+import { CHILD_SANDBOX_PROFILES, type ChildSandboxProfileName } from "../children/sandbox.js";
 import { ChildRecordSnapshot } from "../state/childrenIndex.js";
 import { ChildCollectedOutputs, ChildRuntimeStatus } from "../childRuntime.js";
 import { Autoscaler } from "../agents/autoscaler.js";
@@ -327,7 +328,21 @@ import {
   GraphGenerateInputShape,
   GraphMutateInputSchema,
   GraphMutateInputShape,
+  GraphRewriteApplyInputSchema,
+  GraphRewriteApplyInputShape,
+  handleGraphGenerate,
+  handleGraphMutate,
+  handleGraphRewriteApply,
+} from "../tools/graph/mutate.js";
+import {
   GraphDescriptorSchema,
+  GraphHyperExportInputSchema,
+  GraphHyperExportInputShape,
+  handleGraphHyperExport,
+  normaliseGraphPayload,
+  serialiseNormalisedGraph,
+} from "../tools/graph/snapshot.js";
+import {
   GraphPathsConstrainedInputSchema,
   GraphPathsConstrainedInputShape,
   GraphPathsKShortestInputSchema,
@@ -342,10 +357,6 @@ import {
   GraphOptimizeMooInputShape,
   GraphCausalAnalyzeInputSchema,
   GraphCausalAnalyzeInputShape,
-  GraphRewriteApplyInputSchema,
-  GraphRewriteApplyInputShape,
-  GraphHyperExportInputSchema,
-  GraphHyperExportInputShape,
   GraphPartitionInputSchema,
   GraphPartitionInputShape,
   GraphSummarizeInputSchema,
@@ -354,10 +365,6 @@ import {
   GraphSimulateInputShape,
   GraphValidateInputSchema,
   GraphValidateInputShape,
-  handleGraphGenerate,
-  handleGraphMutate,
-  handleGraphRewriteApply,
-  handleGraphHyperExport,
   handleGraphPathsConstrained,
   handleGraphPathsKShortest,
   handleGraphCentralityBetweenness,
@@ -369,9 +376,7 @@ import {
   handleGraphSummarize,
   handleGraphSimulate,
   handleGraphValidate,
-  normaliseGraphPayload,
-  serialiseNormalisedGraph,
-} from "../tools/graphTools.js";
+} from "../tools/graph/query.js";
 import {
   GraphBatchMutateInputSchema,
   GraphBatchMutateInputShape,
@@ -413,7 +418,8 @@ import {
   handleTxRollback,
   type TxToolContext,
 } from "../tools/txTools.js";
-import type { GraphDescriptorPayload, GraphRewriteApplyInput } from "../tools/graphTools.js";
+import type { GraphRewriteApplyInput } from "../tools/graph/mutate.js";
+import type { GraphDescriptorPayload } from "../tools/graph/snapshot.js";
 import {
   KgExportInputSchema,
   KgExportInputShape,
@@ -1202,13 +1208,6 @@ function parseChildEnvAllowList(raw: string | undefined): string[] {
   return Array.from(allow);
 }
 
-function parseSandboxProfileEnv(raw: string | undefined): string | null {
-  if (!raw) {
-    return null;
-  }
-  return normaliseSandboxProfile(raw, "standard");
-}
-
 /** Resolves the root directory where child runtimes persist their artefacts. */
 function resolveChildrenRootFromEnv(baseDir: string = process.cwd()): string {
   const override = readOptionalString("MCP_CHILDREN_ROOT");
@@ -1227,8 +1226,12 @@ function resolveDefaultChildArgs(): string[] {
 }
 
 /** Collects the sandbox defaults derived from environment overrides. */
-function resolveSandboxDefaults(): { profile: string | null; allowEnv: string[] } {
-  const profile = parseSandboxProfileEnv(readOptionalString("MCP_CHILD_SANDBOX_PROFILE"));
+function resolveSandboxDefaults(): { profile: ChildSandboxProfileName | null; allowEnv: string[] } {
+  const rawProfile = readOptionalString("MCP_CHILD_SANDBOX_PROFILE");
+  const profile: ChildSandboxProfileName | null =
+    rawProfile === undefined
+      ? null
+      : readOptionalEnum("MCP_CHILD_SANDBOX_PROFILE", CHILD_SANDBOX_PROFILES) ?? "standard";
   const allowEnv = parseChildEnvAllowList(readOptionalString("MCP_CHILD_ENV_ALLOW"));
   return { profile, allowEnv };
 }

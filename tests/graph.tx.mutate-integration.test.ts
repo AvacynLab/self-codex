@@ -6,9 +6,8 @@ import {
   GraphMutateInputSchema,
   handleGraphGenerate,
   handleGraphMutate,
-  normaliseGraphPayload,
-  serialiseNormalisedGraph,
-} from "../src/tools/graphTools.js";
+} from "../src/tools/graph/mutate.js";
+import { normaliseGraphPayload, serialiseNormalisedGraph } from "../src/tools/graph/snapshot.js";
 
 /** Utility resetting the global clock after a test altered Date.now. */
 function restoreNow(original: () => number): void {

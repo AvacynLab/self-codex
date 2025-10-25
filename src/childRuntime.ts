@@ -19,6 +19,12 @@ import {
   type ChildProcessGateway,
   type SpawnedChildProcess,
 } from "./gateways/childProcess.js";
+import {
+  resolveChildForceShutdownTimeout,
+  resolveChildGracefulShutdownTimeout,
+  resolveChildReadyTimeout,
+  resolveChildSpawnTimeout,
+} from "./children/timeouts.js";
 
 /** Default hardened gateway leveraged when callers do not inject one explicitly. */
 const defaultChildProcessGateway: ChildProcessGateway = createChildProcessGateway();
@@ -627,8 +633,9 @@ export class ChildRuntime extends EventEmitter {
    */
   async waitForMessage(
     predicate: (message: ChildRuntimeMessage) => boolean,
-    timeoutMs = 2000,
+    timeoutMs?: number,
   ): Promise<ChildRuntimeMessage> {
+    const effectiveTimeout = resolveChildReadyTimeout(timeoutMs);
     for (const message of this.messages) {
       if (predicate(message)) {
         return message;
@@ -640,11 +647,11 @@ export class ChildRuntime extends EventEmitter {
 
       const onTimeout = () => {
         this.off("message", onMessage);
-        reject(new Error(`Timed out after ${timeoutMs}ms while waiting for child message`));
+        reject(new Error(`Timed out after ${effectiveTimeout}ms while waiting for child message`));
       };
 
-      if (timeoutMs >= 0) {
-        timer = runtimeTimers.setTimeout(onTimeout, timeoutMs);
+      if (effectiveTimeout >= 0) {
+        timer = runtimeTimers.setTimeout(onTimeout, effectiveTimeout);
       }
 
       const onMessage = (message: ChildRuntimeMessage) => {
@@ -664,7 +671,10 @@ export class ChildRuntime extends EventEmitter {
    * child is forcefully killed with SIGKILL.
    */
   async shutdown(options: ChildShutdownOptions = {}): Promise<ChildShutdownResult> {
-    const { signal = "SIGINT", timeoutMs = 2000, force = false } = options;
+    const signal = options.signal ?? "SIGINT";
+    const gracefulTimeout = resolveChildGracefulShutdownTimeout(options.timeoutMs);
+    const forcedTimeout = resolveChildForceShutdownTimeout();
+    const force = options.force ?? false;
     const started = Date.now();
 
     if (this.closed) {
@@ -672,7 +682,7 @@ export class ChildRuntime extends EventEmitter {
       return { code: exit.code, signal: exit.signal, forced: exit.forced, durationMs: Date.now() - started };
     }
 
-    this.recordInternal("lifecycle", `shutdown-request:${signal}:${timeoutMs}`);
+    this.recordInternal("lifecycle", `shutdown-request:${signal}:${gracefulTimeout}`);
 
     if (force) {
       // Mark the runtime as forcefully terminated up-front so exit metadata
@@ -690,7 +700,7 @@ export class ChildRuntime extends EventEmitter {
 
     let exit: ChildRuntimeExitEvent;
     try {
-      exit = await this.waitForExit(timeoutMs);
+      exit = await this.waitForExit(gracefulTimeout);
     } catch (err) {
       this.forcedKill = true;
       this.recordInternal("lifecycle", "shutdown-timeout");
@@ -700,7 +710,12 @@ export class ChildRuntime extends EventEmitter {
         this.recordInternal("lifecycle", `kill-error:${(error as Error).message}`);
         throw error;
       }
-      exit = await this.waitForExit();
+      try {
+        exit = await this.waitForExit(forcedTimeout);
+      } catch (forceError) {
+        this.recordInternal("lifecycle", "shutdown-force-timeout");
+        throw forceError;
+      }
     }
 
     return { code: exit.code, signal: exit.signal, forced: exit.forced, durationMs: Date.now() - started };
@@ -1114,6 +1129,7 @@ export async function startChildRuntime(options: StartChildRuntimeOptions): Prom
   const factor = Math.max(1, retry.backoffFactor ?? 2);
   const maxDelay = Math.max(0, retry.maxDelayMs ?? 10_000);
   let delay = Math.max(0, retry.initialDelayMs ?? 250);
+  const spawnTimeout = resolveChildSpawnTimeout(options.spawnTimeoutMs);
 
   let lastError: unknown = null;
 
@@ -1131,7 +1147,7 @@ export async function startChildRuntime(options: StartChildRuntimeOptions): Prom
         inheritEnv: {},
         extraEnv: env,
         stdio: ["pipe", "pipe", "pipe"],
-        ...(options.spawnTimeoutMs !== undefined ? { timeoutMs: options.spawnTimeoutMs } : {}),
+        ...(spawnTimeout !== undefined ? { timeoutMs: spawnTimeout } : {}),
       });
     } catch (error) {
       lastError = normaliseSpawnFailure(error);
@@ -1203,12 +1219,18 @@ export async function startChildRuntime(options: StartChildRuntimeOptions): Prom
 
     try {
       await abortRace.race(runtime.waitUntilSpawned());
-      abortRace.cleanup();
       await runtime.writeManifest(manifestExtras);
+
+      try {
+        spawnHandle.dispose();
+      } catch {
+        // Releasing the spawn handle is a best-effort cleanup; ignore errors
+        // so a successful runtime start is not masked by disposal issues.
+      }
+
       return runtime;
     } catch (error) {
       const failure = normaliseSpawnFailure(error);
-      abortRace.cleanup();
       lastError = failure;
       try {
         await runtime.waitForExit(500);
@@ -1216,9 +1238,11 @@ export async function startChildRuntime(options: StartChildRuntimeOptions): Prom
         // Ignore errors while tearing down a failed spawn attempt.
       }
 
-      // Dispose of the gateway handle after failed readiness to release the
-      // timeout and abort guards before the next retry kicks in.
-      spawnHandle.dispose();
+      try {
+        spawnHandle.dispose();
+      } catch {
+        // Best effort cleanup: swallowing the error prevents masking the original spawn failure.
+      }
 
       if (attempt >= attempts) {
         throw new ChildSpawnError(attempts, failure);
@@ -1228,7 +1252,11 @@ export async function startChildRuntime(options: StartChildRuntimeOptions): Prom
         await sleep(delay);
       }
       delay = computeNextDelay(delay, factor, maxDelay);
+    } finally {
+      abortRace.cleanup();
     }
+
+    continue;
   }
 
   throw new ChildSpawnError(attempts, lastError);
