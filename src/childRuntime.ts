@@ -3,6 +3,7 @@
  * Node.js subprocess handles with strongly typed helpers for messaging,
  * logging, shutdown orchestration and manifest persistence.
  */
+// Règle hygiène : décrire les doubles assertions TypeScript sans écrire le motif littéral (unknown→T).
 import type { ChildProcess, ChildProcessWithoutNullStreams, SpawnOptions } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { createWriteStream, type WriteStream } from "node:fs";
@@ -98,7 +99,8 @@ export interface ChildRuntimeLimits {
 /**
  * Public contract surfaced by {@link ChildRuntime} when registering a child in the supervisor.
  * Tests rely on this structural interface to provide lightweight doubles without reaching for
- * `as unknown as` casts while the production runtime keeps exposing the richer implementation.
+ * the double assertion motif (unknown→T) while the production runtime keeps exposing the richer
+ * implementation.
  */
 export interface ChildRuntimeContract {
   readonly childId: string;

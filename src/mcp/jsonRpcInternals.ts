@@ -1,4 +1,5 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+// Règle hygiène : documenter les doubles assertions TS sans mentionner textuellement le motif (unknown→T).
 
 /**
  * Signature implemented by the MCP SDK for registered JSON-RPC request handlers.
@@ -34,7 +35,7 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
  *
  * Besides checking the `Map` instance we also inspect a sample of entries to
  * guarantee keys are strings and handlers are functions. This lets TypeScript
- * narrow the value without relying on `as unknown as` double assertions.
+ * narrow the value without relying on the double assertion motif (unknown→T).
  */
 function isInternalJsonRpcHandlerMap(value: unknown): value is Map<string, InternalJsonRpcHandler> {
   if (!(value instanceof Map)) {

@@ -57,7 +57,27 @@ export default [
        */
       '@typescript-eslint/prefer-nullish-coalescing': 'off',
       '@typescript-eslint/strict-boolean-expressions': 'off',
-      '@typescript-eslint/no-explicit-any': 'off',
+      /** Enforce explicit `any` bans so accidental regressions are caught immediately. */
+      '@typescript-eslint/no-explicit-any': 'error',
+      /** Require documented intent for TypeScript suppression comments. */
+      '@typescript-eslint/ban-ts-comment': [
+        'error',
+        {
+          'ts-expect-error': 'allow-with-description',
+          'ts-ignore': 'allow-with-description',
+          'ts-nocheck': true,
+          'ts-check': false,
+        },
+      ],
+      /** Guard against the double assertion motif (`value as unknown as T`). */
+      'no-restricted-syntax': [
+        'error',
+        {
+          selector: "TSAsExpression[expression.type='TSAsExpression'][expression.typeAnnotation.type='TSUnknownKeyword']",
+          message:
+            'Avoid double assertion patterns (unknown→T). Narrow the value or refactor the types instead.',
+        },
+      ],
       '@typescript-eslint/no-unsafe-argument': 'off',
       '@typescript-eslint/no-unsafe-assignment': 'off',
       '@typescript-eslint/no-unsafe-member-access': 'off',
