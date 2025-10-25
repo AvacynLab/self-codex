@@ -1996,6 +1996,17 @@ constante ou type exporté mais jamais référencé dans le monorepo échoue la
 commande. Les rares API exposées à l'extérieur peuvent être autorisées via
 `config/dead-code-allowlist.json`.
 
+Le balayage `npm run lint:hygiene` échoue immédiatement si un motif `value as
+unknown as T` ou un marqueur TODO/FIXME est réintroduit hors des fixtures. Une
+whitelist explicite (`config/hygiene.config.json`) recense les rares fichiers
+autorisés à contenir ces marqueurs littéraux : actuellement uniquement
+`src/agents/__tests__/selfReflect.fixtures.ts`. Cette fixture conserve donc un
+`TODO` en clair pour rester fidèle aux retours terrain tout en maintenant
+l'hygiène globale du dépôt. Le script refuse désormais toute entrée vide,
+absolue, pointant hors du dépôt ou vers un fichier absent, et normalise
+automatiquement les séparateurs pour qu'un chemin Windows (`src\foo`) reste
+valide sur la CI Linux.
+
 Les nouveaux outils ajoutent systématiquement des tests unitaires (mocks enfant,
 planification, algorithmes de graphes, simulation/optimisation).
 
