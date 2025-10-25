@@ -92,6 +92,10 @@ export default [
        * Tests commonly use unused expressions to express assertions.
        */
       '@typescript-eslint/no-unused-expressions': 'off',
+      /** Allow ergonomic fixture scaffolding that relies on flexible types. */
+      '@typescript-eslint/no-explicit-any': 'off',
+      /** Relax double assertion guardrails inside test doubles and fixtures. */
+      'no-restricted-syntax': 'off',
     },
   },
 ];

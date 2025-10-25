@@ -119,7 +119,16 @@ describe("evaluation campaign runner", () => {
       loadScenarios: async () => [scenarioSuccess, scenarioFailure],
       createRunContext: async ({ runId }) => ({
         runId,
-        directories: { report: "/tmp/report" },
+        rootDir: "/tmp/run", // Minimal stub for the evaluation context root.
+        directories: {
+          report: "/tmp/report",
+          inputs: "/tmp/inputs",
+          outputs: "/tmp/outputs",
+          events: "/tmp/events",
+          logs: "/tmp/logs",
+          artifacts: "/tmp/artifacts",
+        },
+        createTraceId: () => "trace-stub",
       }),
       createRecorder: async () => ({ recorder: true }),
       createMcpClient: async ({ scenario, featureOverrides }) => {
