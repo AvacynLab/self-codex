@@ -27,6 +27,20 @@ jobs:
       - name: Run hygiene sweep
         run: npm run lint:hygiene
 
+      - name: Ensure double assertion motifs are absent
+        run: |
+          if rg --no-messages --quiet -e "\\bas\\s+unknown\\s+as\\b" src; then
+            echo "Double assertion pattern detected in TypeScript sources." >&2
+            exit 1
+          fi
+
+      - name: Ensure TODO/FIXME markers stay outside source code
+        run: |
+          if rg --no-messages --glob '!**/__tests__/**' --quiet -e "\\b(?:TODO|FIXME)\\b" src; then
+            echo "TODO/FIXME marker detected outside sanctioned fixtures." >&2
+            exit 1
+          fi
+
   build-typecheck-test:
     name: Build, typecheck and test
     needs: hygiene

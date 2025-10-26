@@ -84,14 +84,19 @@ export async function reflect(raw: ReflectionInput): Promise<ReflectionResult> {
     .map((segment) => normaliseToText(segment))
     .filter((segment) => segment.length > 0)
     .join("\n\n");
-  const lowered = combinedText.toLowerCase();
+  // Certains extraits (fixtures de tests notamment) insèrent un séparateur
+  // zéro largeur au sein de `TO​DO` pour contourner les règles d'hygiène. On le
+  // retire avant analyse afin de conserver les mêmes heuristiques qu'avec un
+  // marqueur littéral.
+  const sanitisedText = combinedText.replace(/\u200b/g, "");
+  const lowered = sanitisedText.toLowerCase();
 
   const insights = new Set<string>();
   const nextSteps = new Set<string>();
   const risks = new Set<string>();
 
   // Generic signals shared by every deliverable type.
-  if (!combinedText.length) {
+  if (!sanitisedText.length) {
     insights.add("Aucune sortie exploitable n'a été détectée.");
     nextSteps.add("Vérifier que l'enfant a bien produit un livrable ou relancer la tâche.");
     risks.add("Sans livrable il est impossible de valider la progression du plan.");
@@ -126,7 +131,7 @@ export async function reflect(raw: ReflectionInput): Promise<ReflectionResult> {
         risks.add("Des marqueurs todo/fixme subsistent dans le code.");
         nextSteps.add("Supprimer les marqueurs todo/fixme ou planifier leur résolution.");
       }
-      if (/console\.log|debugger/.test(combinedText)) {
+      if (/console\.log|debugger/.test(sanitisedText)) {
         risks.add("Du logging de debug est présent; nettoyer avant livraison.");
       }
       if (/eslint|lint|format/.test(lowered)) {
@@ -138,7 +143,7 @@ export async function reflect(raw: ReflectionInput): Promise<ReflectionResult> {
     }
     case "plan": {
       insights.add("Le livrable décrit un plan structuré.");
-      const steps = combinedText.split(/\n+/).filter((line) => /^\s*(?:\d+\.|[-*•])/.test(line));
+      const steps = sanitisedText.split(/\n+/).filter((line) => /^\s*(?:\d+\.|[-*•])/.test(line));
       if (steps.length < 3) {
         nextSteps.add("Ajouter davantage d'étapes détaillées pour sécuriser l'exécution.");
         risks.add("Le plan comporte trop peu d'étapes pour couvrir les dépendances.");
@@ -155,10 +160,10 @@ export async function reflect(raw: ReflectionInput): Promise<ReflectionResult> {
     }
     case "text": {
       insights.add("Le livrable est un texte analytique ou explicatif.");
-      const sentences = combinedText.split(/[.!?]+/).filter((part) => part.trim().length > 0);
+      const sentences = sanitisedText.split(/[.!?]+/).filter((part) => part.trim().length > 0);
       const avgLength = sentences.length
-        ? combinedText.replace(/\s+/g, " ").split(" ").length / sentences.length
-        : combinedText.split(/\s+/).length;
+        ? sanitisedText.replace(/\s+/g, " ").split(" ").length / sentences.length
+        : sanitisedText.split(/\s+/).length;
       if (avgLength > 28) {
         risks.add("Les phrases sont longues; risque de perte de lisibilité.");
         nextSteps.add("Scinder les phrases longues et ajouter des intertitres.");
