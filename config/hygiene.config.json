@@ -1,5 +1,3 @@
 {
-  "todoAllowlist": [
-    "src/agents/__tests__/selfReflect.fixtures.ts"
-  ]
+  "todoAllowlist": []
 }

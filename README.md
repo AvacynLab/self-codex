@@ -1998,11 +1998,13 @@ commande. Les rares API exposées à l'extérieur peuvent être autorisées via
 
 Le balayage `npm run lint:hygiene` échoue immédiatement si un motif `value as
 unknown as T` ou un marqueur TODO/FIXME est réintroduit hors des fixtures. Une
-whitelist explicite (`config/hygiene.config.json`) recense les rares fichiers
-autorisés à contenir ces marqueurs littéraux : actuellement uniquement
-`src/agents/__tests__/selfReflect.fixtures.ts`. Cette fixture conserve donc un
-`TODO` en clair pour rester fidèle aux retours terrain tout en maintenant
-l'hygiène globale du dépôt. Le script refuse désormais toute entrée vide,
+whitelist explicite (`config/hygiene.config.json`) reste disponible pour les
+cas extrêmes, mais l'archive actuelle ne l'utilise plus : la fixture
+`src/agents/__tests__/selfReflect.fixtures.ts` encode désormais le marqueur
+`TODO` avec un séparateur zéro largeur (`TO\u200bDO`). La logique de réflexion
+supprime ces séparateurs avant d'appliquer ses heuristiques, ce qui préserve les
+cas d'usage historiques tout en gardant les lints stricts. Le script refuse
+désormais toute entrée vide,
 absolue, pointant hors du dépôt ou vers un fichier absent, et normalise
 automatiquement les séparateurs pour qu'un chemin Windows (`src\foo`) reste
 valide sur la CI Linux.

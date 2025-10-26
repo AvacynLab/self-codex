@@ -37,8 +37,9 @@ export function omitUndefinedEntries<
  */
 /**
  * Type guard mirroring `Array.isArray` while deliberately avoiding permissive
- * array typings. Returning `unknown[]` asserts our preference for a safe
- * hand-off to downstream transformations.
+ * array typings. Returning `unknown[]` enforces a safer alternative to
+ * `any[]`, ensuring downstream transforms must perform explicit narrowing
+ * instead of silently accepting unchecked values.
  */
 function isArray(value: unknown): value is unknown[] {
   return Array.isArray(value);
