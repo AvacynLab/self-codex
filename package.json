@@ -25,6 +25,7 @@
     "test:watch": "cross-env TSX_EXTENSIONS=ts node --import tsx ./node_modules/mocha/bin/mocha.js --reporter spec --watch --watch-files src --watch-files tests --file tests/setup.ts \"tests/**/*.test.ts\"",
     "test:int": "node scripts/run-int-tests.mjs",
     "test:e2e": "node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --file tests/setup.ts \"tests/e2e/**/*.test.ts\"",
+    "test:e2e:search": "node scripts/run-search-e2e.mjs",
     "test:e2e:http": "node scripts/run-http-e2e.mjs",
     "test:graph-forge": "node --import tsx --test graph-forge/test/*.test.ts",
     "validate:run": "node scripts/validate-run.mjs",
@@ -56,6 +57,7 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.18.1",
     "fastest-levenshtein": "^1.0.16",
+    "tinyld": "^1.3.4",
     "yaml": "^2.8.1",
     "zod": "^3.23.8"
   },
@@ -76,6 +78,7 @@
     "eslint-config-prettier": "^9.1.0",
     "fast-check": "^4.3.0",
     "mocha": "^10.7.0",
+    "nock": "^14.0.10",
     "sinon": "^17.0.1",
     "ts-node": "^10.9.2",
     "tsx": "^4.19.2",

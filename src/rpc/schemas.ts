@@ -176,6 +176,21 @@ export type {
   ToolsHelpToolSummary,
 } from "./toolsHelpSchemas.js";
 export {
+  SearchRunDocumentSchema,
+  SearchRunErrorSchema,
+  SearchRunInputSchema,
+  SearchRunInputShape,
+  SearchRunOutputSchema,
+  SearchRunStatsSchema,
+} from "./searchSchemas.js";
+export type {
+  SearchRunDocument,
+  SearchRunError,
+  SearchRunInput,
+  SearchRunOutput,
+  SearchRunStats,
+} from "./searchSchemas.js";
+export {
   RUNTIME_OBSERVE_SECTIONS,
   RuntimeObserveBudgetDiagnosticSchema,
   RuntimeObserveInputSchema,

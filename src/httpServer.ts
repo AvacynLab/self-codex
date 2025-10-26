@@ -7,7 +7,7 @@ import process from "node:process";
 
 import { StructuredLogger } from "./logger.js";
 import type { EventStore } from "./eventStore.js";
-import { handleJsonRpc, maybeRecordIdempotentWalEntry, type JsonRpcRequest } from "./server.js";
+import type { JsonRpcRequest } from "./server.js";
 import type { JsonRpcRouteContext } from "./infra/runtime.js";
 import { HttpRuntimeOptions, createHttpSessionId } from "./serverOptions.js";
 import { applySecurityHeaders, ensureRequestId } from "./http/headers.js";
@@ -60,6 +60,10 @@ const HEALTH_EVENT_LOOP_DELAY_BUDGET_MS = 100;
 const DEFAULT_RATE_LIMIT_RPS = 10;
 /** Default burst capacity tolerated by the HTTP limiter before throttling. */
 const DEFAULT_RATE_LIMIT_BURST = 20;
+/** Default steady-state rate (requests per second) for the search façades. */
+const DEFAULT_SEARCH_RATE_LIMIT_RPS = 2;
+/** Default burst tolerated by the dedicated search limiter before throttling. */
+const DEFAULT_SEARCH_RATE_LIMIT_BURST = 4;
 
 /** Runtime representation of the limiter configuration. */
 interface RateLimiterConfig {
@@ -68,6 +72,16 @@ interface RateLimiterConfig {
   /** Steady-state refill rate expressed as requests per second. */
   rps: number;
   /** Maximum number of tokens stored in the bucket. */
+  burst: number;
+}
+
+/** Runtime representation of the dedicated search limiter. */
+interface SearchRateLimiterConfig {
+  /** When `true`, search requests bypass throttling regardless of token balance. */
+  disabled: boolean;
+  /** Steady-state refill rate expressed as requests per second. */
+  rps: number;
+  /** Maximum number of tokens tolerated in the search-specific bucket. */
   burst: number;
 }
 
@@ -97,8 +111,17 @@ const DEFAULT_RATE_LIMIT_CONFIG: RateLimiterConfig = {
   burst: DEFAULT_RATE_LIMIT_BURST,
 };
 
+/** Default limiter configuration used when no overrides are supplied for search. */
+const DEFAULT_SEARCH_RATE_LIMIT_CONFIG: SearchRateLimiterConfig = {
+  disabled: false,
+  rps: DEFAULT_SEARCH_RATE_LIMIT_RPS,
+  burst: DEFAULT_SEARCH_RATE_LIMIT_BURST,
+};
+
 /** Global limiter configuration shared across all HTTP server instances. */
 let rateLimiterConfig: RateLimiterConfig = DEFAULT_RATE_LIMIT_CONFIG;
+/** Dedicated limiter configuration guarding the search façades. */
+let searchRateLimiterConfig: SearchRateLimiterConfig = DEFAULT_SEARCH_RATE_LIMIT_CONFIG;
 
 /**
  * Parses the user supplied `number` ensuring NaN/Infinity fall back to the
@@ -120,11 +143,31 @@ interface RateLimitEnvOverrides {
   readonly burst?: number;
 }
 
+/** Snapshot of the search limiter overrides supplied via environment variables. */
+interface SearchRateLimitEnvOverrides {
+  readonly disabled?: boolean;
+  readonly rps?: number;
+  readonly burst?: number;
+}
+
 /** Reads environment-sourced overrides while ignoring malformed values. */
 function readRateLimitOverridesFromEnv(): RateLimitEnvOverrides {
   const disabled = readOptionalBool("MCP_HTTP_RATE_LIMIT_DISABLE");
   const rps = readOptionalNumber("MCP_HTTP_RATE_LIMIT_RPS");
   const burst = readOptionalNumber("MCP_HTTP_RATE_LIMIT_BURST");
+
+  return {
+    ...(disabled !== undefined ? { disabled } : {}),
+    ...(rps !== undefined ? { rps } : {}),
+    ...(burst !== undefined ? { burst } : {}),
+  };
+}
+
+/** Reads overrides for the search-specific limiter. */
+function readSearchRateLimitOverridesFromEnv(): SearchRateLimitEnvOverrides {
+  const disabled = readOptionalBool("MCP_HTTP_SEARCH_RATE_LIMIT_DISABLE");
+  const rps = readOptionalNumber("MCP_HTTP_SEARCH_RATE_LIMIT_RPS");
+  const burst = readOptionalNumber("MCP_HTTP_SEARCH_RATE_LIMIT_BURST");
 
   return {
     ...(disabled !== undefined ? { disabled } : {}),
@@ -151,6 +194,21 @@ function configureRateLimiter(overrides: Partial<RateLimiterConfig>): RateLimite
   return rateLimiterConfig;
 }
 
+/** Applies overrides to the dedicated search limiter. */
+function configureSearchRateLimiter(overrides: Partial<SearchRateLimiterConfig>): SearchRateLimiterConfig {
+  const nextRps = coerceFiniteNumber(overrides.rps, searchRateLimiterConfig.rps);
+  const nextBurst = coerceFiniteNumber(overrides.burst, searchRateLimiterConfig.burst);
+  const explicitDisable = typeof overrides.disabled === "boolean" ? overrides.disabled : searchRateLimiterConfig.disabled;
+  const shouldDisable = explicitDisable || nextRps <= 0 || nextBurst <= 0;
+
+  searchRateLimiterConfig = {
+    disabled: shouldDisable,
+    rps: nextRps,
+    burst: nextBurst,
+  };
+  return searchRateLimiterConfig;
+}
+
 /** Refreshes the limiter configuration from environment variables. */
 function refreshRateLimiterFromEnv(): RateLimiterConfig {
   const envOverrides = readRateLimitOverridesFromEnv();
@@ -163,7 +221,19 @@ function refreshRateLimiterFromEnv(): RateLimiterConfig {
     overrides.disabled = envOverrides.disabled;
   }
 
-  return configureRateLimiter(overrides);
+  const updated = configureRateLimiter(overrides);
+
+  const searchOverrides = readSearchRateLimitOverridesFromEnv();
+  const searchConfig: Partial<SearchRateLimiterConfig> = {
+    rps: coerceFiniteNumber(searchOverrides.rps, DEFAULT_SEARCH_RATE_LIMIT_CONFIG.rps),
+    burst: coerceFiniteNumber(searchOverrides.burst, DEFAULT_SEARCH_RATE_LIMIT_CONFIG.burst),
+  };
+  if (searchOverrides.disabled !== undefined) {
+    searchConfig.disabled = searchOverrides.disabled;
+  }
+  configureSearchRateLimiter(searchConfig);
+
+  return updated;
 }
 
 // Initialise the limiter from the current environment as soon as the module loads.
@@ -557,6 +627,51 @@ function enforceRateLimit(
   return false;
 }
 
+/** Applies the search-specific limiter before invoking search façades. */
+function enforceSearchRateLimit(
+  key: string,
+  res: LightweightHttpResponse,
+  logger: StructuredLogger,
+  requestId: string,
+  meta: HttpErrorMeta = {},
+): boolean {
+  const config = searchRateLimiterConfig;
+  if (config.disabled || rateLimitOk(key, config.rps, config.burst)) {
+    return true;
+  }
+
+  logger.warn("http_search_rate_limited", { key, request_id: requestId, method: meta.method ?? null });
+  void respondWithJsonRpcError(res, 429, "RATE_LIMITED", "Rate limit exceeded", logger, requestId, meta, {
+    hint: "Search rate limit exceeded",
+  });
+  return false;
+}
+
+/**
+ * Memoized promise resolving to the heavy server module.  Loading the
+ * orchestrator runtime eagerly at module evaluation time would immediately
+ * trigger the top-level await inside `orchestrator/runtime.ts`, which in turn
+ * breaks the CommonJS compilation performed by the Mocha + tsx test harness.
+ *
+ * Deferring the import until we actually need the default JSON-RPC delegate or
+ * the WAL helper keeps lightweight integration tests hermetic while preserving
+ * the behaviour for production callers.  The helper caches both the promise
+ * and the resolved module so repeated invocations remain inexpensive.
+ */
+let serverModulePromise: Promise<typeof import("./server.js")> | null = null;
+
+async function loadServerModule() {
+  if (!serverModulePromise) {
+    serverModulePromise = import("./server.js");
+  }
+  return serverModulePromise;
+}
+
+type JsonRpcDelegate = (
+  request: JsonRpcRequest,
+  context?: JsonRpcRouteContext,
+) => Promise<unknown>;
+
 /**
  * Attempts to service JSON-RPC POST requests directly via the in-process
  * adapter. The fast-path keeps Codex compatible with stateless HTTP clients
@@ -572,15 +687,19 @@ async function tryHandleJsonRpc(
 ): Promise<boolean> {
   const startedAt = process.hrtime.bigint();
   let requestId: string | undefined;
-  let delegate: (request: JsonRpcRequest, context?: JsonRpcRouteContext) => Promise<unknown> = handleJsonRpc;
+  let delegate: JsonRpcDelegate | undefined;
+  let serverModule: Awaited<ReturnType<typeof loadServerModule>> | null = null;
 
   if (typeof requestIdOrDelegate === "function") {
     delegate = requestIdOrDelegate;
   } else {
     requestId = requestIdOrDelegate;
-    if (delegateParam) {
-      delegate = delegateParam;
-    }
+    delegate = delegateParam;
+  }
+
+  if (!delegate) {
+    serverModule = await loadServerModule();
+    delegate = serverModule.handleJsonRpc;
   }
 
   if (req.method !== "POST" || !req.headers["content-type"]?.includes("application/json")) {
@@ -638,6 +757,20 @@ async function tryHandleJsonRpc(
     ...buildRouteContextFromHeaders(req, parsed),
     payloadSizeBytes: requestBytes,
   };
+
+  const guardMeta: HttpErrorMeta = {
+    startedAt,
+    bytesIn: requestBytes,
+    method: methodName,
+    jsonrpcId,
+  };
+
+  if (typeof parsed?.method === "string" && parsed.method.startsWith("search.")) {
+    const limiterKey = `${req.socket.remoteAddress ?? "unknown"}:${parsed.method}`;
+    if (!enforceSearchRateLimit(limiterKey, res, logger, requestId ?? parsed.method, guardMeta)) {
+      return true;
+    }
+  }
 
   const idempotencyKey = context.idempotencyKey;
   let cacheKey: string | null = null;
@@ -725,7 +858,24 @@ async function tryHandleJsonRpc(
       });
 
       try {
-        await maybeRecordIdempotentWalEntry(parsed, context, { method: methodName });
+        if (!serverModule) {
+          serverModule = await loadServerModule();
+        }
+        try {
+          await serverModule.maybeRecordIdempotentWalEntry(parsed, context, { method: methodName });
+        } catch (walError) {
+          if (
+            walError instanceof Error &&
+            walError.message === "Orchestrator controller not initialised"
+          ) {
+            logger.debug("http_idempotency_skip", {
+              request_id: requestId,
+              reason: "controller_not_initialised",
+            });
+          } else {
+            throw walError;
+          }
+        }
         const response = await delegate(parsed, context);
         const bytesOut = await sendJson(
           res,
@@ -847,13 +997,16 @@ function extractListeningPort(server: NodeHttpServer): number {
 export const __httpServerInternals = {
   enforceBearerToken,
   enforceRateLimit,
+  enforceSearchRateLimit,
   tryHandleJsonRpc,
   buildRouteContextFromHeaders,
   handleHealthCheck,
   handleReadyCheck,
   configureRateLimiter,
+  configureSearchRateLimiter,
   refreshRateLimiterFromEnv,
   getRateLimiterConfig: () => rateLimiterConfig,
+  getSearchRateLimiterConfig: () => searchRateLimiterConfig,
   resetNoAuthBypassWarning: () => {
     noAuthBypassLogged = false;
   },

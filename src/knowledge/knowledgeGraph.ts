@@ -151,6 +151,21 @@ export interface KnowledgePlanTask {
   provenance: Provenance[];
 }
 
+/**
+ * Input payload accepted by {@link upsertTriple}.  The shape mirrors the
+ * low-level `insert` contract while allowing higher level helpers to forward
+ * partially specified provenance and optional metadata without leaking
+ * `undefined` values once exact optional property typing is enabled.
+ */
+export interface KnowledgeTripleInput {
+  subject: string;
+  predicate: string;
+  object: string;
+  source?: string | null;
+  confidence?: number | null;
+  provenance?: ReadonlyArray<Provenance | null | undefined>;
+}
+
 interface KnowledgeTripleRecord extends KnowledgeTripleSnapshot {
   key: string;
 }
@@ -713,4 +728,61 @@ function appendSourceProvenance(base: Provenance[], source: string | null): Prov
 /** Formats confidence scores with a consistent precision for textual summaries. */
 function formatConfidence(value: number): string {
   return value.toFixed(2);
+}
+
+/**
+ * Stores or updates a triple on the provided graph while handling optional
+ * metadata defensively.  The helper mirrors the low-level `insert` method but
+ * avoids forwarding blank sources, `null` confidence values or empty
+ * provenance arrays so that downstream dashboards keep their payloads tidy.
+ */
+export function upsertTriple(
+  graph: KnowledgeGraph,
+  triple: KnowledgeTripleInput,
+): KnowledgeInsertResult {
+  const payload: Parameters<KnowledgeGraph["insert"]>[0] = {
+    subject: triple.subject,
+    predicate: triple.predicate,
+    object: triple.object,
+  };
+
+  const source = typeof triple.source === "string" ? triple.source.trim() : "";
+  if (source) {
+    payload.source = source;
+  }
+
+  if (typeof triple.confidence === "number") {
+    payload.confidence = triple.confidence;
+  }
+
+  if (triple.provenance) {
+    const provenance = normaliseProvenanceList(triple.provenance);
+    if (provenance.length > 0) {
+      payload.provenance = provenance;
+    }
+  }
+
+  return graph.insert(payload);
+}
+
+/**
+ * Merges multiple provenance batches while deduplicating entries.  Each batch
+ * may contain `null` or `undefined` placeholders which are filtered out before
+ * the merge so callers can forward raw extractor output without additional
+ * guards.
+ */
+export function withProvenance(
+  ...batches: ReadonlyArray<Provenance | null | undefined>[]
+): Provenance[] {
+  let merged: Provenance[] = [];
+
+  for (const batch of batches) {
+    const normalised = normaliseProvenanceList(batch);
+    if (normalised.length === 0) {
+      continue;
+    }
+    merged = merged.length === 0 ? [...normalised] : mergeProvenance(merged, normalised);
+  }
+
+  return merged.length === 0 ? [] : [...merged];
 }

@@ -202,6 +202,25 @@ function normaliseMetricLabel(value: string | null | undefined, fallback: string
 }
 
 /**
+ * Records an ad-hoc latency sample so non JSON-RPC workflows can take
+ * advantage of the same percentile computation infrastructure exposed via
+ * {@link collectMethodMetrics}. The helper is used by the search pipeline to
+ * surface p50/p95/p99 timings for the individual stages (Searx query,
+ * downloads, extraction, ingestion...).
+ */
+export function recordCustomOperationLatency(
+  label: string,
+  durationMs: number,
+  options: { errored?: boolean; errorCode?: string | null } = {},
+): void {
+  const normalisedLabel = normaliseMetricLabel(label, "custom");
+  const safeDuration = Number.isFinite(durationMs) && durationMs >= 0 ? durationMs : 0;
+  const errored = options.errored ?? false;
+  const errorCode = options.errorCode ?? null;
+  recordMethodMetrics(normalisedLabel, safeDuration, errored, errorCode);
+}
+
+/**
  * Derives the canonical label used to bucket latency metrics. JSON-RPC tool
  * invocations (`tools/call`) are rewritten to the `tool:<name>` namespace so
  * observability dashboards expose per-façade percentiles instead of an

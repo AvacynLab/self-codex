@@ -86,6 +86,17 @@ import { SharedMemoryStore } from "../memory/store.js";
 import { PersistentKnowledgeGraph } from "../memory/kg.js";
 import { VectorMemoryIndex, VECTOR_MEMORY_MAX_CAPACITY } from "../memory/vector.js";
 import { LocalVectorMemory } from "../memory/vectorMemory.js";
+import {
+  collectSearchRedactionTokens,
+  loadSearchConfig,
+  SearxClient,
+  SearchDownloader,
+  UnstructuredExtractor,
+  KnowledgeGraphIngestor,
+  VectorStoreIngestor,
+  SearchPipeline,
+  SearchMetricsRecorder,
+} from "../search/index.js";
 import { HybridRetriever } from "../memory/retriever.js";
 import {
   LessonsStore,
@@ -221,6 +232,9 @@ import type { PlanCompileExecuteToolContext } from "../tools/plan_compile_execut
 import { registerMemoryUpsertTool } from "../tools/memory_upsert.js";
 import type { MemoryUpsertToolContext } from "../tools/memory_upsert.js";
 import { registerMemorySearchTool } from "../tools/memory_search.js";
+import { registerSearchRunTool, type SearchRunToolContext } from "../tools/search_run.js";
+import { registerSearchIndexTool, type SearchIndexToolContext } from "../tools/search_index.js";
+import { registerSearchStatusTool, type SearchStatusToolContext } from "../tools/search_status.js";
 import { registerChildOrchestrateTool } from "../tools/child_orchestrate.js";
 import type { ChildOrchestrateToolContext } from "../tools/child_orchestrate.js";
 import { registerRuntimeObserveTool } from "../tools/runtime_observe.js";
@@ -970,13 +984,6 @@ function recordServerLogEntry(entry: LogEntry): void {
   }
 }
 
-/** @internal Expose logging helpers so tests can assert journal correlation without mocking the logger. */
-export const __serverLogInternals = {
-  recordServerLogEntry,
-  /** @internal Allows tests to assert that optional logger options stay omitted. */
-  snapshotLoggerOptions: (): LoggerOptions => ({ ...activeLoggerOptions }),
-};
-
 function instantiateLogger(options: LoggerOptions): StructuredLogger {
   return new StructuredLogger({ ...options, onEntry: recordServerLogEntry });
 }
@@ -1006,6 +1013,118 @@ export function configureLogFileOverride(logFile: string | null | undefined): vo
   });
 }
 const eventStore = new EventStore({ maxHistory: 5000, logger });
+
+/**
+ * Normalises redaction tokens produced by downstream modules so they can be
+ * merged safely into the logger configuration. Strings are trimmed to drop
+ * whitespace-only entries, and regular expressions are deduplicated by
+ * reference to avoid redundant subscriptions.
+ */
+function dedupeRedactionTokens(tokens: readonly (string | RegExp)[]): Array<string | RegExp> {
+  const stringTokens = new Set<string>();
+  const regexTokens = new Set<RegExp>();
+  const deduped: Array<string | RegExp> = [];
+
+  for (const token of tokens) {
+    if (typeof token === "string") {
+      const trimmed = token.trim();
+      if (!trimmed || stringTokens.has(trimmed)) {
+        continue;
+      }
+      stringTokens.add(trimmed);
+      deduped.push(trimmed);
+    } else if (token instanceof RegExp) {
+      if (regexTokens.has(token)) {
+        continue;
+      }
+      regexTokens.add(token);
+      deduped.push(token);
+    }
+  }
+
+  return deduped;
+}
+
+/**
+ * Replaces the current logger redaction list and broadcasts the updated logger
+ * to the event store when changes are detected. The helper keeps ordering
+ * stable so deterministic snapshots remain diff-friendly.
+ */
+function applyLoggerRedactionTokens(tokens: readonly (string | RegExp)[]): void {
+  const deduped = dedupeRedactionTokens(tokens);
+  const current = activeLoggerOptions.redactSecrets ?? [];
+  const unchanged =
+    current.length === deduped.length && current.every((value, index) => value === deduped[index]);
+  if (unchanged) {
+    return;
+  }
+
+  activeLoggerOptions = { ...activeLoggerOptions, redactSecrets: deduped };
+  logger = instantiateLogger(activeLoggerOptions);
+  eventStore.setLogger(logger);
+}
+
+/**
+ * Appends new tokens to the logger configuration while skipping empty or
+ * duplicate entries. This is primarily used by the search module to ensure
+ * bearer tokens and API keys do not leak through structured logs.
+ */
+function appendLoggerRedactionTokens(tokens: readonly (string | RegExp)[]): void {
+  if (!tokens.length) {
+    return;
+  }
+
+  const sanitised: Array<string | RegExp> = [];
+  for (const token of tokens) {
+    if (typeof token === "string") {
+      const trimmed = token.trim();
+      if (!trimmed) {
+        continue;
+      }
+      sanitised.push(trimmed);
+    } else if (token instanceof RegExp) {
+      sanitised.push(token);
+    }
+  }
+
+  if (!sanitised.length) {
+    return;
+  }
+
+  const existing = activeLoggerOptions.redactSecrets ?? [];
+  applyLoggerRedactionTokens([...existing, ...sanitised]);
+}
+
+/** @internal Expose logging helpers so tests can assert journal correlation without mocking the logger. */
+export const __serverLogInternals = {
+  recordServerLogEntry,
+  /** @internal Allows tests to assert that optional logger options stay omitted. */
+  snapshotLoggerOptions: (): LoggerOptions => ({ ...activeLoggerOptions }),
+  /** @internal Enables tests to override the redaction list deterministically. */
+  applyLoggerRedactionTokens,
+  /** @internal Enables tests to append redaction tokens without manual deduplication. */
+  appendLoggerRedactionTokens,
+};
+
+const searchConfig = loadSearchConfig();
+appendLoggerRedactionTokens(collectSearchRedactionTokens(searchConfig));
+const searchMetricsRecorder = new SearchMetricsRecorder();
+const searchSearxClient = new SearxClient(searchConfig);
+const searchDownloader = new SearchDownloader(searchConfig.fetch);
+const searchExtractor = new UnstructuredExtractor(searchConfig);
+const searchKnowledgeIngestor = searchConfig.pipeline.injectGraph
+  ? new KnowledgeGraphIngestor({ graph: knowledgeGraph })
+  : null;
+
+let searchVectorIngestor: VectorStoreIngestor | null = null;
+let searchPipeline: SearchPipeline | null = null;
+
+function ensureSearchPipeline(): SearchPipeline {
+  if (!searchPipeline) {
+    throw new Error("Search pipeline not initialised");
+  }
+  return searchPipeline;
+}
 
 let orchestratorController: OrchestratorController | null = null;
 
@@ -2068,7 +2187,7 @@ function getPlanCompileExecuteToolContext(): PlanCompileExecuteToolContext {
   return {
     plan: getPlanToolContext(),
     logger,
-    resolveBudget: (tool) => toolRegistry.get(tool)?.budgets,
+    resolveBudget: (tool) => ensureToolRegistry().get(tool)?.budgets,
     ...omitUndefinedEntries({
       idempotency: runtimeFeatures.enableIdempotency ? idempotencyRegistry : undefined,
     }),
@@ -2104,6 +2223,24 @@ function getMemoryUpsertToolContext(): MemoryUpsertToolContext {
   };
 }
 
+function getSearchRunToolContext(): SearchRunToolContext {
+  return {
+    pipeline: ensureSearchPipeline(),
+    logger,
+  };
+}
+
+function getSearchIndexToolContext(): SearchIndexToolContext {
+  return {
+    pipeline: ensureSearchPipeline(),
+    logger,
+  };
+}
+
+function getSearchStatusToolContext(): SearchStatusToolContext {
+  return { logger };
+}
+
 /** @internal Expose context builders so tests can inspect optional field sanitisation. */
 export const __runtimeToolInternals = {
   getChildToolContext,
@@ -2118,6 +2255,9 @@ export const __runtimeToolInternals = {
   getPlanCompileExecuteToolContext,
   getChildOrchestrateToolContext,
   getMemoryUpsertToolContext,
+  getSearchRunToolContext,
+  getSearchIndexToolContext,
+  getSearchStatusToolContext,
 };
 
 /** @internal Surface graph handler sanitisation helpers for focused regressions. */
@@ -4080,84 +4220,131 @@ export const __rpcServerInternals = {
 };
 
 const runsRoot = readOptionalString("MCP_RUNS_ROOT");
-const toolRegistry = await ToolRegistry.create({
-  server,
-  logger,
-  clock: () => new Date(),
-  invokeTool: invokeToolForRegistry,
-  ...(runsRoot !== undefined ? { runsRoot } : {}),
-});
-process.once("exit", () => toolRegistry.close());
 
-orchestratorController = createOrchestratorController({
-  server,
-  toolRegistry,
-  logger,
-  eventBus,
-  logJournal,
-  requestBudgetLimits: REQUEST_BUDGET_LIMITS,
-  defaultTimeoutOverride: DEFAULT_RPC_TIMEOUT_OVERRIDE,
-});
+export let toolRegistry!: ToolRegistry;
 
-const toolsHelpManifest = await registerToolsHelpTool(toolRegistry, { logger });
-toolRouter.register(toolsHelpManifest);
-const intentRouteManifest = await registerIntentRouteTool(toolRegistry, {
-  logger,
-  resolveBudget: (tool) => toolRegistry.get(tool)?.budgets,
-  toolRouter,
-  recordRouterDecision: (record) => resources.recordToolRouterDecision(record),
-  isRouterEnabled: () => runtimeFeatures.enableToolRouter,
-});
-toolRouter.register(intentRouteManifest);
-const runtimeObserveManifest = await registerRuntimeObserveTool(toolRegistry, { logger });
-toolRouter.register(runtimeObserveManifest);
-const projectScaffoldManifest = await registerProjectScaffoldRunTool(
-  toolRegistry,
-  getProjectScaffoldRunToolContext(),
-);
-toolRouter.register(projectScaffoldManifest);
-const artifactWriteManifest = await registerArtifactWriteTool(
-  toolRegistry,
-  getArtifactWriteToolContext(),
-);
-toolRouter.register(artifactWriteManifest);
-const artifactReadManifest = await registerArtifactReadTool(toolRegistry, {
-  logger,
-  childrenRoot: CHILDREN_ROOT,
-});
-toolRouter.register(artifactReadManifest);
-const artifactSearchManifest = await registerArtifactSearchTool(toolRegistry, {
-  logger,
-  childrenRoot: CHILDREN_ROOT,
-});
-toolRouter.register(artifactSearchManifest);
-const graphApplyManifest = await registerGraphApplyChangeSetTool(
-  toolRegistry,
-  getGraphApplyChangeSetToolContext(),
-);
-toolRouter.register(graphApplyManifest);
-const graphSnapshotManifest = await registerGraphSnapshotTimeTravelTool(
-  toolRegistry,
-  getGraphSnapshotToolContext(),
-);
-toolRouter.register(graphSnapshotManifest);
-const planCompileManifest = await registerPlanCompileExecuteTool(
-  toolRegistry,
-  getPlanCompileExecuteToolContext(),
-);
-toolRouter.register(planCompileManifest);
-const childOrchestrateManifest = await registerChildOrchestrateTool(
-  toolRegistry,
-  getChildOrchestrateToolContext(),
-);
-toolRouter.register(childOrchestrateManifest);
-const memoryUpsertManifest = await registerMemoryUpsertTool(toolRegistry, getMemoryUpsertToolContext());
-toolRouter.register(memoryUpsertManifest);
-const memorySearchManifest = await registerMemorySearchTool(toolRegistry, {
-  vectorIndex: vectorMemoryIndex,
-  logger,
-});
-toolRouter.register(memorySearchManifest);
+function ensureToolRegistry(): ToolRegistry {
+  if (!toolRegistry) {
+    throw new Error("Tool registry not initialised");
+  }
+  return toolRegistry;
+}
+
+async function initialiseRuntimeInner(): Promise<void> {
+  if (!searchPipeline) {
+    const vectorMemory = searchConfig.pipeline.injectVector ? await getRagMemoryInstance() : null;
+    searchVectorIngestor = vectorMemory ? new VectorStoreIngestor({ memory: vectorMemory }) : null;
+    searchPipeline = new SearchPipeline({
+      config: searchConfig,
+      searxClient: searchSearxClient,
+      downloader: searchDownloader,
+      extractor: searchExtractor,
+      ...(searchKnowledgeIngestor ? { knowledgeIngestor: searchKnowledgeIngestor } : {}),
+      ...(searchVectorIngestor ? { vectorIngestor: searchVectorIngestor } : {}),
+      eventStore,
+      logger,
+      metrics: searchMetricsRecorder,
+    });
+  }
+
+  if (!toolRegistry) {
+    toolRegistry = await ToolRegistry.create({
+      server,
+      logger,
+      clock: () => new Date(),
+      invokeTool: invokeToolForRegistry,
+      ...(runsRoot !== undefined ? { runsRoot } : {}),
+    });
+    process.once("exit", () => toolRegistry.close());
+  }
+
+  orchestratorController = createOrchestratorController({
+    server,
+    toolRegistry,
+    logger,
+    eventBus,
+    logJournal,
+    requestBudgetLimits: REQUEST_BUDGET_LIMITS,
+    defaultTimeoutOverride: DEFAULT_RPC_TIMEOUT_OVERRIDE,
+  });
+
+  const toolsHelpManifest = await registerToolsHelpTool(toolRegistry, { logger });
+  toolRouter.register(toolsHelpManifest);
+  const intentRouteManifest = await registerIntentRouteTool(toolRegistry, {
+    logger,
+    resolveBudget: (tool) => toolRegistry.get(tool)?.budgets,
+    toolRouter,
+    recordRouterDecision: (record) => resources.recordToolRouterDecision(record),
+    isRouterEnabled: () => runtimeFeatures.enableToolRouter,
+  });
+  toolRouter.register(intentRouteManifest);
+  const runtimeObserveManifest = await registerRuntimeObserveTool(toolRegistry, { logger });
+  toolRouter.register(runtimeObserveManifest);
+  const projectScaffoldManifest = await registerProjectScaffoldRunTool(
+    toolRegistry,
+    getProjectScaffoldRunToolContext(),
+  );
+  toolRouter.register(projectScaffoldManifest);
+  const artifactWriteManifest = await registerArtifactWriteTool(
+    toolRegistry,
+    getArtifactWriteToolContext(),
+  );
+  toolRouter.register(artifactWriteManifest);
+  const artifactReadManifest = await registerArtifactReadTool(toolRegistry, {
+    logger,
+    childrenRoot: CHILDREN_ROOT,
+  });
+  toolRouter.register(artifactReadManifest);
+  const artifactSearchManifest = await registerArtifactSearchTool(toolRegistry, {
+    logger,
+    childrenRoot: CHILDREN_ROOT,
+  });
+  toolRouter.register(artifactSearchManifest);
+  const graphApplyManifest = await registerGraphApplyChangeSetTool(
+    toolRegistry,
+    getGraphApplyChangeSetToolContext(),
+  );
+  toolRouter.register(graphApplyManifest);
+  const graphSnapshotManifest = await registerGraphSnapshotTimeTravelTool(
+    toolRegistry,
+    getGraphSnapshotToolContext(),
+  );
+  toolRouter.register(graphSnapshotManifest);
+  const planCompileManifest = await registerPlanCompileExecuteTool(
+    toolRegistry,
+    getPlanCompileExecuteToolContext(),
+  );
+  toolRouter.register(planCompileManifest);
+  const childOrchestrateManifest = await registerChildOrchestrateTool(
+    toolRegistry,
+    getChildOrchestrateToolContext(),
+  );
+  toolRouter.register(childOrchestrateManifest);
+  const memoryUpsertManifest = await registerMemoryUpsertTool(toolRegistry, getMemoryUpsertToolContext());
+  toolRouter.register(memoryUpsertManifest);
+  const memorySearchManifest = await registerMemorySearchTool(toolRegistry, {
+    vectorIndex: vectorMemoryIndex,
+    logger,
+  });
+  toolRouter.register(memorySearchManifest);
+  const searchRunManifest = await registerSearchRunTool(toolRegistry, getSearchRunToolContext());
+  toolRouter.register(searchRunManifest);
+  const searchIndexManifest = await registerSearchIndexTool(toolRegistry, getSearchIndexToolContext());
+  toolRouter.register(searchIndexManifest);
+  const searchStatusManifest = await registerSearchStatusTool(toolRegistry, getSearchStatusToolContext());
+  toolRouter.register(searchStatusManifest);
+}
+
+let runtimeInitializationPromise: Promise<void> | null = null;
+
+function ensureRuntimeInitialisation(): Promise<void> {
+  if (!runtimeInitializationPromise) {
+    runtimeInitializationPromise = initialiseRuntimeInner();
+  }
+  return runtimeInitializationPromise;
+}
+
+export const runtimeReady = ensureRuntimeInitialisation();
 
 // Keep the MCP capabilities export in sync with the tools registered on the
 // underlying `McpServer` instance. The SDK stores registrations in a private
@@ -4241,7 +4428,7 @@ server.registerTool(
   },
   async (input: unknown) => {
     const parsed = ToolsListInputSchema.parse(input ?? {});
-    const manifests = toolRegistry.listVisible(parsed.mode, parsed.pack);
+    const manifests = ensureToolRegistry().listVisible(parsed.mode, parsed.pack);
     const byName = parsed.names ? manifests.filter((manifest) => parsed.names!.includes(manifest.name)) : manifests;
     const filtered = parsed.kinds ? byName.filter((manifest) => parsed.kinds!.includes(manifest.kind)) : byName;
     const payload = { generated_at: new Date().toISOString(), tools: filtered };
@@ -4346,7 +4533,7 @@ server.registerTool(
           ...(parsed.description ? { description: parsed.description } : {}),
           ...(parsed.tags && parsed.tags.length > 0 ? { tags: parsed.tags } : {}),
         };
-      const manifest = await toolRegistry.registerComposite(request);
+      const manifest = await ensureToolRegistry().registerComposite(request);
       const payload = { tool: manifest.name, manifest };
       return {
         content: [{ type: "text", text: j({ tool: "tool_compose_register", result: payload }) }],
@@ -9589,6 +9776,7 @@ export async function routeJsonRpcRequest(
   params?: unknown,
   context: JsonRpcRouteContext = {},
 ): Promise<unknown> {
+  await runtimeReady;
   return ensureOrchestratorController().routeJsonRpcRequest(method, params, context);
 }
 
@@ -9597,6 +9785,7 @@ export async function maybeRecordIdempotentWalEntry(
   context: JsonRpcRouteContext | undefined,
   overrides: { method?: string; toolName?: string | null } = {},
 ): Promise<void> {
+  await runtimeReady;
   return ensureOrchestratorController().maybeRecordIdempotentWalEntry(request, context, overrides);
 }
 
@@ -9604,6 +9793,7 @@ export async function handleJsonRpc(
   req: JsonRpcRequest,
   context?: JsonRpcRouteContext,
 ): Promise<JsonRpcResponse> {
+  await runtimeReady;
   return ensureOrchestratorController().handleJsonRpc(req, context);
 }
 
@@ -9701,7 +9891,6 @@ export function buildJsonRpcObservabilityInput(
  */
 export {
   server,
-  toolRegistry,
   graphState,
   childProcessSupervisor,
   resources,

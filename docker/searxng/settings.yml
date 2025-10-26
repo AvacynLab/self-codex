@@ -1,0 +1,73 @@
+# Minimal SearxNG configuration tailored for the MCP search module. The goal is
+# to provide deterministic defaults that work in development and CI while
+# keeping the list of enabled engines compliant with permissive licences.
+use_default_settings: true
+
+server:
+  secret_key: "please-change-me"
+  port: 8080
+  bind_address: "0.0.0.0"
+  public_instance: false
+  limiter: true
+  method: "auto"
+
+search:
+  safe_search: 1
+  autocomplete: ""
+  formats:
+    - html
+    - json
+
+engines:
+  - name: duckduckgo
+    engine: duckduckgo
+    disabled: false
+    timeout: 5.0
+    categories:
+      - general
+      - news
+  - name: wikipedia
+    engine: wikipedia
+    disabled: false
+    timeout: 5.0
+    categories:
+      - general
+      - science
+  - name: arxiv
+    engine: arxiv
+    disabled: false
+    timeout: 5.0
+    categories:
+      - science
+      - files
+  - name: github
+    engine: github
+    disabled: false
+    timeout: 5.0
+    categories:
+      - it
+      - code
+  - name: qwant
+    engine: qwant
+    disabled: false
+    timeout: 5.0
+    categories:
+      - general
+      - images
+
+ui:
+  theme_args:
+    header_logo: ""
+  infinite_scroll: false
+
+result_proxy:
+  url: ""
+  rewrite_result_links: false
+
+categories_as_tabs:
+  - general
+  - news
+  - science
+  - it
+  - files
+  - images
