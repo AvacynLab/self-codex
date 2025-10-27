@@ -564,7 +564,8 @@ export class SearchDownloader {
     const hostKey = target.host.toLowerCase();
     const previous = this.domainLocks.get(hostKey) ?? Promise.resolve();
 
-    const finalPromise = previous
+    // lockPromise handles the waiting logic before we expose the cancellable wrapper.
+    const lockPromise = previous
       .catch(() => undefined)
       .then(async () => {
         const now = this.now();
@@ -575,12 +576,14 @@ export class SearchDownloader {
         }
         const base = Math.max(availableAt, this.now());
         this.domainAvailableAt.set(hostKey, base + this.config.minDomainDelayMs);
-      })
-      .finally(() => {
-        if (this.domainLocks.get(hostKey) === finalPromise) {
-          this.domainLocks.delete(hostKey);
-        }
       });
+
+    // finalPromise is what we store, so cleanup only happens for the currently active lock.
+    const finalPromise = lockPromise.finally(() => {
+      if (this.domainLocks.get(hostKey) === finalPromise) {
+        this.domainLocks.delete(hostKey);
+      }
+    });
 
     this.domainLocks.set(hostKey, finalPromise);
     await finalPromise;
