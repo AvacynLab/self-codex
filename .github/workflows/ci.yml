@@ -89,3 +89,37 @@ jobs:
           name: self-codex.test.log
           path: /tmp/self-codex.test.log
           if-no-files-found: warn
+
+  # Validates the dockerised search stack (SearxNG + unstructured) so regressions
+  # are caught even when local environments lack Docker.
+  search-e2e:
+    name: Search stack end-to-end
+    needs: build-typecheck-test
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Use Node.js 20.x
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20.x"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify Docker availability
+        run: docker compose version
+
+      - name: Run search end-to-end suite
+        run: npm run test:e2e:search
+
+      - name: Run search smoke validation
+        run: npm run smoke:search
+
+      - name: Collect compose logs on failure
+        if: failure()
+        run: |
+          docker compose -f docker/docker-compose.search.yml logs || true

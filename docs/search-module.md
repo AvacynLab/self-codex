@@ -191,3 +191,8 @@ cache-related headers (`ETag`, `Last-Modified`). Operators should:
 - `npm run smoke:search` *(brings up the stack, runs a real `search.run` job, and tears everything down with a summary report)*
 
 Keep the validation list updated as new automation arrives.
+
+### Continuous integration guardrails
+- The GitHub Actions job **“Search stack end-to-end”** provisions the compose
+  stack, runs `npm run test:e2e:search`, and follows up with `npm run
+  smoke:search` to ensure the dockerised flow stays healthy on every push.
