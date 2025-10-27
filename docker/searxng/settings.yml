@@ -61,6 +61,10 @@ engines:
       - code
   - name: qwant
     engine: qwant
+    # The qwant engine requires an explicit category value; otherwise SearxNG
+    # aborts during startup with a configuration error. Use the general web
+    # variant so development and CI runs have deterministic coverage.
+    qwant_categ: web
     shortcut: qw
     disabled: false
     timeout: 5.0

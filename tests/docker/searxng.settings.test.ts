@@ -39,4 +39,13 @@ describe('docker/searxng/settings.yml', () => {
     const uniqueShortcuts = new Set(shortcuts);
     expect(uniqueShortcuts.size).to.equal(shortcuts.length);
   });
+
+  it('configures qwant with an explicit category so the engine loads', () => {
+    const engines = config.engines as Array<Record<string, unknown>> | undefined;
+    expect(engines, 'engines list').to.be.an('array').that.is.not.empty;
+
+    const qwant = engines!.find((engine) => engine.name === 'qwant');
+    expect(qwant, 'qwant engine').to.be.ok;
+    expect(qwant?.qwant_categ, 'qwant_categ field').to.equal('web');
+  });
 });
