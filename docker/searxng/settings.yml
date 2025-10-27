@@ -25,9 +25,11 @@ search:
     - html
     - json
 
+# Each engine defines a shortcut so SearxNG can register them without collisions.
 engines:
   - name: duckduckgo
     engine: duckduckgo
+    shortcut: ddg
     disabled: false
     timeout: 5.0
     categories:
@@ -35,6 +37,7 @@ engines:
       - news
   - name: wikipedia
     engine: wikipedia
+    shortcut: wp
     disabled: false
     timeout: 5.0
     categories:
@@ -42,6 +45,7 @@ engines:
       - science
   - name: arxiv
     engine: arxiv
+    shortcut: arx
     disabled: false
     timeout: 5.0
     categories:
@@ -49,6 +53,7 @@ engines:
       - files
   - name: github
     engine: github
+    shortcut: gh
     disabled: false
     timeout: 5.0
     categories:
@@ -56,6 +61,7 @@ engines:
       - code
   - name: qwant
     engine: qwant
+    shortcut: qw
     disabled: false
     timeout: 5.0
     categories:

@@ -22,4 +22,21 @@ describe('docker/searxng/settings.yml', () => {
     expect(server?.secret_key).to.be.a('string');
     expect((server?.secret_key as string).length).to.be.greaterThanOrEqual(32);
   });
+
+  it('assigns unique shortcuts to every enabled engine', () => {
+    // Each shortcut must be unique; otherwise SearxNG aborts during startup with an
+    // "ambiguous shortcut" error and the container never becomes healthy.
+    const engines = config.engines as Array<Record<string, unknown>> | undefined;
+    expect(engines, 'engines list').to.be.an('array').that.is.not.empty;
+
+    const shortcuts = engines!.map((engine, index) => {
+      const shortcut = engine.shortcut;
+      expect(shortcut, `shortcut for engine #${index + 1}`).to.be.a('string').that.is.not
+        .empty;
+      return shortcut as string;
+    });
+
+    const uniqueShortcuts = new Set(shortcuts);
+    expect(uniqueShortcuts.size).to.equal(shortcuts.length);
+  });
 });
