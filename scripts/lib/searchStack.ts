@@ -3,10 +3,14 @@ import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 import { setTimeout as defaultDelay } from "node:timers/promises";
 
-/** Absolute path to the dedicated search docker-compose manifest. */
+/**
+ * Absolute path to the dedicated search docker-compose manifest. The helper
+ * lives under `scripts/lib`, so we need to walk two directories up to reach the
+ * repository root before jumping into `docker/`.
+ */
 export const defaultSearchComposeFile = resolve(
   dirname(fileURLToPath(import.meta.url)),
-  "../docker/docker-compose.search.yml",
+  "../../docker/docker-compose.search.yml",
 );
 
 /**
