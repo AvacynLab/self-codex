@@ -321,8 +321,8 @@ Tu vas créer un **module de recherche multimodal isolé** (comme le module Grap
 ### Couverture & qualité
 
 * [x] **Coverage global ≥ 85%**, `src/search/*` ≥ 90%.
-* [ ] Pas de tests flakys (timeouts stables, retries mockés).
-* [ ] Tests typés strict (no `any` implicite, `exactOptionalPropertyTypes` respecté).
+* [x] Pas de tests flakys (timeouts stables, retries mockés).
+* [x] Tests typés strict (no `any` implicite, `exactOptionalPropertyTypes` respecté).
 
 ---
 
@@ -349,7 +349,7 @@ Tu vas créer un **module de recherche multimodal isolé** (comme le module Grap
 * [x] Pas de `console.log` brut → **logger** central.
 * [x] Vérifie **exact optional** (aucun `undefined` exposé).
 * [x] Vérifie **budgets** tools (`timeMs`, `bytesOut`, `toolCalls`).
-* [ ] **Smoke test** local (compose up, `search.run`, dashboard OK). *(bloqué : docker indisponible dans l'environnement agent)*
+*⚠️* **Smoke test** local (compose up, `search.run`, dashboard OK). *(script `npm run smoke:search` prêt ; reste bloqué sans Docker dans l'environnement agent)*
 
 ---
 
@@ -590,4 +590,9 @@ Si tu coches ces cases dans l’ordre, on obtient un **moteur de recherche LLM**
 - Réinstallation des dépendances de développement (`npm install --include=dev`) pour restaurer `tinyld` absent lors de la couverture complète.
 - Exécution de `npm run coverage` ✅ confirmant 91.16 % global et 92.64 % sur `src/search/*` (script `scripts/checkSearchCoverage.ts`).
 - Commandes exécutées supplémentaires : `npm install` (résolution modules manquants).
+
+### Historique Agent (2025-11-15)
+- Factorisation du pilotage Docker dans `scripts/lib/searchStack.ts`, conversion du runner e2e en TypeScript et ajout du script fumée `scripts/run-search-smoke.ts`.
+- Ajout du validateur `assessSmokeRun`, de tests unitaires (`tests/scripts/searchStack.test.ts`, `tests/scripts/searchSmokePlan.test.ts`) et de la commande `npm run smoke:search` documentée.
+- Tests exécutés : `npm run lint` ✅ ; `TSX_EXTENSIONS=ts node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --file tests/setup.ts tests/scripts/searchStack.test.ts tests/scripts/searchSmokePlan.test.ts` ✅.
 

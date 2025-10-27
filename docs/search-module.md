@@ -188,5 +188,6 @@ cache-related headers (`ETag`, `Last-Modified`). Operators should:
 - `TSX_EXTENSIONS=ts node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --file tests/setup.ts tests/unit/search/pipeline.test.ts`
 - `docker compose -f docker/docker-compose.search.yml up -d`
 - `npm run test:e2e:search` *(automatically sets `SEARCH_E2E_ALLOW_RUN=1`; skips when Docker/unstructured are unavailable)*
+- `npm run smoke:search` *(brings up the stack, runs a real `search.run` job, and tears everything down with a summary report)*
 
 Keep the validation list updated as new automation arrives.
