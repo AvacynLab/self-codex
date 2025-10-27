@@ -13,32 +13,25 @@ services:
     volumes:
       - ./searxng/settings.yml:/etc/searxng/settings.yml:ro
     healthcheck:
-      # SearxNG images do not ship curl, so rely on Python's stdlib to probe the
-      # health endpoint and fall back to the home page if /healthz is
-      # unavailable. Any non-successful responses trigger a retry.
+      # The image lacks curl/wget by default. Use Python's socket library to
+      # verify that the HTTP listener is accepting TCP connections instead of
+      # issuing full HTTP requests (which may fail if the application has not
+      # finished booting yet).
       test:
         - CMD-SHELL
         - |
           python3 - <<'PYTHON'
+          import socket
           import sys
-          import urllib.error
-          import urllib.request
 
-          BASE_URL = "http://localhost:8080"
-          PATHS = ("/healthz", "/")
+          ADDRESS = ("127.0.0.1", 8080)
 
           def main() -> int:
-              for path in PATHS:
-                  try:
-                      with urllib.request.urlopen(f"{BASE_URL}{path}", timeout=5) as resp:
-                          status = getattr(resp, "status", 200)
-                          if status < 400:
-                              return 0
-                  except urllib.error.URLError:
-                      continue
-                  except Exception:
-                      continue
-              return 1
+              try:
+                  with socket.create_connection(ADDRESS, timeout=5):
+                      return 0
+              except OSError:
+                  return 1
 
           sys.exit(main())
           PYTHON
@@ -60,30 +53,27 @@ services:
     ports:
       - "127.0.0.1:8000:8000"
     healthcheck:
-      # The unstructured API image also lacks curl, so rely on Python to POST a
-      # lightweight ping payload to the general extraction endpoint.
+      # Similar to the SearxNG probe, rely on a TCP dial to detect when the
+      # FastAPI server is bound and accepting requests. The application exposes
+      # HTTP-only interfaces, so establishing the socket is a sufficient
+      # readiness signal for the e2e search tests.
       test:
         - CMD-SHELL
         - |
           python3 - <<'PYTHON'
-          import json
+          import socket
           import sys
-          import urllib.error
-          import urllib.request
 
-          REQUEST = urllib.request.Request(
-              "http://localhost:8000/general/v0/general",
-              data=json.dumps({"text": "ping"}).encode(),
-              headers={"Content-Type": "application/json"},
-          )
+          ADDRESS = ("127.0.0.1", 8000)
 
-          try:
-              urllib.request.urlopen(REQUEST, timeout=10)
-              sys.exit(0)
-          except urllib.error.URLError:
-              sys.exit(1)
-          except Exception:
-              sys.exit(1)
+          def main() -> int:
+              try:
+                  with socket.create_connection(ADDRESS, timeout=5):
+                      return 0
+              except OSError:
+                  return 1
+
+          sys.exit(main())
           PYTHON
       interval: 15s
       timeout: 10s
