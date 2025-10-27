@@ -38,6 +38,12 @@ const HTML_FIXTURE = `<!doctype html>
 type HttpServer = ReturnType<typeof createServer>;
 
 describe("search.run end-to-end pipeline", function () {
+  before(function (this: Mocha.Context) {
+    if (process.env.SEARCH_E2E_ALLOW_RUN !== "1") {
+      this.skip();
+    }
+  });
+
   // The dockerised unstructured server can take a noticeable amount of time to
   // warm up on first boot. Allocating a generous timeout keeps the suite
   // reliable on slower CI runners.

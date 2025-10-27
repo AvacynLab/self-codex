@@ -307,6 +307,9 @@ Tu vas créer un **module de recherche multimodal isolé** (comme le module Grap
 
 ### E2E (avec `docker-compose.search.yml`)
 
+*⚠️* La suite s'exécute uniquement si `SEARCH_E2E_ALLOW_RUN=1` (automatiquement défini par `npm run test:e2e:search`). Sans ce flag,
+ elle se mettra en `SKIP` pour éviter les faux négatifs lorsque Docker/Unstructured ne sont pas disponibles.
+
 * [ ] Lancer **searxng + unstructured + server**.
 * [ ] Appeler `search.run { query: "site:arxiv.org LLM 2025 filetype:pdf", categories:["files","general"], maxResults:4 }`.
 * [ ] Attendre complétion → vérifier :
@@ -461,7 +464,7 @@ Tu vas créer un **module de recherche multimodal isolé** (comme le module Grap
 
 **Lint & qualité**
 
-* [ ] Lint passe (règles hygiène existantes). *(à exécuter)*
+* [x] Lint passe (règles hygiène existantes). *(commandé le 2025-11-12 via `npm run lint`)*
 * [x] Aucune clé optionnelle exposant `undefined` dans JSON public.
 * [x] JSON stable (ordre des champs si nécessaire côté EventStore).
 
@@ -572,4 +575,9 @@ Si tu coches ces cases dans l’ordre, on obtient un **moteur de recherche LLM**
 - Factorisation de l'initialisation du runtime orchestrateur (`runtimeReady`) pour supprimer les `await` de haut niveau et protéger l'accès aux outils/pipelines tant que l'initialisation n'est pas terminée.
 - Mise à jour des façades JSON-RPC/serveur pour attendre l'initialisation, rafraîchissement du test `runtime.optional-contexts` et import des secrets search dans la redaction des logs.
 - Tests exécutés : `TSX_EXTENSIONS=ts node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --file tests/setup.ts tests/orchestrator/runtime.optional-contexts.test.ts` ✅ ; `TSX_EXTENSIONS=ts node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --file tests/setup.ts tests/tools/facades/search_run.test.ts tests/tools/facades/search_index.test.ts tests/http/http_rate_limit.test.ts` ✅ ; `npm run typecheck` ✅.
+
+### Historique Agent (2025-11-12)
+- Ajout d'un garde-fou `SEARCH_E2E_ALLOW_RUN` : la suite `tests/e2e/search/search_run.e2e.test.ts` se met en SKIP par défaut et ne s'exécute qu'à travers `npm run test:e2e:search` qui active le flag et orchestre Docker.
+- Documentation `docs/search-module.md` mise à jour pour refléter le nouveau comportement, et checklist AGENTS annotée pour éviter les faux négatifs en environnement sans Docker.
+- Tests exécutés : `TSX_EXTENSIONS=ts node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --file tests/setup.ts tests/e2e/search/search_run.e2e.test.ts` ✅ (SKIP attendu) ; `npm run lint` ✅.
 
