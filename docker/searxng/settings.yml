@@ -43,29 +43,37 @@ search:
 # Each engine entry below overrides the defaults shipped with SearxNG. The
 # keep_only directive above guarantees that only these engines remain enabled,
 # avoiding shortcut collisions while letting us tailor categories and timeouts.
+# SearxNG requires every engine to expose a unique `shortcut`; we set them
+# explicitly here so overrides do not erase the upstream defaults during the
+# merge process.
 engines:
   - name: duckduckgo
+    shortcut: ddg
     timeout: 5.0
     categories:
       - general
       - news
   - name: wikipedia
+    shortcut: wp
     timeout: 5.0
     categories:
       - general
       - science
   - name: arxiv
+    shortcut: arx
     timeout: 5.0
     categories:
       - science
       - files
   - name: github
+    shortcut: gh
     timeout: 5.0
     categories:
       - it
       # Keep the categories restricted to values supported by SearxNG to avoid
       # configuration validation failures during container startup.
   - name: qwant
+    shortcut: qw
     qwant_categ: web
     disabled: false
     timeout: 5.0

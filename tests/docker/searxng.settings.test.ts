@@ -87,4 +87,19 @@ describe('docker/searxng/settings.yml', () => {
       }
     }
   });
+
+  it('declares unique shortcuts for every curated engine', () => {
+    const engines = config.engines as Array<Record<string, unknown>> | undefined;
+    expect(engines, 'engines list').to.be.an('array').that.is.not.empty;
+
+    const seen = new Set<string>();
+    for (const engine of engines!) {
+      const shortcut = engine.shortcut as unknown;
+      expect(shortcut, `shortcut for ${engine.name as string}`).to.be.a('string');
+
+      const key = shortcut as string;
+      expect(seen.has(key), `duplicate shortcut ${key}`).to.equal(false);
+      seen.add(key);
+    }
+  });
 });
