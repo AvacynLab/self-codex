@@ -61,7 +61,8 @@ engines:
     timeout: 5.0
     categories:
       - it
-      - code
+      # Keep the categories restricted to values supported by SearxNG to avoid
+      # configuration validation failures during container startup.
   - name: qwant
     engine: qwant
     # The qwant engine requires an explicit category value; otherwise SearxNG

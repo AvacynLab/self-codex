@@ -53,4 +53,37 @@ describe('docker/searxng/settings.yml', () => {
     expect(qwant, 'qwant engine').to.be.ok;
     expect(qwant?.qwant_categ, 'qwant_categ field').to.equal('web');
   });
+
+  it('keeps engine categories within the supported SearxNG set', () => {
+    const allowedCategories = new Set([
+      'general',
+      'news',
+      'images',
+      'videos',
+      'it',
+      'science',
+      'files',
+      'music',
+      'social media',
+      'map',
+    ]);
+
+    const engines = config.engines as Array<Record<string, unknown>> | undefined;
+    expect(engines, 'engines list').to.be.an('array').that.is.not.empty;
+
+    for (const engine of engines!) {
+      const categories = engine.categories as Array<unknown> | undefined;
+      expect(categories, `categories for engine ${engine.name as string}`).to.satisfy(
+        (value: unknown) => Array.isArray(value) && value.length > 0,
+        'engine must declare at least one category',
+      );
+
+      for (const category of categories!) {
+        expect(
+          allowedCategories.has(category as string),
+          `category "${String(category)}" is not supported by SearxNG`,
+        ).to.equal(true);
+      }
+    }
+  });
 });
