@@ -4,7 +4,12 @@
 use_default_settings: true
 
 server:
-  secret_key: "please-change-me"
+  # Use a deterministic but sufficiently long default secret so the container
+  # boots without requiring manual overrides during local development. The
+  # sample value below is 48 characters long, satisfying SearxNG's minimum
+  # length requirements while remaining safe to replace in production via
+  # environment overrides or Docker secrets.
+  secret_key: "please-change-me-please-change-me-please-change-me"
   port: 8080
   bind_address: "0.0.0.0"
   public_instance: false
