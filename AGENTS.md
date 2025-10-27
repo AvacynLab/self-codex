@@ -320,7 +320,7 @@ Tu vas créer un **module de recherche multimodal isolé** (comme le module Grap
 
 ### Couverture & qualité
 
-* [ ] **Coverage global ≥ 85%**, `src/search/*` ≥ 90%.
+* [x] **Coverage global ≥ 85%**, `src/search/*` ≥ 90%.
 * [ ] Pas de tests flakys (timeouts stables, retries mockés).
 * [ ] Tests typés strict (no `any` implicite, `exactOptionalPropertyTypes` respecté).
 
@@ -585,4 +585,9 @@ Si tu coches ces cases dans l’ordre, on obtient un **moteur de recherche LLM**
 - Relance complète de la couverture (`npm run coverage`) afin de valider le nouveau garde agrégé `scripts/checkSearchCoverage.ts` (>90 % sur `src/search/*`).
 - Nettoyage du dossier `coverage/` et mise à jour de la checklist (case couverture) pour refléter la confirmation.
 - Tests exécutés : `npm run coverage` ✅ (incluant `node --import tsx scripts/checkSearchCoverage.ts`).
+
+### Historique Agent (2025-11-14)
+- Réinstallation des dépendances de développement (`npm install --include=dev`) pour restaurer `tinyld` absent lors de la couverture complète.
+- Exécution de `npm run coverage` ✅ confirmant 91.16 % global et 92.64 % sur `src/search/*` (script `scripts/checkSearchCoverage.ts`).
+- Commandes exécutées supplémentaires : `npm install` (résolution modules manquants).
 
