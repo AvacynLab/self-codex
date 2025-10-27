@@ -11,6 +11,10 @@ describe('docker/searxng/settings.yml', () => {
   const settingsContent = readFileSync(settingsPath, 'utf8');
   const config = parse(settingsContent) as Record<string, unknown>;
 
+  it('disables bundled defaults so the curated engines do not duplicate shortcuts', () => {
+    expect(config.use_default_settings).to.equal(false);
+  });
+
   it('disables the limiter to avoid requiring an external Valkey service', () => {
     const server = config.server as { limiter?: unknown } | undefined;
     expect(server, 'server section').to.be.ok;

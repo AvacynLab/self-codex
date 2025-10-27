@@ -1,7 +1,12 @@
 # Minimal SearxNG configuration tailored for the MCP search module. The goal is
 # to provide deterministic defaults that work in development and CI while
 # keeping the list of enabled engines compliant with permissive licences.
-use_default_settings: true
+#
+# Disable the upstream defaults so the engine list defined below is the single
+# source of truth. Leaving `use_default_settings` enabled causes SearxNG to load
+# its bundled engines alongside ours, which immediately reintroduces duplicate
+# shortcuts and makes the container exit during startup.
+use_default_settings: false
 
 server:
   # Use a deterministic but sufficiently long default secret so the container
