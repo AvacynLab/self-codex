@@ -13,14 +13,15 @@ services:
     volumes:
       - ./searxng/settings.yml:/etc/searxng/settings.yml:ro
     healthcheck:
-      # The image lacks curl/wget by default. Use Python's socket library to
-      # verify that the HTTP listener is accepting TCP connections instead of
-      # issuing full HTTP requests (which may fail if the application has not
-      # finished booting yet).
+      # The production image bundles only the embedded virtualenv. Invoke the
+      # interpreter from that environment so the probe does not rely on any
+      # system-wide binaries that might be absent (the previous `python3`
+      # command is not available on the distroless runtime image, which caused
+      # the container to remain unhealthy in CI).
       test:
         - CMD-SHELL
         - |
-          python3 - <<'PYTHON'
+          /usr/local/searxng/.venv/bin/python3 - <<'PYTHON'
           import socket
           import sys
 
