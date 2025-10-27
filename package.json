@@ -42,7 +42,7 @@
     "validation:performance": "node --import tsx scripts/runPerformancePhase.ts",
     "validation:security": "node --import tsx scripts/runSecurityPhase.ts",
     "eval:scenarios": "node --import tsx scripts/eval.ts",
-    "coverage": "npm run build --silent && c8 --reporter=text-summary --reporter=lcov --reporter=html --check-coverage --statements 85 --functions 85 --lines 85 --branches 70 --exclude \"dist/**\" node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --file tests/setup.ts \"tests/**/*.test.ts\"",
+    "coverage": "npm run build --silent && c8 --reporter=text-summary --reporter=lcov --reporter=html --reporter=json-summary --check-coverage --statements 85 --functions 85 --lines 85 --branches 70 --exclude \"dist/**\" node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --file tests/setup.ts \"tests/**/*.test.ts\" && node --import tsx scripts/checkSearchCoverage.ts",
     "bench:scheduler": "node --import tsx tests/perf/scheduler.bench.ts",
     "lint": "npm run lint:types && npm run lint:eslint && npm run lint:hygiene && npm run lint:node-builtins && npm run lint:dead-exports",
     "lint:hygiene": "node scripts/checkHygiene.mjs",

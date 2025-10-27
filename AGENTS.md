@@ -470,7 +470,7 @@ Tu vas créer un **module de recherche multimodal isolé** (comme le module Grap
 
 **Tests**
 
-* [ ] **Unit ≥ 90%** sur `src/search/*`, **Global ≥ 85%**. *(collecte couverture à planifier)*
+* [x] **Unit ≥ 90%** sur `src/search/*`, **Global ≥ 85%**. *(confirmé via `npm run coverage` le 2025-11-13)*
 * [x] **Intégration** : mocks HTTP (`nock`) pour SearxNG/Unstructured.
 * [x] **E2E** : `docker-compose.search.yml` — script unique `npm run test:e2e:search`.
 * [ ] **CI** : job dédié qui monte compose, attend health, lance tests, publie couverture & logs.
@@ -580,4 +580,9 @@ Si tu coches ces cases dans l’ordre, on obtient un **moteur de recherche LLM**
 - Ajout d'un garde-fou `SEARCH_E2E_ALLOW_RUN` : la suite `tests/e2e/search/search_run.e2e.test.ts` se met en SKIP par défaut et ne s'exécute qu'à travers `npm run test:e2e:search` qui active le flag et orchestre Docker.
 - Documentation `docs/search-module.md` mise à jour pour refléter le nouveau comportement, et checklist AGENTS annotée pour éviter les faux négatifs en environnement sans Docker.
 - Tests exécutés : `TSX_EXTENSIONS=ts node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --file tests/setup.ts tests/e2e/search/search_run.e2e.test.ts` ✅ (SKIP attendu) ; `npm run lint` ✅.
+
+### Historique Agent (2025-11-13)
+- Relance complète de la couverture (`npm run coverage`) afin de valider le nouveau garde agrégé `scripts/checkSearchCoverage.ts` (>90 % sur `src/search/*`).
+- Nettoyage du dossier `coverage/` et mise à jour de la checklist (case couverture) pour refléter la confirmation.
+- Tests exécutés : `npm run coverage` ✅ (incluant `node --import tsx scripts/checkSearchCoverage.ts`).
 
