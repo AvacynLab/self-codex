@@ -13,14 +13,35 @@ services:
     volumes:
       - ./searxng/settings.yml:/etc/searxng/settings.yml:ro
     healthcheck:
-      # SearxNG images do not ship curl, so use Python's stdlib to probe the
+      # SearxNG images do not ship curl, so rely on Python's stdlib to probe the
       # health endpoint and fall back to the home page if /healthz is
       # unavailable. Any non-successful responses trigger a retry.
       test:
-        [
-          "CMD-SHELL",
-          "python3 -c 'import sys, urllib.error, urllib.request; base="http://localhost:8080"; paths=["/healthz", "/"];\nfor path in paths:\n    try:\n        with urllib.request.urlopen(base + path, timeout=5) as resp:\n            status = getattr(resp, "status", 200)\n            if status < 400:\n                sys.exit(0)\n    except urllib.error.URLError:\n        continue\n    except Exception:\n        continue\nsys.exit(1)'",
-        ]
+        - CMD-SHELL
+        - |
+          python3 - <<'PYTHON'
+          import sys
+          import urllib.error
+          import urllib.request
+
+          BASE_URL = "http://localhost:8080"
+          PATHS = ("/healthz", "/")
+
+          def main() -> int:
+              for path in PATHS:
+                  try:
+                      with urllib.request.urlopen(f"{BASE_URL}{path}", timeout=5) as resp:
+                          status = getattr(resp, "status", 200)
+                          if status < 400:
+                              return 0
+                  except urllib.error.URLError:
+                      continue
+                  except Exception:
+                      continue
+              return 1
+
+          sys.exit(main())
+          PYTHON
       interval: 10s
       timeout: 5s
       retries: 6
@@ -42,10 +63,28 @@ services:
       # The unstructured API image also lacks curl, so rely on Python to POST a
       # lightweight ping payload to the general extraction endpoint.
       test:
-        [
-          "CMD-SHELL",
-          "python3 -c 'import json, sys, urllib.error, urllib.request;\nreq = urllib.request.Request("http://localhost:8000/general/v0/general", data=json.dumps({"text": "ping"}).encode(), headers={"Content-Type": "application/json"});\ntry:\n    urllib.request.urlopen(req, timeout=10)\n    sys.exit(0)\nexcept urllib.error.URLError:\n    sys.exit(1)\nexcept Exception:\n    sys.exit(1)'",
-        ]
+        - CMD-SHELL
+        - |
+          python3 - <<'PYTHON'
+          import json
+          import sys
+          import urllib.error
+          import urllib.request
+
+          REQUEST = urllib.request.Request(
+              "http://localhost:8000/general/v0/general",
+              data=json.dumps({"text": "ping"}).encode(),
+              headers={"Content-Type": "application/json"},
+          )
+
+          try:
+              urllib.request.urlopen(REQUEST, timeout=10)
+              sys.exit(0)
+          except urllib.error.URLError:
+              sys.exit(1)
+          except Exception:
+              sys.exit(1)
+          PYTHON
       interval: 15s
       timeout: 10s
       retries: 6
