@@ -2,11 +2,18 @@
 # to provide deterministic defaults that work in development and CI while
 # keeping the list of enabled engines compliant with permissive licences.
 #
-# Disable the upstream defaults so the engine list defined below is the single
-# source of truth. Leaving `use_default_settings` enabled causes SearxNG to load
-# its bundled engines alongside ours, which immediately reintroduces duplicate
-# shortcuts and makes the container exit during startup.
-use_default_settings: false
+# Keep the upstream defaults for every section but instruct SearxNG to retain
+# only the engines listed below. This preserves core configuration (like
+# `outgoing` and plugin definitions) while giving the search stack a predictable
+# set of sources to work with.
+use_default_settings:
+  engines:
+    keep_only:
+      - duckduckgo
+      - wikipedia
+      - arxiv
+      - github
+      - qwant
 
 server:
   # Use a deterministic but sufficiently long default secret so the container
@@ -33,48 +40,33 @@ search:
     - html
     - json
 
-# Each engine defines a shortcut so SearxNG can register them without collisions.
+# Each engine entry below overrides the defaults shipped with SearxNG. The
+# keep_only directive above guarantees that only these engines remain enabled,
+# avoiding shortcut collisions while letting us tailor categories and timeouts.
 engines:
   - name: duckduckgo
-    engine: duckduckgo
-    shortcut: ddg
-    disabled: false
     timeout: 5.0
     categories:
       - general
       - news
   - name: wikipedia
-    engine: wikipedia
-    shortcut: wp
-    disabled: false
     timeout: 5.0
     categories:
       - general
       - science
   - name: arxiv
-    engine: arxiv
-    shortcut: arx
-    disabled: false
     timeout: 5.0
     categories:
       - science
       - files
   - name: github
-    engine: github
-    shortcut: gh
-    disabled: false
     timeout: 5.0
     categories:
       - it
       # Keep the categories restricted to values supported by SearxNG to avoid
       # configuration validation failures during container startup.
   - name: qwant
-    engine: qwant
-    # The qwant engine requires an explicit category value; otherwise SearxNG
-    # aborts during startup with a configuration error. Use the general web
-    # variant so development and CI runs have deterministic coverage.
     qwant_categ: web
-    shortcut: qw
     disabled: false
     timeout: 5.0
     categories:

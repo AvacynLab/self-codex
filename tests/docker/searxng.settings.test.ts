@@ -11,8 +11,22 @@ describe('docker/searxng/settings.yml', () => {
   const settingsContent = readFileSync(settingsPath, 'utf8');
   const config = parse(settingsContent) as Record<string, unknown>;
 
-  it('disables bundled defaults so the curated engines do not duplicate shortcuts', () => {
-    expect(config.use_default_settings).to.equal(false);
+  it('keeps only the curated engines while inheriting the upstream defaults', () => {
+    const defaults = config.use_default_settings as
+      | { engines?: { keep_only?: unknown } }
+      | undefined;
+
+    expect(defaults, 'use_default_settings').to.be.an('object');
+    const keepOnly = defaults?.engines?.keep_only as unknown;
+    expect(keepOnly, 'engines.keep_only').to.be.an('array');
+    expect(keepOnly).to.deep.equal([
+      'duckduckgo',
+      'wikipedia',
+      'arxiv',
+      'github',
+      'qwant',
+    ]);
+    expect(new Set(keepOnly as string[]).size).to.equal((keepOnly as string[]).length);
   });
 
   it('disables the limiter to avoid requiring an external Valkey service', () => {
@@ -30,23 +44,6 @@ describe('docker/searxng/settings.yml', () => {
     const server = config.server as { secret_key?: unknown } | undefined;
     expect(server?.secret_key).to.be.a('string');
     expect((server?.secret_key as string).length).to.be.greaterThanOrEqual(32);
-  });
-
-  it('assigns unique shortcuts to every enabled engine', () => {
-    // Each shortcut must be unique; otherwise SearxNG aborts during startup with an
-    // "ambiguous shortcut" error and the container never becomes healthy.
-    const engines = config.engines as Array<Record<string, unknown>> | undefined;
-    expect(engines, 'engines list').to.be.an('array').that.is.not.empty;
-
-    const shortcuts = engines!.map((engine, index) => {
-      const shortcut = engine.shortcut;
-      expect(shortcut, `shortcut for engine #${index + 1}`).to.be.a('string').that.is.not
-        .empty;
-      return shortcut as string;
-    });
-
-    const uniqueShortcuts = new Set(shortcuts);
-    expect(uniqueShortcuts.size).to.equal(shortcuts.length);
   });
 
   it('configures qwant with an explicit category so the engine loads', () => {
