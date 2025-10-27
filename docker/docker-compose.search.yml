@@ -13,7 +13,14 @@ services:
     volumes:
       - ./searxng/settings.yml:/etc/searxng/settings.yml:ro
     healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://localhost:8080/healthz || curl -fsS http://localhost:8080"]
+      # SearxNG images do not ship curl, so use Python's stdlib to probe the
+      # health endpoint and fall back to the home page if /healthz is
+      # unavailable. Any non-successful responses trigger a retry.
+      test:
+        [
+          "CMD-SHELL",
+          "python3 -c 'import sys, urllib.error, urllib.request; base="http://localhost:8080"; paths=["/healthz", "/"];\nfor path in paths:\n    try:\n        with urllib.request.urlopen(base + path, timeout=5) as resp:\n            status = getattr(resp, "status", 200)\n            if status < 400:\n                sys.exit(0)\n    except urllib.error.URLError:\n        continue\n    except Exception:\n        continue\nsys.exit(1)'",
+        ]
       interval: 10s
       timeout: 5s
       retries: 6
@@ -32,10 +39,12 @@ services:
     ports:
       - "127.0.0.1:8000:8000"
     healthcheck:
+      # The unstructured API image also lacks curl, so rely on Python to POST a
+      # lightweight ping payload to the general extraction endpoint.
       test:
         [
           "CMD-SHELL",
-          "curl -fsS -X POST -H 'Content-Type: application/json' -d '{\"text\":\"ping\"}' http://localhost:8000/general/v0/general >/dev/null"
+          "python3 -c 'import json, sys, urllib.error, urllib.request;\nreq = urllib.request.Request("http://localhost:8000/general/v0/general", data=json.dumps({"text": "ping"}).encode(), headers={"Content-Type": "application/json"});\ntry:\n    urllib.request.urlopen(req, timeout=10)\n    sys.exit(0)\nexcept urllib.error.URLError:\n    sys.exit(1)\nexcept Exception:\n    sys.exit(1)'",
         ]
       interval: 15s
       timeout: 10s
