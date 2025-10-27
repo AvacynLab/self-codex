@@ -564,8 +564,7 @@ export class SearchDownloader {
     const hostKey = target.host.toLowerCase();
     const previous = this.domainLocks.get(hostKey) ?? Promise.resolve();
 
-    let finalPromise!: Promise<void>;
-    finalPromise = previous
+    const finalPromise = previous
       .catch(() => undefined)
       .then(async () => {
         const now = this.now();

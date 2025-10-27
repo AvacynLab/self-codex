@@ -10,7 +10,11 @@ import type {
   ToolManifestDraft,
   ToolRegistry,
 } from "../mcp/registry.js";
-import { SearchStatusInputSchema, SearchStatusOutputSchema } from "../rpc/searchSchemas.js";
+import {
+  SearchStatusInputSchema,
+  SearchStatusOutputSchema,
+} from "../rpc/searchSchemas.js";
+import type { SearchStatusInput, SearchStatusOutput } from "../rpc/searchSchemas.js";
 import { buildToolSuccessResult } from "./shared.js";
 
 /** Canonical façade identifier registered with the MCP server. */
@@ -47,11 +51,11 @@ type RpcExtra = RequestHandlerExtra<ServerRequest, ServerNotification>;
  */
 export function createSearchStatusHandler(context: SearchStatusToolContext): ToolImplementation {
   return async (input: unknown, extra: RpcExtra): Promise<CallToolResult> => {
-    const parsed = SearchStatusInputSchema.parse(input);
+    const parsed: SearchStatusInput = SearchStatusInputSchema.parse(input);
     const rpcContext = getJsonRpcContext();
     const traceContext = getActiveTraceContext();
 
-    const payload = SearchStatusOutputSchema.parse({
+    const payload: SearchStatusOutput = SearchStatusOutputSchema.parse({
       ok: false,
       reason: "not_implemented" as const,
       message: "la persistance des jobs de recherche n'est pas encore disponible",

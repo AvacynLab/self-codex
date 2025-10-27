@@ -2,7 +2,6 @@ import { createHash, randomUUID } from "node:crypto";
 
 import type { RequestHandlerExtra } from "@modelcontextprotocol/sdk/shared/protocol.js";
 import type { CallToolResult, ServerNotification, ServerRequest } from "@modelcontextprotocol/sdk/types.js";
-import { z } from "zod";
 
 import {
   BudgetExceededError,
@@ -29,6 +28,7 @@ import {
   SearchIndexOutputSchema,
   SearchRunErrorSchema,
 } from "../rpc/searchSchemas.js";
+import type { SearchIndexDocument, SearchIndexInput, SearchIndexOutput } from "../rpc/searchSchemas.js";
 import { buildToolErrorResult, buildToolSuccessResult } from "./shared.js";
 
 /** Canonical façade identifier registered with the MCP server. */
@@ -63,9 +63,8 @@ export interface SearchIndexToolContext {
 
 type RpcExtra = RequestHandlerExtra<ServerRequest, ServerNotification>;
 
-type ParsedInput = z.infer<typeof SearchIndexInputSchema>;
+type ParsedInput = SearchIndexInput;
 
-type SearchIndexOutput = z.infer<typeof SearchIndexOutputSchema>;
 type SearchIndexSuccessOutput = Extract<SearchIndexOutput, { ok: true }>;
 type SearchIndexBudgetFailureOutput = Extract<SearchIndexOutput, { ok: false; reason: "budget_exhausted" }>;
 type SearchIndexOperationFailureOutput = Extract<SearchIndexOutput, { ok: false; reason: "operation_failed" }>;
@@ -125,7 +124,7 @@ function buildSuccessResponse(
   idempotencyKey: string,
   result: Awaited<ReturnType<SearchPipeline["ingestDirect"]>>,
 ): SearchIndexSuccessOutput {
-  const docs = result.documents.map((doc) =>
+  const docs: Array<SearchIndexDocument> = result.documents.map((doc) =>
     SearchIndexDocumentSchema.parse({
       id: doc.id,
       url: doc.url,
@@ -158,7 +157,7 @@ function buildSuccessResponse(
  */
 export function createSearchIndexHandler(context: SearchIndexToolContext): ToolImplementation {
   return async (input: unknown, extra: RpcExtra): Promise<CallToolResult> => {
-    const parsed = SearchIndexInputSchema.parse(input);
+    const parsed: ParsedInput = SearchIndexInputSchema.parse(input);
     const rpcContext = getJsonRpcContext();
     const traceContext = getActiveTraceContext();
 
