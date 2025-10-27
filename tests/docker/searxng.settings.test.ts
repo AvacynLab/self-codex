@@ -11,22 +11,14 @@ describe('docker/searxng/settings.yml', () => {
   const settingsContent = readFileSync(settingsPath, 'utf8');
   const config = parse(settingsContent) as Record<string, unknown>;
 
-  it('keeps only the curated engines while inheriting the upstream defaults', () => {
-    const defaults = config.use_default_settings as
-      | { engines?: { keep_only?: unknown } }
-      | undefined;
+  it('inherits upstream defaults while explicitly overriding the curated engines', () => {
+    expect(config.use_default_settings).to.equal(true);
 
-    expect(defaults, 'use_default_settings').to.be.an('object');
-    const keepOnly = defaults?.engines?.keep_only as unknown;
-    expect(keepOnly, 'engines.keep_only').to.be.an('array');
-    expect(keepOnly).to.deep.equal([
-      'duckduckgo',
-      'wikipedia',
-      'arxiv',
-      'github',
-      'qwant',
-    ]);
-    expect(new Set(keepOnly as string[]).size).to.equal((keepOnly as string[]).length);
+    const engines = config.engines as Array<Record<string, unknown>> | undefined;
+    expect(engines, 'engines list').to.be.an('array').that.is.not.empty;
+
+    const engineNames = engines!.map((engine) => engine.name);
+    expect(engineNames).to.deep.equal(['duckduckgo', 'wikipedia', 'arxiv', 'github', 'qwant']);
   });
 
   it('disables the limiter to avoid requiring an external Valkey service', () => {

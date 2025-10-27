@@ -2,18 +2,12 @@
 # to provide deterministic defaults that work in development and CI while
 # keeping the list of enabled engines compliant with permissive licences.
 #
-# Keep the upstream defaults for every section but instruct SearxNG to retain
-# only the engines listed below. This preserves core configuration (like
-# `outgoing` and plugin definitions) while giving the search stack a predictable
-# set of sources to work with.
-use_default_settings:
-  engines:
-    keep_only:
-      - duckduckgo
-      - wikipedia
-      - arxiv
-      - github
-      - qwant
+# Keep the upstream defaults for every section so the container benefits from
+# future engine updates and security fixes. The curated engine list below
+# overrides the settings we rely on without disabling the rest of the built-in
+# catalogue; the search orchestrator targets only these engines through its
+# environment configuration.
+use_default_settings: true
 
 server:
   # Use a deterministic but sufficiently long default secret so the container
@@ -40,12 +34,9 @@ search:
     - html
     - json
 
-# Each engine entry below overrides the defaults shipped with SearxNG. The
-# keep_only directive above guarantees that only these engines remain enabled,
-# avoiding shortcut collisions while letting us tailor categories and timeouts.
-# SearxNG requires every engine to expose a unique `shortcut`; we set them
-# explicitly here so overrides do not erase the upstream defaults during the
-# merge process.
+# Each engine entry below overrides the defaults shipped with SearxNG. Defining
+# them explicitly keeps shortcut assignments deterministic and ensures the
+# categories exposed to the orchestrator stay within the supported SearxNG set.
 engines:
   - name: duckduckgo
     shortcut: ddg
