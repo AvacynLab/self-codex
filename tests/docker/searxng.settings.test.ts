@@ -17,6 +17,11 @@ describe('docker/searxng/settings.yml', () => {
     expect(server?.limiter).to.equal(false);
   });
 
+  it('uses POST as the HTTP method so requests remain compatible with defaults', () => {
+    const server = config.server as { method?: unknown } | undefined;
+    expect(server?.method).to.equal('POST');
+  });
+
   it('ships with a sufficiently long default secret key for development', () => {
     const server = config.server as { secret_key?: unknown } | undefined;
     expect(server?.secret_key).to.be.a('string');

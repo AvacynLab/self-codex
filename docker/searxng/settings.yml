@@ -16,7 +16,10 @@ server:
   # The limiter requires a Valkey/Redis backend; keep it disabled in the
   # self-contained development stack to avoid depending on external services.
   limiter: false
-  method: "auto"
+  # SearxNG only supports GET or POST as the incoming request method. Rely on
+  # POST so queries remain private from intermediaries and match the upstream
+  # default, avoiding startup validation errors.
+  method: "POST"
 
 search:
   safe_search: 1
