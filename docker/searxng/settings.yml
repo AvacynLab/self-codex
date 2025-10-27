@@ -13,7 +13,9 @@ server:
   port: 8080
   bind_address: "0.0.0.0"
   public_instance: false
-  limiter: true
+  # The limiter requires a Valkey/Redis backend; keep it disabled in the
+  # self-contained development stack to avoid depending on external services.
+  limiter: false
   method: "auto"
 
 search:
