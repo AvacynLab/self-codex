@@ -24,13 +24,24 @@ services:
         - CMD-SHELL
         - |
           set -eu
+
+          # The SearxNG image bundles Python inside a virtualenv. Depending on
+          # the base layer version the interpreter may live in different
+          # prefixes, so probe a list of well-known locations and finally fall
+          # back to whatever `command -v` can discover on PATH.
           for candidate in \
             /usr/local/searxng/searxng-venv/bin/python3 \
             /usr/local/searxng/.venv/bin/python3 \
-            python3
+            /usr/local/bin/python3 \
+            /usr/bin/python3 \
+            python3 \
+            python
           do
             if [ -x "$candidate" ]; then
               SELECTED="$candidate"
+              break
+            elif command -v "$candidate" >/dev/null 2>&1; then
+              SELECTED="$(command -v "$candidate")"
               break
             fi
           done
