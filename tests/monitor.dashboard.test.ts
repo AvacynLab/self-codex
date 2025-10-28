@@ -17,6 +17,7 @@ import {
   summariseRuntimeCosts,
   type DashboardSnapshot,
   type DashboardHttpResponse,
+  __testing as dashboardTesting,
 } from "../src/monitor/dashboard.js";
 import {
   buildLessonsPromptPayload,
@@ -222,6 +223,120 @@ describe("monitor/dashboard", function () {
     expect(summary.perChild).to.have.length(2);
     expect(summary.perChild[0]).to.include({ childId: "child-a", tokens: 60, latencyMs: 200, maxLatencyMs: 120 });
     expect(summary.perChild[1]).to.include({ childId: "child-b", tokens: 8, latencyMs: 100, maxLatencyMs: 60 });
+  });
+
+  it("summarises search activity for dashboard panels", () => {
+    const logger = new StructuredLogger();
+    const eventStore = new EventStore({ maxHistory: 50, logger });
+    const now = Date.now();
+
+    const started = eventStore.emit({
+      kind: "search:job_started",
+      level: "info",
+      source: "orchestrator",
+      jobId: "search-1",
+      payload: {
+        query: "graph embeddings",
+        categories: ["general"],
+        engines: ["duckduckgo"],
+        max_results: 4,
+        fetch_content: true,
+        inject_graph: true,
+        inject_vector: true,
+      },
+    });
+    started.ts = now - 30_000;
+
+    const recentDoc = eventStore.emit({
+      kind: "search:doc_ingested",
+      level: "info",
+      source: "orchestrator",
+      jobId: "search-1",
+      payload: {
+        doc_id: "doc-html",
+        url: "https://example.com/report.html",
+        title: "Sample",
+        language: "en",
+        checksum: "sha-html",
+        size: 1_024,
+        fetched_at: now - 31_000,
+        mime_type: "text/html",
+        searx_position: 0,
+        graph_ingested: true,
+        graph_triples: 2,
+        vector_ingested: true,
+        vector_chunks: 1,
+        error_count: 0,
+      },
+    });
+    recentDoc.ts = now - 20_000;
+
+    const olderDoc = eventStore.emit({
+      kind: "search:doc_ingested",
+      level: "info",
+      source: "orchestrator",
+      payload: {
+        doc_id: "doc-pdf",
+        url: "https://files.example.org/archive.pdf",
+        title: "Archive",
+        language: "en",
+        checksum: "sha-pdf",
+        size: 2_048,
+        fetched_at: now - 180_000,
+        mime_type: "application/pdf",
+        searx_position: 1,
+        graph_ingested: false,
+        graph_triples: 0,
+        vector_ingested: false,
+        vector_chunks: 0,
+        error_count: 1,
+      },
+    });
+    olderDoc.ts = now - 120_000;
+
+    const error = eventStore.emit({
+      kind: "search:error",
+      level: "error",
+      source: "orchestrator",
+      payload: { stage: "fetch", url: "https://example.com/report.html", message: "timeout", code: "E_FETCH" },
+    });
+    error.ts = now - 10_000;
+
+    const completed = eventStore.emit({
+      kind: "search:job_completed",
+      level: "info",
+      source: "orchestrator",
+      jobId: "search-1",
+      payload: {
+        query: "graph embeddings",
+        requested_results: 4,
+        received_results: 2,
+        fetched_documents: 1,
+        structured_documents: 1,
+        graph_ingested: 1,
+        vector_ingested: 1,
+        errors: 0,
+      },
+    });
+    completed.ts = now - 5_000;
+
+    const summary = dashboardTesting.summariseSearchActivity(eventStore, now);
+
+    expect(summary.queue.running).to.equal(0);
+    expect(summary.queue.completedLastHour).to.equal(1);
+    expect(summary.queue.docsPerMinute).to.equal(1);
+    expect(summary.queue.errorsByStage).to.deep.equal([{ stage: "fetch", count: 1 }]);
+
+    const domains = summary.topDomains.map((entry) => entry.domain);
+    expect(domains).to.include("example.com");
+    expect(domains).to.include("files.example.org");
+
+    const htmlLatency = summary.contentLatency.find((entry) => entry.contentType === "html");
+    expect(htmlLatency?.samples).to.equal(1);
+    expect(htmlLatency && htmlLatency.averageMs).to.be.greaterThan(0);
+    const pdfLatency = summary.contentLatency.find((entry) => entry.contentType === "pdf");
+    expect(pdfLatency?.samples).to.equal(1);
+    expect(pdfLatency && pdfLatency.averageMs).to.be.greaterThan(0);
   });
 
   it("exposes monitoring endpoints and sanitises the bootstrap HTML", async () => {

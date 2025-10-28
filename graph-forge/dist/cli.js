@@ -6,6 +6,30 @@ import { compileSource } from "./compiler.js";
 import { criticalPath } from "./algorithms/criticalPath.js";
 import { shortestPath } from "./algorithms/dijkstra.js";
 import { tarjanScc } from "./algorithms/tarjan.js";
+/**
+ * Builds the analysis input object forwarded to individual handlers while
+ * omitting the `weightKey` property when it is not explicitly provided.
+ *
+ * The CLI previously forwarded `{ weightKey: undefined }`, which breaks once
+ * `exactOptionalPropertyTypes` is enabled. This helper centralises the
+ * sanitisation to make the omission explicit and easily testable.
+ */
+function buildAnalysisInput(task, compiledGraph, weightKey) {
+    const base = {
+        args: task.args,
+        compiledGraph
+    };
+    return weightKey === undefined ? base : { ...base, weightKey };
+}
+/**
+ * Normalises the optional weight attribute passed to the graph algorithms so
+ * that we never emit `{ weightAttribute: undefined }` when the CLI flag is not
+ * supplied. Returning `undefined` keeps the downstream helper signatures happy
+ * under `exactOptionalPropertyTypes`.
+ */
+function buildWeightAttributeOptions(weightKey) {
+    return weightKey === undefined ? undefined : { weightAttribute: weightKey };
+}
 async function main(argv) {
     if (argv.length === 0) {
         printUsage();
@@ -35,7 +59,7 @@ async function main(argv) {
         if (!handler) {
             throw new Error(`Unknown analysis '${task.name}'`);
         }
-        const result = handler({ args: task.args, weightKey: options.weightKey, compiledGraph: compiled });
+        const result = handler(buildAnalysisInput(task, compiled, options.weightKey));
         return { name: task.name, source: task.source, result };
     });
     if (options.format === "json") {
@@ -57,10 +81,10 @@ const analysisHandlers = {
             throw new Error("shortestPath requires <start> and <goal>");
         }
         const [start, goal] = args;
-        return shortestPath(compiledGraph.graph, start, goal, { weightAttribute: weightKey });
+        return shortestPath(compiledGraph.graph, start, goal, buildWeightAttributeOptions(weightKey));
     },
     criticalPath: ({ weightKey, compiledGraph }) => {
-        return criticalPath(compiledGraph.graph, { weightAttribute: weightKey });
+        return criticalPath(compiledGraph.graph, buildWeightAttributeOptions(weightKey));
     },
     stronglyConnected: ({ compiledGraph }) => {
         return tarjanScc(compiledGraph.graph);
@@ -143,7 +167,12 @@ function parseArgs(argv) {
                 throw new Error(`Unknown argument '${token}'`);
         }
     }
-    return { file, format, analyses, weightKey };
+    return {
+        file,
+        format,
+        analyses,
+        ...(weightKey === undefined ? {} : { weightKey })
+    };
 }
 function coerceToString(value) {
     if (value === null || value === undefined) {
@@ -172,4 +201,14 @@ if (isCliEntryPoint) {
         process.exit(1);
     });
 }
+/**
+ * Exposes internal helpers for the dedicated Node test suite so we can assert
+ * optional-field sanitisation without exporting them as part of the runtime
+ * API surface.
+ */
+export const __testing = {
+    buildAnalysisInput,
+    buildWeightAttributeOptions,
+    parseArgs
+};
 //# sourceMappingURL=cli.js.map

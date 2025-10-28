@@ -34,6 +34,10 @@ const EVENT_KIND_TO_CATEGORY: Record<EventKind, EventCategory> = {
   AUTOSCALER: "scheduler",
   COGNITIVE: "child",
   HTTP_ACCESS: "graph",
+  "search:job_started": "graph",
+  "search:doc_ingested": "graph",
+  "search:error": "graph",
+  "search:job_completed": "graph",
 };
 
 const EVENT_CATEGORY_SET = new Set<EventCategory>(EVENT_CATEGORIES);

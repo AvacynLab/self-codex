@@ -1,0 +1,56 @@
+# Minimal SearxNG configuration tailored for the MCP search module. The goal is
+# to provide deterministic defaults that work in development and CI while
+# keeping the list of enabled engines compliant with permissive licences.
+#
+# Keep the upstream defaults for every section so the container benefits from
+# future engine updates and security fixes. The orchestrator narrows the engines
+# used at runtime through `SEARCH_SEARX_ENGINES`, avoiding configuration drift
+# in this file and preventing duplicate shortcut registrations during startup.
+use_default_settings: true
+
+server:
+  # Use a deterministic but sufficiently long default secret so the container
+  # boots without requiring manual overrides during local development. The
+  # sample value below is 48 characters long, satisfying SearxNG's minimum
+  # length requirements while remaining safe to replace in production via
+  # environment overrides or Docker secrets.
+  secret_key: "please-change-me-please-change-me-please-change-me"
+  port: 8080
+  bind_address: "0.0.0.0"
+  public_instance: false
+  # The limiter requires a Valkey/Redis backend; keep it disabled in the
+  # self-contained development stack to avoid depending on external services.
+  limiter: false
+  # SearxNG only supports GET or POST as the incoming request method. Rely on
+  # POST so queries remain private from intermediaries and match the upstream
+  # default, avoiding startup validation errors.
+  method: "POST"
+
+search:
+  safe_search: 1
+  autocomplete: ""
+  formats:
+    - html
+    - json
+
+# Rely on the upstream engine catalogue so the container automatically benefits
+# from security fixes and API updates. The orchestrator narrows the actual
+# engines used via `SEARCH_SEARX_ENGINES`, avoiding configuration drift in this
+# file and preventing duplicate shortcut registrations during startup.
+
+ui:
+  theme_args:
+    header_logo: ""
+  infinite_scroll: false
+
+result_proxy:
+  url: ""
+  rewrite_result_links: false
+
+categories_as_tabs:
+  - general
+  - news
+  - science
+  - it
+  - files
+  - images

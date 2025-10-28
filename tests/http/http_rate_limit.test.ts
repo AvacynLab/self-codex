@@ -42,6 +42,25 @@ function buildJsonRpcRequest(id: string) {
   );
 }
 
+function buildSearchRequest(id: string, params: Record<string, unknown>) {
+  return createHttpRequest(
+    "POST",
+    ROUTE,
+    {
+      authorization: "Bearer test-secret",
+      accept: "application/json",
+      "content-type": "application/json",
+    },
+    {
+      jsonrpc: "2.0",
+      id,
+      method: "search.run",
+      params,
+    },
+    { remoteAddress: CLIENT_IP },
+  );
+}
+
 describe("http rate limit integration", () => {
   const previousToken = process.env.MCP_HTTP_TOKEN;
   const previousAllow = process.env.MCP_HTTP_ALLOW_NOAUTH;
@@ -52,6 +71,7 @@ describe("http rate limit integration", () => {
     delete process.env.MCP_HTTP_ALLOW_NOAUTH;
     clock = sinon.useFakeTimers({ now: 0 });
     __httpServerInternals.configureRateLimiter({ disabled: false, rps: 1, burst: 2 });
+    __httpServerInternals.configureSearchRateLimiter({ disabled: false, rps: 2, burst: 4 });
     resetRateLimitBuckets();
     __httpServerInternals.resetNoAuthBypassWarning();
   });
@@ -59,6 +79,7 @@ describe("http rate limit integration", () => {
   afterEach(() => {
     clock.restore();
     __httpServerInternals.configureRateLimiter({ disabled: false, rps: 10, burst: 20 });
+    __httpServerInternals.configureSearchRateLimiter({ disabled: false, rps: 2, burst: 4 });
     resetRateLimitBuckets();
     __httpServerInternals.resetNoAuthBypassWarning();
     if (previousToken === undefined) {
@@ -125,5 +146,57 @@ describe("http rate limit integration", () => {
 
     expect(handled, "JSON-RPC handler must run after refill").to.equal(true);
     expect(recovered.statusCode, "HTTP status").to.equal(200);
+  });
+
+  it("throttles repeated search requests using the dedicated limiter", async () => {
+    const logger = new RecordingLogger();
+    const delegate = async (request: { id: string | number | null }) => ({
+      jsonrpc: "2.0" as const,
+      id: request.id ?? null,
+      result: { ok: true },
+    });
+
+    __httpServerInternals.configureRateLimiter({ disabled: true, rps: 100, burst: 100 });
+    __httpServerInternals.configureSearchRateLimiter({ disabled: false, rps: 1, burst: 1 });
+    resetRateLimitBuckets();
+
+    const params = { query: "llm security", max_results: 2 };
+
+    const first = new MemoryHttpResponse();
+    const handledFirst = await __httpServerInternals.tryHandleJsonRpc(
+      buildSearchRequest("search-1", params),
+      first,
+      logger,
+      "search-1",
+      delegate,
+    );
+    expect(handledFirst).to.equal(true);
+    expect(first.statusCode).to.equal(200);
+
+    const second = new MemoryHttpResponse();
+    const handledSecond = await __httpServerInternals.tryHandleJsonRpc(
+      buildSearchRequest("search-2", params),
+      second,
+      logger,
+      "search-2",
+      delegate,
+    );
+    expect(handledSecond).to.equal(true);
+    expect(second.statusCode).to.equal(429);
+    const throttledPayload = JSON.parse(second.body) as { error?: { data?: { hint?: string } } };
+    expect(throttledPayload.error?.data?.hint).to.match(/search rate limit/i);
+
+    clock.tick(1_000);
+
+    const third = new MemoryHttpResponse();
+    const handledThird = await __httpServerInternals.tryHandleJsonRpc(
+      buildSearchRequest("search-3", params),
+      third,
+      logger,
+      "search-3",
+      delegate,
+    );
+    expect(handledThird).to.equal(true);
+    expect(third.statusCode).to.equal(200);
   });
 });

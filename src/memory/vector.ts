@@ -63,6 +63,34 @@ export interface VectorDocumentInput {
   createdAt?: number;
 }
 
+/** Input accepted by {@link embedText}. */
+export interface EmbedTextOptions {
+  /** Optional identifier hint allowing deterministic chunk ids. */
+  idHint?: string;
+  /** Raw textual content that should be embedded. */
+  text: string;
+  /** Optional semantic tags describing the chunk. */
+  tags?: string[];
+  /** Structured metadata attached to the resulting vector entry. */
+  metadata?: Record<string, unknown>;
+  /** Provenance pointers grounding the chunk back to its artefacts. */
+  provenance?: ReadonlyArray<Provenance | null | undefined>;
+  /** Optional timestamp describing when the chunk was produced. */
+  createdAt?: number;
+}
+
+/** Result returned by {@link embedText}. */
+export interface EmbedTextResult {
+  /** Normalised payload ready to be forwarded to the vector index. */
+  payload: VectorDocumentInput;
+  /** Deterministic token frequency embedding. */
+  embedding: Record<string, number>;
+  /** Euclidean norm of {@link embedding}. */
+  norm: number;
+  /** Number of tokens extracted from the textual content. */
+  tokenCount: number;
+}
+
 /** Options accepted when querying the vector index. */
 export interface VectorSearchOptions {
   limit?: number;
@@ -337,6 +365,58 @@ export class VectorMemoryIndex {
     await writeFile(tmpPath, JSON.stringify(serialized, null, 2), "utf8");
     await rename(tmpPath, this.filePath);
   }
+}
+
+/**
+ * Generates a deterministic embedding for the provided text while normalising
+ * auxiliary metadata so callers can forward the resulting payload directly to
+ * {@link VectorMemoryIndex.upsert}.  The helper mirrors the internal embedding
+ * logic which keeps unit tests deterministic and avoids code duplication
+ * between ingestion pipelines and the vector index.
+ */
+export function embedText(options: EmbedTextOptions): EmbedTextResult {
+  const text = typeof options.text === "string" ? options.text.trim() : "";
+  const payload: VectorDocumentInput = { text };
+
+  if (options.idHint) {
+    const trimmed = options.idHint.trim();
+    if (trimmed) {
+      payload.id = trimmed;
+    }
+  }
+
+  if (Array.isArray(options.tags) && options.tags.length > 0) {
+    const tags = normaliseTags(options.tags);
+    if (tags.length > 0) {
+      payload.tags = tags;
+    }
+  }
+
+  if (options.metadata) {
+    payload.metadata = { ...options.metadata };
+  }
+
+  if (options.createdAt !== undefined) {
+    payload.createdAt = options.createdAt;
+  }
+
+  if (options.provenance) {
+    const provenance = normaliseProvenanceList(options.provenance);
+    if (provenance.length > 0) {
+      payload.provenance = provenance;
+    }
+  }
+
+  const tokens = tokenise(text);
+  const embedding = buildEmbedding(tokens);
+  const norm = computeNorm(embedding);
+
+  return {
+    payload,
+    embedding,
+    norm,
+    tokenCount: tokens.length,
+  };
 }
 
 function normaliseTags(tags: string[] | undefined): string[] {

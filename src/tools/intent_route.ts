@@ -113,6 +113,9 @@ const ESTIMATED_BUDGET_HINTS: Record<string, ToolBudgets> = {
   child_orchestrate: { time_ms: 15_000, tool_calls: 1, bytes_out: 32_768 },
   runtime_observe: { time_ms: 1_000, tool_calls: 1, bytes_out: 12_288 },
   tools_help: { time_ms: 1_000, tool_calls: 1, bytes_out: 16_384 },
+  "search.run": { time_ms: 60_000, tool_calls: 1, bytes_out: 96_000 },
+  "search.index": { time_ms: 45_000, tool_calls: 1, bytes_out: 64_000 },
+  "search.status": { time_ms: 5_000, tool_calls: 1, bytes_out: 8_000 },
 };
 
 /** Heuristic rule examined sequentially until one matches the intent. */

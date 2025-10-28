@@ -12,12 +12,17 @@ import {
   __transcriptAggregationInternals,
   __jsonRpcCorrelationInternals,
   __rpcServerInternals,
+  runtimeReady,
 } from "../../src/orchestrator/runtime.js";
 import type { FeatureToggles } from "../../src/serverOptions.js";
 import type { ReviewResult } from "../../src/agents/metaCritic.js";
 
 describe("orchestrator/runtime optional context sanitisation", () => {
   let originalFeatures: FeatureToggles;
+
+  before(async () => {
+    await runtimeReady;
+  });
 
   beforeEach(() => {
     originalFeatures = getRuntimeFeatures();
@@ -222,6 +227,27 @@ describe("orchestrator/runtime optional context sanitisation", () => {
     }
     if ("maxFileCount" in options) {
       expect(options.maxFileCount, "rotate count remains numeric when provided").to.be.a("number");
+    }
+  });
+
+  it("merges runtime-provided redaction tokens without duplicating entries", () => {
+    const baselineSnapshot = __serverLogInternals.snapshotLoggerOptions();
+    const baselineTokens = baselineSnapshot.redactSecrets ? [...baselineSnapshot.redactSecrets] : [];
+
+    try {
+      __serverLogInternals.applyLoggerRedactionTokens(baselineTokens);
+      __serverLogInternals.appendLoggerRedactionTokens(["  bearer-secret  ", /secret/i, "bearer-secret"]);
+
+      const updated = __serverLogInternals.snapshotLoggerOptions();
+      const tokens = updated.redactSecrets ?? [];
+      const stringOccurrences = tokens.filter((entry): entry is string => typeof entry === "string").filter((entry) => entry === "bearer-secret");
+      expect(stringOccurrences.length, "string tokens are deduplicated and trimmed").to.equal(1);
+      expect(
+        tokens.some((entry) => entry instanceof RegExp && entry.source === "secret" && entry.flags.includes("i")),
+        "regex tokens remain present after merge",
+      ).to.equal(true);
+    } finally {
+      __serverLogInternals.applyLoggerRedactionTokens(baselineTokens);
     }
   });
 

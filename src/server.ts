@@ -13,6 +13,7 @@ import {
   stigmergy,
   btStatusRegistry,
   logJournal,
+  runtimeReady,
 } from "./orchestrator/runtime.js";
 import { parseOrchestratorRuntimeOptions } from "./serverOptions.js";
 import { startHttpServer } from "./httpServer.js";
@@ -40,6 +41,8 @@ async function main(): Promise<void> {
   // Apply CLI overrides to the orchestrator core so subsequent requests inherit
   // the negotiated features, timings, and guardrails.
   applyOrchestratorRuntimeOptions(options);
+
+  await runtimeReady;
 
   let enableStdio = options.enableStdio;
   const httpEnabled = options.http.enabled;

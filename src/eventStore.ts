@@ -123,7 +123,11 @@ export type EventKind =
   | "SCHEDULER"
   | "AUTOSCALER"
   | "COGNITIVE"
-  | "HTTP_ACCESS"; // Structured audit log capturing HTTP access (ip/route/status/latency).
+  | "HTTP_ACCESS" // Structured audit log capturing HTTP access (ip/route/status/latency).
+  | "search:job_started"
+  | "search:doc_ingested"
+  | "search:error"
+  | "search:job_completed";
 
 export type EventLevel = "info" | "warn" | "error";
 export type EventSource = "orchestrator" | "child" | "system";

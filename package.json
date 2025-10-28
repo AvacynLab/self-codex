@@ -25,6 +25,8 @@
     "test:watch": "cross-env TSX_EXTENSIONS=ts node --import tsx ./node_modules/mocha/bin/mocha.js --reporter spec --watch --watch-files src --watch-files tests --file tests/setup.ts \"tests/**/*.test.ts\"",
     "test:int": "node scripts/run-int-tests.mjs",
     "test:e2e": "node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --file tests/setup.ts \"tests/e2e/**/*.test.ts\"",
+    "test:e2e:search": "node --import tsx scripts/run-search-e2e.ts",
+    "smoke:search": "node --import tsx scripts/run-search-smoke.ts",
     "test:e2e:http": "node scripts/run-http-e2e.mjs",
     "test:graph-forge": "node --import tsx --test graph-forge/test/*.test.ts",
     "validate:run": "node scripts/validate-run.mjs",
@@ -41,7 +43,7 @@
     "validation:performance": "node --import tsx scripts/runPerformancePhase.ts",
     "validation:security": "node --import tsx scripts/runSecurityPhase.ts",
     "eval:scenarios": "node --import tsx scripts/eval.ts",
-    "coverage": "npm run build --silent && c8 --reporter=text-summary --reporter=lcov --reporter=html --check-coverage --statements 85 --functions 85 --lines 85 --branches 70 --exclude \"dist/**\" node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --file tests/setup.ts \"tests/**/*.test.ts\"",
+    "coverage": "npm run build --silent && c8 --reporter=text-summary --reporter=lcov --reporter=html --reporter=json-summary --check-coverage --statements 85 --functions 85 --lines 85 --branches 70 --exclude \"dist/**\" node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --file tests/setup.ts \"tests/**/*.test.ts\" && node --import tsx scripts/checkSearchCoverage.ts",
     "bench:scheduler": "node --import tsx tests/perf/scheduler.bench.ts",
     "lint": "npm run lint:types && npm run lint:eslint && npm run lint:hygiene && npm run lint:node-builtins && npm run lint:dead-exports",
     "lint:hygiene": "node scripts/checkHygiene.mjs",
@@ -56,6 +58,7 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.18.1",
     "fastest-levenshtein": "^1.0.16",
+    "tinyld": "^1.3.4",
     "yaml": "^2.8.1",
     "zod": "^3.23.8"
   },
@@ -76,6 +79,7 @@
     "eslint-config-prettier": "^9.1.0",
     "fast-check": "^4.3.0",
     "mocha": "^10.7.0",
+    "nock": "^14.0.10",
     "sinon": "^17.0.1",
     "ts-node": "^10.9.2",
     "tsx": "^4.19.2",

@@ -99,6 +99,8 @@ export interface DashboardSnapshot {
     /** Declarative runtime limits captured from the supervisor, if any. */
     limits: ChildRuntimeLimits | null;
   }>;
+  /** Aggregated telemetry derived from recent search jobs. */
+  search: DashboardSearchSummary;
 }
 
 /** Heatmap surface computed by {@link computeDashboardHeatmap}. */
@@ -172,6 +174,40 @@ export interface DashboardRuntimeCosts {
   topLatencyConsumer: DashboardRuntimeCostEntry | null;
   /** Per-child breakdown sorted by token usage. */
   perChild: DashboardRuntimeCostEntry[];
+}
+
+/** Summary of the current search queue and throughput. */
+export interface DashboardSearchQueueSummary {
+  running: number;
+  completedLastHour: number;
+  docsPerMinute: number;
+  errorsByStage: DashboardSearchErrorEntry[];
+}
+
+/** Error counter entry grouped by pipeline stage. */
+export interface DashboardSearchErrorEntry {
+  stage: string;
+  count: number;
+}
+
+/** Descriptor summarising how often a domain appears in recent search ingestions. */
+export interface DashboardSearchDomainEntry {
+  domain: string;
+  count: number;
+}
+
+/** Descriptor summarising the average latency per content type category. */
+export interface DashboardSearchContentLatencyEntry {
+  contentType: string;
+  averageMs: number;
+  samples: number;
+}
+
+/** Aggregated search telemetry surfaced alongside graph metrics. */
+export interface DashboardSearchSummary {
+  queue: DashboardSearchQueueSummary;
+  topDomains: DashboardSearchDomainEntry[];
+  contentLatency: DashboardSearchContentLatencyEntry[];
 }
 
 /**
@@ -1356,6 +1392,7 @@ function buildSnapshot(
   const timeline = buildDashboardTimeline(eventStore);
   const consensus = summariseConsensusDecisions(eventStore);
   const thoughtGraph = buildThoughtGraphHeatmap(graphState);
+  const searchSummary = summariseSearchActivity(eventStore);
   const children = graphState.listChildSnapshots().map((child) => {
     const lastActivityAt = child.lastTs ?? child.lastHeartbeatAt ?? child.createdAt;
     return {
@@ -1385,6 +1422,7 @@ function buildSnapshot(
     consensus,
     thoughtGraph,
     children,
+    search: searchSummary,
   };
 }
 
@@ -1408,6 +1446,91 @@ function buildDashboardTimeline(eventStore: EventStore, limit = 40): DashboardTi
 
   const filters = buildTimelineFilters(events);
   return { events, filters };
+}
+
+const SEARCH_DOCS_WINDOW_MS = 60_000;
+const SEARCH_COMPLETION_WINDOW_MS = 60 * 60 * 1000;
+const SEARCH_DOMAIN_LIMIT = 12;
+
+/**
+ * Aggregates recent search activity so dashboards can render dedicated panels
+ * (queue size, domain heatmap, latency distribution) without reprocessing the
+ * full event stream client-side.
+ */
+function summariseSearchActivity(eventStore: EventStore, now = Date.now()): DashboardSearchSummary {
+  const runningJobs = new Set<string>();
+  let anonymousRunningJobs = 0;
+  let docsInWindow = 0;
+  let completedLastHour = 0;
+
+  const errorCounters = new Map<string, number>();
+  const domainCounters = new Map<string, number>();
+  const latencyBuckets = new Map<string, { total: number; count: number }>();
+
+  const window = eventStore.list({
+    kinds: ["search:job_started", "search:job_completed", "search:doc_ingested", "search:error"],
+  });
+
+  for (const event of window) {
+    const payload = asRecord(event.payload);
+    switch (event.kind) {
+      case "search:job_started":
+        if (event.jobId) {
+          runningJobs.add(event.jobId);
+        } else {
+          anonymousRunningJobs += 1;
+        }
+        break;
+      case "search:job_completed":
+        if (now - event.ts <= SEARCH_COMPLETION_WINDOW_MS) {
+          completedLastHour += 1;
+        }
+        if (event.jobId && runningJobs.delete(event.jobId)) {
+          // deleted from the set
+        } else if (!event.jobId && anonymousRunningJobs > 0) {
+          anonymousRunningJobs -= 1;
+        }
+        break;
+      case "search:doc_ingested": {
+        if (now - event.ts <= SEARCH_DOCS_WINDOW_MS) {
+          docsInWindow += 1;
+        }
+        const domain = payload ? extractDomain(payload.url) : null;
+        if (domain) {
+          incrementCounter(domainCounters, domain);
+        }
+        const mime = payload ? coerceString(payload.mime_type ?? payload.mimetype) : null;
+        const category = classifyContentType(mime);
+        const fetchedAt = payload ? toOptionalNumber(payload.fetched_at ?? payload.fetchedAt) : null;
+        if (fetchedAt !== null) {
+          const latencyMs = Math.max(0, now - fetchedAt);
+          incrementLatencyBucket(latencyBuckets, category, latencyMs);
+        }
+        break;
+      }
+      case "search:error": {
+        const stage = payload ? coerceString(payload.stage) : null;
+        incrementCounter(errorCounters, stage ?? "unknown");
+        break;
+      }
+      default:
+        break;
+    }
+  }
+
+  const docsPerMinute = docsInWindow / (SEARCH_DOCS_WINDOW_MS / 60_000);
+  const queue: DashboardSearchQueueSummary = {
+    running: runningJobs.size + anonymousRunningJobs,
+    completedLastHour,
+    docsPerMinute: roundToTwoDecimals(docsPerMinute),
+    errorsByStage: normaliseSearchErrors(errorCounters),
+  };
+
+  return {
+    queue,
+    topDomains: normaliseTopDomains(domainCounters),
+    contentLatency: normaliseContentLatency(latencyBuckets),
+  };
 }
 
 /** Aggregates distinct filter values for the timeline dropdowns. */
@@ -1437,6 +1560,112 @@ function buildTimelineFilters(events: DashboardTimelineEntry[]): DashboardTimeli
     jobs: [...jobs].sort(),
     children: [...children].sort(),
   };
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+  return value as Record<string, unknown>;
+}
+
+function incrementCounter(counters: Map<string, number>, key: string, delta = 1): void {
+  const previous = counters.get(key) ?? 0;
+  counters.set(key, previous + delta);
+}
+
+function normaliseSearchErrors(counters: Map<string, number>): DashboardSearchErrorEntry[] {
+  const entries = Array.from(counters.entries()).map(([stage, count]) => ({ stage, count }));
+  entries.sort((left, right) => {
+    if (right.count !== left.count) {
+      return right.count - left.count;
+    }
+    return left.stage.localeCompare(right.stage);
+  });
+  return entries;
+}
+
+function normaliseTopDomains(counters: Map<string, number>): DashboardSearchDomainEntry[] {
+  const entries = Array.from(counters.entries()).map(([domain, count]) => ({ domain, count }));
+  entries.sort((left, right) => {
+    if (right.count !== left.count) {
+      return right.count - left.count;
+    }
+    return left.domain.localeCompare(right.domain);
+  });
+  return entries.slice(0, SEARCH_DOMAIN_LIMIT);
+}
+
+function classifyContentType(mime: string | null): string {
+  if (!mime) {
+    return "unknown";
+  }
+  const lower = mime.toLowerCase();
+  if (lower.includes("pdf")) {
+    return "pdf";
+  }
+  if (lower.startsWith("image/")) {
+    return "image";
+  }
+  if (lower.includes("html") || lower.includes("htm")) {
+    return "html";
+  }
+  return lower.split(";")[0] ?? "other";
+}
+
+function incrementLatencyBucket(
+  buckets: Map<string, { total: number; count: number }>,
+  category: string,
+  latencyMs: number,
+): void {
+  const bucket = buckets.get(category) ?? { total: 0, count: 0 };
+  bucket.total += latencyMs;
+  bucket.count += 1;
+  buckets.set(category, bucket);
+}
+
+function normaliseContentLatency(
+  buckets: Map<string, { total: number; count: number }>,
+): DashboardSearchContentLatencyEntry[] {
+  const entries: DashboardSearchContentLatencyEntry[] = [];
+  for (const [contentType, bucket] of buckets.entries()) {
+    if (bucket.count === 0) {
+      continue;
+    }
+    const average = bucket.total / bucket.count;
+    entries.push({ contentType, averageMs: roundToTwoDecimals(average), samples: bucket.count });
+  }
+  entries.sort((left, right) => {
+    if (right.averageMs !== left.averageMs) {
+      return right.averageMs - left.averageMs;
+    }
+    if (right.samples !== left.samples) {
+      return right.samples - left.samples;
+    }
+    return left.contentType.localeCompare(right.contentType);
+  });
+  return entries;
+}
+
+function roundToTwoDecimals(value: number): number {
+  if (!Number.isFinite(value)) {
+    return 0;
+  }
+  return Number(value.toFixed(2));
+}
+
+function extractDomain(value: unknown): string | null {
+  const url = coerceString(value);
+  if (!url) {
+    return null;
+  }
+  try {
+    const parsed = new URL(url);
+    const host = parsed.hostname.trim().toLowerCase();
+    return host.length > 0 ? host : null;
+  } catch {
+    return null;
+  }
 }
 
 /** Builds a concise textual summary for the timeline entry. */
@@ -3814,4 +4043,5 @@ function serialiseSnapshotForInlineScript(snapshot: DashboardSnapshot): string {
 /** @internal Exposes helpers exclusively used within the test-suite. */
 export const __testing = {
   buildSchedulerSnapshot,
+  summariseSearchActivity,
 };
