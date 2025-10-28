@@ -53,7 +53,13 @@ describe("search/config", () => {
     expect(config.searx.baseUrl).to.equal("http://searxng:8080");
     expect(config.searx.apiPath).to.equal("/search");
     expect(config.searx.timeoutMs).to.equal(15000);
-    expect(config.searx.engines).to.deep.equal(["bing", "ddg", "wikipedia", "arxiv", "github"]);
+    expect(config.searx.engines).to.deep.equal([
+      "duckduckgo",
+      "wikipedia",
+      "arxiv",
+      "github",
+      "qwant",
+    ]);
     expect(config.searx.categories).to.deep.equal(["general", "news", "images", "files"]);
     expect(config.searx.authToken).to.equal(null);
     expect(config.searx.maxRetries).to.equal(2);

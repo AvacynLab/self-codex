@@ -80,7 +80,7 @@ Tu vas créer un **module de recherche multimodal isolé** (comme le module Grap
   * [x] `SEARCH_SEARX_BASE_URL=http://searxng:8080`
   * [x] `SEARCH_SEARX_API_PATH=/search`
   * [x] `SEARCH_SEARX_TIMEOUT_MS=15000`
-  * [x] `SEARCH_SEARX_ENGINES=bing,ddg,wikipedia,arxiv,github` *(exemple)*
+* [x] `SEARCH_SEARX_ENGINES=duckduckgo,wikipedia,arxiv,github,qwant` *(exemple)*
   * [x] `SEARCH_SEARX_CATEGORIES=general,news,images,files`
   * [x] `UNSTRUCTURED_BASE_URL=http://unstructured:8000`
   * [x] `UNSTRUCTURED_TIMEOUT_MS=30000`

@@ -73,7 +73,7 @@ The table below documents the environment variables consumed by
 | `SEARCH_SEARX_BASE_URL` | `http://searxng:8080` | Base URL for the internal SearxNG instance. |
 | `SEARCH_SEARX_API_PATH` | `/search` | Path appended to the Searx base URL for JSON queries. |
 | `SEARCH_SEARX_TIMEOUT_MS` | `15000` | Request timeout (ms) for Searx queries. |
-| `SEARCH_SEARX_ENGINES` | `bing,ddg,wikipedia,arxiv,github` | Comma separated engine allow-list; duplicates are removed. |
+| `SEARCH_SEARX_ENGINES` | `duckduckgo,wikipedia,arxiv,github,qwant` | Comma separated engine allow-list; duplicates are removed. |
 | `SEARCH_SEARX_CATEGORIES` | `general,news,images,files` | Comma separated Searx categories. |
 | `SEARCH_SEARX_AUTH_TOKEN` | _unset_ | Optional bearer token when SearxNG enforces authentication. |
 | `SEARCH_SEARX_MAX_RETRIES` | `2` | Number of retry attempts performed after the initial query. |

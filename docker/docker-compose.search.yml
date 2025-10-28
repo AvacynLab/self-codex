@@ -126,7 +126,7 @@ services:
       SEARCH_SEARX_BASE_URL: http://searxng:8080
       SEARCH_SEARX_API_PATH: /search
       SEARCH_SEARX_TIMEOUT_MS: "15000"
-      SEARCH_SEARX_ENGINES: bing,ddg,wikipedia,arxiv,github
+      SEARCH_SEARX_ENGINES: duckduckgo,wikipedia,arxiv,github,qwant
       SEARCH_SEARX_CATEGORIES: general,news,images,files
       SEARCH_FETCH_TIMEOUT_MS: "20000"
       SEARCH_FETCH_MAX_BYTES: "15000000"

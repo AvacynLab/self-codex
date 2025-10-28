@@ -57,7 +57,7 @@ function createStructuredDocument(overrides: Partial<StructuredDocument> = {}): 
     segments: baseSegments,
     provenance: {
       searxQuery: "demo",
-      engines: ["bing"],
+      engines: ["duckduckgo"],
       categories: ["general"],
       position: 0,
       sourceUrl: "https://example.org/article",
@@ -76,7 +76,7 @@ function createSearchJobResult(overrides: Partial<SearchJobResult> = {}): Search
         url: documents[0]?.url ?? "https://example.org/article",
         title: "Résultat",
         snippet: "Snippet",
-        engines: ["bing"],
+        engines: ["duckduckgo"],
         categories: ["general"],
         position: 0,
         thumbnailUrl: null,
@@ -161,7 +161,7 @@ describe("search.run facade", () => {
             {
               query: "benchmarks multimodaux",
               categories: ["general", "files"],
-              engines: ["bing"],
+              engines: ["duckduckgo"],
               max_results: 4,
               fetch_content: true,
               inject_graph: true,
@@ -184,7 +184,7 @@ describe("search.run facade", () => {
     const expectedIdempotencyKey = computeDeterministicIdempotencyKey({
       query: "benchmarks multimodaux",
       categories: ["general", "files"],
-      engines: ["bing"],
+      engines: ["duckduckgo"],
       max_results: 4,
       fetch_content: true,
       inject_graph: true,
@@ -196,7 +196,7 @@ describe("search.run facade", () => {
 
     expect(capturedParameters?.query).to.equal("benchmarks multimodaux");
     expect(capturedParameters?.categories).to.deep.equal(["general", "files"]);
-    expect(capturedParameters?.engines).to.deep.equal(["bing"]);
+    expect(capturedParameters?.engines).to.deep.equal(["duckduckgo"]);
     expect(capturedParameters?.jobId).to.equal("job-search-run");
   });
 

@@ -11,14 +11,11 @@ describe('docker/searxng/settings.yml', () => {
   const settingsContent = readFileSync(settingsPath, 'utf8');
   const config = parse(settingsContent) as Record<string, unknown>;
 
-  it('inherits upstream defaults while explicitly overriding the curated engines', () => {
+  it('inherits upstream defaults without redefining the engine catalogue', () => {
     expect(config.use_default_settings).to.equal(true);
 
     const engines = config.engines as Array<Record<string, unknown>> | undefined;
-    expect(engines, 'engines list').to.be.an('array').that.is.not.empty;
-
-    const engineNames = engines!.map((engine) => engine.name);
-    expect(engineNames).to.deep.equal(['duckduckgo', 'wikipedia', 'arxiv', 'github', 'qwant']);
+    expect(engines, 'engines overrides').to.be.undefined;
   });
 
   it('disables the limiter to avoid requiring an external Valkey service', () => {
@@ -38,60 +35,8 @@ describe('docker/searxng/settings.yml', () => {
     expect((server?.secret_key as string).length).to.be.greaterThanOrEqual(32);
   });
 
-  it('configures qwant with an explicit category so the engine loads', () => {
-    const engines = config.engines as Array<Record<string, unknown>> | undefined;
-    expect(engines, 'engines list').to.be.an('array').that.is.not.empty;
-
-    const qwant = engines!.find((engine) => engine.name === 'qwant');
-    expect(qwant, 'qwant engine').to.be.ok;
-    expect(qwant?.qwant_categ, 'qwant_categ field').to.equal('web');
-  });
-
-  it('keeps engine categories within the supported SearxNG set', () => {
-    const allowedCategories = new Set([
-      'general',
-      'news',
-      'images',
-      'videos',
-      'it',
-      'science',
-      'files',
-      'music',
-      'social media',
-      'map',
-    ]);
-
-    const engines = config.engines as Array<Record<string, unknown>> | undefined;
-    expect(engines, 'engines list').to.be.an('array').that.is.not.empty;
-
-    for (const engine of engines!) {
-      const categories = engine.categories as Array<unknown> | undefined;
-      expect(categories, `categories for engine ${engine.name as string}`).to.satisfy(
-        (value: unknown) => Array.isArray(value) && value.length > 0,
-        'engine must declare at least one category',
-      );
-
-      for (const category of categories!) {
-        expect(
-          allowedCategories.has(category as string),
-          `category "${String(category)}" is not supported by SearxNG`,
-        ).to.equal(true);
-      }
-    }
-  });
-
-  it('declares unique shortcuts for every curated engine', () => {
-    const engines = config.engines as Array<Record<string, unknown>> | undefined;
-    expect(engines, 'engines list').to.be.an('array').that.is.not.empty;
-
-    const seen = new Set<string>();
-    for (const engine of engines!) {
-      const shortcut = engine.shortcut as unknown;
-      expect(shortcut, `shortcut for ${engine.name as string}`).to.be.a('string');
-
-      const key = shortcut as string;
-      expect(seen.has(key), `duplicate shortcut ${key}`).to.equal(false);
-      seen.add(key);
-    }
+  it('documents the runtime allow-list to avoid configuration drift', () => {
+    const fileContent = readFileSync(settingsPath, 'utf8');
+    expect(fileContent).to.contain('SEARCH_SEARX_ENGINES');
   });
 });

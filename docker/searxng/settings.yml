@@ -3,10 +3,9 @@
 # keeping the list of enabled engines compliant with permissive licences.
 #
 # Keep the upstream defaults for every section so the container benefits from
-# future engine updates and security fixes. The curated engine list below
-# overrides the settings we rely on without disabling the rest of the built-in
-# catalogue; the search orchestrator targets only these engines through its
-# environment configuration.
+# future engine updates and security fixes. The orchestrator narrows the engines
+# used at runtime through `SEARCH_SEARX_ENGINES`, avoiding configuration drift
+# in this file and preventing duplicate shortcut registrations during startup.
 use_default_settings: true
 
 server:
@@ -34,43 +33,10 @@ search:
     - html
     - json
 
-# Each engine entry below overrides the defaults shipped with SearxNG. Defining
-# them explicitly keeps shortcut assignments deterministic and ensures the
-# categories exposed to the orchestrator stay within the supported SearxNG set.
-engines:
-  - name: duckduckgo
-    shortcut: ddg
-    timeout: 5.0
-    categories:
-      - general
-      - news
-  - name: wikipedia
-    shortcut: wp
-    timeout: 5.0
-    categories:
-      - general
-      - science
-  - name: arxiv
-    shortcut: arx
-    timeout: 5.0
-    categories:
-      - science
-      - files
-  - name: github
-    shortcut: gh
-    timeout: 5.0
-    categories:
-      - it
-      # Keep the categories restricted to values supported by SearxNG to avoid
-      # configuration validation failures during container startup.
-  - name: qwant
-    shortcut: qw
-    qwant_categ: web
-    disabled: false
-    timeout: 5.0
-    categories:
-      - general
-      - images
+# Rely on the upstream engine catalogue so the container automatically benefits
+# from security fixes and API updates. The orchestrator narrows the actual
+# engines used via `SEARCH_SEARX_ENGINES`, avoiding configuration drift in this
+# file and preventing duplicate shortcut registrations during startup.
 
 ui:
   theme_args:

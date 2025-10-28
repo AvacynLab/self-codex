@@ -9,7 +9,7 @@ const DEFAULT_FETCH_MAX_BYTES = 15_000_000;
 /** Timeout (ms) applied to calls against the unstructured API. */
 const DEFAULT_UNSTRUCTURED_TIMEOUT_MS = 30_000;
 /** Default list of engines enabled when none is specified. */
-const DEFAULT_ENGINES = ["bing", "ddg", "wikipedia", "arxiv", "github"] as const;
+const DEFAULT_ENGINES = ["duckduckgo", "wikipedia", "arxiv", "github", "qwant"] as const;
 /** Default set of categories requested from SearxNG. */
 const DEFAULT_CATEGORIES = ["general", "news", "images", "files"] as const;
 /** Default concurrency used by the pipeline when fetching documents. */

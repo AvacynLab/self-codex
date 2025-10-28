@@ -238,7 +238,7 @@ describe("monitor/dashboard", function () {
       payload: {
         query: "graph embeddings",
         categories: ["general"],
-        engines: ["bing"],
+        engines: ["duckduckgo"],
         max_results: 4,
         fetch_content: true,
         inject_graph: true,
