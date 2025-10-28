@@ -1,86 +1,66 @@
 ----------
-Voici ta **liste de tâches exhaustive et hiérarchisée (à cocher)**, **adressée directement à toi, Agent**, pour **développer** et **intégrer** le moteur de recherche LLM basé sur **SearxNG**, avec extraction **unstructured.io**, **injection graphe de connaissances** et **RAG**, dans le projet existant (orchestrateur MCP).
-Chaque tâche précise **quoi faire**, **où (fichier par fichier)**, **avec sous-étapes**, ainsi que **les exigences tests & build** à respecter.
+Voici ta **liste de tâches exhaustive et hiérarchisée, à cocher**, **adressée directement à toi, Agent**, pour **créer, intégrer et valider** le moteur de recherche LLM (SearxNG + unstructured.io) dans le dépôt actuel (`self-codex-main`). Je m’appuie sur l’arborescence réelle du repo et sur nos spécifications précédentes.
+Objectif : livrer un module `src/search/**` isolé, des tools MCP `search.*`, une infra **self-host** SearxNG + Unstructured (docker), l’ingestion dans **KnowledgeGraph** et **VectorMemory**, l’observabilité, et une batterie de **tests** (unit/int/e2e) en conformité avec la toolchain (Node ≥ 20, ESM, TS strict, exactOptionalPropertyTypes, Mocha+tsx).
 
 ---
 
 ## 🎯 Brief (lis ça d’abord)
 
-**Objectif général**
-Tu vas créer un **module de recherche multimodal isolé** (comme le module Graph), basé sur **SearxNG** (instance **self-hosted**), qui :
+**Objectifs attendus (résumé)**
+Tu vas :
 
-1. interroge SearxNG,
-2. télécharge les contenus (HTML/PDF/Images…),
-3. les **structure** via **unstructured.io**,
-4. **alimente le graphe** (triples + provenance) et **le RAG** (chunks + embeddings),
-5. expose des **MCP tools** (`search.run`, `search.index`, `search.status`),
-6. est **observé**, **budgetisé**, **sécurisé**, et **testé** e2e.
+1. Implémenter le **module `src/search/**`** (client SearxNG, téléchargement, extraction via unstructured, normalisation, ingestion KG + VectorMemory, métriques).
+2. Exposer **3 tools MCP** : `search.run`, `search.index`, `search.status`, et les **enregistrer** via `src/mcp/registry.ts`.
+3. Ajouter une **infra self-host** : `docker/docker-compose.search.yml` (services `searxng`, `unstructured`, `server`) + `docker/searxng/settings.yml`.
+4. Étendre l’**observabilité** : nouveaux events/métriques visibles dans le **dashboard**.
+5. Écrire des **tests unitaires, d’intégration, et E2E** (mocks HTTP et avec containers réels).
+6. Mettre à jour les **docs** et **.env.example**.
 
-**Correctifs attendus / contraintes**
+**Contraintes de qualité / build**
 
-* Respecte l’ESM, TS strict, `exactOptionalPropertyTypes`, budgets/timeout, idempotence HTTP, logs structurés, events `EventStore`.
-* Pas de `undefined` dans les sorties publiques ; **clés omises** uniquement.
-* Déduplique contenus/segments ; limite la taille téléchargée ; **respect robots.txt** (si activé).
-* **Self-host SearxNG** + **unstructured server** via **docker-compose** (dev & CI).
-* **Tests unitaires, intégration, e2e** (avec mocks et avec containers réels).
-* Intégration Dashboard : SSE live, métriques p50/p95/p99.
-
----
-
-## 🧭 Plan global (phases)
-
-* [x] **A. Infrastructure** : docker-compose (SearxNG + Unstructured + Server), env, settings.yml
-* [x] **B. Module `src/search`** : clients, pipeline, ingestion Graph/RAG, cache
-* [x] **C. Tools MCP** : `search.run`, `search.index`, `search.status` + registry
-* [x] **D. Intégration orchestrateur** : runtime, events, dashboard
-* [x] **E. Sécurité/Robots/Rate-limit**
-* [ ] **F. Tests** (unit, integ, e2e), fixtures, coverage, CI *(reste : exécution docker réelle + suivi couverture/CI)*
-* [x] **G. Docs & Runbook**
-* [ ] **H. Nettoyage & vérifs finales** *(reste : fumée docker + validations manuelles)*
+* **TypeScript strict** + `exactOptionalPropertyTypes: true` (déjà actif dans `tsconfig.json`) : ne jamais exposer `undefined` dans les sorties publiques (préférer **omission** des clés).
+* Respect des **budgets/timeout** outillés (côté controller/registry), **idempotence** HTTP, **rate limiting** (si exposé via HTTP).
+* **Imports Node** en `node:` pour ESM (conventions existantes).
+* **Tests** : Mocha + tsx (`npm run test`, `npm run test:int`, `npm run test:e2e`). Viser **≥90%** de couverture sur `src/search/**` et **≥85%** global.
+* **Observabilité** : tracer les étapes critiques (Searx, fetch, extract, ingest) et émettre des events **stables** et diffables.
 
 ---
 
 ## A) Infrastructure : SearxNG & Unstructured (self-host)
 
-### `docker/docker-compose.search.yml` **(NOUVEAU)**
+> Nouveaux fichiers (dans `docker/`), adoption CI/dev.
 
-* [x] Crée un compose dédié avec 3 services : `searxng`, `unstructured`, `server`.
+* [x] **Créer** `docker/docker-compose.search.yml`
 
-  * [x] `searxng`
+  * [x] Service `searxng` (image `searxng/searxng:latest`)
 
-    * [x] Image : `searxng/searxng:latest`
-    * [x] Volumes : `./searxng/settings.yml:/etc/searxng/settings.yml:ro`
     * [x] Ports : `127.0.0.1:8080:8080`
-    * [x] Healthcheck : `GET /healthz` (ou page d’accueil), interval 10s, retries 6
-    * [x] Resources : limites CPU/RAM (éviter OOM en CI)
-  * [x] `unstructured`
+    * [x] Volume : `./searxng/settings.yml:/etc/searxng/settings.yml:ro`
+    * [x] Healthcheck HTTP (ex: `/healthz` ou page d’accueil)
+  * [x] Service `unstructured` (image `quay.io/unstructured-io/unstructured-api:latest`)
 
-    * [x] Image : `quay.io/unstructured-io/unstructured-api:latest`
     * [x] Ports : `127.0.0.1:8000:8000`
-    * [x] Healthcheck : `POST /general/v0/general` (ping minimal)
-  * [x] `server`
+    * [x] Healthcheck minimal (POST `/general/v0/general` ping)
+  * [x] Service `server` (build depuis Dockerfile du projet)
 
-    * [x] Build : Dockerfile existant du serveur MCP
-    * [x] Depends_on : `searxng`, `unstructured` (condition: service_healthy)
-    * [x] Env : variables `SEARCH_*`, `UNSTRUCTURED_*` (cf. config)
-* [x] Ajoute un **réseau bridge interne** (ex: `search_net`) pour isoler.
-* [x] Cible `dev` et `ci` (fichiers override si besoin).
+    * [x] `depends_on` avec `condition: service_healthy` pour `searxng` et `unstructured`
+    * [x] Variables d’env (cf. `.env.example` à compléter)
+  * [x] **Réseau** dédié (bridge interne) `search_net`
+  * [x] **Ressources** : limites CPU/RAM raisonnables (éviter OOM en CI)
 
-### `docker/searxng/settings.yml` **(NOUVEAU)**
+* [x] **Créer** `docker/searxng/settings.yml`
 
-* [x] Configure `engines` pertinents (general/news/images/files/science/it), `categories`, `safe_search=0` (ou 1 selon besoin), `tokens`, `retries`.
-* [x] Désactive/active engines selon conformité (pas d’APIs non licenciées).
-* [x] Active `result_proxy` si souhaité (utile pour fetch via proxy interne).
-* [x] `server: { secret_key: "…" }` (monté via secret en prod).
+  * [x] Configurer **engines** pertinents (p.ex. `bing`, `ddg`, `wikipedia`, `arxiv`, `github`, …)
+  * [x] Configurer **categories** (au minimum : `general,news,images,files`)
+  * [x] `safe_search` selon besoin (0/1), `retries`, `result_proxy` si requis
+  * [x] Clés/secret côté prod via secret/env (ne rien commiter de sensible)
 
-### `env/.env.example` **(MODIFIER/CRÉER)**
-
-* [x] Ajouter :
+* [x] **Mettre à jour** `env/.env.example`
 
   * [x] `SEARCH_SEARX_BASE_URL=http://searxng:8080`
   * [x] `SEARCH_SEARX_API_PATH=/search`
   * [x] `SEARCH_SEARX_TIMEOUT_MS=15000`
-* [x] `SEARCH_SEARX_ENGINES=duckduckgo,wikipedia,arxiv,github,qwant` *(exemple)*
+  * [x] `SEARCH_SEARX_ENGINES=bing,ddg,wikipedia,arxiv,github`
   * [x] `SEARCH_SEARX_CATEGORIES=general,news,images,files`
   * [x] `UNSTRUCTURED_BASE_URL=http://unstructured:8000`
   * [x] `UNSTRUCTURED_TIMEOUT_MS=30000`
@@ -93,454 +73,320 @@ Tu vas créer un **module de recherche multimodal isolé** (comme le module Grap
 
 ---
 
-## B) Module `src/search` (isolé, comme `graph/`)
+## B) Nouveau module isolé : `src/search/**`
 
-> Tous ces fichiers sont **NOUVEAUX** à moins d’exister déjà.
+> Tous les fichiers suivants sont **nouveaux** et doivent respecter les conventions ESM/TS strictes du repo.
 
-### `src/search/types.ts`
+### B1. Types & Config
 
-* [x] Implémente **types pivot** : `SearxResult`, `RawFetched`, `StructuredSegment`, `StructuredDocument`.
-* [x] **Sous-tâches**
+* [x] **Créer** `src/search/types.ts`
 
-  * [x] `StructuredSegment.kind` (title/paragraph/list/table/figure/caption/code/meta)
-  * [x] `StructuredDocument.provenance` (engines, categories, searxQuery)
-  * [x] Pas de champs `undefined` dans les types publics.
+  * [x] `SearxResult` : `{ url:string; title?:string; snippet?:string; engine?:string; category?:string; publishedAt?:string; mime?:string }`
+  * [x] `RawFetched` : `{ url; status; headers; contentType?; body:Buffer; fetchedAt }`
+  * [x] `StructuredSegment` : `{ kind:'title'|'paragraph'|'list'|'table'|'figure'|'caption'|'code'|'meta'; text?; page?; bbox?; meta? }`
+  * [x] `StructuredDocument` : `{ id; url; source; contentType; language?; title?; publishedAt?; fetchedAt; metadata; segments; provenance:{ engines?; categories?; searxQuery? } }`
+  * [x] **Aucun `undefined` exporté** dans les objets publics (omets les clés absentes)
 
-### `src/search/config.ts`
+* [x] **Créer** `src/search/config.ts`
 
-* [x] Centralise **env** et valeurs par défaut (cf. `.env.example`).
-* [x] **Sous-tâches**
+  * [x] Lire/normaliser env → `SearchConfig` (searx, unstructured, fetch, pipeline)
+  * [x] Parser `engines/categories` CSV en `string[]` (ignore vides)
 
-  * [x] Parser `engines`/`categories` (CSV → array sans vides).
-  * [x] Export `SearchConfig` (searx, unstructured, fetch, pipeline).
+### B2. Clients & Étapes du pipeline
 
-### `src/search/searxClient.ts`
+* [x] **Créer** `src/search/searxClient.ts`
 
-* [x] Client **SearxNG JSON** (`format=json`).
-* [x] **Sous-tâches**
+  * [x] `searxQuery(q,{categories,engines,count}) => Promise<SearxResult[]>`
+  * [x] Requête `format=json`, zod pour valider `results[]`, timeouts, bearer optionnel, 1–2 retries
 
-  * [x] `searxQuery(q, {categories, engines, count})`
-  * [x] Validation stricte de la réponse (zod).
-  * [x] Timeout, headers (auth bearer si configuré), retries basiques (2).
+* [x] **Créer** `src/search/downloader.ts`
 
-### `src/search/downloader.ts`
+  * [x] `fetchUrl(url) => RawFetched` (follow, `content-type` sans charset, clamp taille max, erreurs 4xx/5xx)
+  * [x] `computeDocId(url, headers) => sha256(url+etag+last-modified)`
+  * [x] Respect `SEARCH_FETCH_UA`, option **robots.txt** si tu ajoutes le contrôle
 
-* [x] Téléchargement HTTP **robuste** (follow, clampsize, type sniff).
-* [x] **Sous-tâches**
+* [x] **Créer** `src/search/extractor.ts`
 
-  * [x] `fetchUrl(url)` → `RawFetched` (headers normalisés, `contentType` sans charset)
-  * [x] `computeDocId(url, headers)` → SHA256(url+ETag+Last-Modified)
-  * [x] Option **robots.txt** (si activé dans config)
-  * [x] Rejets : `status >= 400`, contenus > `maxContentBytes`.
+  * [x] `extractWithUnstructured(raw, {url,title?,engines?,categories?}) => StructuredDocument`
+  * [x] Appel API Unstructured `/general/v0/general` (multipart), `strategy` configurable
+  * [x] Mapper éléments → `StructuredSegment` (page, bbox, meta)
+  * [x] Détection **langue** (lib simple), propagation `contentType`
+  * [x] **Ne pas** exposer de `undefined` : champs optionnels omis
 
-### `src/search/extractor.ts`
+* [x] **Créer** `src/search/normalizer.ts`
 
-* [x] Client **unstructured.io** (endpoint `/general/v0/general`).
-* [x] **Sous-tâches**
+  * [x] `finalizeDocId(doc)` : remplace `id` par `computeDocId`
+  * [x] `deduplicateSegments(doc)` : déduplique via `(kind|text.trim)`
 
-  * [x] Multipart upload du **buffer** téléchargé, `strategy=hi_res` (param)
-  * [x] Mapping éléments → `StructuredSegment` (incl. page, bbox, meta)
-  * [x] Détection **langue** (lib simple : tinyld)
-  * [x] Gestion images/PDF/HTML (laisser faire unstructured; passer `content_type`).
+### B3. Ingestion vers KG + VectorMemory
 
-### `src/search/normalizer.ts`
+* [x] **Créer** `src/search/ingest/toKnowledgeGraph.ts`
 
-* [x] **Nettoyage** & **dédup**.
-* [x] **Sous-tâches**
+  * [x] Utiliser la **classe** `KnowledgeGraph` existante (`src/knowledge/knowledgeGraph.ts`) → méthode **`insert`**
+  * [x] Insérer le nœud Document (type `Document`, `dc:title`, `dc:source` (URL), `dc:language`) avec **provenance** (sourceUrl, fetchedAt)
+  * [x] MVP : ajouter des `mentions` basées sur termes clés extraits (stopwords basiques)
+  * [x] Prévoir un hook ultérieur NER/LLM (non activé par défaut)
 
-  * [x] `finalizeDocId(doc)` (remplace `id: 'tmp'`)
-  * [x] `deduplicateSegments(doc)` (hash `(kind|text.trim)`).
+* [x] **Créer** `src/search/ingest/toVectorStore.ts`
 
-### `src/search/ingest/toKnowledgeGraph.ts`
+  * [x] Utiliser `VectorMemoryIndex` (`src/memory/vector.ts`) → méthode **`upsert`**
+  * [x] Sélectionner segments `paragraph|title|list`, normaliser, chunker si util existant (sinon naïf)
+  * [x] `metadata` : `{ docId, url, title, language, fetchedAt }`, tags vides au départ
+  * [x] **Pas** d’accès à des embeddings externes : on reste sur l’index texte→TF-IDF du repo
 
-* [x] Ingestion **doc → triples** (Document type, title, source, language, provenance).
-* [x] **Sous-tâches**
+### B4. Orchestrateur de pipeline + métriques
 
-  * [x] Appelle `knowledge/knowledgeGraph.ts`: `upsertTriple`, `withProvenance`.
-  * [x] `mentions` (MVP) via `extractKeyTerms(doc)` ; prévoir hook NER/LLM plus tard.
-  * [x] **Provenance** obligatoire (sourceUrl, fetchedAt).
+* [x] **Créer** `src/search/pipeline.ts`
 
-### `src/search/ingest/toVectorStore.ts`
+  * [x] `runSearchJob({ query, categories?, engines?, maxResults?, fetchContent?, injectGraph?, injectVector? })`
+  * [x] Étapes : `searxQuery` → pick top K → `fetchUrl` → `extractWithUnstructured` → `finalizeDocId` → `deduplicateSegments` → ingestion KG + Vector
+  * [x] **Émettre des events** via `EventStore` (voir section D)
+  * [x] Gérer les erreurs URL individuellement (continuer le job)
+  * [x] Retourner `{ results:[…], docs:[{id,url,title,language}] }`
 
-* [x] Ingestion **chunks → embeddings**.
-* [x] **Sous-tâches**
+* [x] **Créer** `src/search/metrics.ts`
 
-  * [x] Sélectionne segments `paragraph|title|list`, `.trim()`
-  * [x] Chunking par tokens si util dispo (`memory/chunking.ts`)
-  * [x] `embedText({ idHint, text, metadata })` → `memory/vector.ts`.
+  * [x] Intégration `infra/tracing.ts` pour mesurer latences p50/p95/p99 des fonctions : `searxQuery`, `fetchUrl`, `extractWithUnstructured`, `ingestToGraph`, `ingestToVector`
 
-### `src/search/pipeline.ts`
+* [x] **Créer** `src/search/index.ts`
 
-* [x] Orchestrateur **end-to-end** (query → fetch → extract → normalize → ingest).
-* [x] **Sous-tâches**
+  * [x] Export centralisé des symboles du module
 
-  * [x] `runSearchJob(params)` : émet events `search:*` sur `eventStore`.
-  * [x] Respect `maxResults`, parallélismes (`parallelFetch`, `parallelExtract`).
-  * [x] Catch/emit `search:error { url, error }` et continue.
+* [x] **(Optionnel recommandé)** `src/search/cache/contentCache.ts`
 
-### `src/search/cache/contentCache.ts` *(optionnel, recommandé)*
-
-* [x] Clé: `url + (etag|last-modified)` ; TTL par **domaine** ; backoff sur 4xx/5xx.
-
-### `src/search/metrics.ts`
-
-* [x] Intègre `infra/tracing.ts` : histogrammes `p50/p95/p99` pour `searxQuery`, `fetchUrl`, `extractWithUnstructured`, `ingest*`.
-
-### `src/search/index.ts`
-
-* [x] Façade d’export (unique point d’entrée du module).
+  * [x] Cache disque par URL + (etag|last-modified), TTL par domaine, backoff sur 4xx/5xx
 
 ---
 
-## C) Tools MCP (exposition contrôlée)
+## C) Tools MCP : exposition contrôlée
 
-### `src/tools/search_run.ts` **(NOUVEAU)**
+> S’inspirer du style des tools existants dans `src/tools/**`. Utiliser zod, budgets, `buildToolSuccessResult`.
 
-* [x] Tool **`search.run`** (zod input, budgets, description).
-* [x] Appelle `runSearchJob`.
-* [x] **Retour** : `{ ok, count, docs:[{id,url,title,language}] }`.
-* [x] **Tests** : mock clients + snapshot réponse.
+* [x] **Créer** `src/tools/search_run.ts`
 
-### `src/tools/search_index.ts` **(NOUVEAU)**
+  * [x] Entrée (zod) : `{ query:string; categories?:string[]; engines?:string[]; maxResults?:number(1..50); fetchContent?:boolean; injectGraph?:boolean; injectVector?:boolean }`
+  * [x] Budgets init : `{ timeMs: 60_000, toolCalls: 4, bytesOut: 512_000 }` (ajuste si besoin)
+  * [x] Appeler `runSearchJob` et **retourner** `{ ok:true, count, docs:[{id,url,title,language}] }` via helper de succès
+  * [x] **Ne pas** renvoyer de blobs ; **pas** d’`undefined`
 
-* [x] Tool **`search.index`** (ingérer URL(s) directes sans Searx).
-* [x] Boucle `fetch → extract → normalize → ingest`.
-* [x] **Retour** : `{ ok, docs:[{id,url,title}] }`.
+* [x] **Créer** `src/tools/search_index.ts`
 
-### `src/tools/search_status.ts` **(NOUVEAU)**
+  * [x] Entrée : `{ url:string | string[]; title?:string; injectGraph?:boolean; injectVector?:boolean }`
+  * [x] Boucle `fetch → extract → normalize → ingest`
+  * [x] Retour `{ ok:true, docs:[{id,url,title}] }`
 
-* [x] Tool **`search.status`** (si jobs persistent) ; sinon renvoie non implémenté proprement.
+* [x] **Créer** `src/tools/search_status.ts`
 
-### `src/mcp/registry.ts` **(EXISTANT, MODIFIER)**
+  * [x] Si persistance de jobs **non** mise en place : renvoyer proprement “non implémenté” (code/tool result standard)
 
-* [x] Enregistre les 3 tools dans **pack** (`authoring` ou `ops`).
-* [x] **Budgets**: `timeMs`, `toolCalls`, `bytesOut` ; **tags** (`search`,`web`,`ingest`,`rag`).
-* [x] **Docs** : title/description clairs + exemples d’appel.
+* [x] **Modifier** `src/mcp/registry.ts`
+
+  * [x] **Enregistrer** les 3 tools (`search.run`, `search.index`, `search.status`) dans le pack approprié (p.ex. `authoring` ou `ops`)
+  * [x] Ajouter **tags** (`search`,`web`,`ingest`,`rag`) et **budgets**
+  * [x] Ajouter un **exemple d’appel** dans la description (cohérent avec les autres tools)
 
 ---
 
 ## D) Intégration orchestrateur & observabilité
 
-### `src/orchestrator/runtime.ts` **(EXISTANT, MODIFIER)**
+* [x] **Événements EventStore** : **ne pas inventer un nouveau `EventKind`** si tu ne touches pas le type union
 
-* [x] Injecte le module `search/` dans la composition (si pattern déjà en place).
-* [x] Passe `eventStore`, `logger`, `tracing` au pipeline.
-* [x] Ajoute teardown propre si ressources (rien de spécial attendu côté clients HTTP).
+  * [x] Utiliser `EventKind` existants (p.ex. `"INFO"` pour les étapes Search) et inclure un `payload` structuré :
 
-### `src/eventStore.ts` **(EXISTANT, MODIFIER)**
+    * [x] `search:job_started` → `{ query, categories, engines, maxResults }`
+    * [x] `search:doc_ingested` → `{ docId, url, injectGraph, injectVector }`
+    * [x] `search:error` → `{ url, error }`
+    * [x] `search:job_completed` → `{ query, tookMs, docCount }`
+  * [x] **Alternative (option “plus propre”)** : étendre l’union `EventKind` de `src/eventStore.ts` pour ajouter `"SEARCH"` et router ces events sous ce kind (exige update des types et dashboard). Si tu fais ça :
 
-* [x] Ajoute **kinds** : `search:job_started`, `search:doc_ingested`, `search:error`, `search:job_completed`.
-* [x] Stabilise la **sérialisation JSON** (clés ordonnées si votre infra le requiert).
+    * [x] Mettre à jour toutes les occurrences de l’union dans le repo (compilateur t’aidera)
+    * [x] Adapter `monitor/dashboard.ts` (voir ci-dessous)
 
-### `src/monitor/dashboard.ts` **(EXISTANT, MODIFIER)**
+* [x] **Modifier** `src/monitor/dashboard.ts`
 
-* [x] **Panneaux** :
+  * [x] Ajouter un **panneau Search** (HTML) et un **endpoint JSON** récapitulant :
 
-  * [x] File jobs (en cours/terminés) + docs/min + erreurs par type
-  * [x] Heatmap domaines les plus consultés
-  * [x] Latence moyenne par `contentType` (HTML/PDF/Image)
+    * [x] `jobs` récents, `docs/min`, `errors by type`, latence moyenne par `contentType`
+  * [x] Brancher la **SSE** si nécessaire (en t’inspirant des autres panneaux)
+  * [x] **Ne pas** casser les pages existantes (garde la navigation)
 
-### `src/http/*` **(EXISTANT, VÉRIFIER)**
+* [x] **Modifier** `src/runtime/*` si nécessaire pour injecter des dépendances (logger/tracing) vers `src/search/pipeline.ts` (garde la composition root **pure**)
 
-* [x] Si tools exposés via HTTP, s’assurer :
+* [x] **HTTP idempotence/rate-limit** (si tools exposés via HTTP)
 
-  * [x] **Idempotence** (clé = hash(query,categories,engines,maxResults))
-  * [x] **Rate-limit** dédié `search.*`.
+  * [x] Dans `src/httpServer.ts` et `src/orchestrator/controller.ts`, vérifier que l’**idempotency cache key** couvre `search.run` (clé = hash des arguments pertinents)
+  * [x] Ajouter un **rate-limit** spécifique pour `search.*` si la conf le permet
 
 ---
 
 ## E) Sécurité, conformité & robustesse
 
-* [x] **User-Agent** explicite (`SEARCH_FETCH_UA`).
-* [x] **robots.txt** (si activé) + **throttle** par domaine.
-* [x] **Max bytes** strict (15MB par défaut).
-* [x] **Timeouts** cohérents (fetch/extract/job).
-* [x] **Redaction** des secrets dans logs. *(tests runtime optional contexts ✅)*
-* [x] **Allow-list** des env injectées si exec enfant (pas prévu ici).
-* [x] **Provenance** obligatoire sur triples.
-* [x] **Conformité** licences engines Searx (désactiver ceux à risque).
+* [x] **User-Agent** dédié (`SEARCH_FETCH_UA`), **timeouts** et **limites de taille** stricts
+* [x] **robots.txt** : si tu ajoutes le respect des robots, le rendre **activable par env**, et logguer une alerte si bloqué
+* [x] **Redaction** des headers sensibles dans les logs (`logger` central)
+* [x] **Provenance** : toujours renseigner `sourceUrl`, `fetchedAt`, + provenance Unstructured si utile
+* [x] **Licences engines SearxNG** : commenter/désactiver ceux à risque dans `settings.yml`
 
 ---
 
-## F) Tests (tu dois les écrire et les faire passer)
+## F) Tests (unit, intégration, E2E)
 
-> Suis les **contraintes build/tests** en fin de document.
+> Respecter la structure existante : **Mocha + tsx**, fichiers `*.test.ts`, répertoires sous `tests/`. Viser ≥90% de cov. `src/search/**`.
 
-### Unitaires (Mocha + TS)
+### F1. Unitaires (nouveaux)
 
-#### `test/unit/search/searxClient.spec.ts`
+* [x] **Créer** `tests/unit/search/searxClient.test.ts`
 
-* [x] Mock réponses SearxNG (cas OK / schema invalide / timeout / 500).
-* [x] Vérifie **zod parsing**, params de requête (engines/categories/count).
+  * [x] Mocker réponses SearxNG (OK / schéma invalide / 500 / timeout)
+  * [x] Vérifier parsing zod et mapping → `SearxResult[]`
+  * [x] Vérifier params (`q`, `categories`, `engines`, `count`)
 
-#### `test/unit/search/downloader.spec.ts`
+* [x] **Créer** `tests/unit/search/downloader.test.ts`
 
-* [x] Content-type sniff, clamp taille, follow redirects, erreurs 4xx/5xx.
-* [x] `computeDocId` (ETag, Last-Modified) — golden tests.
+  * [x] Mocker HTTP : redirects, 404/500, `content-type` variés, clamp taille
+  * [x] Tester `computeDocId` (variation ETag/Last-Modified)
 
-#### `test/unit/search/extractor.spec.ts`
+* [x] **Créer** `tests/unit/search/extractor.test.ts`
 
-* [x] Mock **unstructured** (éléments variés : title/paragraph/list/table/figure).
-* [x] Mapping vers `StructuredSegment`, détection langue.
+  * [x] Mocker Unstructured (`/general/v0/general`) avec jeux d’éléments (title/paragraph/list/table/figure)
+  * [x] Vérifier mapping → `StructuredSegment[]`, détection langue, erreurs 5xx
 
-#### `test/unit/search/normalizer.spec.ts`
+* [x] **Créer** `tests/unit/search/normalizer.test.ts`
 
-* [x] Déduplication segments, finalisation id.
+  * [x] Vérifier `finalizeDocId` + déduplication (pas de doubles)
+  * [x] S’assurer que les champs optionnels absents sont **omis** (pas `undefined`)
 
-#### `test/unit/search/ingest.toKnowledgeGraph.spec.ts`
+* [x] **Créer** `tests/unit/search/ingest.toKnowledgeGraph.test.ts`
 
-* [x] Appels `upsertTriple` + `withProvenance` (spies).
-* [x] `mentions`: extraction tokens fréquents (stopwords FR/EN basiques).
+  * [x] Mocker `KnowledgeGraph` : vérifier **appel de `insert`** avec provenance, titre/langue/source
+  * [x] Vérifier génération `mentions` (stopwords FR/EN basiques)
 
-#### `test/unit/search/ingest.toVectorStore.spec.ts`
+* [x] **Créer** `tests/unit/search/ingest.toVectorStore.test.ts`
 
-* [x] Découpage, appel `embedText` par chunk avec metadata.
+  * [x] Mocker `VectorMemoryIndex` : vérifier **appel à `upsert`** par chunk
+  * [x] Vérifier metadata (`docId,url,title,language,fetchedAt`)
 
-#### `test/unit/search/pipeline.spec.ts`
+* [x] **Créer** `tests/unit/search/pipeline.test.ts`
 
-* [x] Pipeline heureux (tout OK) + cas d’erreur isolée (un URL échoue), vérifie **events** émis.
+  * [x] Cas **heureux** : 2–3 résultats Searx → 2 docs ingérés (KG + Vector)
+  * [x] Cas **partiellement en échec** : 1 URL fail (erreur fetch/extract) → event `search:error` émis, job continue
+  * [x] Vérifier **events** émis (voir section D)
 
-### Intégration (sans containers réels)
+### F2. Intégration (mocks réseaux, sans containers)
 
-* [x] Mocks HTTP **SearxNG** & **Unstructured** (nock).
-* [x] `search.run` tool : entrée → docs ingérés → vérifie appels Graph/RAG.
+* [x] **Créer** `tests/integration/search.tools.test.ts`
 
-### E2E (avec `docker-compose.search.yml`)
+  * [x] Mocker SearxNG/Unstructured (nock)
+  * [x] Appeler tool `search.run` → vérifier **sortie tool**, appels KG/Vector, events
 
-*⚠️* La suite s'exécute uniquement si `SEARCH_E2E_ALLOW_RUN=1` (automatiquement défini par `npm run test:e2e:search`). Sans ce flag,
- elle se mettra en `SKIP` pour éviter les faux négatifs lorsque Docker/Unstructured ne sont pas disponibles. La CI GitHub Actions
- (job "Search stack end-to-end") exécute systématiquement les étapes ci-dessous.
+### F3. E2E (avec containers)
 
-* [x] Lancer **searxng + unstructured + server** (`npm run test:e2e:search` orchestre Docker compose + Mocha).
-* [x] Appeler `search.run { query: "site:arxiv.org LLM 2025 filetype:pdf", categories:["files","general"], maxResults:4 }` (via la
-      suite e2e officielle).
-* [x] Attendre complétion → vérifier :
+* [x] **Créer** `tests/e2e/search.e2e.test.ts`
 
-  * [x] au moins 1 doc ingéré dans **graphe** (triples Document + provenance).
-  * [x] au moins 1 embedding dans **vector store** avec metadata correcte.
-  * [x] events dans **dashboard** (ou endpoint JSON de stats).
+  * [x] Démarrer `docker/docker-compose.search.yml` (ou script existant `scripts/run-http-e2e.mjs` adapté)
+  * [x] Appeler `search.run` avec requête de démo (ex : `benchmarks LLM multimodal 2025 filetype:pdf`)
+  * [x] Attendre complétion → vérifier :
 
-### Couverture & qualité
+    * [x] au moins 1 triple `Document` dans **KnowledgeGraph** (via tool/query existant)
+    * [x] au moins 1 **VectorMemory** `upsert` (via tool de recherche mémoire existant)
+    * [x] Dashboard/endpoint stats expose un **compteur de jobs** et **latences**
 
-* [x] **Coverage global ≥ 85%**, `src/search/*` ≥ 90%.
-* [x] Pas de tests flakys (timeouts stables, retries mockés).
-* [x] Tests typés strict (no `any` implicite, `exactOptionalPropertyTypes` respecté).
+### F4. Couverture & CI
 
----
-
-## G) Documentation & Runbook
-
-### `docs/search-module.md` **(NOUVEAU)**
-
-* [x] Overview, architecture, schémas.
-* [x] Variables d’env + valeurs par défaut.
-* [x] Exemples d’appels `search.run`/`search.index`.
-* [x] Stratégies de **re-crawl** (ETag, TTL par domaine).
-* [x] Limites connues (images OCR lourdes, PDFs scannés).
-* [x] **Playbook incident** (unstructured down, searxng rate-limited).
-
-### `CHANGELOG.md` **(MODIFIER)**
-
-* [x] Ajoute entrée `feature: search llm searxng`.
+* [x] Configurer la **couverture** (collecte existante OK) : viser ≥90% sur `src/search/**`
+* [x] **CI** : ajouter un job qui monte `docker-compose.search.yml`, attend les healthchecks, lance `npm run test:e2e` et publie logs/coverage
 
 ---
 
-## H) Nettoyage & vérifications finales
+## G) Documentation & Changelog
 
-* [x] Enlève **placeholders**/TODO non traités ou ouvre tickets.
-* [x] Pas de `console.log` brut → **logger** central.
-* [x] Vérifie **exact optional** (aucun `undefined` exposé).
-* [x] Vérifie **budgets** tools (`timeMs`, `bytesOut`, `toolCalls`).
-* [x] **Smoke test** local (compose up, `search.run`, dashboard OK). *Couvert automatiquement par `npm run smoke:search` exécuté dans la CI "Search stack end-to-end" ; lancer manuellement si Docker est disponible en local.*
+* [x] **Créer** `docs/search-module.md`
 
----
+  * [x] Architecture (schémas, étapes du pipeline)
+  * [x] Variables d’environnement et valeurs par défaut
+  * [x] Exemples d’utilisation des tools `search.run` / `search.index`
+  * [x] Stratégie de recrawl (ETag/Last-Modified, TTL par domaine)
+  * [x] Limites connues (PDF scannés, OCR lourd, multilingue)
+  * [x] Runbook incident (SearxNG down, Unstructured slow/5xx)
 
-# 📁 Détail **fichier par fichier** (avec objectifs & attentes de tests)
+* [x] **Modifier** `CHANGELOG.md`
 
-> **NOUVEAUX**
-
-* [x] `src/search/types.ts` — **Objectif** : contrat pivot des données.
-
-  * **Attendu tests** : types utilisés sans `any`, pas d’`undefined` en sortie.
-
-* [x] `src/search/config.ts` — **Objectif** : config centralisée, valeurs par défaut sûres.
-
-  * **Attendu tests** : parsing CSV, numériques, booléens ; fallback OK.
-
-* [x] `src/search/searxClient.ts` — **Objectif** : requêter SearxNG proprement.
-
-  * **Attendu tests** : zod schema, erreurs réseau, params q/cat/engines.
-
-* [x] `src/search/downloader.ts` — **Objectif** : fetching robuste (clamp, type).
-
-  * **Attendu tests** : redirects, status 404/500, clamp, content-type.
-
-* [x] `src/search/extractor.ts` — **Objectif** : mapper unstructured → segments.
-
-  * **Attendu tests** : diversité éléments, langue, erreurs 5xx.
-
-* [x] `src/search/normalizer.ts` — **Objectif** : id stable, dédup segments.
-
-  * **Attendu tests** : collisions évitées, dédup correcte.
-
-* [x] `src/search/ingest/toKnowledgeGraph.ts` — **Objectif** : triples + provenance.
-
-  * **Attendu tests** : appels `upsertTriple` exacts, présence provenance.
-
-* [x] `src/search/ingest/toVectorStore.ts` — **Objectif** : embeddings avec metadata.
-
-  * **Attendu tests** : nombre de chunks, metadata complète (docId,url,title,language,fetchedAt).
-
-* [x] `src/search/pipeline.ts` — **Objectif** : orchestration + events.
-
-  * **Attendu tests** : séquence d’appels, events `search:*`, résilience sur erreurs URL.
-
-* [x] `src/search/metrics.ts` — **Objectif** : timers/histogrammes branchés.
-
-  * **Attendu tests** : counters incrémentés, labels corrects.
-
-* [x] `src/search/index.ts` — **Objectif** : export public propre.
-
-  * **Attendu tests** : import unique depuis ailleurs compile.
-
-* [x] `src/tools/search_run.ts` — **Objectif** : tool MCP principal.
-
-  * **Attendu tests** : validation input, budgets, retour docs.
-
-* [x] `src/tools/search_index.ts` — **Objectif** : ingestion directe URL(s).
-
-  * **Attendu tests** : liste d’URL, erreurs isolées, retours agrégés.
-
-* [x] `src/tools/search_status.ts` — **Objectif** : introspection jobs (si persistés).
-
-  * **Attendu tests** : job not found / job done.
-
-* [x] `docker/docker-compose.search.yml` — **Objectif** : dev & CI e2e.
-
-  * **Attendu tests** : healthchecks OK, services up avant e2e.
-
-* [x] `docker/searxng/settings.yml` — **Objectif** : engines sains.
-
-  * **Attendu tests** : requêtes simples retournent résultats.
-
-* [x] `docs/search-module.md` — **Objectif** : runbook complet.
-
-  * **Attendu** : explicite, reproductible.
-
-> **EXISTANTS (à MODIFIER)**
-
-* [x] `src/mcp/registry.ts` — **Objectif** : enregistrer les 3 tools avec budgets/tags.
-
-  * **Attendu tests** : `tools help` liste bien search.* avec metadata.
-
-* [x] `src/orchestrator/runtime.ts` — **Objectif** : injecter module search et wiring `eventStore/tracing`.
-
-  * **Attendu tests** : pas de régression sur autres modules, hooks OK.
-
-* [x] `src/eventStore.ts` — **Objectif** : nouveaux kinds `search:*` stabilisés.
-
-  * **Attendu tests** : sérialisation stable (ordre clé), SSE fonctionne.
-
-* [x] `src/monitor/dashboard.ts` — **Objectif** : panneaux search.
-
-  * **Attendu tests** : endpoints JSON renvoient stats ; UI affiche docs/min & erreurs.
-
-* [x] `knowledge/knowledgeGraph.ts` — **Objectif** : garantir `upsertTriple` + `withProvenance`.
-
-  * **Attendu tests** : triplets persistés, duplication évitée.
-
-* [x] `memory/vector.ts` — **Objectif** : `embedText` stable, capacity caps respectées.
-
-  * **Attendu tests** : taille index plafonnée, recherche par similarité OK.
+  * [x] Entrée : `feature: search llm searxng (module + tools + infra + tests)`
 
 ---
 
-## 🧪 Exigences **Tests & Build** (à respecter partout)
+## H) Nettoyage et vérifications finales
 
-**Build**
-
-* [x] Node **≥ 20**, ESM strict, TS **strict** + `exactOptionalPropertyTypes: true`.
-* [x] `npm run build` compile sans warn ; **aucun** `any` implicite.
-* [x] Pas de dépendances non déclarées ; imports Node en `node:`.
-* [x] `graph-forge` / workers : inchangés (pas d’impact).
-
-**Lint & qualité**
-
-* [x] Lint passe (règles hygiène existantes). *(commandé le 2025-11-12 via `npm run lint`)*
-* [x] Aucune clé optionnelle exposant `undefined` dans JSON public.
-* [x] JSON stable (ordre des champs si nécessaire côté EventStore).
-
-**Tests**
-
-* [x] **Unit ≥ 90%** sur `src/search/*`, **Global ≥ 85%**. *(confirmé via `npm run coverage` le 2025-11-13)*
-* [x] **Intégration** : mocks HTTP (`nock`) pour SearxNG/Unstructured.
-* [x] **E2E** : `docker-compose.search.yml` — script unique `npm run test:e2e:search`.
-* [x] **CI** : job dédié qui monte compose, attend health, lance tests, publie couverture & logs. *(workflow GitHub Actions "Search stack end-to-end" : `npm run test:e2e:search` + `npm run smoke:search` + collecte des logs compose en cas d'échec)*
-
-**Observabilité**
-
-* [x] Tracing : latences `searxQuery`, `fetchUrl`, `extractWithUnstructured`, `ingest*`.
-* [x] EventStore : `search:job_*`, `search:error` ; Dashboard affiche tendances.
-
-**Sécurité & conformité**
-
-* [x] **robots.txt** (si activé), throttle, user-agent.
-* [x] Auth bearer vers SearxNG si requis par env (prod).
-* [x] Redaction logs (en-têtes sensibles).
-* [x] Respect licences engines (désactiver ceux qui posent problème).
+* [x] **Aucun** `console.log` brut : utiliser `StructuredLogger`
+* [x] **Aucune** clé optionnelle exposant `undefined` dans JSON publics
+* [x] **Budgets** tools `search.*` revus (temps, toolCalls, bytesOut) selon perfs mesurées
+* [x] **Smoke test** local : `docker compose -f docker/docker-compose.search.yml up -d` → `search.run` → dashboard OK
 
 ---
 
-## ✅ Mini scénario de validation (manuel)
+## 📁 Récap **fichier par fichier** (créations/modifs)
 
-* [x] Lancer `docker compose -f docker/docker-compose.search.yml up -d` *(couvert automatiquement par `npm run smoke:search` dans la CI « Search stack end-to-end » ; non exécuté localement faute de Docker dans cet environnement).* 
-* [x] Appeler `search.run` avec :
+**À créer :**
 
-```json
-{
-  "query": "benchmarks LLM multimodal 2025 filetype:pdf",
-  "categories": ["files","general","images"],
-  "maxResults": 6,
-  "fetchContent": true,
-  "injectGraph": true,
-  "injectVector": true
-}
-```
+* [x] `src/search/types.ts` — types pivots structurés
+* [x] `src/search/config.ts` — configuration centralisée du module
+* [x] `src/search/searxClient.ts` — client SearxNG (zod, timeouts, retries)
+* [x] `src/search/downloader.ts` — fetch robuste + `computeDocId`
+* [x] `src/search/extractor.ts` — client Unstructured + mapping segments
+* [x] `src/search/normalizer.ts` — finalisation d’ID + dédup
+* [x] `src/search/ingest/toKnowledgeGraph.ts` — **`KnowledgeGraph.insert`** + provenance + mentions
+* [x] `src/search/ingest/toVectorStore.ts` — **`VectorMemoryIndex.upsert`** + metadata
+* [x] `src/search/pipeline.ts` — orchestration end-to-end + events
+* [x] `src/search/metrics.ts` — timers/histogrammes
+* [x] `src/search/index.ts` — exports module
+* [x] `src/tools/search_run.ts` — tool principal (ingestion + retour docs)
+* [x] `src/tools/search_index.ts` — ingestion directe d’URL(s)
+* [x] `src/tools/search_status.ts` — statut job (ou “non implémenté” propre)
+* [x] `docker/docker-compose.search.yml` — infra E2E
+* [x] `docker/searxng/settings.yml` — config engines/catégories
+* [x] `docs/search-module.md` — runbook
+* [x] `tests/unit/search/*.test.ts` — 7 fichiers (client, downloader, extractor, normalizer, ingest KG, ingest Vector, pipeline)
+* [x] `tests/integration/search.tools.test.ts` — intégration tools search
+* [x] `tests/e2e/search.e2e.test.ts` — E2E containers
 
-* [x] Observer :
+**À modifier :**
 
-  * [x] ≥1 doc dans graphe (triples + provenance)
-  * [x] ≥1 embedding en vector store
-  * [x] Dashboard: docs/min > 0, erreurs = 0, latences raisonnables *(vérifiés via `npm run smoke:search` en CI ; non reproduits localement faute de Docker).* 
+* [x] `src/mcp/registry.ts` — enregistrement des tools `search.*` (pack/tags/budgets/descriptions)
+* [x] `src/monitor/dashboard.ts` — panneau Search + endpoints JSON correspondants
+* [x] `src/orchestrator/runtime.ts` — wiring propre (si injection nécessaire du logger/tracing vers le pipeline)
+* [x] `src/eventStore.ts` — **optionnel** : si tu décides d’ajouter `EventKind = "SEARCH"`, étendre l’union et adapter usages
+* [x] `env/.env.example` — ajouter toutes les variables `SEARCH_*` et `UNSTRUCTURED_*`
+* [x] `CHANGELOG.md` — nouvelle entrée
 
 ---
 
-Si tu coches ces cases dans l’ordre, on obtient un **moteur de recherche LLM** **robuste**, **intégré proprement**, **observé** et **testé**, prêt pour l’orchestration multi-agents.
+## 🧪 Ce qu’il faut savoir et respecter concernant **les tests** et le **build**
+
+* **Build** :
+
+  * [ ] `npm run build` doit compiler sans warnings ; ESM strict ; imports Node en `node:` ; `graph-forge` unaffected.
+  * [ ] Respecter **`exactOptionalPropertyTypes`** : jamais `undefined` dans les objets publics ; préférer omettre la clé.
+
+* **Tests** :
+
+  * [ ] **Unitaires** : isoler chaque fichier logique du module ; utiliser **nock** pour mocks HTTP ; ne pas dépasser des timeouts élevés.
+  * [ ] **Intégration** : valider le flow MCP tool → pipeline → KG/Vector ; vérifier les **events**.
+  * [ ] **E2E** : monter les containers (`docker-compose.search.yml`), attendre **healthchecks**, lancer `npm run test:e2e`, vérifier ingestion réelle (au moins 1 doc).
+  * [ ] **Couverture** : `src/search/**` ≥ 90%, global ≥ 85% ; éviter tests flaky (retries côté mocks plutôt que sleep).
+
+* **Observabilité** :
+
+  * [ ] Tracer les durées par étape, compter les erreurs par type (Network, Unstructured, Ingest).
+  * [ ] S’assurer que le **Dashboard** expose des stats consultables (JSON + page), et que les **SSE** restent stables.
+
 ---
 
+Si tu coches ces cases dans l’ordre, tu livreras un **moteur de recherche LLM** complet, **self-host** (SearxNG), **multimodal via unstructured**, solidement **intégré** au KnowledgeGraph et à la VectorMemory du repo, avec **outillage MCP**, **observabilité**, et **tests** robustes.
+## Historique Agent
 
-### Historique Agent (2025-11-13)
-- Relance complète de la couverture (`npm run coverage`) afin de valider le nouveau garde agrégé `scripts/checkSearchCoverage.ts` (>90 % sur `src/search/*`).
-- Nettoyage du dossier `coverage/` et mise à jour de la checklist (case couverture) pour refléter la confirmation.
-- Tests exécutés : `npm run coverage` ✅ (incluant `node --import tsx scripts/checkSearchCoverage.ts`).
 
-### Historique Agent (2025-11-14)
-- Réinstallation des dépendances de développement (`npm install --include=dev`) pour restaurer `tinyld` absent lors de la couverture complète.
-- Exécution de `npm run coverage` ✅ confirmant 91.16 % global et 92.64 % sur `src/search/*` (script `scripts/checkSearchCoverage.ts`).
-- Commandes exécutées supplémentaires : `npm install` (résolution modules manquants).
+### 2025-10-28
+- Vérification de l’implémentation complète du module search, mise à jour de la checklist et exécution de `npm run test:unit` (échoue ici sur `graph worker pool performance offloads heavy change-sets via worker threads when available`, `server module loader falls back to the compiled output when forced` et une sonde maintenance HTTP).
 
-### Historique Agent (2025-11-15)
-- Factorisation du pilotage Docker dans `scripts/lib/searchStack.ts`, conversion du runner e2e en TypeScript et ajout du script fumée `scripts/run-search-smoke.ts`.
-- Ajout du validateur `assessSmokeRun`, de tests unitaires (`tests/scripts/searchStack.test.ts`, `tests/scripts/searchSmokePlan.test.ts`) et de la commande `npm run smoke:search` documentée.
-- Tests exécutés : `npm run lint` ✅ ; `TSX_EXTENSIONS=ts node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --file tests/setup.ts tests/scripts/searchStack.test.ts tests/scripts/searchSmokePlan.test.ts` ✅.
-
-### Historique Agent (2025-11-16)
-- Ajout du job GitHub Actions **Search stack end-to-end** pour exécuter `npm run test:e2e:search` puis `npm run smoke:search` avec collecte des logs compose.
-- Documentation (`docs/search-module.md`) complétée avec la section guardrails CI et checklist AGENTS mise à jour (cases E2E/Smoke/CI cochées, historique ancien épuré <50 lignes).
-- Tests exécutés : `npm run lint` ✅.
-
-### Historique Agent (2025-11-17)
-- Vérification de la checklist mini-scénario : couverture assurée par `npm run smoke:search` en CI, impossibilité de lancer Docker localement rappelée dans les cases.
-- Aucun changement de code nécessaire, mise à jour documentaire uniquement.
-- Tests exécutés : `npm run lint` ✅ (environnement sans Docker, pas d'exécution des scripts compose).
-
+### 2025-11-18
+- Réinitialisation du fichier AGENTS.md avec la nouvelle checklist fournie par l'utilisateur.
