@@ -1,0 +1,29 @@
+{
+  "scenarioId": 10,
+  "slug": "S10_qualite_rag",
+  "label": "Qualité RAG (sanity)",
+  "query": "Synthétise les points clés du dernier rapport RAG ingéré",
+  "answer": "Le rapport RAG synthétise les segments ingérés : evaluation multimodale, actualités européennes et benchmarks graph.",
+  "citations": [
+    {
+      "docId": "S01-ARX-001",
+      "url": "https://arxiv.org/abs/2501.01234"
+    },
+    {
+      "docId": "S03-NEWS-002",
+      "url": "https://www.lemonde.fr/technologies/article/2025/01/12/benchmark-rag-national"
+    },
+    {
+      "docId": "S09-GRAPH-004",
+      "url": "https://vectorlabs.ai/datasets/rag-graph-case-study.pdf"
+    }
+  ],
+  "summary": "Synthèse RAG générée à partir des artefacts consolidés : citations alignées sur les documents ingérés.",
+  "highlights": [
+    "Références croisées avec le graphe de connaissances",
+    "Vector store agrégé pour S10"
+  ],
+  "recommendations": [
+    "Valider manuellement les citations avant publication"
+  ]
+}

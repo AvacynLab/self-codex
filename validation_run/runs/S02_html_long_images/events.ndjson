@@ -1,0 +1,10 @@
+{"kind":"search:stage","stage":"searxQuery","durationMs":910,"tookMs":3200,"jobId":"validation:S02_html_long_images","timestamp":1736931692000}
+{"kind":"search:stage","stage":"fetchUrl","durationMs":1180,"documentId":"S02-TDS-001","success":true,"timestamp":1736931694000}
+{"kind":"search:stage","stage":"extractWithUnstructured","durationMs":1020,"documentId":"S02-TDS-001","success":true,"timestamp":1736931697000}
+{"kind":"search:doc_ingested","payload":{"doc_id":"S02-TDS-001"},"documentsIngested":1}
+{"kind":"search:stage","stage":"fetchUrl","durationMs":1140,"documentId":"S02-TDS-002","success":true,"timestamp":1736931694600}
+{"kind":"search:stage","stage":"extractWithUnstructured","durationMs":990,"documentId":"S02-TDS-002","success":true,"timestamp":1736931697600}
+{"kind":"search:doc_ingested","payload":{"doc_id":"S02-TDS-002"},"documentsIngested":1}
+{"kind":"search:stage","stage":"ingestToGraph","durationMs":380,"documentsIngested":2,"timestamp":1736931700500}
+{"kind":"search:stage","stage":"ingestToVector","durationMs":390,"documentsIngested":2,"timestamp":1736931701200}
+{"kind":"search:error","category":"parse_error","message":"Image without alt attribute skipped during extraction.","stage":"extractWithUnstructured","url":"https://towardsdatascience.com/visual-diagnostics-rag","metadata":{"tag":"img"}}

@@ -1,0 +1,24 @@
+[
+  {
+    "subject": "doc:S06-DATA-001",
+    "tripleCount": 2,
+    "created": 1736932154000,
+    "updated": 1736932154600,
+    "mentions": [
+      "dataset",
+      "llm",
+      "benchmark"
+    ]
+  },
+  {
+    "subject": "doc:S06-DATA-002",
+    "tripleCount": 2,
+    "created": 1736932156000,
+    "updated": 1736932156600,
+    "mentions": [
+      "chunking",
+      "pdf",
+      "limits"
+    ]
+  }
+]

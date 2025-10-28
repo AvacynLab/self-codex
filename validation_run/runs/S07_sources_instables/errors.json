@@ -1,0 +1,16 @@
+[
+  {
+    "category": "network_error",
+    "message": "Timeout 504 sur example.net après trois tentatives.",
+    "url": "https://example.net/flaky.pdf",
+    "metadata": {
+      "attempts": 3,
+      "timeoutMs": 15000
+    }
+  },
+  {
+    "category": "network_error",
+    "message": "Connexion interrompue sur unstable.example.org.",
+    "url": "https://unstable.example.org/resource.html"
+  }
+]

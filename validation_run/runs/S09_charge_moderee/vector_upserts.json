@@ -1,0 +1,47 @@
+[
+  {
+    "docId": "S09-GRAPH-001",
+    "chunkIds": [
+      "chunk:S09-GRAPH-001:intro",
+      "chunk:S09-GRAPH-001:patterns"
+    ],
+    "tokenTotal": 374,
+    "tookMs": 180
+  },
+  {
+    "docId": "S09-GRAPH-002",
+    "chunkIds": [
+      "chunk:S09-GRAPH-002:abstract",
+      "chunk:S09-GRAPH-002:results"
+    ],
+    "tokenTotal": 472,
+    "tookMs": 185
+  },
+  {
+    "docId": "S09-GRAPH-003",
+    "chunkIds": [
+      "chunk:S09-GRAPH-003:intro",
+      "chunk:S09-GRAPH-003:tradeoffs"
+    ],
+    "tokenTotal": 364,
+    "tookMs": 190
+  },
+  {
+    "docId": "S09-GRAPH-004",
+    "chunkIds": [
+      "chunk:S09-GRAPH-004:abstract",
+      "chunk:S09-GRAPH-004:metrics"
+    ],
+    "tokenTotal": 460,
+    "tookMs": 195
+  },
+  {
+    "docId": "S09-GRAPH-005",
+    "chunkIds": [
+      "chunk:S09-GRAPH-005:intro",
+      "chunk:S09-GRAPH-005:visuals"
+    ],
+    "tokenTotal": 350,
+    "tookMs": 200
+  }
+]

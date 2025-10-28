@@ -1,0 +1,29 @@
+[
+  {
+    "docId": "S04-ACL-001",
+    "chunkIds": [
+      "chunk:S04-ACL-001:abstract",
+      "chunk:S04-ACL-001:results"
+    ],
+    "tokenTotal": 468,
+    "tookMs": 180
+  },
+  {
+    "docId": "S04-ACL-002",
+    "chunkIds": [
+      "chunk:S04-ACL-002:abstract",
+      "chunk:S04-ACL-002:analysis"
+    ],
+    "tokenTotal": 456,
+    "tookMs": 185
+  },
+  {
+    "docId": "S04-ACL-003",
+    "chunkIds": [
+      "chunk:S04-ACL-003:abstract",
+      "chunk:S04-ACL-003:conclusion"
+    ],
+    "tokenTotal": 448,
+    "tookMs": 190
+  }
+]

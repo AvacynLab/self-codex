@@ -1,0 +1,6 @@
+[2025-01-15T09:00:00.000Z] INFO validation:S09_charge_moderee launched moderate-load query
+[2025-01-15T09:00:01.000Z] INFO validation:S09_charge_moderee retrieved 5 representative documents
+[2025-01-15T09:00:02.000Z] INFO validation:S09_charge_moderee processed pdf and html mix
+[2025-01-15T09:00:03.000Z] INFO validation:S09_charge_moderee aggregated metrics for reporting
+[2025-01-15T09:00:04.000Z] INFO validation:S09_charge_moderee scenario satisfied performance thresholds
+[2025-01-15T09:00:00.000Z] INFO validation:S09_charge_moderee completed

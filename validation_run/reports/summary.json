@@ -1,0 +1,681 @@
+{
+  "generatedAt": "2025-10-28T23:30:32.797Z",
+  "scenarios": [
+    {
+      "id": 1,
+      "slug": "S01_pdf_science",
+      "label": "PDF scientifique",
+      "description": "Recherche ciblée de PDF scientifiques sur arXiv (S01).",
+      "timings": {
+        "searxQuery": {
+          "p50": 840,
+          "p95": 840,
+          "p99": 840
+        },
+        "fetchUrl": {
+          "p50": 1080,
+          "p95": 1116,
+          "p99": 1119.2
+        },
+        "extractWithUnstructured": {
+          "p50": 910,
+          "p95": 937,
+          "p99": 939.4
+        },
+        "ingestToGraph": {
+          "p50": 420,
+          "p95": 420,
+          "p99": 420
+        },
+        "ingestToVector": {
+          "p50": 430,
+          "p95": 430,
+          "p99": 430
+        },
+        "tookMs": 3650,
+        "documentsIngested": 9,
+        "errors": {
+          "network_error": 1
+        }
+      },
+      "errorEntries": [
+        {
+          "category": "network_error",
+          "message": "Timeout transitoire sur arxiv.org résolu après retry.",
+          "url": "https://arxiv.org/abs/2501.07890",
+          "metadata": {
+            "retry": true,
+            "attempts": 2
+          }
+        }
+      ],
+      "errorCounts": {
+        "network_error": 2
+      },
+      "documentsIngested": 9,
+      "tookMs": 3650,
+      "eventsCount": 13,
+      "kgChangesCount": 6,
+      "vectorUpsertsCount": 3,
+      "serverLogLines": 6,
+      "notes": []
+    },
+    {
+      "id": 2,
+      "slug": "S02_html_long_images",
+      "label": "HTML long + images",
+      "description": "Contenu HTML riche avec images pour valider l'extraction (S02).",
+      "timings": {
+        "searxQuery": {
+          "p50": 910,
+          "p95": 910,
+          "p99": 910
+        },
+        "fetchUrl": {
+          "p50": 1160,
+          "p95": 1178,
+          "p99": 1179.6
+        },
+        "extractWithUnstructured": {
+          "p50": 1005,
+          "p95": 1018.5,
+          "p99": 1019.7
+        },
+        "ingestToGraph": {
+          "p50": 380,
+          "p95": 380,
+          "p99": 380
+        },
+        "ingestToVector": {
+          "p50": 390,
+          "p95": 390,
+          "p99": 390
+        },
+        "tookMs": 3200,
+        "documentsIngested": 6,
+        "errors": {
+          "parse_error": 1
+        }
+      },
+      "errorEntries": [
+        {
+          "category": "parse_error",
+          "message": "Attribut alt manquant sur une image, chunk ignoré.",
+          "url": "https://towardsdatascience.com/visual-diagnostics-rag",
+          "metadata": {
+            "element": "img",
+            "issue": "missing_alt"
+          }
+        }
+      ],
+      "errorCounts": {
+        "parse_error": 2
+      },
+      "documentsIngested": 6,
+      "tookMs": 3200,
+      "eventsCount": 10,
+      "kgChangesCount": 4,
+      "vectorUpsertsCount": 2,
+      "serverLogLines": 6,
+      "notes": []
+    },
+    {
+      "id": 3,
+      "slug": "S03_actualites_fraicheur",
+      "label": "Actualités (fraîcheur)",
+      "description": "Suivi de l'actualité récente pour tester la fraîcheur (S03).",
+      "timings": {
+        "searxQuery": {
+          "p50": 760,
+          "p95": 760,
+          "p99": 760
+        },
+        "fetchUrl": {
+          "p50": 940,
+          "p95": 976,
+          "p99": 979.2
+        },
+        "extractWithUnstructured": {
+          "p50": 780,
+          "p95": 816,
+          "p99": 819.2
+        },
+        "ingestToGraph": {
+          "p50": 360,
+          "p95": 360,
+          "p99": 360
+        },
+        "ingestToVector": {
+          "p50": 370,
+          "p95": 370,
+          "p99": 370
+        },
+        "tookMs": 2880,
+        "documentsIngested": 9,
+        "errors": {}
+      },
+      "errorEntries": [],
+      "errorCounts": {},
+      "documentsIngested": 9,
+      "tookMs": 2880,
+      "eventsCount": 12,
+      "kgChangesCount": 5,
+      "vectorUpsertsCount": 3,
+      "serverLogLines": 6,
+      "notes": []
+    },
+    {
+      "id": 4,
+      "slug": "S04_multilingue_fr_en",
+      "label": "Multilingue (FR/EN)",
+      "description": "Comparaison FR/EN sur ACL Anthology pour la couverture multilingue (S04).",
+      "timings": {
+        "searxQuery": {
+          "p50": 890,
+          "p95": 890,
+          "p99": 890
+        },
+        "fetchUrl": {
+          "p50": 1030,
+          "p95": 1048,
+          "p99": 1049.6
+        },
+        "extractWithUnstructured": {
+          "p50": 920,
+          "p95": 929,
+          "p99": 929.8
+        },
+        "ingestToGraph": {
+          "p50": 410,
+          "p95": 410,
+          "p99": 410
+        },
+        "ingestToVector": {
+          "p50": 420,
+          "p95": 420,
+          "p99": 420
+        },
+        "tookMs": 3180,
+        "documentsIngested": 9,
+        "errors": {}
+      },
+      "errorEntries": [],
+      "errorCounts": {},
+      "documentsIngested": 9,
+      "tookMs": 3180,
+      "eventsCount": 12,
+      "kgChangesCount": 6,
+      "vectorUpsertsCount": 3,
+      "serverLogLines": 6,
+      "notes": []
+    },
+    {
+      "id": 5,
+      "slug": "S05_idempotence",
+      "label": "Idempotence (rejouer S01)",
+      "description": "Double exécution de S01 pour vérifier l'idempotence (S05).",
+      "timings": {
+        "searxQuery": {
+          "p50": 830,
+          "p95": 830,
+          "p99": 830
+        },
+        "fetchUrl": {
+          "p50": 1070,
+          "p95": 1097,
+          "p99": 1099.4
+        },
+        "extractWithUnstructured": {
+          "p50": 900,
+          "p95": 927,
+          "p99": 929.4
+        },
+        "ingestToGraph": {
+          "p50": 410,
+          "p95": 410,
+          "p99": 410
+        },
+        "ingestToVector": {
+          "p50": 420,
+          "p95": 420,
+          "p99": 420
+        },
+        "tookMs": 3520,
+        "documentsIngested": 9,
+        "errors": {}
+      },
+      "errorEntries": [],
+      "errorCounts": {},
+      "documentsIngested": 9,
+      "tookMs": 3520,
+      "eventsCount": 12,
+      "kgChangesCount": 6,
+      "vectorUpsertsCount": 3,
+      "serverLogLines": 6,
+      "notes": []
+    },
+    {
+      "id": 6,
+      "slug": "S06_robots_taille_max",
+      "label": "robots & taille max",
+      "description": "Test de respect des robots.txt et limites de taille (S06).",
+      "timings": {
+        "searxQuery": {
+          "p50": 780,
+          "p95": 780,
+          "p99": 780
+        },
+        "fetchUrl": {
+          "p50": 1035,
+          "p95": 1048.5,
+          "p99": 1049.7
+        },
+        "extractWithUnstructured": {
+          "p50": 815,
+          "p95": 819.5,
+          "p99": 819.9
+        },
+        "ingestToGraph": {
+          "p50": 340,
+          "p95": 340,
+          "p99": 340
+        },
+        "ingestToVector": {
+          "p50": 350,
+          "p95": 350,
+          "p99": 350
+        },
+        "tookMs": 2940,
+        "documentsIngested": 6,
+        "errors": {
+          "robots_denied": 1,
+          "max_size_exceeded": 1
+        }
+      },
+      "errorEntries": [
+        {
+          "category": "robots_denied",
+          "message": "Robots.txt interdit l'accès à /private/report.pdf.",
+          "url": "https://datasets.example.com/private/report.pdf"
+        },
+        {
+          "category": "max_size_exceeded",
+          "message": "Fichier de 32MB ignoré (limite 15MB).",
+          "url": "https://oversized.example.org/rag/huge.pdf",
+          "metadata": {
+            "size": 33554432,
+            "limit": 15000000
+          }
+        }
+      ],
+      "errorCounts": {
+        "robots_denied": 2,
+        "max_size_exceeded": 2
+      },
+      "documentsIngested": 6,
+      "tookMs": 2940,
+      "eventsCount": 11,
+      "kgChangesCount": 4,
+      "vectorUpsertsCount": 2,
+      "serverLogLines": 6,
+      "notes": []
+    },
+    {
+      "id": 7,
+      "slug": "S07_sources_instables",
+      "label": "Sources instables (5xx/timeout)",
+      "description": "Gestion des sources sujettes aux erreurs 5xx ou timeouts (S07).",
+      "timings": {
+        "searxQuery": {
+          "p50": 800,
+          "p95": 800,
+          "p99": 800
+        },
+        "fetchUrl": {
+          "p50": 1160,
+          "p95": 1178,
+          "p99": 1179.6
+        },
+        "extractWithUnstructured": {
+          "p50": 850,
+          "p95": 859,
+          "p99": 859.8
+        },
+        "ingestToGraph": {
+          "p50": 360,
+          "p95": 360,
+          "p99": 360
+        },
+        "ingestToVector": {
+          "p50": 365,
+          "p95": 365,
+          "p99": 365
+        },
+        "tookMs": 3060,
+        "documentsIngested": 6,
+        "errors": {
+          "network_error": 2
+        }
+      },
+      "errorEntries": [
+        {
+          "category": "network_error",
+          "message": "Timeout 504 sur example.net après trois tentatives.",
+          "url": "https://example.net/flaky.pdf",
+          "metadata": {
+            "attempts": 3,
+            "timeoutMs": 15000
+          }
+        },
+        {
+          "category": "network_error",
+          "message": "Connexion interrompue sur unstable.example.org.",
+          "url": "https://unstable.example.org/resource.html"
+        }
+      ],
+      "errorCounts": {
+        "network_error": 4
+      },
+      "documentsIngested": 6,
+      "tookMs": 3060,
+      "eventsCount": 11,
+      "kgChangesCount": 4,
+      "vectorUpsertsCount": 2,
+      "serverLogLines": 6,
+      "notes": []
+    },
+    {
+      "id": 8,
+      "slug": "S08_indexation_directe",
+      "label": "Indexation directe (sans Searx)",
+      "description": "Ingestion directe d'URLs pour bypasser Searx (S08).",
+      "timings": {
+        "searxQuery": {
+          "p50": 320,
+          "p95": 320,
+          "p99": 320
+        },
+        "fetchUrl": {
+          "p50": 1020,
+          "p95": 1038,
+          "p99": 1039.6
+        },
+        "extractWithUnstructured": {
+          "p50": 890,
+          "p95": 899,
+          "p99": 899.8
+        },
+        "ingestToGraph": {
+          "p50": 340,
+          "p95": 340,
+          "p99": 340
+        },
+        "ingestToVector": {
+          "p50": 345,
+          "p95": 345,
+          "p99": 345
+        },
+        "tookMs": 2480,
+        "documentsIngested": 6,
+        "errors": {}
+      },
+      "errorEntries": [],
+      "errorCounts": {},
+      "documentsIngested": 6,
+      "tookMs": 2480,
+      "eventsCount": 9,
+      "kgChangesCount": 4,
+      "vectorUpsertsCount": 2,
+      "serverLogLines": 6,
+      "notes": []
+    },
+    {
+      "id": 9,
+      "slug": "S09_charge_moderee",
+      "label": "Charge modérée (K=12)",
+      "description": "Charge accrue avec 12 résultats pour mesurer les performances (S09).",
+      "timings": {
+        "searxQuery": {
+          "p50": 2380,
+          "p95": 2380,
+          "p99": 2380
+        },
+        "fetchUrl": {
+          "p50": 1140,
+          "p95": 1174,
+          "p99": 1178.8
+        },
+        "extractWithUnstructured": {
+          "p50": 980,
+          "p95": 1016,
+          "p99": 1019.2
+        },
+        "ingestToGraph": {
+          "p50": 460,
+          "p95": 460,
+          "p99": 460
+        },
+        "ingestToVector": {
+          "p50": 470,
+          "p95": 470,
+          "p99": 470
+        },
+        "tookMs": 5850,
+        "documentsIngested": 15,
+        "errors": {}
+      },
+      "errorEntries": [],
+      "errorCounts": {},
+      "documentsIngested": 15,
+      "tookMs": 5850,
+      "eventsCount": 18,
+      "kgChangesCount": 10,
+      "vectorUpsertsCount": 5,
+      "serverLogLines": 6,
+      "notes": []
+    },
+    {
+      "id": 10,
+      "slug": "S10_qualite_rag",
+      "label": "Qualité RAG (sanity)",
+      "description": "Validation qualitative du RAG sans web avec citations (S10).",
+      "timings": {
+        "searxQuery": {
+          "p50": 0,
+          "p95": 0,
+          "p99": 0
+        },
+        "fetchUrl": {
+          "p50": 0,
+          "p95": 0,
+          "p99": 0
+        },
+        "extractWithUnstructured": {
+          "p50": 0,
+          "p95": 0,
+          "p99": 0
+        },
+        "ingestToGraph": {
+          "p50": 0,
+          "p95": 0,
+          "p99": 0
+        },
+        "ingestToVector": {
+          "p50": 0,
+          "p95": 0,
+          "p99": 0
+        },
+        "tookMs": 1200,
+        "documentsIngested": 3,
+        "errors": {}
+      },
+      "errorEntries": [],
+      "errorCounts": {},
+      "documentsIngested": 3,
+      "tookMs": 1200,
+      "eventsCount": 3,
+      "kgChangesCount": 0,
+      "vectorUpsertsCount": 0,
+      "serverLogLines": 6,
+      "notes": [
+        "kg_changes.ndjson vide"
+      ]
+    }
+  ],
+  "totals": {
+    "documentsIngested": 78,
+    "events": 111,
+    "kgChanges": 49,
+    "vectorUpserts": 25,
+    "errors": {
+      "network_error": 6,
+      "parse_error": 2,
+      "robots_denied": 2,
+      "max_size_exceeded": 2
+    },
+    "topDomains": [
+      {
+        "domain": "arxiv.org",
+        "count": 7,
+        "percentage": 28
+      },
+      {
+        "domain": "aclanthology.org",
+        "count": 3,
+        "percentage": 12
+      },
+      {
+        "domain": "vectorlabs.ai",
+        "count": 3,
+        "percentage": 12
+      },
+      {
+        "domain": "graphresearch.org",
+        "count": 2,
+        "percentage": 8
+      },
+      {
+        "domain": "towardsdatascience.com",
+        "count": 2,
+        "percentage": 8
+      },
+      {
+        "domain": "datahub.example.net",
+        "count": 1,
+        "percentage": 4
+      },
+      {
+        "domain": "datasets.example.org",
+        "count": 1,
+        "percentage": 4
+      },
+      {
+        "domain": "docs.example.org",
+        "count": 1,
+        "percentage": 4
+      },
+      {
+        "domain": "research.facebook.com",
+        "count": 1,
+        "percentage": 4
+      },
+      {
+        "domain": "status.example.com",
+        "count": 1,
+        "percentage": 4
+      }
+    ],
+    "contentTypes": [
+      {
+        "mimeType": "application/pdf",
+        "count": 14,
+        "percentage": 56
+      },
+      {
+        "mimeType": "text/html",
+        "count": 11,
+        "percentage": 44
+      }
+    ]
+  },
+  "acceptance": {
+    "functional": {
+      "status": "pass",
+      "details": "Chaque scénario instrumenté expose des documents ingérés ou des erreurs classées.",
+      "scenarios": [
+        "S01_pdf_science",
+        "S02_html_long_images",
+        "S03_actualites_fraicheur",
+        "S04_multilingue_fr_en",
+        "S05_idempotence",
+        "S06_robots_taille_max",
+        "S07_sources_instables",
+        "S08_indexation_directe",
+        "S09_charge_moderee",
+        "S10_qualite_rag"
+      ]
+    },
+    "idempotence": {
+      "status": "pass",
+      "details": "Les docIds et événements doc_ingested sont identiques entre S01_pdf_science et S05_idempotence.",
+      "scenarios": [
+        "S01_pdf_science",
+        "S05_idempotence"
+      ]
+    },
+    "extraction": {
+      "status": "pass",
+      "details": "Segments uniques: 100.0% (49/49)",
+      "scenarios": [
+        "S01_pdf_science",
+        "S02_html_long_images",
+        "S03_actualites_fraicheur",
+        "S04_multilingue_fr_en",
+        "S05_idempotence",
+        "S06_robots_taille_max",
+        "S07_sources_instables",
+        "S08_indexation_directe",
+        "S09_charge_moderee"
+      ]
+    },
+    "language": {
+      "status": "pass",
+      "details": "Détections valides: 100.0% (25/25) ; Top langues: en: 23, fr: 2",
+      "scenarios": [
+        "S01_pdf_science",
+        "S02_html_long_images",
+        "S03_actualites_fraicheur",
+        "S04_multilingue_fr_en",
+        "S05_idempotence",
+        "S06_robots_taille_max",
+        "S07_sources_instables",
+        "S08_indexation_directe",
+        "S09_charge_moderee"
+      ]
+    },
+    "ragQuality": {
+      "status": "pass",
+      "details": "La réponse S10 cite les sources ingérées (≥1 citation).",
+      "scenarios": [
+        "S10_qualite_rag"
+      ]
+    },
+    "performance": {
+      "status": "pass",
+      "details": "Les seuils de latence (p95) et la durée totale respectent les contraintes de S09.",
+      "scenarios": [
+        "S09_charge_moderee"
+      ]
+    },
+    "robustness": {
+      "status": "pass",
+      "details": "Toutes les erreurs présentes sont classées et non bloquantes.",
+      "scenarios": [
+        "S01_pdf_science",
+        "S02_html_long_images",
+        "S06_robots_taille_max",
+        "S07_sources_instables"
+      ]
+    }
+  }
+}

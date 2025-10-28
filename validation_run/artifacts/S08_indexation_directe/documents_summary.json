@@ -1,0 +1,38 @@
+[
+  {
+    "id": "S08-DIRECT-001",
+    "url": "https://arxiv.org/pdf/2407.12345.pdf",
+    "title": "Graph-Augmented Retrieval for Multimodal Agents",
+    "language": "en",
+    "description": "PDF récupéré via ingestion directe.",
+    "mimeType": "application/pdf",
+    "checksum": "sha256:5566aaee112233445566778899aabbcc",
+    "size": 4200000,
+    "fetchedAt": 1736932308000,
+    "segmentCount": 2,
+    "provenance": [
+      {
+        "sourceId": "https://arxiv.org/pdf/2407.12345.pdf",
+        "type": "url"
+      }
+    ]
+  },
+  {
+    "id": "S08-DIRECT-002",
+    "url": "https://research.facebook.com/publications/2025-direct-indexing.pdf",
+    "title": "Direct Indexing for Enterprise Knowledge Bases",
+    "language": "en",
+    "description": "Document technique importé depuis une URL listée.",
+    "mimeType": "application/pdf",
+    "checksum": "sha256:6677bbff2233445566778899aabbccdd",
+    "size": 3880000,
+    "fetchedAt": 1736932310000,
+    "segmentCount": 2,
+    "provenance": [
+      {
+        "sourceId": "https://research.facebook.com/publications/2025-direct-indexing.pdf",
+        "type": "url"
+      }
+    ]
+  }
+]

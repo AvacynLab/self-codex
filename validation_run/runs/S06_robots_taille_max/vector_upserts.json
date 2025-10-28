@@ -1,0 +1,20 @@
+[
+  {
+    "docId": "S06-DATA-001",
+    "chunkIds": [
+      "chunk:S06-DATA-001:intro",
+      "chunk:S06-DATA-001:download"
+    ],
+    "tokenTotal": 310,
+    "tookMs": 180
+  },
+  {
+    "docId": "S06-DATA-002",
+    "chunkIds": [
+      "chunk:S06-DATA-002:abstract",
+      "chunk:S06-DATA-002:guidelines"
+    ],
+    "tokenTotal": 428,
+    "tookMs": 185
+  }
+]

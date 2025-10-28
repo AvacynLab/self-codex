@@ -1,0 +1,56 @@
+[
+  {
+    "id": "S04-ACL-001",
+    "url": "https://aclanthology.org/2024.acl-long.123",
+    "title": "Comparing RAG Strategies for Multilingual QA",
+    "language": "en",
+    "description": "Analysis of multilingual retrieval performance for QA systems.",
+    "mimeType": "application/pdf",
+    "checksum": "sha256:1f2a3b4c5d6e7f8090a1b2c3d4e5f607",
+    "size": 142204,
+    "fetchedAt": 1736931985000,
+    "segmentCount": 2,
+    "provenance": [
+      {
+        "sourceId": "https://aclanthology.org/2024.acl-long.123",
+        "type": "url"
+      }
+    ]
+  },
+  {
+    "id": "S04-ACL-002",
+    "url": "https://aclanthology.org/2024.acl-long.210",
+    "title": "Graph-Augmented Retrieval for Code-Switched Dialogue",
+    "language": "en",
+    "description": "Graph-augmented retrieval applied to code-switched conversations.",
+    "mimeType": "application/pdf",
+    "checksum": "sha256:abcd1234efef56789011121314151617",
+    "size": 138552,
+    "fetchedAt": 1736931987000,
+    "segmentCount": 2,
+    "provenance": [
+      {
+        "sourceId": "https://aclanthology.org/2024.acl-long.210",
+        "type": "url"
+      }
+    ]
+  },
+  {
+    "id": "S04-ACL-003",
+    "url": "https://aclanthology.org/2024.acl-long.333",
+    "title": "Évaluation du RAG sur corpus francophones",
+    "language": "fr",
+    "description": "Étude ciblée sur l'évaluation des systèmes RAG en français.",
+    "mimeType": "application/pdf",
+    "checksum": "sha256:ffeeddccbbaa00998877665544332211",
+    "size": 129004,
+    "fetchedAt": 1736931989000,
+    "segmentCount": 2,
+    "provenance": [
+      {
+        "sourceId": "https://aclanthology.org/2024.acl-long.333",
+        "type": "url"
+      }
+    ]
+  }
+]

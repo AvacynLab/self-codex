@@ -1,0 +1,20 @@
+[
+  {
+    "docId": "S02-TDS-001",
+    "chunkIds": [
+      "chunk:S02-TDS-001:intro",
+      "chunk:S02-TDS-001:table"
+    ],
+    "tokenTotal": 408,
+    "tookMs": 180
+  },
+  {
+    "docId": "S02-TDS-002",
+    "chunkIds": [
+      "chunk:S02-TDS-002:intro",
+      "chunk:S02-TDS-002:gallery"
+    ],
+    "tokenTotal": 397,
+    "tookMs": 185
+  }
+]

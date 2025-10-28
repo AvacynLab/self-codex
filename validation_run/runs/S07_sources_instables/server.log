@@ -1,0 +1,6 @@
+[2025-01-15T09:00:00.000Z] INFO validation:S07_sources_instables triggered backoff for flaky domains
+[2025-01-15T09:00:01.000Z] INFO validation:S07_sources_instables classified repeated timeouts
+[2025-01-15T09:00:02.000Z] INFO validation:S07_sources_instables captured guidance documents
+[2025-01-15T09:00:03.000Z] INFO validation:S07_sources_instables updated remediation notes
+[2025-01-15T09:00:04.000Z] INFO validation:S07_sources_instables scenario ended with actionable errors
+[2025-01-15T09:00:00.000Z] INFO validation:S07_sources_instables completed

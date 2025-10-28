@@ -1,0 +1,74 @@
+[
+  {
+    "id": "kg:S02_html_long_images:201",
+    "subject": "doc:S02-TDS-001",
+    "predicate": "advises",
+    "object": "Online evaluation for RAG",
+    "source": "https://towardsdatascience.com/evaluating-rag-metrics-production",
+    "provenance": [
+      {
+        "sourceId": "S02-TDS-001",
+        "type": "url"
+      }
+    ],
+    "confidence": 0.86,
+    "insertedAt": 1736931817400,
+    "updatedAt": 1736931817400,
+    "revision": 0,
+    "ordinal": 201
+  },
+  {
+    "id": "kg:S02_html_long_images:202",
+    "subject": "doc:S02-TDS-001",
+    "predicate": "lists",
+    "object": "Precision, recall, answer relevance",
+    "source": "https://towardsdatascience.com/evaluating-rag-metrics-production",
+    "provenance": [
+      {
+        "sourceId": "S02-TDS-001",
+        "type": "url"
+      }
+    ],
+    "confidence": 0.83,
+    "insertedAt": 1736931817400,
+    "updatedAt": 1736931817400,
+    "revision": 0,
+    "ordinal": 202
+  },
+  {
+    "id": "kg:S02_html_long_images:203",
+    "subject": "doc:S02-TDS-002",
+    "predicate": "describes",
+    "object": "Heatmap-based error analysis",
+    "source": "https://towardsdatascience.com/visual-diagnostics-rag",
+    "provenance": [
+      {
+        "sourceId": "S02-TDS-002",
+        "type": "url"
+      }
+    ],
+    "confidence": 0.84,
+    "insertedAt": 1736931820400,
+    "updatedAt": 1736931820400,
+    "revision": 0,
+    "ordinal": 203
+  },
+  {
+    "id": "kg:S02_html_long_images:204",
+    "subject": "doc:S02-TDS-002",
+    "predicate": "highlights",
+    "object": "Importance of multimodal assets",
+    "source": "https://towardsdatascience.com/visual-diagnostics-rag",
+    "provenance": [
+      {
+        "sourceId": "S02-TDS-002",
+        "type": "url"
+      }
+    ],
+    "confidence": 0.8,
+    "insertedAt": 1736931820400,
+    "updatedAt": 1736931820400,
+    "revision": 0,
+    "ordinal": 204
+  }
+]

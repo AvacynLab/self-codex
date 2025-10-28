@@ -1,0 +1,32 @@
+{
+  "scenarioId": 6,
+  "slug": "S06_robots_taille_max",
+  "label": "robots & taille max",
+  "query": "dataset large download pdf",
+  "summary": "Scénario robots & taille max complété : un domaine bloqué, un fichier ignoré pour taille.",
+  "highlights": [
+    "Robots.txt respecté pour datasets.example.com",
+    "Fichier >15MB rejeté avec classification"
+  ],
+  "recommendations": [
+    "Activer SEARCH_FETCH_RESPECT_ROBOTS=1 en production"
+  ],
+  "documents": [
+    {
+      "id": "S06-DATA-001",
+      "title": "Benchmark Dataset for LLM Evaluation",
+      "url": "https://datasets.example.org/llm/benchmark-dataset.zip",
+      "snippet": "Large PDF bundle summarising multimodal evaluation datasets.",
+      "language": "en",
+      "score": 0.78
+    },
+    {
+      "id": "S06-DATA-002",
+      "title": "Handling Large PDFs for Retrieval Pipelines",
+      "url": "https://datahub.example.net/rag/large-pdf-guide.pdf",
+      "snippet": "Guide explaining chunking strategies for large PDF assets.",
+      "language": "en",
+      "score": 0.75
+    }
+  ]
+}

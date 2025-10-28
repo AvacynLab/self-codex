@@ -1,0 +1,11 @@
+[
+  {
+    "category": "network_error",
+    "message": "Timeout transitoire sur arxiv.org résolu après retry.",
+    "url": "https://arxiv.org/abs/2501.07890",
+    "metadata": {
+      "retry": true,
+      "attempts": 2
+    }
+  }
+]

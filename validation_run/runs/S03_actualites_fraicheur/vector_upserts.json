@@ -1,0 +1,28 @@
+[
+  {
+    "docId": "S03-NEWS-001",
+    "chunkIds": [
+      "chunk:S03-NEWS-001:intro",
+      "chunk:S03-NEWS-001:quote"
+    ],
+    "tokenTotal": 380,
+    "tookMs": 180
+  },
+  {
+    "docId": "S03-NEWS-002",
+    "chunkIds": [
+      "chunk:S03-NEWS-002:intro",
+      "chunk:S03-NEWS-002:details"
+    ],
+    "tokenTotal": 344,
+    "tookMs": 185
+  },
+  {
+    "docId": "S03-NEWS-003",
+    "chunkIds": [
+      "chunk:S03-NEWS-003:intro"
+    ],
+    "tokenTotal": 170,
+    "tookMs": 190
+  }
+]

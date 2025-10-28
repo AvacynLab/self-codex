@@ -1,0 +1,32 @@
+{
+  "scenarioId": 8,
+  "slug": "S08_indexation_directe",
+  "label": "Indexation directe (sans Searx)",
+  "query": null,
+  "summary": "Ingestion directe complétée avec deux documents stratégiques.",
+  "highlights": [
+    "RAG exécuté sans requête externe",
+    "Audit trail généré pour chaque URL"
+  ],
+  "recommendations": [
+    "Utiliser ce flux pour les documents internes sensibles"
+  ],
+  "documents": [
+    {
+      "id": "S08-DIRECT-001",
+      "title": "Graph-Augmented Retrieval for Multimodal Agents",
+      "url": "https://arxiv.org/pdf/2407.12345.pdf",
+      "snippet": "Preprint ingested directement sans requête Searx.",
+      "language": "en",
+      "score": 0.88
+    },
+    {
+      "id": "S08-DIRECT-002",
+      "title": "Direct Indexing for Enterprise Knowledge Bases",
+      "url": "https://research.facebook.com/publications/2025-direct-indexing.pdf",
+      "snippet": "Meta AI whitepaper sur l'ingestion directe et la gouvernance.",
+      "language": "en",
+      "score": 0.84
+    }
+  ]
+}

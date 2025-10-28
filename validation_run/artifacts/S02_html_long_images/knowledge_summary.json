@@ -1,0 +1,24 @@
+[
+  {
+    "subject": "doc:S02-TDS-001",
+    "tripleCount": 2,
+    "created": 1736931817000,
+    "updated": 1736931817600,
+    "mentions": [
+      "metrics",
+      "production",
+      "rag"
+    ]
+  },
+  {
+    "subject": "doc:S02-TDS-002",
+    "tripleCount": 2,
+    "created": 1736931820000,
+    "updated": 1736931820600,
+    "mentions": [
+      "diagnostics",
+      "images",
+      "rag"
+    ]
+  }
+]

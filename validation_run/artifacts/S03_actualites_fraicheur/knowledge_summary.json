@@ -1,0 +1,35 @@
+[
+  {
+    "subject": "doc:S03-NEWS-001",
+    "tripleCount": 2,
+    "created": 1736931907000,
+    "updated": 1736931907600,
+    "mentions": [
+      "funding",
+      "responsible",
+      "ai"
+    ]
+  },
+  {
+    "subject": "doc:S03-NEWS-002",
+    "tripleCount": 2,
+    "created": 1736931908500,
+    "updated": 1736931909100,
+    "mentions": [
+      "benchmark",
+      "rag",
+      "france"
+    ]
+  },
+  {
+    "subject": "doc:S03-NEWS-003",
+    "tripleCount": 1,
+    "created": 1736931909200,
+    "updated": 1736931909800,
+    "mentions": [
+      "safety",
+      "germany",
+      "llm"
+    ]
+  }
+]

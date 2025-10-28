@@ -1,0 +1,42 @@
+{
+  "scenarioId": 1,
+  "slug": "S01_pdf_science",
+  "label": "PDF scientifique",
+  "query": "site:arxiv.org multimodal LLM evaluation 2025 filetype:pdf",
+  "summary": "Trois PDF arXiv couvrant l'évaluation RAG multimodale ont été ingérés et indexés.",
+  "highlights": [
+    "6 chunks vectoriels générés pour les sections clés",
+    "18 triples ajoutés au graphe de connaissances",
+    "Timeout transitoire résolu automatiquement"
+  ],
+  "recommendations": [
+    "Conserver la configuration actuelle de retry sur arxiv.org",
+    "Poursuivre l'analyse comparative graph vs vector"
+  ],
+  "documents": [
+    {
+      "id": "S01-ARX-001",
+      "title": "Evaluating Multimodal LLMs in 2025",
+      "url": "https://arxiv.org/abs/2501.01234",
+      "snippet": "Comprehensive survey covering evaluation metrics for multimodal LLMs.",
+      "language": "en",
+      "score": 0.92
+    },
+    {
+      "id": "S01-ARX-002",
+      "title": "Benchmarking RAG Strategies for Scientific QA",
+      "url": "https://arxiv.org/abs/2501.04567",
+      "snippet": "Benchmarks contrasting graph-grounded and vector-grounded retrieval.",
+      "language": "en",
+      "score": 0.88
+    },
+    {
+      "id": "S01-ARX-003",
+      "title": "Context Windows for Cross-Modal Reasoning",
+      "url": "https://arxiv.org/abs/2501.07890",
+      "snippet": "Exploration of long-context strategies for multimodal models.",
+      "language": "en",
+      "score": 0.84
+    }
+  ]
+}

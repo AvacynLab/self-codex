@@ -1,0 +1,16 @@
+[
+  {
+    "category": "robots_denied",
+    "message": "Robots.txt interdit l'accès à /private/report.pdf.",
+    "url": "https://datasets.example.com/private/report.pdf"
+  },
+  {
+    "category": "max_size_exceeded",
+    "message": "Fichier de 32MB ignoré (limite 15MB).",
+    "url": "https://oversized.example.org/rag/huge.pdf",
+    "metadata": {
+      "size": 33554432,
+      "limit": 15000000
+    }
+  }
+]

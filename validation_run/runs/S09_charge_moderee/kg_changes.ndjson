@@ -1,0 +1,10 @@
+{"scenario":"S09_charge_moderee","docId":"S09-GRAPH-001","triple":{"predicate":"lists","object":"Topology patterns for retrieval"},"insertedAt":1736932387400}
+{"scenario":"S09_charge_moderee","docId":"S09-GRAPH-001","triple":{"predicate":"recommends","object":"Hybrid scoring for RAG"},"insertedAt":1736932387400}
+{"scenario":"S09_charge_moderee","docId":"S09-GRAPH-002","triple":{"predicate":"evaluates","object":"Graph retrieval latency"},"insertedAt":1736932389400}
+{"scenario":"S09_charge_moderee","docId":"S09-GRAPH-002","triple":{"predicate":"summarises","object":"p95 results across datasets"},"insertedAt":1736932389400}
+{"scenario":"S09_charge_moderee","docId":"S09-GRAPH-003","triple":{"predicate":"describes","object":"Hybrid orchestration"},"insertedAt":1736932391400}
+{"scenario":"S09_charge_moderee","docId":"S09-GRAPH-003","triple":{"predicate":"notes","object":"Trade-offs between recall and cost"},"insertedAt":1736932391400}
+{"scenario":"S09_charge_moderee","docId":"S09-GRAPH-004","triple":{"predicate":"reports","object":"p95 latency improvements"},"insertedAt":1736932393400}
+{"scenario":"S09_charge_moderee","docId":"S09-GRAPH-004","triple":{"predicate":"details","object":"Cost profile of graph ingestion"},"insertedAt":1736932393400}
+{"scenario":"S09_charge_moderee","docId":"S09-GRAPH-005","triple":{"predicate":"explains","object":"Dashboard patterns"},"insertedAt":1736932395400}
+{"scenario":"S09_charge_moderee","docId":"S09-GRAPH-005","triple":{"predicate":"encourages","object":"Aligning RAG metrics with KG views"},"insertedAt":1736932395400}

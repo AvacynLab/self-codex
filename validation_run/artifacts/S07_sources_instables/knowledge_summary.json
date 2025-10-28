@@ -1,0 +1,24 @@
+[
+  {
+    "subject": "doc:S07-NEWS-001",
+    "tripleCount": 2,
+    "created": 1736932232000,
+    "updated": 1736932232600,
+    "mentions": [
+      "outage",
+      "mitigation",
+      "monitoring"
+    ]
+  },
+  {
+    "subject": "doc:S07-GUIDE-002",
+    "tripleCount": 2,
+    "created": 1736932234000,
+    "updated": 1736932234600,
+    "mentions": [
+      "retry",
+      "timeouts",
+      "rag"
+    ]
+  }
+]

@@ -1,0 +1,4 @@
+{"scenario":"S07_sources_instables","docId":"S07-NEWS-001","triple":{"predicate":"details","object":"Retry jitter for 5xx errors"},"insertedAt":1736932232400}
+{"scenario":"S07_sources_instables","docId":"S07-NEWS-001","triple":{"predicate":"recommends","object":"Circuit breaker for flaky domains"},"insertedAt":1736932232400}
+{"scenario":"S07_sources_instables","docId":"S07-GUIDE-002","triple":{"predicate":"lists","object":"Backoff parameters for fetch"},"insertedAt":1736932234400}
+{"scenario":"S07_sources_instables","docId":"S07-GUIDE-002","triple":{"predicate":"suggests","object":"Mark flaky domains for review"},"insertedAt":1736932234400}

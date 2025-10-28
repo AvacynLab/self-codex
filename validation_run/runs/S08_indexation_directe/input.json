@@ -1,0 +1,8 @@
+{
+  "url": [
+    "https://arxiv.org/pdf/2407.12345.pdf",
+    "https://research.facebook.com/publications/..."
+  ],
+  "injectGraph": true,
+  "injectVector": true
+}

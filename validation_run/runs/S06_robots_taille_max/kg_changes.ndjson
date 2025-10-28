@@ -1,0 +1,4 @@
+{"scenario":"S06_robots_taille_max","docId":"S06-DATA-001","triple":{"predicate":"hosts","object":"LLM benchmark dataset"},"insertedAt":1736932154400}
+{"scenario":"S06_robots_taille_max","docId":"S06-DATA-001","triple":{"predicate":"describes","object":"Download limits for large files"},"insertedAt":1736932154400}
+{"scenario":"S06_robots_taille_max","docId":"S06-DATA-002","triple":{"predicate":"recommends","object":"Chunking large PDFs"},"insertedAt":1736932156400}
+{"scenario":"S06_robots_taille_max","docId":"S06-DATA-002","triple":{"predicate":"warns","object":"Respect storage quotas"},"insertedAt":1736932156400}

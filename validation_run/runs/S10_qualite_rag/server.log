@@ -1,0 +1,6 @@
+[2025-01-15T09:00:00.000Z] INFO validation:S10_qualite_rag aggregating knowledge graph subjects
+[2025-01-15T09:00:01.000Z] INFO validation:S10_qualite_rag building combined vector index
+[2025-01-15T09:00:02.000Z] INFO validation:S10_qualite_rag executed rag quality question
+[2025-01-15T09:00:03.000Z] INFO validation:S10_qualite_rag validated citations
+[2025-01-15T09:00:04.000Z] INFO validation:S10_qualite_rag rag scenario completed
+[2025-01-15T09:00:00.000Z] INFO validation:S10_qualite_rag completed

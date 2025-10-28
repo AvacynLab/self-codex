@@ -1,0 +1,146 @@
+[
+  {
+    "chunkId": "chunk:S01-ARX-001:abstract",
+    "tokenCount": 248,
+    "segmentIds": [
+      "seg:S01-ARX-001:abstract"
+    ],
+    "metadata": {
+      "docId": "S01-ARX-001",
+      "section": "abstract"
+    },
+    "tags": [
+      "pdf",
+      "abstract"
+    ],
+    "provenance": [
+      {
+        "sourceId": "S01-ARX-001",
+        "type": "url"
+      }
+    ],
+    "createdAt": 1736931723200,
+    "updatedAt": 1736931723200,
+    "textLength": 1024
+  },
+  {
+    "chunkId": "chunk:S01-ARX-001:conclusion",
+    "tokenCount": 232,
+    "segmentIds": [
+      "seg:S01-ARX-001:conclusion"
+    ],
+    "metadata": {
+      "docId": "S01-ARX-001",
+      "section": "conclusion"
+    },
+    "tags": [
+      "pdf",
+      "conclusion"
+    ],
+    "provenance": [
+      {
+        "sourceId": "S01-ARX-001",
+        "type": "url"
+      }
+    ],
+    "createdAt": 1736931723200,
+    "updatedAt": 1736931723200,
+    "textLength": 912
+  },
+  {
+    "chunkId": "chunk:S01-ARX-002:abstract",
+    "tokenCount": 256,
+    "segmentIds": [
+      "seg:S01-ARX-002:abstract"
+    ],
+    "metadata": {
+      "docId": "S01-ARX-002",
+      "section": "abstract"
+    },
+    "tags": [
+      "pdf",
+      "abstract"
+    ],
+    "provenance": [
+      {
+        "sourceId": "S01-ARX-002",
+        "type": "url"
+      }
+    ],
+    "createdAt": 1736931727200,
+    "updatedAt": 1736931727200,
+    "textLength": 1040
+  },
+  {
+    "chunkId": "chunk:S01-ARX-002:discussion",
+    "tokenCount": 244,
+    "segmentIds": [
+      "seg:S01-ARX-002:discussion"
+    ],
+    "metadata": {
+      "docId": "S01-ARX-002",
+      "section": "discussion"
+    },
+    "tags": [
+      "pdf",
+      "discussion"
+    ],
+    "provenance": [
+      {
+        "sourceId": "S01-ARX-002",
+        "type": "url"
+      }
+    ],
+    "createdAt": 1736931727200,
+    "updatedAt": 1736931727200,
+    "textLength": 968
+  },
+  {
+    "chunkId": "chunk:S01-ARX-003:abstract",
+    "tokenCount": 250,
+    "segmentIds": [
+      "seg:S01-ARX-003:abstract"
+    ],
+    "metadata": {
+      "docId": "S01-ARX-003",
+      "section": "abstract"
+    },
+    "tags": [
+      "pdf",
+      "abstract"
+    ],
+    "provenance": [
+      {
+        "sourceId": "S01-ARX-003",
+        "type": "url"
+      }
+    ],
+    "createdAt": 1736931730200,
+    "updatedAt": 1736931730200,
+    "textLength": 1032
+  },
+  {
+    "chunkId": "chunk:S01-ARX-003:analysis",
+    "tokenCount": 238,
+    "segmentIds": [
+      "seg:S01-ARX-003:analysis"
+    ],
+    "metadata": {
+      "docId": "S01-ARX-003",
+      "section": "analysis"
+    },
+    "tags": [
+      "pdf",
+      "analysis"
+    ],
+    "provenance": [
+      {
+        "sourceId": "S01-ARX-003",
+        "type": "url"
+      }
+    ],
+    "createdAt": 1736931730200,
+    "updatedAt": 1736931730200,
+    "textLength": 940
+  }
+]

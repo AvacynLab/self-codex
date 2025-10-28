@@ -1,0 +1,56 @@
+{
+  "scenarioId": 9,
+  "slug": "S09_charge_moderee",
+  "label": "Charge modérée (K=12)",
+  "query": "graph-based rag knowledge graphs 2025",
+  "summary": "Charge modérée réussie : cinq documents ingérés, latences dans les objectifs.",
+  "highlights": [
+    "p95 searxQuery < 3s",
+    "p95 extract < 2s"
+  ],
+  "recommendations": [
+    "Poursuivre la collecte de métriques pour scénarios haute charge"
+  ],
+  "documents": [
+    {
+      "id": "S09-GRAPH-001",
+      "title": "Knowledge Graph Patterns for 2025 RAG Systems",
+      "url": "https://graphresearch.org/blog/knowledge-graphs-rag-2025",
+      "snippet": "Overview of graph-centric retrieval strategies for modern LLMs.",
+      "language": "en",
+      "score": 0.87
+    },
+    {
+      "id": "S09-GRAPH-002",
+      "title": "RAG Benchmarks 2025",
+      "url": "https://graphresearch.org/reports/rag-benchmarks-2025.pdf",
+      "snippet": "Comprehensive benchmark covering 12 graph-based retrieval scenarios.",
+      "language": "en",
+      "score": 0.84
+    },
+    {
+      "id": "S09-GRAPH-003",
+      "title": "Hybrid RAG: Graph + Vector Pipelines",
+      "url": "https://vectorlabs.ai/blog/hybrid-rag-graph-vector",
+      "snippet": "Guidelines for balancing vector and graph retrieval.",
+      "language": "en",
+      "score": 0.82
+    },
+    {
+      "id": "S09-GRAPH-004",
+      "title": "Case Study: Graph RAG in Production",
+      "url": "https://vectorlabs.ai/datasets/rag-graph-case-study.pdf",
+      "snippet": "Detailed case study showing latency/performance metrics.",
+      "language": "en",
+      "score": 0.8
+    },
+    {
+      "id": "S09-GRAPH-005",
+      "title": "Visualising Knowledge Graphs for Analysts",
+      "url": "https://vectorlabs.ai/blog/visualising-knowledge-graphs",
+      "snippet": "Tips for building dashboards that combine RAG metrics and graphs.",
+      "language": "en",
+      "score": 0.78
+    }
+  ]
+}

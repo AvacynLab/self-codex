@@ -1,0 +1,38 @@
+[
+  {
+    "id": "S02-TDS-001",
+    "url": "https://towardsdatascience.com/evaluating-rag-metrics-production",
+    "title": "Evaluating RAG Metrics for Production Systems",
+    "language": "en",
+    "description": "Metric selection checklist for production-grade RAG systems.",
+    "mimeType": "text/html",
+    "checksum": "sha256:234c1588f5c7f1b4dbd8a57de77289c1",
+    "size": 96102,
+    "fetchedAt": 1736931815000,
+    "segmentCount": 2,
+    "provenance": [
+      {
+        "sourceId": "https://towardsdatascience.com/evaluating-rag-metrics-production",
+        "type": "url"
+      }
+    ]
+  },
+  {
+    "id": "S02-TDS-002",
+    "url": "https://towardsdatascience.com/visual-diagnostics-rag",
+    "title": "Visual Diagnostics for Retrieval-Augmented Generation",
+    "language": "en",
+    "description": "Image-rich article exploring debugging workflows for RAG.",
+    "mimeType": "text/html",
+    "checksum": "sha256:8333d43ee6d852c098e7b15d1af6f1e9",
+    "size": 102440,
+    "fetchedAt": 1736931818000,
+    "segmentCount": 2,
+    "provenance": [
+      {
+        "sourceId": "https://towardsdatascience.com/visual-diagnostics-rag",
+        "type": "url"
+      }
+    ]
+  }
+]

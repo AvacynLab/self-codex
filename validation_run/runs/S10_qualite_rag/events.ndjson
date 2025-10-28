@@ -1,0 +1,3 @@
+{"type":"rag_scenario_prepared","timestamp":1736932050000,"jobId":"validation:S10_qualite_rag","scenarios":["S01_pdf_science","S02_html_long_images","S03_actualites_fraicheur","S04_multilingue_fr_en","S05_idempotence","S06_robots_taille_max","S07_sources_instables","S08_indexation_directe","S09_charge_moderee"],"missing":[],"knowledgeSubjects":15,"knowledgeTriples":42,"vectorDocuments":18,"notes":["Agrégation synthétique des scénarios S01 à S09"]}
+{"type":"rag_scenario_completed","timestamp":1736932051200,"jobId":"validation:S10_qualite_rag","knowledgeHits":5,"ragHits":4,"citations":3,"tookMs":1200}
+{"kind":"rag:citations_recorded","documentsIngested":3,"payload":{"docIds":["S01-ARX-001","S03-NEWS-002","S09-GRAPH-004"]}}

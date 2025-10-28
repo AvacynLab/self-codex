@@ -1,0 +1,33 @@
+{
+  "scenarioId": 2,
+  "slug": "S02_html_long_images",
+  "label": "HTML long + images",
+  "query": "site:towardsdatascience.com RAG evaluation metrics",
+  "summary": "Deux articles riches en médias ont été intégrés pour tester l'extraction HTML.",
+  "highlights": [
+    "Balises img sans alt détectées et loguées",
+    "Segmentation vectorielle adaptée aux sections longues"
+  ],
+  "recommendations": [
+    "Renforcer la validation des attributs alt côté extraction",
+    "Documenter les métriques de suivi pour le contenu riche"
+  ],
+  "documents": [
+    {
+      "id": "S02-TDS-001",
+      "title": "Evaluating RAG Metrics for Production Systems",
+      "url": "https://towardsdatascience.com/evaluating-rag-metrics-production",
+      "snippet": "Playbook for selecting online and offline metrics when shipping RAG.",
+      "language": "en",
+      "score": 0.89
+    },
+    {
+      "id": "S02-TDS-002",
+      "title": "Visual Diagnostics for Retrieval-Augmented Generation",
+      "url": "https://towardsdatascience.com/visual-diagnostics-rag",
+      "snippet": "How to analyse image-heavy RAG corpora with lightweight tooling.",
+      "language": "en",
+      "score": 0.82
+    }
+  ]
+}

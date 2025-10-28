@@ -1,0 +1,11 @@
+[
+  {
+    "category": "parse_error",
+    "message": "Attribut alt manquant sur une image, chunk ignoré.",
+    "url": "https://towardsdatascience.com/visual-diagnostics-rag",
+    "metadata": {
+      "element": "img",
+      "issue": "missing_alt"
+    }
+  }
+]

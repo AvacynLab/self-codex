@@ -1,0 +1,20 @@
+[
+  {
+    "docId": "S08-DIRECT-001",
+    "chunkIds": [
+      "chunk:S08-DIRECT-001:abstract",
+      "chunk:S08-DIRECT-001:method"
+    ],
+    "tokenTotal": 464,
+    "tookMs": 180
+  },
+  {
+    "docId": "S08-DIRECT-002",
+    "chunkIds": [
+      "chunk:S08-DIRECT-002:abstract",
+      "chunk:S08-DIRECT-002:governance"
+    ],
+    "tokenTotal": 452,
+    "tookMs": 185
+  }
+]

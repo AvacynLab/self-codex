@@ -1,0 +1,54 @@
+{
+  "scenarioId": 5,
+  "slug": "S05_idempotence",
+  "label": "Idempotence (rejouer S01)",
+  "query": "site:arxiv.org multimodal LLM evaluation 2025 filetype:pdf",
+  "summary": "Rerun S01 exécuté sans duplication ; les docIds correspondent au premier passage.",
+  "highlights": [
+    "Docs identiques détectés",
+    "Chunks vectoriels mis à jour sans doublon"
+  ],
+  "recommendations": [
+    "Continuer à monitorer les collisions de checksum"
+  ],
+  "documents": [
+    {
+      "id": "S01-ARX-001",
+      "title": "Evaluating Multimodal LLMs in 2025",
+      "url": "https://arxiv.org/abs/2501.01234",
+      "snippet": "Re-run validation to confirm idempotent ingestion of arXiv PDFs.",
+      "language": "en",
+      "score": 0.91
+    },
+    {
+      "id": "S01-ARX-002",
+      "title": "Benchmarking RAG Strategies for Scientific QA",
+      "url": "https://arxiv.org/abs/2501.04567",
+      "snippet": "Second execution validating deduplication of search results.",
+      "language": "en",
+      "score": 0.88
+    },
+    {
+      "id": "S01-ARX-003",
+      "title": "Context Windows for Cross-Modal Reasoning",
+      "url": "https://arxiv.org/abs/2501.07890",
+      "snippet": "Ensures long-context PDFs remain deduplicated on subsequent runs.",
+      "language": "en",
+      "score": 0.85
+    }
+  ],
+  "citations": [
+    {
+      "docId": "S01-ARX-001",
+      "url": "https://arxiv.org/abs/2501.01234"
+    },
+    {
+      "docId": "S01-ARX-002",
+      "url": "https://arxiv.org/abs/2501.04567"
+    },
+    {
+      "docId": "S01-ARX-003",
+      "url": "https://arxiv.org/abs/2501.07890"
+    }
+  ]
+}

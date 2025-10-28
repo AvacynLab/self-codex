@@ -1,0 +1,6 @@
+{"scenario":"S04_multilingue_fr_en","docId":"S04-ACL-001","triple":{"predicate":"evaluates","object":"Multilingual RAG pipelines"},"insertedAt":1736931987400}
+{"scenario":"S04_multilingue_fr_en","docId":"S04-ACL-001","triple":{"predicate":"reports","object":"Precision gains on FR corpora"},"insertedAt":1736931987400}
+{"scenario":"S04_multilingue_fr_en","docId":"S04-ACL-002","triple":{"predicate":"introduces","object":"Graph augmentation for code-switched dialogue"},"insertedAt":1736931989400}
+{"scenario":"S04_multilingue_fr_en","docId":"S04-ACL-002","triple":{"predicate":"observes","object":"Stability gains for bilingual queries"},"insertedAt":1736931989400}
+{"scenario":"S04_multilingue_fr_en","docId":"S04-ACL-003","triple":{"predicate":"analyse","object":"Performances RAG francophones"},"insertedAt":1736931991400}
+{"scenario":"S04_multilingue_fr_en","docId":"S04-ACL-003","triple":{"predicate":"propose","object":"Corpus d'évaluation mixte"},"insertedAt":1736931991400}

@@ -1,0 +1,146 @@
+[
+  {
+    "chunkId": "chunk:S04-ACL-001:abstract",
+    "tokenCount": 240,
+    "segmentIds": [
+      "seg:S04-ACL-001:abstract"
+    ],
+    "metadata": {
+      "docId": "S04-ACL-001",
+      "section": "abstract"
+    },
+    "tags": [
+      "pdf",
+      "abstract"
+    ],
+    "provenance": [
+      {
+        "sourceId": "S04-ACL-001",
+        "type": "url"
+      }
+    ],
+    "createdAt": 1736931988200,
+    "updatedAt": 1736931988200,
+    "textLength": 980
+  },
+  {
+    "chunkId": "chunk:S04-ACL-001:results",
+    "tokenCount": 228,
+    "segmentIds": [
+      "seg:S04-ACL-001:results"
+    ],
+    "metadata": {
+      "docId": "S04-ACL-001",
+      "section": "results"
+    },
+    "tags": [
+      "pdf",
+      "results"
+    ],
+    "provenance": [
+      {
+        "sourceId": "S04-ACL-001",
+        "type": "url"
+      }
+    ],
+    "createdAt": 1736931988200,
+    "updatedAt": 1736931988200,
+    "textLength": 920
+  },
+  {
+    "chunkId": "chunk:S04-ACL-002:abstract",
+    "tokenCount": 236,
+    "segmentIds": [
+      "seg:S04-ACL-002:abstract"
+    ],
+    "metadata": {
+      "docId": "S04-ACL-002",
+      "section": "abstract"
+    },
+    "tags": [
+      "pdf",
+      "abstract"
+    ],
+    "provenance": [
+      {
+        "sourceId": "S04-ACL-002",
+        "type": "url"
+      }
+    ],
+    "createdAt": 1736931990200,
+    "updatedAt": 1736931990200,
+    "textLength": 952
+  },
+  {
+    "chunkId": "chunk:S04-ACL-002:analysis",
+    "tokenCount": 220,
+    "segmentIds": [
+      "seg:S04-ACL-002:analysis"
+    ],
+    "metadata": {
+      "docId": "S04-ACL-002",
+      "section": "analysis"
+    },
+    "tags": [
+      "pdf",
+      "analysis"
+    ],
+    "provenance": [
+      {
+        "sourceId": "S04-ACL-002",
+        "type": "url"
+      }
+    ],
+    "createdAt": 1736931990200,
+    "updatedAt": 1736931990200,
+    "textLength": 888
+  },
+  {
+    "chunkId": "chunk:S04-ACL-003:abstract",
+    "tokenCount": 230,
+    "segmentIds": [
+      "seg:S04-ACL-003:abstract"
+    ],
+    "metadata": {
+      "docId": "S04-ACL-003",
+      "section": "abstract"
+    },
+    "tags": [
+      "pdf",
+      "abstract"
+    ],
+    "provenance": [
+      {
+        "sourceId": "S04-ACL-003",
+        "type": "url"
+      }
+    ],
+    "createdAt": 1736931992200,
+    "updatedAt": 1736931992200,
+    "textLength": 940
+  },
+  {
+    "chunkId": "chunk:S04-ACL-003:conclusion",
+    "tokenCount": 218,
+    "segmentIds": [
+      "seg:S04-ACL-003:conclusion"
+    ],
+    "metadata": {
+      "docId": "S04-ACL-003",
+      "section": "conclusion"
+    },
+    "tags": [
+      "pdf",
+      "conclusion"
+    ],
+    "provenance": [
+      {
+        "sourceId": "S04-ACL-003",
+        "type": "url"
+      }
+    ],
+    "createdAt": 1736931992200,
+    "updatedAt": 1736931992200,
+    "textLength": 880
+  }
+]

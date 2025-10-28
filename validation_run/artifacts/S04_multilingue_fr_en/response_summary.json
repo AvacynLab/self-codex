@@ -1,0 +1,40 @@
+{
+  "scenarioId": 4,
+  "slug": "S04_multilingue_fr_en",
+  "label": "Multilingue (FR/EN)",
+  "query": "évaluation RAG comparaison méthodes site:aclanthology.org",
+  "summary": "Comparaison FR/EN réussie avec ingestion complète des PDF ACL.",
+  "highlights": [
+    "Couverture équilibrée FR/EN",
+    "Graph augmentation confirmée sur dialogues bilingues"
+  ],
+  "recommendations": [
+    "Poursuivre l'entraînement de modèles bilingues"
+  ],
+  "documents": [
+    {
+      "id": "S04-ACL-001",
+      "title": "Comparing RAG Strategies for Multilingual QA",
+      "url": "https://aclanthology.org/2024.acl-long.123",
+      "snippet": "ACL study evaluating retrieval strategies across FR/EN corpora.",
+      "language": "en",
+      "score": 0.9
+    },
+    {
+      "id": "S04-ACL-002",
+      "title": "Graph-Augmented Retrieval for Code-Switched Dialogue",
+      "url": "https://aclanthology.org/2024.acl-long.210",
+      "snippet": "Techniques for stabilising bilingual dialogue retrieval.",
+      "language": "en",
+      "score": 0.84
+    },
+    {
+      "id": "S04-ACL-003",
+      "title": "Évaluation du RAG sur corpus francophones",
+      "url": "https://aclanthology.org/2024.acl-long.333",
+      "snippet": "Analyse des performances RAG pour les publications francophones.",
+      "language": "fr",
+      "score": 0.83
+    }
+  ]
+}

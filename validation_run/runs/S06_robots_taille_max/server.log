@@ -1,0 +1,6 @@
+[2025-01-15T09:00:00.000Z] INFO validation:S06_robots_taille_max checked robots directives for dataset domains
+[2025-01-15T09:00:01.000Z] INFO validation:S06_robots_taille_max skipped disallowed endpoint
+[2025-01-15T09:00:02.000Z] INFO validation:S06_robots_taille_max downloaded permitted dataset landing page
+[2025-01-15T09:00:03.000Z] INFO validation:S06_robots_taille_max ignored oversized pdf gracefully
+[2025-01-15T09:00:04.000Z] INFO validation:S06_robots_taille_max scenario completed with classified errors
+[2025-01-15T09:00:00.000Z] INFO validation:S06_robots_taille_max completed

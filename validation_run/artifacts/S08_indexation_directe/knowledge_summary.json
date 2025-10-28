@@ -1,0 +1,24 @@
+[
+  {
+    "subject": "doc:S08-DIRECT-001",
+    "tripleCount": 2,
+    "created": 1736932310000,
+    "updated": 1736932310600,
+    "mentions": [
+      "graph",
+      "multimodal",
+      "retrieval"
+    ]
+  },
+  {
+    "subject": "doc:S08-DIRECT-002",
+    "tripleCount": 2,
+    "created": 1736932312000,
+    "updated": 1736932312600,
+    "mentions": [
+      "enterprise",
+      "governance",
+      "indexing"
+    ]
+  }
+]

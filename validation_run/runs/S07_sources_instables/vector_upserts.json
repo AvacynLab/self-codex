@@ -1,0 +1,20 @@
+[
+  {
+    "docId": "S07-NEWS-001",
+    "chunkIds": [
+      "chunk:S07-NEWS-001:intro",
+      "chunk:S07-NEWS-001:mitigation"
+    ],
+    "tokenTotal": 332,
+    "tookMs": 180
+  },
+  {
+    "docId": "S07-GUIDE-002",
+    "chunkIds": [
+      "chunk:S07-GUIDE-002:intro",
+      "chunk:S07-GUIDE-002:checklist"
+    ],
+    "tokenTotal": 323,
+    "tookMs": 185
+  }
+]
