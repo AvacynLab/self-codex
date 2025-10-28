@@ -12,63 +12,12 @@ services:
       - "127.0.0.1:8080:8080"
     volumes:
       - ./searxng/settings.yml:/etc/searxng/settings.yml:ro
-    healthcheck:
-      # The production image ships a Python interpreter inside an embedded
-      # virtualenv whose exact location may vary between releases (historically
-      # `/usr/local/searxng/searxng-venv/bin/python3` or
-      # `/usr/local/searxng/.venv/bin/python3`). The probe below discovers the
-      # first available interpreter and executes a tiny socket dial so the
-      # health check stays compatible with both layouts and with future image
-      # updates.
-      test:
-        - CMD-SHELL
-        - |
-          set -eu
-
-          # The SearxNG image bundles Python inside a virtualenv. Depending on
-          # the base layer version the interpreter may live in different
-          # prefixes, so probe a list of well-known locations and finally fall
-          # back to whatever `command -v` can discover on PATH.
-          for candidate in \
-            /usr/local/searxng/searxng-venv/bin/python3 \
-            /usr/local/searxng/.venv/bin/python3 \
-            /usr/local/bin/python3 \
-            /usr/bin/python3 \
-            python3 \
-            python
-          do
-            if [ -x "$candidate" ]; then
-              SELECTED="$candidate"
-              break
-            elif command -v "$candidate" >/dev/null 2>&1; then
-              SELECTED="$(command -v "$candidate")"
-              break
-            fi
-          done
-
-          if [ -z "${SELECTED:-}" ]; then
-            echo "no python interpreter found for healthcheck" >&2
-            exit 1
-          fi
-
-          "$SELECTED" - <<'PYTHON'
-          import socket
-          import sys
-
-          ADDRESS = ("127.0.0.1", 8080)
-
-          def main() -> int:
-              try:
-                  with socket.create_connection(ADDRESS, timeout=5):
-                      return 0
-              except OSError:
-                  return 1
-
-          sys.exit(main())
-          PYTHON
-      interval: 10s
-      timeout: 5s
-      retries: 6
+    # No container-level health check is defined because recent SearxNG
+    # releases shuffle the embedded virtualenv layout, breaking custom probes
+    # that depend on the python interpreter location. The orchestration layer
+    # waits for `http://127.0.0.1:8080/healthz` before running any tests, so the
+    # stack still observes readiness without depending on the container
+    # lifecycle semantics.
     deploy:
       resources:
         limits:
@@ -125,7 +74,10 @@ services:
     restart: unless-stopped
     depends_on:
       searxng:
-        condition: service_healthy
+        # Without a health check Docker cannot surface a `service_healthy`
+        # condition, so rely on `service_started` and let the orchestration
+        # scripts poll the HTTP endpoint for readiness.
+        condition: service_started
       unstructured:
         condition: service_healthy
     environment:
