@@ -336,3 +336,65 @@ Aucun log de validation ne doit finir ailleurs.
 ### 2025-12-10
 - Génération automatique des exports dashboard (`validation_run/metrics/<slug>_dashboard.json`) via `writeScenarioDashboardExport`.
 - Script `validation:metrics` enrichi pour annoncer le chemin du dashboard et tests/documentation mis à jour.
+
+---
+
+### 2024-05-05 – Agent Update
+- [x] A.1 `docker/docker-compose.search.yml` : services isolés, healthchecks HTTP, limites de logs/ressources, variables d'env alignées `validation_run`.
+- [x] A.2 `docker/searxng/settings.yml` : moteurs sûrs, `safe_search` documenté, proxy désactivé.
+- [x] A.3 `env/.env.example` : variables ajoutées/mises à jour (`SEARCH_PARALLEL_*`, `SEARCH_MAX_RESULTS`, `SEARCH_FETCH_RESPECT_ROBOTS`).
+- [x] B.1 `scripts/setup-agent-env.sh` : garde Node >=20, création `validation_run/**`, avertissements endpoints, log unique `self-codex.log`.
+- [x] B.2 `scripts/probe-search-stack.sh` : script de sondage SearxNG/Unstructured → snapshots `validation_run/snapshots/`.
+- [ ] Suites A/B/C restantes (pipeline, ingestion, tests E2E...).
+  - [x] C.1 `src/search/config.ts` : config immuable, defaults centralisés, tokens à masquer.
+  - [x] C.2 `src/search/types.ts` : `SEGMENT_KINDS` canonique et metadata typée.
+  - [x] C.3 `src/search/searxClient.ts` : canonisation d’URL, retries 429/5xx, mapping `publishedAt`/`mime`.
+  - [x] C.4 `src/search/downloader.ts` : streaming, sniff MIME, gestion ETag/Last-Modified.
+  - [x] C.5 `src/search/extractor.ts` : mutualisation HTML/PDF/Image, hint langue, cap PDF.
+  - [x] C.6 `src/search/normalizer.ts` : déduplication par hash, fallback titre, ménage helpers.
+  - [x] C.7 `src/search/ingest/toKnowledgeGraph.ts` : constantes `P`, debounce triples, stoplist mentions.
+  - [x] C.8 `src/search/ingest/toVectorStore.ts` : fusion titre+paragraphe, skip duplicata, langue metadata.
+  - [x] C.9 `src/search/metrics.ts` : labels stables (`step, contentType, domain`), buckets 50ms→20s.
+  - [x] C.10 `src/search/pipeline.ts` : limiteurs fetch/extract, erreurs typées, jobId hash args, events légers.
+  - [x] C.11 `src/search/index.ts` : exports publics triés uniquement.
+  - [x] D.1 `src/tools/search_run.ts` : schéma strict avec défauts, warnings optionnels, budget et jobId propagés.
+  - [x] D.2 `src/tools/search_index.ts` : normalisation `url(s)` → `items`, budget surfaced, erreurs optionnelles.
+  - [x] D.3 `src/tools/search_status.ts` : réponse not_implemented typée, description enrichie.
+  - [x] D.4 Budgets/tooling alignés (`src/tools/intent_route.ts`, manifestes search.* avec exemples d'appel).
+
+Historique rapide :
+- Mise à jour de la stack Docker search (healthchecks HTTP, limites CPU/RAM, logging compact, variables runtime `validation_run`).
+- Durcissement de la configuration SearxNG avec moteurs permissifs et documentation `safe_search`/proxy.
+- Harmonisation des variables d'environnement search/unstructured (noms, valeurs par défaut conformes à la checklist).
+- Script de setup renforcé : garde Node >=20, création des dossiers `validation_run/` + avertissements Searx/Unstructured, log HTTP redirigé.
+- Nouveau script `scripts/probe-search-stack.sh` pour capturer les probes dans `validation_run/snapshots/`.
+
+### 2024-05-06 – Agent Update
+- Configuration search gelée avec defaults centralisés et tokens de redaction dérivés de l'env (`loadSearchConfig`, `collectSearchRedactionTokens`).
+- Client Searx canonisé (URLs nettoyées, retries ciblés, mapping `publishedAt`/`mime`) et pipeline harmonisé (normalisation `maxResults`, erreurs typées, événements légers).
+- Typage des segments (`SEGMENT_KINDS`, metadata stricte) et suite de tests unitaires search (config/searxClient/pipeline) réalignés sur le nouveau contrat, exécutées avec TS strict.
+
+### 2024-05-07 – Agent Update
+- Téléchargeur renforcé : requêtes conditionnelles `If-None-Match`/`If-Modified-Since`, retour cache sur 304, sniff MIME par signature binaire et docIds stables via hachage de l'échantillon.
+- Extracteur unifié HTML/PDF/Image : hint de langue transmis, normalisation NFC, cap PDF à 40 pages avec drapeau `metadata.truncated`, conversions CamelCase→snake_case et métadonnées basées sur pages.
+- Tests unitaires downloader/extractor enrichis (payload sample IDs, 304, sniff MIME, langue via headers, troncature PDF) validés via mocha.
+
+### 2024-05-08 – Agent Update
+- Normalisation des segments : hachage SHA-1 des contenus textuels, suppression des doublons et fallback automatique du titre depuis le premier segment `title`.
+- Ingestion KG : prédicats RDF/DC centralisés dans `P`, déduplication `(s,p,o)` avant `upsertTriple` et mentions filtrées (longueur ≥3, fréquence ≥2).
+- Ingestion vectorielle : fusion titre court + paragraphe, élimination des chunks consécutifs identiques et métadonnées `language` forcées en minuscule, avec tests unitaires couvrant ces flux.
+
+### 2024-05-09 – Agent Update
+- Metrics search enrichis : dimensions stables (step/contentType/domain), histogramme 50ms→20s et labels nettoyés.
+- Pipeline : instrumentation contextuelle (domaines/mimes) pour fetch/extract/ingest avec dérivation de domaines sûrs.
+- Exports publics harmonisés et tests unitaires `search/metrics` mis à jour pour couvrir buckets & labels.
+
+### 2024-05-10 – Agent Update
+- Façades search refactorées : sortie `search.run` compacte (warnings optionnels, budget used) avec défaut `max_results=6` et tests dédiés.
+- Indexation directe : compatibilité `url`/`urls`, budgets exposés et erreurs optionnelles, plus description manifest enrichie.
+- Budgets MPC alignés (intent router + manifestes) et `search.status` renvoie un code typé `not_implemented`.
+
+### 2024-05-11 – Agent Update
+- EventStore `search:*` : payloads versionnés (`version=1`) et messages d'erreur tronqués à 1 000 caractères, avec tests unitaires dédiés.
+- KnowledgeGraph : déduplication des triples par lot (`dedupeTripleBatch`) et fusion de provenance sans doublons, couverte par des tests ciblés.
+- Mémoire vectorielle : métadonnées normalisées (`docId` trim + langue lowercase), limite configurable de chunks/doc appliquée au runtime (`MCP_MEMORY_VECTOR_MAX_CHUNKS_PER_DOC`) et tests garantissant l'éviction des anciens chunks.

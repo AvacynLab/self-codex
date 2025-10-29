@@ -2,7 +2,8 @@ version: "3.9"
 
 # Docker Compose stack dedicated to the search subsystem. The file keeps the
 # services isolated from the default development environment so contributors can
-# opt-in only when working on the search pipeline.
+# opt-in only when working on the search pipeline. Resource limits and logging
+# caps are applied so the stack remains CI friendly.
 services:
   searxng:
     image: searxng/searxng:latest
@@ -12,17 +13,25 @@ services:
       - "127.0.0.1:8080:8080"
     volumes:
       - ./searxng/settings.yml:/etc/searxng/settings.yml:ro
-    # No container-level health check is defined because recent SearxNG
-    # releases shuffle the embedded virtualenv layout, breaking custom probes
-    # that depend on the python interpreter location. The orchestration layer
-    # waits for `http://127.0.0.1:8080/healthz` before running any tests, so the
-    # stack still observes readiness without depending on the container
-    # lifecycle semantics.
+    healthcheck:
+      # HTTP based readiness probe so `depends_on` can rely on the
+      # `service_healthy` condition.
+      test:
+        - CMD-SHELL
+        - curl --fail --silent --show-error http://127.0.0.1:8080/healthz || exit 1
+      interval: 15s
+      timeout: 10s
+      retries: 5
     deploy:
       resources:
         limits:
           cpus: "1"
           memory: 1024M
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
     networks:
       - search_net
 
@@ -33,36 +42,29 @@ services:
     ports:
       - "127.0.0.1:8000:8000"
     healthcheck:
-      # Similar to the SearxNG probe, rely on a TCP dial to detect when the
-      # FastAPI server is bound and accepting requests. The application exposes
-      # HTTP-only interfaces, so establishing the socket is a sufficient
-      # readiness signal for the e2e search tests.
+      # POST ping mirroring the production readiness probe exposed by the
+      # Unstructured container.
       test:
         - CMD-SHELL
         - |
-          python3 - <<'PYTHON'
-          import socket
-          import sys
-
-          ADDRESS = ("127.0.0.1", 8000)
-
-          def main() -> int:
-              try:
-                  with socket.create_connection(ADDRESS, timeout=5):
-                      return 0
-              except OSError:
-                  return 1
-
-          sys.exit(main())
-          PYTHON
+          curl --fail --silent --show-error \
+            --request POST \
+            --header 'Content-Type: application/json' \
+            --data '{"ping": "search-stack"}' \
+            http://127.0.0.1:8000/healthcheck || exit 1
       interval: 15s
       timeout: 10s
-      retries: 6
+      retries: 5
     deploy:
       resources:
         limits:
           cpus: "1"
           memory: 1536M
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
     networks:
       - search_net
 
@@ -74,10 +76,7 @@ services:
     restart: unless-stopped
     depends_on:
       searxng:
-        # Without a health check Docker cannot surface a `service_healthy`
-        # condition, so rely on `service_started` and let the orchestration
-        # scripts poll the HTTP endpoint for readiness.
-        condition: service_started
+        condition: service_healthy
       unstructured:
         condition: service_healthy
     environment:
@@ -86,14 +85,20 @@ services:
       MCP_HTTP_PORT: "8765"
       MCP_HTTP_PATH: /mcp
       MCP_HTTP_ALLOW_NOAUTH: "1"
+      MCP_RUNS_ROOT: /app/validation_run
+      MCP_LOG_FILE: /app/validation_run/logs/self-codex.log
       SEARCH_SEARX_BASE_URL: http://searxng:8080
       SEARCH_SEARX_API_PATH: /search
       SEARCH_SEARX_TIMEOUT_MS: "15000"
-      SEARCH_SEARX_ENGINES: duckduckgo,wikipedia,arxiv,github,qwant
+      SEARCH_SEARX_ENGINES: ddg,wikipedia,arxiv,github,mojeek
       SEARCH_SEARX_CATEGORIES: general,news,images,files
       SEARCH_FETCH_TIMEOUT_MS: "20000"
       SEARCH_FETCH_MAX_BYTES: "15000000"
       SEARCH_FETCH_UA: CodexSearchBot/1.0
+      SEARCH_FETCH_RESPECT_ROBOTS: "1"
+      SEARCH_PARALLEL_FETCH: "4"
+      SEARCH_PARALLEL_EXTRACT: "2"
+      SEARCH_MAX_RESULTS: "12"
       UNSTRUCTURED_BASE_URL: http://unstructured:8000
       UNSTRUCTURED_TIMEOUT_MS: "30000"
       UNSTRUCTURED_STRATEGY: hi_res
@@ -101,6 +106,11 @@ services:
       SEARCH_INJECT_VECTOR: "1"
     ports:
       - "127.0.0.1:8765:8765"
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
     networks:
       - search_net
 

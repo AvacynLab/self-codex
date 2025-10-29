@@ -364,6 +364,35 @@ function guessContentTypeFromUrl(url: string): string | null {
   return EXTENSION_MIME_FALLBACK[ext] ?? null;
 }
 
+/**
+ * Attempts to detect the MIME type using well known file signatures.  The
+ * method intentionally keeps the heuristics small to avoid false positives
+ * while still recognising the binary formats we regularly ingest.
+ */
+function sniffContentType(buffer: Buffer): string | null {
+  if (buffer.length === 0) {
+    return null;
+  }
+
+  if (buffer.slice(0, 4).toString("ascii") === "%PDF") {
+    return "application/pdf";
+  }
+
+  if (buffer.length >= 8 && buffer.slice(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) {
+    return "image/png";
+  }
+
+  if (buffer.length >= 3 && buffer.slice(0, 3).equals(Buffer.from([0xff, 0xd8, 0xff]))) {
+    return "image/jpeg";
+  }
+
+  if (buffer.length >= 4 && buffer.slice(0, 4).equals(Buffer.from([0x50, 0x4b, 0x03, 0x04]))) {
+    return "application/zip";
+  }
+
+  return null;
+}
+
 /** Reads the response body while enforcing the maximum size constraint. */
 async function readClampedBody(
   response: Response,
@@ -403,15 +432,26 @@ async function readClampedBody(
  * Computes a deterministic identifier for the downloaded document using the
  * canonical URL combined with HTTP validators.
  */
-export function computeDocId(url: string, headers: ReadonlyMap<string, string>): string {
+export function computeDocId(
+  url: string,
+  headers: ReadonlyMap<string, string>,
+  bodySample?: Buffer | null,
+): string {
   const etag = headers.get("etag") ?? "";
   const lastModified = headers.get("last-modified") ?? "";
   const hash = createHash("sha256");
   hash.update(url);
   hash.update("|");
-  hash.update(etag);
-  hash.update("|");
-  hash.update(lastModified);
+
+  if (etag || lastModified) {
+    hash.update(etag);
+    hash.update("|");
+    hash.update(lastModified);
+  } else {
+    const sample = bodySample && bodySample.length > 0 ? bodySample.slice(0, 1024) : Buffer.alloc(0);
+    hash.update(sample);
+  }
+
   return hash.digest("hex");
 }
 
@@ -477,6 +517,7 @@ export class SearchDownloader {
       return cached;
     }
 
+    const validatorMetadata = this.contentCache?.getValidatorMetadata(canonicalUrl);
     const failure = this.contentCache?.getFailure(canonicalUrl);
     if (failure) {
       throw new DownloadBackoffError(canonicalUrl, failure.status, failure.retryAt, failure.attempts);
@@ -493,13 +534,21 @@ export class SearchDownloader {
       controller.abort();
     }, this.config.timeoutMs);
 
+    const requestHeaders = new Headers({
+      "user-agent": this.config.userAgent,
+      accept: "*/*",
+    });
+    if (validatorMetadata?.etag) {
+      requestHeaders.set("If-None-Match", validatorMetadata.etag);
+    }
+    if (validatorMetadata?.lastModified) {
+      requestHeaders.set("If-Modified-Since", validatorMetadata.lastModified);
+    }
+
     let response: Response;
     try {
       response = await this.fetchImpl(parsed.href, {
-        headers: {
-          "user-agent": this.config.userAgent,
-          accept: "*/*",
-        },
+        headers: requestHeaders,
         redirect: "follow",
         signal: controller.signal,
       });
@@ -518,6 +567,17 @@ export class SearchDownloader {
 
     clearTimeout(timeout);
 
+    if (response.status === 304) {
+      if (!validatorMetadata) {
+        throw new DownloadError(`Received HTTP 304 for ${url} without cached validators.`);
+      }
+      const cachedRevalidated = this.contentCache?.get(canonicalUrl, validatorMetadata.validator);
+      if (!cachedRevalidated) {
+        throw new DownloadError(`Received HTTP 304 for ${url} but no cached payload was found.`);
+      }
+      return cachedRevalidated;
+    }
+
     if (response.status >= 400) {
       this.contentCache?.recordFailure(canonicalUrl, response.status);
       const failureUrl = response.url || canonicalUrl;
@@ -531,7 +591,10 @@ export class SearchDownloader {
     const body = await readClampedBody(response, this.config.maxBytes, controller);
     const finalUrl = response.url || parsed.href;
     const fetchedAt = this.now();
-    const contentType = sanitiseContentType(headers.get("content-type") ?? null) ?? guessContentTypeFromUrl(finalUrl);
+    const contentType =
+      sanitiseContentType(headers.get("content-type") ?? null) ??
+      sniffContentType(body) ??
+      guessContentTypeFromUrl(finalUrl);
     const checksum = computePayloadChecksum(body);
 
     const result: RawFetched = {

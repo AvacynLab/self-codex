@@ -25,7 +25,7 @@ export const SearchStatusManifestDraft: ToolManifestDraft = {
   name: SEARCH_STATUS_TOOL_NAME,
   title: "Statut des recherches",
   description:
-    "Retourne l'état d'un job de recherche si la persistance est activée. Actuellement renvoie une information d'indisponibilité.",
+    "Retourne l'état d'un job de recherche si la persistance est activée. Actuellement renvoie une information d'indisponibilité. Exemple : search.status {\"job_id\":\"abc123\"}",
   kind: "dynamic",
   category: "runtime",
   tags: ["search", "web", "ops"],
@@ -57,7 +57,7 @@ export function createSearchStatusHandler(context: SearchStatusToolContext): Too
 
     const payload: SearchStatusOutput = SearchStatusOutputSchema.parse({
       ok: false,
-      reason: "not_implemented" as const,
+      code: "not_implemented" as const,
       message: "la persistance des jobs de recherche n'est pas encore disponible",
     });
 

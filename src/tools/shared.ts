@@ -5,6 +5,8 @@
  */
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 
+import type { BudgetCharge } from "../infra/budget.js";
+
 /** Structured payload type surfaced by MCP tool responses. */
 type ToolStructuredContent = NonNullable<CallToolResult["structuredContent"]>;
 
@@ -135,5 +137,49 @@ export function buildToolErrorResult<TStructured extends ToolStructuredContent>(
   structured: TStructured,
 ): CallToolResult & { structuredContent: TStructured } {
   return buildToolResponse({ text, structured, isError: true });
+}
+
+/**
+ * Canonical shape exposed when façades want to surface the budget they consumed
+ * during an invocation. Values are expressed using snake_case keys to remain
+ * consistent with the rest of the JSON payload emitted by the tools.
+ */
+export interface NormalisedBudgetUsage {
+  readonly time_ms?: number;
+  readonly tokens?: number;
+  readonly tool_calls?: number;
+  readonly bytes_in?: number;
+  readonly bytes_out?: number;
+}
+
+/**
+ * Converts the raw {@link BudgetCharge} returned by the tracker into a compact
+ * JSON payload. Dimensions that were not consumed are omitted to keep the
+ * structured response under the declared `bytes_out` budget.
+ */
+export function formatBudgetUsage(charge: BudgetCharge | null | undefined): NormalisedBudgetUsage | undefined {
+  if (!charge) {
+    return undefined;
+  }
+
+  const snapshot: NormalisedBudgetUsage = {};
+
+  if (charge.timeMs > 0) {
+    snapshot.time_ms = Math.round(charge.timeMs);
+  }
+  if (charge.tokens > 0) {
+    snapshot.tokens = Math.round(charge.tokens);
+  }
+  if (charge.toolCalls > 0) {
+    snapshot.tool_calls = Math.round(charge.toolCalls);
+  }
+  if (charge.bytesIn > 0) {
+    snapshot.bytes_in = Math.round(charge.bytesIn);
+  }
+  if (charge.bytesOut > 0) {
+    snapshot.bytes_out = Math.round(charge.bytesOut);
+  }
+
+  return Object.keys(snapshot).length > 0 ? snapshot : undefined;
 }
 

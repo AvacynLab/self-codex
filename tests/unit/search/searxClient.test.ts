@@ -37,6 +37,7 @@ describe("search/searxClient", () => {
       injectGraph: true,
       injectVector: true,
       parallelExtract: 1,
+      maxResults: 6,
     },
   };
 
@@ -76,7 +77,7 @@ describe("search/searxClient", () => {
     expect(result.snippet).to.equal("A synthetic snippet");
     expect(result.engines).to.deep.equal(["ddg"]);
     expect(result.categories).to.deep.equal(["general"]);
-    expect(result.mimeType).to.equal("text/html");
+    expect(result.mime).to.equal("text/html");
     expect(result.thumbnailUrl).to.equal("https://example.com/thumb.jpg");
     expect(result.score).to.equal(1.23);
     expect(result.id).to.have.length(64);

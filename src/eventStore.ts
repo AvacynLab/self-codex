@@ -13,6 +13,8 @@ import { normaliseProvenanceList, type Provenance } from "./types/provenance.js"
  * orchestrator logs when callers attach verbose artefacts to an event.
  */
 const MAX_LOGGED_PAYLOAD_LENGTH = 4_096;
+/** Upper bound applied to event payload error messages before storage. */
+const MAX_ERROR_MESSAGE_LENGTH = 1_000;
 
 /**
  * Recursively sorts the keys of plain object payloads so JSON serialisation
@@ -103,6 +105,34 @@ function clonePayloadForStorage(payload: unknown): unknown {
   }
 
   return payload;
+}
+
+/**
+ * Normalises event payloads before they are cloned for storage. Search events
+ * automatically receive a payload version tag and excessively long error
+ * messages are truncated so downstream artefacts remain readable.
+ */
+function normaliseEventPayload(kind: EventKind, payload: unknown): unknown {
+  if (!kind.startsWith("search:")) {
+    return payload;
+  }
+
+  const base: Record<string, unknown> =
+    payload && typeof payload === "object" && !Array.isArray(payload)
+      ? { ...(payload as Record<string, unknown>) }
+      : {};
+
+  const message = base.message;
+  if (typeof message === "string" && message.length > MAX_ERROR_MESSAGE_LENGTH) {
+    const slice = message.slice(0, MAX_ERROR_MESSAGE_LENGTH - 1);
+    base.message = `${slice}…`;
+  }
+
+  if (base.version === undefined) {
+    base.version = 1;
+  }
+
+  return base;
 }
 
 export type EventKind =
@@ -241,6 +271,7 @@ export class EventStore {
   }
 
   emit(input: EmitEventInput): OrchestratorEvent {
+    const normalisedPayload = normaliseEventPayload(input.kind, input.payload);
     const event: OrchestratorEvent = {
       seq: ++this.seq,
       ts: Date.now(),
@@ -254,7 +285,7 @@ export class EventStore {
       ...omitUndefinedEntries({
         jobId: coerceNullToUndefined(input.jobId),
         childId: coerceNullToUndefined(input.childId),
-        payload: clonePayloadForStorage(input.payload),
+        payload: clonePayloadForStorage(normalisedPayload),
       }),
       provenance: normaliseProvenanceList(input.provenance),
     };

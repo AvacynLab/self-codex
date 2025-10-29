@@ -9,13 +9,15 @@ const DEFAULT_FETCH_MAX_BYTES = 15_000_000;
 /** Timeout (ms) applied to calls against the unstructured API. */
 const DEFAULT_UNSTRUCTURED_TIMEOUT_MS = 30_000;
 /** Default list of engines enabled when none is specified. */
-const DEFAULT_ENGINES = ["duckduckgo", "wikipedia", "arxiv", "github", "qwant"] as const;
+const DEFAULT_ENGINES = ["ddg", "wikipedia", "arxiv", "github"] as const;
 /** Default set of categories requested from SearxNG. */
 const DEFAULT_CATEGORIES = ["general", "news", "images", "files"] as const;
 /** Default concurrency used by the pipeline when fetching documents. */
 const DEFAULT_PARALLEL_FETCH = 4;
 /** Default concurrency used during the extraction phase. */
 const DEFAULT_PARALLEL_EXTRACT = 2;
+/** Default maximum number of documents requested from SearxNG. */
+const DEFAULT_MAX_RESULTS = 12;
 /** Default delay (ms) enforced between requests hitting the same domain. */
 const DEFAULT_DOMAIN_DELAY_MS = 0;
 
@@ -78,6 +80,7 @@ export interface PipelineConfig {
   readonly injectGraph: boolean;
   readonly injectVector: boolean;
   readonly parallelExtract: number;
+  readonly maxResults: number;
 }
 
 /** Aggregated search configuration consumed by the runtime. */
@@ -150,20 +153,28 @@ function resolveSearxCategories(): string[] {
 export function loadSearchConfig(): SearchConfig {
   const searxBaseUrl = readString("SEARCH_SEARX_BASE_URL", "http://searxng:8080");
   const searxApiPath = readString("SEARCH_SEARX_API_PATH", "/search");
-  const searxTimeoutMs = readInt("SEARCH_SEARX_TIMEOUT_MS", DEFAULT_SEARX_TIMEOUT_MS, { min: 1 });
+  const searxTimeoutMs = readInt("SEARCH_SEARX_TIMEOUT_MS", DEFAULT_SEARX_TIMEOUT_MS, { min: 1, max: 60_000 });
   const searxAuthToken = readOptionalString("SEARCH_SEARX_AUTH_TOKEN") ?? null;
-  const searxMaxRetries = readInt("SEARCH_SEARX_MAX_RETRIES", 2, { min: 0, max: 10 });
+  const searxMaxRetries = readInt("SEARCH_SEARX_MAX_RETRIES", 2, { min: 0, max: 6 });
 
   const unstructuredBaseUrl = readString("UNSTRUCTURED_BASE_URL", "http://unstructured:8000");
-  const unstructuredTimeoutMs = readInt("UNSTRUCTURED_TIMEOUT_MS", DEFAULT_UNSTRUCTURED_TIMEOUT_MS, { min: 1 });
+  const unstructuredTimeoutMs = readInt("UNSTRUCTURED_TIMEOUT_MS", DEFAULT_UNSTRUCTURED_TIMEOUT_MS, {
+    min: 1,
+    max: 120_000,
+  });
   const unstructuredStrategy = readString("UNSTRUCTURED_STRATEGY", "hi_res");
   const unstructuredApiKey = readOptionalString("UNSTRUCTURED_API_KEY") ?? null;
 
-  const fetchTimeoutMs = readInt("SEARCH_FETCH_TIMEOUT_MS", DEFAULT_FETCH_TIMEOUT_MS, { min: 1 });
-  const fetchMaxBytes = readInt("SEARCH_FETCH_MAX_BYTES", DEFAULT_FETCH_MAX_BYTES, { min: 1 });
+  const fetchTimeoutMs = readInt("SEARCH_FETCH_TIMEOUT_MS", DEFAULT_FETCH_TIMEOUT_MS, { min: 1_000, max: 120_000 });
+  const fetchMaxBytes = readInt("SEARCH_FETCH_MAX_BYTES", DEFAULT_FETCH_MAX_BYTES, {
+    min: 1,
+    max: 200_000_000,
+  });
   const fetchUserAgent = readString("SEARCH_FETCH_UA", "CodexSearchBot/1.0");
   const fetchRespectRobots = readBool("SEARCH_FETCH_RESPECT_ROBOTS", false);
-  const fetchParallelism = readInt("SEARCH_FETCH_PARALLEL", DEFAULT_PARALLEL_FETCH, { min: 1, max: 16 });
+  const fetchParallelKey =
+    process.env.SEARCH_PARALLEL_FETCH !== undefined ? "SEARCH_PARALLEL_FETCH" : "SEARCH_FETCH_PARALLEL";
+  const fetchParallelism = readInt(fetchParallelKey, DEFAULT_PARALLEL_FETCH, { min: 1, max: 16 });
   const fetchDomainDelay = readInt("SEARCH_FETCH_DOMAIN_DELAY_MS", DEFAULT_DOMAIN_DELAY_MS, {
     min: 0,
     max: 60_000,
@@ -189,9 +200,12 @@ export function loadSearchConfig(): SearchConfig {
 
   const injectGraph = readBool("SEARCH_INJECT_GRAPH", true);
   const injectVector = readBool("SEARCH_INJECT_VECTOR", true);
-  const parallelExtract = readInt("SEARCH_EXTRACT_PARALLEL", DEFAULT_PARALLEL_EXTRACT, { min: 1, max: 16 });
+  const extractParallelKey =
+    process.env.SEARCH_PARALLEL_EXTRACT !== undefined ? "SEARCH_PARALLEL_EXTRACT" : "SEARCH_EXTRACT_PARALLEL";
+  const parallelExtract = readInt(extractParallelKey, DEFAULT_PARALLEL_EXTRACT, { min: 1, max: 16 });
+  const pipelineMaxResults = readInt("SEARCH_MAX_RESULTS", DEFAULT_MAX_RESULTS, { min: 1, max: 50 });
 
-  return {
+  const config: SearchConfig = {
     searx: {
       baseUrl: searxBaseUrl,
       apiPath: searxApiPath.startsWith("/") ? searxApiPath : `/${searxApiPath}`,
@@ -220,8 +234,10 @@ export function loadSearchConfig(): SearchConfig {
       injectGraph,
       injectVector,
       parallelExtract,
+      maxResults: pipelineMaxResults,
     },
   };
+  return deepFreeze(config);
 }
 
 /**
@@ -245,4 +261,25 @@ function parseDomainTtlOverrides(raw: string): Readonly<Record<string, number>> 
     overrides[domain] = ttl;
   }
   return overrides;
+}
+
+/**
+ * Recursively freezes the provided {@link value}. This defensive measure keeps
+ * the configuration immutable so long-lived runtimes cannot override values at
+ * runtime and inadvertently diverge from the environment-derived settings.
+ */
+function deepFreeze<T>(value: T): T {
+  if (typeof value !== "object" || value === null) {
+    return value;
+  }
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      deepFreeze(entry);
+    }
+  } else {
+    for (const entry of Object.values(value as Record<string, unknown>)) {
+      deepFreeze(entry);
+    }
+  }
+  return Object.freeze(value);
 }

@@ -23,6 +23,7 @@ const SEARCH_ENV_KEYS = [
   "SEARCH_FETCH_MAX_BYTES",
   "SEARCH_FETCH_UA",
   "SEARCH_FETCH_RESPECT_ROBOTS",
+  "SEARCH_PARALLEL_FETCH",
   "SEARCH_FETCH_PARALLEL",
   "SEARCH_FETCH_DOMAIN_DELAY_MS",
   "SEARCH_FETCH_CACHE_ENABLED",
@@ -33,6 +34,7 @@ const SEARCH_ENV_KEYS = [
   "SEARCH_FETCH_CACHE_DOMAIN_TTLS",
   "SEARCH_INJECT_GRAPH",
   "SEARCH_INJECT_VECTOR",
+  "SEARCH_PARALLEL_EXTRACT",
   "SEARCH_EXTRACT_PARALLEL",
 ];
 
@@ -53,13 +55,7 @@ describe("search/config", () => {
     expect(config.searx.baseUrl).to.equal("http://searxng:8080");
     expect(config.searx.apiPath).to.equal("/search");
     expect(config.searx.timeoutMs).to.equal(15000);
-    expect(config.searx.engines).to.deep.equal([
-      "duckduckgo",
-      "wikipedia",
-      "arxiv",
-      "github",
-      "qwant",
-    ]);
+    expect(config.searx.engines).to.deep.equal(["ddg", "wikipedia", "arxiv", "github"]);
     expect(config.searx.categories).to.deep.equal(["general", "news", "images", "files"]);
     expect(config.searx.authToken).to.equal(null);
     expect(config.searx.maxRetries).to.equal(2);
@@ -77,6 +73,7 @@ describe("search/config", () => {
     expect(config.pipeline.injectGraph).to.equal(true);
     expect(config.pipeline.injectVector).to.equal(true);
     expect(config.pipeline.parallelExtract).to.equal(2);
+    expect(config.pipeline.maxResults).to.equal(12);
   });
 
   it("honours environment overrides", () => {
@@ -95,7 +92,7 @@ describe("search/config", () => {
     process.env.SEARCH_FETCH_MAX_BYTES = "4096";
     process.env.SEARCH_FETCH_UA = "MyAgent/1.0";
     process.env.SEARCH_FETCH_RESPECT_ROBOTS = "true";
-    process.env.SEARCH_FETCH_PARALLEL = "8";
+    process.env.SEARCH_PARALLEL_FETCH = "8";
     process.env.SEARCH_FETCH_DOMAIN_DELAY_MS = "1500";
     process.env.SEARCH_FETCH_CACHE_ENABLED = "true";
     process.env.SEARCH_FETCH_CACHE_TTL_MS = "450000";
@@ -105,7 +102,8 @@ describe("search/config", () => {
     process.env.SEARCH_FETCH_CACHE_DOMAIN_TTLS = "example.com=900000";
     process.env.SEARCH_INJECT_GRAPH = "false";
     process.env.SEARCH_INJECT_VECTOR = "0";
-    process.env.SEARCH_EXTRACT_PARALLEL = "3";
+    process.env.SEARCH_PARALLEL_EXTRACT = "3";
+    process.env.SEARCH_MAX_RESULTS = "9";
 
     const config = loadSearchConfig();
     assertConfigShape(config);
@@ -136,6 +134,7 @@ describe("search/config", () => {
     expect(config.pipeline.injectGraph).to.equal(false);
     expect(config.pipeline.injectVector).to.equal(false);
     expect(config.pipeline.parallelExtract).to.equal(3);
+    expect(config.pipeline.maxResults).to.equal(9);
   });
 
   it("collects non-empty search secrets for log redaction", () => {

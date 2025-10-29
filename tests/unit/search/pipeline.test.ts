@@ -51,6 +51,7 @@ describe("search/pipeline", () => {
       injectGraph: true,
       injectVector: true,
       parallelExtract: 2,
+      maxResults: 6,
     },
   };
 
@@ -74,7 +75,8 @@ describe("search/pipeline", () => {
           categories: ["general"],
           position: 0,
           thumbnailUrl: null,
-          mimeType: "text/html",
+          mime: "text/html",
+          publishedAt: null,
           score: null,
         },
       ],
@@ -185,7 +187,8 @@ describe("search/pipeline", () => {
           categories: ["general"],
           position: 0,
           thumbnailUrl: null,
-          mimeType: "text/html",
+          mime: "text/html",
+          publishedAt: null,
           score: null,
         },
         {
@@ -197,7 +200,8 @@ describe("search/pipeline", () => {
           categories: ["general"],
           position: 1,
           thumbnailUrl: null,
-          mimeType: "text/html",
+          mime: "text/html",
+          publishedAt: null,
           score: null,
         },
       ],

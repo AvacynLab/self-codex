@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import { estimateTokenUsage } from "../../infra/budget.js";
 import {
   embedText,
@@ -124,13 +126,55 @@ interface ChunkCandidate {
   readonly segmentIds: readonly string[];
 }
 
+interface NormalisedSegment {
+  readonly id: string;
+  readonly kind: StructuredSegment["kind"];
+  readonly text: string;
+  readonly segmentIds: readonly string[];
+}
+
 function buildChunks(document: StructuredDocument, maxTokens: number): ChunkCandidate[] {
   const segments = document.segments
     .filter((segment) => CHUNK_KINDS.has(segment.kind))
-    .map((segment) => ({ id: segment.id, text: segment.text.trim() }))
+    .map((segment) => ({
+      id: segment.id,
+      kind: segment.kind,
+      text: segment.text.trim(),
+    }))
     .filter((entry) => entry.text.length > 0);
 
-  if (segments.length === 0) {
+  const merged: NormalisedSegment[] = [];
+
+  for (let index = 0; index < segments.length; index += 1) {
+    const current = segments[index];
+    if (!current) {
+      continue;
+    }
+
+    if (current.kind === "title") {
+      const tokenCount = estimateTokenUsage(current.text);
+      const next = segments[index + 1];
+      if (tokenCount > 0 && tokenCount < 10 && next && next.kind !== "title") {
+        merged.push({
+          id: `${current.id}+${next.id}`,
+          kind: next.kind,
+          text: `${current.text}\n\n${next.text}`,
+          segmentIds: [current.id, next.id],
+        });
+        index += 1;
+        continue;
+      }
+    }
+
+    merged.push({
+      id: current.id,
+      kind: current.kind,
+      text: current.text,
+      segmentIds: [current.id],
+    });
+  }
+
+  if (merged.length === 0) {
     const fallbackText = document.description ?? document.title;
     if (!fallbackText) {
       return [];
@@ -156,7 +200,7 @@ function buildChunks(document: StructuredDocument, maxTokens: number): ChunkCand
     tokenBudget = 0;
   };
 
-  for (const segment of segments) {
+  for (const segment of merged) {
     const tokens = estimateTokenUsage(segment.text);
     if (tokens === 0) {
       continue;
@@ -173,7 +217,7 @@ function buildChunks(document: StructuredDocument, maxTokens: number): ChunkCand
           flush();
         }
         buffer.push(piece);
-        segmentIds.push(segment.id);
+        segmentIds.push(...segment.segmentIds);
         tokenBudget += pieceTokens;
         flush();
       }
@@ -185,12 +229,24 @@ function buildChunks(document: StructuredDocument, maxTokens: number): ChunkCand
     }
 
     buffer.push(segment.text);
-    segmentIds.push(segment.id);
+    segmentIds.push(...segment.segmentIds);
     tokenBudget += tokens;
   }
 
   flush();
-  return candidates;
+  const deduped: ChunkCandidate[] = [];
+  let previousHash: string | null = null;
+
+  for (const candidate of candidates) {
+    const hash = hashChunk(candidate.text);
+    if (hash === previousHash) {
+      continue;
+    }
+    previousHash = hash;
+    deduped.push(candidate);
+  }
+
+  return deduped;
 }
 
 function splitTextIntoChunks(text: string, maxTokens: number): string[] {
@@ -259,6 +315,7 @@ function buildChunkMetadata(
   chunkIndex: number,
   chunkCount: number,
 ): Record<string, unknown> {
+  const language = typeof document.language === "string" ? document.language.toLowerCase() : null;
   return {
     document_id: document.id,
     document_url: document.url,
@@ -266,7 +323,7 @@ function buildChunkMetadata(
     fetched_at: document.fetchedAt,
     checksum: document.checksum,
     mime_type: document.mimeType ?? null,
-    language: document.language ?? null,
+    language,
     title: document.title ?? null,
     description: document.description ?? null,
     searx_query: document.provenance.searxQuery,
@@ -287,4 +344,9 @@ function buildChunkProvenance(document: StructuredDocument, chunkId: string) {
     { sourceId: chunkId, type: "rag" as const },
     { sourceId: `sha256:${document.checksum}`, type: "file" as const },
   ];
+}
+
+/** Computes a deterministic fingerprint for a chunk's textual content. */
+function hashChunk(text: string): string {
+  return createHash("sha1").update(text).digest("hex");
 }

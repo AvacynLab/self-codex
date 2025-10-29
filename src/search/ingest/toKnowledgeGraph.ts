@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 
 import {
+  dedupeTripleBatch,
   type KnowledgeGraph,
   type KnowledgeInsertResult,
   type KnowledgeTripleInput,
@@ -11,6 +12,17 @@ import type { StructuredDocument, StructuredSegment } from "../types.js";
 
 /** Prefix applied to subjects so search sourced triples remain isolated. */
 const SEARCH_DOCUMENT_SUBJECT_PREFIX = "search:document:" as const;
+
+/** Canonical predicates emitted when persisting search documents. */
+export const P = Object.freeze({
+  type: "rdf:type",
+  title: "dc:title",
+  lang: "dc:language",
+  src: "dc:source",
+  description: "dc:description",
+  mentions: "search:mentions",
+  fetchMetadata: "search:fetch_metadata",
+} as const);
 
 /**
  * Basic French/English stop word list used when extracting mentions.  The
@@ -150,34 +162,40 @@ export class KnowledgeGraphIngestor {
       size: document.size,
     } as const;
 
-    const triples: KnowledgeTripleInput[] = [
-      {
-        subject,
-        predicate: "type",
-        object: "search_document",
-        source: document.provenance.sourceUrl,
-        provenance: baseProvenance,
-      },
-      {
-        subject,
-        predicate: "source_url",
-        object: document.url,
-        source: document.provenance.sourceUrl,
-        provenance: baseProvenance,
-      },
-      {
-        subject,
-        predicate: "fetch_metadata",
-        object: JSON.stringify(sourcePayload),
-        source: document.provenance.sourceUrl,
-        provenance: baseProvenance,
-      },
-    ];
+    const triples: KnowledgeTripleInput[] = [];
+
+    const enqueue = (triple: KnowledgeTripleInput) => {
+      triples.push(triple);
+    };
+
+    enqueue({
+      subject,
+      predicate: P.type,
+      object: "search:Document",
+      source: document.provenance.sourceUrl,
+      provenance: baseProvenance,
+    });
+
+    enqueue({
+      subject,
+      predicate: P.src,
+      object: document.url,
+      source: document.provenance.sourceUrl,
+      provenance: baseProvenance,
+    });
+
+    enqueue({
+      subject,
+      predicate: P.fetchMetadata,
+      object: JSON.stringify(sourcePayload),
+      source: document.provenance.sourceUrl,
+      provenance: baseProvenance,
+    });
 
     if (document.title) {
-      triples.push({
+      enqueue({
         subject,
-        predicate: "title",
+        predicate: P.title,
         object: document.title,
         source: document.provenance.sourceUrl,
         provenance: baseProvenance,
@@ -185,9 +203,9 @@ export class KnowledgeGraphIngestor {
     }
 
     if (document.description) {
-      triples.push({
+      enqueue({
         subject,
-        predicate: "description",
+        predicate: P.description,
         object: document.description,
         source: document.provenance.sourceUrl,
         provenance: baseProvenance,
@@ -195,41 +213,38 @@ export class KnowledgeGraphIngestor {
     }
 
     if (document.language) {
-      triples.push({
+      enqueue({
         subject,
-        predicate: "language",
+        predicate: P.lang,
         object: document.language,
         source: document.provenance.sourceUrl,
         provenance: baseProvenance,
       });
     }
 
-    const aggregated: KnowledgeGraphIngestedTriple[] = triples.map((triple) => ({
-      predicate: triple.predicate,
-      object: triple.object,
-      result: upsertTriple(this.graph, triple),
-    }));
-
     const mentionTerms = extractKeyTerms(document);
-    const mentionTriples: KnowledgeGraphIngestedTriple[] = [];
     for (const [index, term] of mentionTerms.entries()) {
-      const mentionTriple: KnowledgeTripleInput = {
+      enqueue({
         subject,
-        predicate: "mentions",
+        predicate: P.mentions,
         object: term,
         source: document.provenance.sourceUrl,
         provenance: withProvenance(baseProvenance, [buildMentionProvenance(subject, index)]),
-      };
-      mentionTriples.push({
-        predicate: mentionTriple.predicate,
-        object: mentionTriple.object,
-        result: upsertTriple(this.graph, mentionTriple),
+      });
+    }
+
+    const aggregated: KnowledgeGraphIngestedTriple[] = [];
+    for (const triple of dedupeTripleBatch(triples)) {
+      aggregated.push({
+        predicate: triple.predicate,
+        object: triple.object,
+        result: upsertTriple(this.graph, triple),
       });
     }
 
     return {
       subject,
-      triples: [...aggregated, ...mentionTriples],
+      triples: aggregated,
       mentions: mentionTerms,
     };
   }
@@ -279,7 +294,7 @@ export function extractKeyTerms(document: StructuredDocument): string[] {
     consider(segment.text);
   }
 
-  const entries = Array.from(frequency.entries());
+  const entries = Array.from(frequency.entries()).filter(([, count]) => count >= 2);
   entries.sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
   return entries.slice(0, MAX_MENTION_TERMS).map(([token]) => token);
 }

@@ -4,6 +4,25 @@
  * orchestrator can rely on stable contracts when integrating the search
  * subsystem.
  */
+/**
+ * Ordered list of supported segment kinds emitted by the extractor. Keeping the
+ * list centralised avoids discrepancies across the ingestion modules and makes
+ * it trivial for tests to reference the canonical enumeration.
+ */
+export const SEGMENT_KINDS = [
+  "title",
+  "paragraph",
+  "list",
+  "table",
+  "figure",
+  "caption",
+  "code",
+  "meta",
+] as const;
+
+/** Literal union derived from {@link SEGMENT_KINDS}. */
+export type SegmentKind = (typeof SEGMENT_KINDS)[number];
+
 export interface SearxResult {
   /** Stable identifier derived from the URL and source metadata. */
   readonly id: string;
@@ -22,7 +41,9 @@ export interface SearxResult {
   /** Optional media thumbnail when provided by the engine. */
   readonly thumbnailUrl: string | null;
   /** Content type advertised by Searx for the target resource. */
-  readonly mimeType: string | null;
+  readonly mime: string | null;
+  /** Publication timestamp in ISO-8601 format when provided by Searx. */
+  readonly publishedAt: string | null;
   /** Raw score exposed by Searx. */
   readonly score: number | null;
 }
@@ -55,16 +76,6 @@ export interface RawFetched {
 }
 
 /** Supported structural segment kinds produced by the extractor. */
-export type StructuredSegmentKind =
-  | "title"
-  | "paragraph"
-  | "list"
-  | "table"
-  | "figure"
-  | "caption"
-  | "code"
-  | "meta";
-
 /**
  * Canonical representation of a structured segment extracted from a document.
  */
@@ -72,7 +83,7 @@ export interface StructuredSegment {
   /** Stable identifier combining the document id and the extractor ordinal. */
   readonly id: string;
   /** Semantic kind emitted by the extractor. */
-  readonly kind: StructuredSegmentKind;
+  readonly kind: SegmentKind;
   /** Clean textual content associated with the segment. */
   readonly text: string;
   /** Page number when available (useful for PDFs). */
@@ -122,5 +133,10 @@ export interface StructuredDocument {
     readonly position: number | null;
     /** URL originally advertised by Searx (may differ after redirects). */
     readonly sourceUrl: string;
+  };
+  /** Optional document-level metadata describing extraction side effects. */
+  readonly metadata?: {
+    /** Indicates that the source document was truncated during extraction. */
+    readonly truncated?: boolean;
   };
 }

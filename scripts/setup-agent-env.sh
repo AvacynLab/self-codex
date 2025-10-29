@@ -4,8 +4,16 @@
 # - Garantit la présence des types Node (@types/node) déjà en dependencies
 # - Compile TypeScript (src + graph-forge) avec fallback via npx si tsc absent
 # - Peut démarrer le serveur HTTP si START_HTTP=1
+# - Vérifie la version de Node, crée l'arborescence `validation_run/` et avertit
+#   si les endpoints SearxNG/Unstructured sont absents.
 
 set -euo pipefail
+
+# La validation requiert Node.js >= 20 (fetch natif + AbortController).
+MIN_NODE_MAJOR=20
+
+# START_MCP_BG est obsolète : neutralisation pour éviter les fuites d'état.
+unset START_MCP_BG || true
 
 # Neutralisation immédiate des variables npm pour éviter les surprises (proxies, devDeps omis).
 unset NPM_CONFIG_PRODUCTION || true
@@ -40,7 +48,21 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 echo "🔎 Vérification Node/npm"
-node -v
+node_version_raw="$(node -v 2>/dev/null || true)"
+if [[ -z "${node_version_raw}" ]]; then
+  echo "❌ Node.js introuvable. Installez Node ${MIN_NODE_MAJOR}+ avant de poursuivre." >&2
+  exit 5
+fi
+echo "${node_version_raw}"
+if [[ ! "${node_version_raw}" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+  echo "❌ Version Node inattendue (${node_version_raw})." >&2
+  exit 6
+fi
+node_major="${BASH_REMATCH[1]}"
+if (( node_major < MIN_NODE_MAJOR )); then
+  echo "❌ Node ${node_version_raw} détecté (< ${MIN_NODE_MAJOR}). Mettez à jour Node.js." >&2
+  exit 7
+fi
 
 # Validation supplémentaire : vérifie qu'aucune variable npm_config proxy n'est restée active.
 ensure_no_npm_proxy_env() {
@@ -69,6 +91,29 @@ npm -v
 if [[ ! -f package-lock.json ]]; then
   echo "❌ package-lock.json manquant. Ce dépôt requiert 'npm ci'."
   exit 2
+fi
+
+# Préparation des répertoires runtime (`validation_run`, `children`, logs...).
+RUNTIME_ROOT_DEFAULT="./validation_run"
+RUNTIME_ROOT="${MCP_RUNS_ROOT:-${RUNTIME_ROOT_DEFAULT}}"
+LOG_ROOT="${RUNTIME_ROOT}/logs"
+mkdir -p "${RUNTIME_ROOT}" "${LOG_ROOT}" "${RUNTIME_ROOT}/runs" "${RUNTIME_ROOT}/snapshots" "${RUNTIME_ROOT}/metrics" "${RUNTIME_ROOT}/artifacts" "${RUNTIME_ROOT}/reports"
+mkdir -p ./children
+
+# Valeurs par défaut pour l'orchestrateur (respect des conventions validation_run).
+if [[ -z "${MCP_RUNS_ROOT:-}" ]]; then
+  export MCP_RUNS_ROOT="${RUNTIME_ROOT}"
+fi
+if [[ -z "${MCP_LOG_FILE:-}" ]]; then
+  export MCP_LOG_FILE="${LOG_ROOT}/self-codex.log"
+fi
+
+# Avertissement précoce si les endpoints requis ne sont pas configurés.
+if [[ -z "${SEARCH_SEARX_BASE_URL:-}" ]]; then
+  echo "⚠️  SEARCH_SEARX_BASE_URL non défini : les outils search échoueront." >&2
+fi
+if [[ -z "${UNSTRUCTURED_BASE_URL:-}" ]]; then
+  echo "⚠️  UNSTRUCTURED_BASE_URL non défini : l'extracteur ne pourra pas fonctionner." >&2
 fi
 
 # Helper : lance une commande en forçant NODE_ENV=development uniquement sur la portée demandée.
@@ -129,8 +174,9 @@ EOF
 
 if [[ "${START_HTTP}" == "1" ]]; then
   echo "🚀 Démarrage serveur MCP HTTP"
-  LOG_FILE="${REPO_DIR}/runs/http-$(date +%Y%m%d-%H%M%S).log"
+  LOG_FILE="${MCP_LOG_FILE:-${LOG_ROOT}/self-codex.log}"
   mkdir -p "$(dirname "$LOG_FILE")"
+  touch "${LOG_FILE}"
 
   # Token optionnel pour sécuriser l’endpoint
   AUTH_ENV=()
@@ -138,14 +184,14 @@ if [[ "${START_HTTP}" == "1" ]]; then
     AUTH_ENV=(MCP_HTTP_TOKEN="${MCP_HTTP_TOKEN}")
   fi
 
-  env "${AUTH_ENV[@]}" node dist/server.js \
+  env MCP_RUNS_ROOT="${MCP_RUNS_ROOT}" MCP_LOG_FILE="${LOG_FILE}" "${AUTH_ENV[@]}" node dist/server.js \
     --http \
     --http-host "$MCP_HTTP_HOST" \
     --http-port "$MCP_HTTP_PORT" \
     --http-path "$MCP_HTTP_PATH" \
     --http-json "$MCP_HTTP_JSON" \
     --http-stateless "$MCP_HTTP_STATELESS" \
-    > "$LOG_FILE" 2>&1 &
+    >> "$LOG_FILE" 2>&1 &
 
   SERVER_PID=$!
   echo "${SERVER_PID}" > "${SERVER_PID_FILE}"
@@ -153,6 +199,7 @@ if [[ "${START_HTTP}" == "1" ]]; then
   sleep 1
   echo "✅ MCP HTTP PID: $(cat "${SERVER_PID_FILE}" 2>/dev/null || echo 'n/a')"
   echo "🌐 Endpoint: http://${MCP_HTTP_HOST}:${MCP_HTTP_PORT}${MCP_HTTP_PATH}"
+  echo "🗂️  Log file: ${LOG_FILE}"
 else
   echo "ℹ️ START_HTTP=0 → serveur HTTP non démarré (STDIO seul)."
 fi

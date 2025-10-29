@@ -76,6 +76,23 @@ describe("orchestrator runtime env overrides", () => {
 
     process.env.MCP_MEMORY_VECTOR_MAX_DOCS = String(VECTOR_MEMORY_MAX_CAPACITY * 5);
     expect(resolveVectorIndexCapacity(), "global ceiling").to.equal(VECTOR_MEMORY_MAX_CAPACITY);
+
+    delete process.env.MCP_MEMORY_VECTOR_MAX_DOCS;
+  });
+
+  it("derives the per-document vector chunk limit", () => {
+    const { resolveVectorIndexCapacity, resolveVectorPerDocLimit } = __envRuntimeInternals;
+
+    const capacity = resolveVectorIndexCapacity();
+    expect(resolveVectorPerDocLimit(capacity), "default limit").to.equal(Math.min(capacity, 24));
+
+    process.env.MCP_MEMORY_VECTOR_MAX_CHUNKS_PER_DOC = "5";
+    expect(resolveVectorPerDocLimit(capacity), "explicit override").to.equal(5);
+
+    process.env.MCP_MEMORY_VECTOR_MAX_CHUNKS_PER_DOC = String(capacity * 10);
+    expect(resolveVectorPerDocLimit(capacity), "clamped to capacity").to.equal(capacity);
+
+    delete process.env.MCP_MEMORY_VECTOR_MAX_CHUNKS_PER_DOC;
   });
 
   it("derives hybrid retriever options from the environment", () => {

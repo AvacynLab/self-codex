@@ -14,32 +14,47 @@ const ERROR_SEARX_NETWORK = "E-SEARCH-SEARX-NETWORK" as const;
 
 /** Raw structure returned by SearxNG for a single result entry. */
 const searxResultSchema = z
-  .object({
+  .strictObject({
     url: z.string().url(),
     title: z.string().optional().nullable(),
-    content: z.string().optional().nullable(),
     snippet: z.string().optional().nullable(),
+    content: z.string().optional().nullable(),
     engines: z.array(z.string()).optional(),
     engine: z.string().optional(),
     categories: z.array(z.string()).optional(),
     score: z.number().optional(),
-    result_type: z.string().optional(),
     thumbnail: z.string().optional().nullable(),
     img_src: z.string().optional().nullable(),
     mimetype: z.string().optional().nullable(),
+    published: z.union([z.string(), z.number(), z.date()]).optional().nullable(),
   })
-  .passthrough();
+  .transform((payload) => ({
+    url: payload.url,
+    title: payload.title ?? null,
+    snippet: payload.snippet ?? payload.content ?? null,
+    engines: payload.engines ?? (payload.engine ? [payload.engine] : []),
+    categories: payload.categories ?? [],
+    score: payload.score,
+    thumbnail: payload.thumbnail ?? payload.img_src ?? null,
+    mimetype: payload.mimetype ?? null,
+    published: payload.published ?? null,
+  }));
 
 /** Envelope returned by SearxNG when requesting the JSON format. */
-const searxResponseSchema = z.object({
-  query: z.string().optional().default(""),
-  number_of_results: z.number().optional(),
-  results: z.array(searxResultSchema),
-});
+const searxResponseSchema = z
+  .strictObject({
+    query: z.string().optional(),
+    number_of_results: z.number().optional(),
+    results: z.array(z.record(z.unknown())),
+  })
+  .transform((payload) => ({
+    query: payload.query ?? "",
+    results: payload.results,
+  }));
 
 /** Helper discriminating whether an error should trigger a retry. */
 function isRetriableStatus(status: number): boolean {
-  return status >= 500 && status < 600;
+  return status === 429 || status === 502 || status === 503 || status === 504;
 }
 
 /** Error thrown when the client cannot obtain a valid response from SearxNG. */
@@ -101,7 +116,8 @@ export class SearxClient {
       });
     }
 
-    const categories = options.categories && options.categories.length > 0 ? options.categories : this.config.categories;
+    const categories =
+      options.categories && options.categories.length > 0 ? options.categories : this.config.categories;
     const engines = options.engines && options.engines.length > 0 ? options.engines : this.config.engines;
     const url = new URL(this.config.apiPath, this.config.baseUrl);
 
@@ -149,7 +165,7 @@ export class SearxClient {
             query,
           }),
         );
-        return { query: payload.query ?? query, results, raw: payload };
+        return { query: payload.query || query, results, raw: payload };
       } catch (error) {
         const asClientError = error instanceof SearxClientError ? error : null;
         lastError = error;
@@ -158,8 +174,9 @@ export class SearxClient {
         if (!retriable || attempt >= maxAttempts) {
           throw error;
         }
-        // Small exponential backoff to avoid hammering the instance on flaky responses.
-        await delay(50 * attempt);
+        // Small exponential backoff with jitter to avoid hammering the instance on flaky responses.
+        const backoffMs = 150 * attempt + Math.floor(Math.random() * 100);
+        await delay(backoffMs);
       }
     }
 
@@ -241,7 +258,7 @@ export class SearxClient {
 }
 
 interface NormaliseContext {
-  readonly raw: z.infer<typeof searxResultSchema>;
+  readonly raw: Record<string, unknown>;
   readonly position: number;
   readonly engines: readonly string[];
   readonly categories: readonly string[];
@@ -250,31 +267,143 @@ interface NormaliseContext {
 
 function normaliseResult(context: NormaliseContext): SearxResult {
   const { raw, position, engines, categories, query } = context;
-  const selectedEngines = Array.isArray(raw.engines) && raw.engines.length > 0 ? raw.engines : raw.engine ? [raw.engine] : engines;
-  const selectedCategories = Array.isArray(raw.categories) && raw.categories.length > 0 ? raw.categories : categories;
-  const thumbnail = raw.thumbnail ?? raw.img_src ?? null;
-  const mimeType = raw.mimetype ?? null;
-  const snippet = raw.snippet ?? raw.content ?? null;
-  const score = Number.isFinite(raw.score) ? Number(raw.score) : null;
+  const parsed = searxResultSchema.parse({
+    url: typeof raw["url"] === "string" ? (raw["url"] as string) : "",
+    title:
+      typeof raw["title"] === "string" || raw["title"] === null ? (raw["title"] as string | null | undefined) : undefined,
+    snippet:
+      typeof raw["snippet"] === "string" || raw["snippet"] === null
+        ? (raw["snippet"] as string | null | undefined)
+        : undefined,
+    content: typeof raw["content"] === "string" ? (raw["content"] as string) : undefined,
+    engines: Array.isArray(raw["engines"]) ? (raw["engines"] as string[]) : undefined,
+    engine: typeof raw["engine"] === "string" ? (raw["engine"] as string) : undefined,
+    categories: Array.isArray(raw["categories"]) ? (raw["categories"] as string[]) : undefined,
+    score: typeof raw["score"] === "number" ? (raw["score"] as number) : undefined,
+    thumbnail: typeof raw["thumbnail"] === "string" ? (raw["thumbnail"] as string) : undefined,
+    img_src: typeof raw["img_src"] === "string" ? (raw["img_src"] as string) : undefined,
+    mimetype: typeof raw["mimetype"] === "string" ? (raw["mimetype"] as string) : undefined,
+    published: extractPublished(raw),
+  });
 
+  const canonicalUrl = canonicalizeUrl(parsed.url);
   const identifier = createHash("sha256")
-    .update(raw.url)
+    .update(canonicalUrl)
     .update("|")
-    .update(mimeType ?? "")
+    .update(parsed.mimetype ?? "")
     .update("|")
     .update(query)
     .digest("hex");
 
+  const selectedEngines = parsed.engines.length > 0 ? parsed.engines : engines;
+  const selectedCategories = parsed.categories.length > 0 ? parsed.categories : categories;
+
   return {
     id: identifier,
-    url: raw.url,
-    title: raw.title ?? null,
-    snippet,
-    engines: Object.freeze(selectedEngines.map((engine) => engine.trim()).filter((engine) => engine.length > 0)),
-    categories: Object.freeze(selectedCategories.map((category) => category.trim()).filter((category) => category.length > 0)),
+    url: canonicalUrl,
+    title: parsed.title,
+    snippet: parsed.snippet ?? null,
+    engines: Object.freeze(sanitiseList(selectedEngines)),
+    categories: Object.freeze(sanitiseList(selectedCategories)),
     position,
-    thumbnailUrl: thumbnail ?? null,
-    mimeType,
-    score,
+    thumbnailUrl: parsed.thumbnail,
+    mime: parsed.mimetype ?? null,
+    publishedAt: normalisePublished(parsed.published),
+    score: typeof parsed.score === "number" ? parsed.score : null,
   };
+}
+
+/**
+ * Produces a deterministic list by trimming values and dropping duplicates while
+ * preserving the first occurrence order. This avoids leaking empty strings to
+ * downstream consumers and keeps analytics consistent across runs.
+ */
+function sanitiseList(values: readonly string[]): string[] {
+  const seen = new Set<string>();
+  const ordered: string[] = [];
+  for (const value of values) {
+    const trimmed = value.trim();
+    if (trimmed.length === 0 || seen.has(trimmed)) {
+      continue;
+    }
+    seen.add(trimmed);
+    ordered.push(trimmed);
+  }
+  return ordered;
+}
+
+/**
+ * Canonicalises a result URL by removing fragments, dropping noisy tracking
+ * parameters and sorting the remaining query parameters. This keeps deduplication
+ * stable across runs and engines.
+ */
+function canonicalizeUrl(rawUrl: string): string {
+  try {
+    const url = new URL(rawUrl);
+    url.hash = "";
+    const params = new URLSearchParams(url.search);
+    const blockedPrefixes = [/^utm_/i, /^ref$/i, /^fbclid$/i, /^gclid$/i, /^mc_cid$/i, /^mc_eid$/i];
+    for (const key of [...params.keys()]) {
+      if (blockedPrefixes.some((pattern) => pattern.test(key))) {
+        params.delete(key);
+      }
+    }
+    const sortedParams = [...params.entries()].sort(([aKey, aValue], [bKey, bValue]) => {
+      if (aKey === bKey) {
+        return aValue.localeCompare(bValue);
+      }
+      return aKey.localeCompare(bKey);
+    });
+    url.search = sortedParams.length > 0 ? new URLSearchParams(sortedParams).toString() : "";
+    return url.toString();
+  } catch {
+    return rawUrl.trim();
+  }
+}
+
+/**
+ * Collects the most relevant publication candidate exposed by Searx. Engines
+ * use different key names, therefore we check the most common variants while
+ * preserving the original value for later normalisation.
+ */
+function extractPublished(raw: Record<string, unknown>): unknown {
+  const candidates = [
+    raw["published"],
+    raw["publishedDate"],
+    raw["published_date"],
+    raw["pubdate"],
+    raw["date"],
+    raw["updated"],
+  ];
+  for (const candidate of candidates) {
+    if (candidate !== undefined && candidate !== null) {
+      return candidate;
+    }
+  }
+  return null;
+}
+
+/**
+ * Converts the provided publication hint into an ISO-8601 string. Numeric
+ * values are interpreted as seconds unless they look like a millisecond epoch.
+ */
+function normalisePublished(value: unknown): string | null {
+  if (value instanceof Date) {
+    return value.toISOString();
+  }
+  if (typeof value === "number" && Number.isFinite(value)) {
+    const date = new Date(value * (value < 10_000_000_000 ? 1000 : 1));
+    return Number.isNaN(date.getTime()) ? null : date.toISOString();
+  }
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (trimmed.length === 0) {
+      return null;
+    }
+    const parsed = new Date(trimmed);
+    if (!Number.isNaN(parsed.getTime())) {
+      return parsed.toISOString();
+    }
+  }
+  return null;
 }

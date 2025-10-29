@@ -50,7 +50,7 @@ describe("search/ingest/toVectorStore", () => {
       id: "doc-v1",
       url: "https://example.com/doc",
       title: "LLM search overview",
-      language: "en",
+      language: "EN",
       description: "Overview of the ingestion pipeline",
       checksum: "deadbeef",
       mimeType: "text/html",
@@ -115,6 +115,8 @@ describe("search/ingest/toVectorStore", () => {
     expect(metadata?.["language"]).to.equal("en");
     expect(metadata?.["fetched_at"]).to.equal(1_700_000_123_000);
 
+    expect(firstCall.text.startsWith("LLM Search\n\nThe pipeline")).to.equal(true);
+
     sinon.assert.calledOnce(memory.upsert as sinon.SinonStub<[VectorMemoryUpsertInput[]], Promise<VectorMemoryDocument[]>>);
     const upsertArg = (memory.upsert as sinon.SinonStub<[VectorMemoryUpsertInput[]], Promise<VectorMemoryDocument[]>>).firstCall
       .args[0];
@@ -163,6 +165,54 @@ describe("search/ingest/toVectorStore", () => {
 
     const memory = createMemory();
     const ingestor = new VectorStoreIngestor({ memory, embed: embedStub, maxTokensPerChunk: 50 });
+
+    await ingestor.ingest(document);
+
+    sinon.assert.calledOnce(embedStub);
+    sinon.assert.calledOnce(memory.upsert as sinon.SinonStub<[VectorMemoryUpsertInput[]], Promise<VectorMemoryDocument[]>>);
+  });
+
+  it("skips duplicate chunks generated back-to-back", async () => {
+    const document: StructuredDocument = {
+      id: "doc-dup",
+      url: "https://example.com/doc-dup",
+      title: "Duplicate",
+      language: "en",
+      description: null,
+      checksum: "ff00",
+      mimeType: "text/html",
+      size: 2048,
+      fetchedAt: 1_700_000_123_999,
+      segments: [
+        { id: "seg-1", kind: "paragraph", text: "Repeated chunk." },
+        { id: "seg-2", kind: "paragraph", text: "Repeated chunk." },
+        { id: "seg-3", kind: "paragraph", text: "Repeated chunk." },
+      ],
+      provenance: {
+        searxQuery: "duplicate chunk",
+        engines: ["ddg"],
+        categories: ["general"],
+        position: 1,
+        sourceUrl: "https://source.example/doc-dup",
+      },
+    };
+
+    const embedStub = sinon.stub().callsFake((options: EmbedTextOptions): EmbedTextResult => ({
+      payload: {
+        text: options.text,
+        id: options.idHint,
+        metadata: options.metadata,
+        tags: options.tags,
+        provenance: options.provenance,
+        createdAt: options.createdAt,
+      },
+      embedding: {},
+      norm: 1,
+      tokenCount: options.text.split(/\s+/u).length,
+    }));
+
+    const memory = createMemory();
+    const ingestor = new VectorStoreIngestor({ memory, embed: embedStub, maxTokensPerChunk: 40 });
 
     await ingestor.ingest(document);
 

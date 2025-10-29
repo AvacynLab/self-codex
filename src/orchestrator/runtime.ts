@@ -626,6 +626,14 @@ function resolveVectorIndexCapacity(): number {
   return Math.min(VECTOR_MEMORY_MAX_CAPACITY, requested);
 }
 
+function resolveVectorPerDocLimit(maxDocuments: number): number {
+  const override = readOptionalInt("MCP_MEMORY_VECTOR_MAX_CHUNKS_PER_DOC", { min: 1 });
+  if (override === undefined || override === null) {
+    return Math.min(maxDocuments, 24);
+  }
+  return Math.min(maxDocuments, override);
+}
+
 /** Resolves the default configuration used by the hybrid RAG retriever. */
 function resolveHybridRetrieverOptions(): {
   defaultLimit: number;
@@ -677,6 +685,7 @@ function resolveGraphWorkerPoolOptions(): {
 export const __envRuntimeInternals = {
   resolveIdempotencyTtlFromEnv,
   resolveVectorIndexCapacity,
+  resolveVectorPerDocLimit,
   resolveHybridRetrieverOptions,
   resolveThoughtGraphOptions,
   resolveGraphWorkerPoolOptions,
@@ -699,9 +708,12 @@ const idempotencyRegistry = new IdempotencyRegistry(
 /** Root directory storing the layered memory artefacts (vector + knowledge). */
 const MEMORY_ROOT = resolvePath(process.cwd(), "runs", "memory");
 /** Persistent vector index capturing long form orchestrator artefacts. */
+const VECTOR_INDEX_CAPACITY = resolveVectorIndexCapacity();
+const VECTOR_PER_DOC_LIMIT = resolveVectorPerDocLimit(VECTOR_INDEX_CAPACITY);
 const vectorMemoryIndex = VectorMemoryIndex.createSync({
   directory: resolvePath(MEMORY_ROOT, "vector"),
-  maxDocuments: resolveVectorIndexCapacity(),
+  maxDocuments: VECTOR_INDEX_CAPACITY,
+  maxChunksPerDocument: VECTOR_PER_DOC_LIMIT,
 });
 /** Shared vector memory dedicated to RAG ingestion workflows. */
 const ragRetrieverOptions = resolveHybridRetrieverOptions();
@@ -709,7 +721,8 @@ const ragRetrieverOptions = resolveHybridRetrieverOptions();
 const ragMemoryBackend = readString("MEM_BACKEND", "local").toLowerCase();
 const ragMemoryPromise = LocalVectorMemory.create({
   directory: resolvePath(MEMORY_ROOT, "rag"),
-  maxDocuments: resolveVectorIndexCapacity(),
+  maxDocuments: VECTOR_INDEX_CAPACITY,
+  maxChunksPerDocument: VECTOR_PER_DOC_LIMIT,
 });
 let ragMemoryInstance: LocalVectorMemory | null = null;
 let ragRetrieverInstance: HybridRetriever | null = null;

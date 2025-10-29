@@ -10,7 +10,7 @@ export const SearchRunInputSchema = z
     query: z.string().trim().min(1, "query must not be empty"),
     categories: z.array(z.string().trim().min(1)).max(16).optional(),
     engines: z.array(z.string().trim().min(1)).max(16).optional(),
-    max_results: z.number().int().min(1).max(20).optional(),
+    max_results: z.number().int().min(1).max(20).default(6),
     language: z.string().trim().min(2).max(16).optional(),
     safe_search: z.union([z.literal(0), z.literal(1), z.literal(2)]).optional(),
     fetch_content: z.boolean().optional(),
@@ -64,8 +64,18 @@ const SearchRunSuccessSchema = z
     job_id: z.string().min(1).nullable(),
     count: z.number().int().min(0),
     docs: z.array(SearchRunDocumentSchema),
-    errors: z.array(SearchRunErrorSchema),
+    warnings: z.array(SearchRunErrorSchema).min(1).optional(),
     stats: SearchRunStatsSchema,
+    budget_used: z
+      .object({
+        time_ms: z.number().nonnegative().optional(),
+        tokens: z.number().nonnegative().optional(),
+        tool_calls: z.number().nonnegative().optional(),
+        bytes_in: z.number().nonnegative().optional(),
+        bytes_out: z.number().nonnegative().optional(),
+      })
+      .strict()
+      .optional(),
   })
   .strict();
 
@@ -151,8 +161,18 @@ const SearchIndexSuccessSchema = z
     summary: z.string().min(1),
     count: z.number().int().min(0),
     docs: z.array(SearchIndexDocumentSchema),
-    errors: z.array(SearchRunErrorSchema),
+    errors: z.array(SearchRunErrorSchema).min(1).optional(),
     stats: SearchRunStatsSchema,
+    budget_used: z
+      .object({
+        time_ms: z.number().nonnegative().optional(),
+        tokens: z.number().nonnegative().optional(),
+        tool_calls: z.number().nonnegative().optional(),
+        bytes_in: z.number().nonnegative().optional(),
+        bytes_out: z.number().nonnegative().optional(),
+      })
+      .strict()
+      .optional(),
   })
   .strict();
 
@@ -204,7 +224,7 @@ export const SearchStatusInputSchema = z
 const SearchStatusNotImplementedSchema = z
   .object({
     ok: z.literal(false),
-    reason: z.literal("not_implemented"),
+    code: z.literal("not_implemented"),
     message: z.string().min(1),
   })
   .strict();

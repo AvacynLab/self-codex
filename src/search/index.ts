@@ -2,7 +2,12 @@
  * Public entry point for the search subsystem. Centralising exports ensures
  * other modules only rely on stable, well-documented contracts.
  */
-export { collectSearchRedactionTokens, loadSearchConfig, parseCsvList } from "./config.js";
+export { SearchContentCache } from "./cache/contentCache.js";
+export {
+  collectSearchRedactionTokens,
+  loadSearchConfig,
+  parseCsvList,
+} from "./config.js";
 export type {
   FetchCacheConfig,
   FetchConfig,
@@ -11,28 +16,19 @@ export type {
   SearxConfig,
   UnstructuredConfig,
 } from "./config.js";
-export { SearxClient, SearxClientError } from "./searxClient.js";
-export type { SearxQueryOptions, SearxQueryResponse } from "./searxClient.js";
 export {
-  SearchDownloader,
-  DownloadError,
   DownloadBackoffError,
+  DownloadError,
   DownloadSizeExceededError,
   DownloadTimeoutError,
   HttpStatusError,
   RobotsNotAllowedError,
+  SearchDownloader,
   computeDocId,
 } from "./downloader.js";
-export { SearchContentCache } from "./cache/contentCache.js";
-export {
-  UnstructuredExtractor,
-  UnstructuredExtractorError,
-  type ExtractionRequest,
-  type SearxProvenanceContext,
-} from "./extractor.js";
-export { deduplicateSegments, finalizeDocId } from "./normalizer.js";
 export {
   KnowledgeGraphIngestor,
+  P,
   extractKeyTerms,
   type KnowledgeGraphIngestDependencies,
   type KnowledgeGraphIngestResult,
@@ -40,10 +36,23 @@ export {
 } from "./ingest/toKnowledgeGraph.js";
 export {
   VectorStoreIngestor,
+  type VectorChunkDescriptor,
   type VectorStoreIngestDependencies,
   type VectorStoreIngestResult,
-  type VectorChunkDescriptor,
 } from "./ingest/toVectorStore.js";
+export {
+  SearchMetricsRecorder,
+  type LatencyBucketSnapshot,
+  type OperationLatencyBucketsSnapshot,
+  type OperationMetricSnapshot,
+  type SearchMetricContext,
+  type SearchMetricDimensions,
+  type SearchMetricOperation,
+  type SearchMetricOutcome,
+  type SearchMetricsOptions,
+  type SearchMetricsSnapshot,
+} from "./metrics.js";
+export { deduplicateSegments, finalizeDocId } from "./normalizer.js";
 export {
   SearchPipeline,
   type DirectIngestParameters,
@@ -54,17 +63,19 @@ export {
   type SearchJobResult,
   type SearchJobStats,
 } from "./pipeline.js";
+export { SearxClient, SearxClientError } from "./searxClient.js";
+export type { SearxQueryOptions, SearxQueryResponse } from "./searxClient.js";
 export {
-  SearchMetricsRecorder,
-  type OperationMetricSnapshot,
-  type SearchMetricOperation,
-  type SearchMetricsOptions,
-  type SearchMetricsSnapshot,
-} from "./metrics.js";
+  UnstructuredExtractor,
+  UnstructuredExtractorError,
+  type ExtractionRequest,
+  type SearxProvenanceContext,
+} from "./extractor.js";
+export { SEGMENT_KINDS } from "./types.js";
 export type {
   RawFetched,
   SearxResult,
+  SegmentKind,
   StructuredDocument,
   StructuredSegment,
-  StructuredSegmentKind,
 } from "./types.js";

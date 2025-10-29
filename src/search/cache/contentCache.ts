@@ -168,6 +168,46 @@ export class SearchContentCache {
     return entry;
   }
 
+  /**
+   * Exposes the HTTP validators (ETag / Last-Modified) associated with a URL when
+   * the cache still holds a successful entry.  The downloader relies on these
+   * hints to issue conditional requests (`If-None-Match` / `If-Modified-Since`)
+   * so large documents can be revalidated without re-downloading their payload.
+   */
+  getValidatorMetadata(url: string): {
+    readonly validator: string;
+    readonly etag: string | null;
+    readonly lastModified: string | null;
+  } | null {
+    const canonicalUrl = normaliseUrl(url);
+    const bucket = this.domains.get(canonicalUrl.domain);
+    if (!bucket) {
+      return null;
+    }
+
+    this.pruneExpired(bucket);
+    const keys = bucket.byUrl.get(canonicalUrl.href);
+    if (!keys || keys.size === 0) {
+      return null;
+    }
+
+    for (const key of keys) {
+      const entry = bucket.entries.get(key);
+      if (!entry) {
+        continue;
+      }
+      const etag = entry.value.headers.get("etag") ?? null;
+      const lastModified = entry.value.headers.get("last-modified") ?? null;
+      return {
+        validator: entry.validator,
+        etag,
+        lastModified,
+      };
+    }
+
+    return null;
+  }
+
   private insert(url: string, validator: string, value: RawFetched, now: number): void {
     const canonicalUrl = normaliseUrl(url);
     const bucket = this.obtainDomainBucket(canonicalUrl.domain);
