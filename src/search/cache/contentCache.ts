@@ -290,6 +290,15 @@ export class SearchContentCache {
     bucket.order.push(key);
   }
 
+  /**
+   * Clears every cached payload, throttling backoff and validator hint. The
+   * orchestrator calls this hook during shutdown so subsequent runs start from a
+   * clean slate and release any memory retained by long-lived validations.
+   */
+  clear(): void {
+    this.domains.clear();
+  }
+
   private resolveDomainTtl(domain: string, fallback: number): number {
     return this.domainTtlOverrides[domain] ?? fallback;
   }

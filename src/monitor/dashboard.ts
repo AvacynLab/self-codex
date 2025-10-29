@@ -6,7 +6,7 @@
 import { Buffer } from "node:buffer";
 import { createServer, IncomingMessage, ServerResponse } from "node:http";
 import type { OutgoingHttpHeaders } from "node:http";
-import { runtimeTimers, type IntervalHandle } from "../runtime/timers.js";
+import { runtimeTimers, type IntervalHandle, type TimeoutHandle } from "../runtime/timers.js";
 import { URL } from "node:url";
 import { z } from "zod";
 // NOTE: Node built-in modules are imported with the explicit `node:` prefix to guarantee ESM resolution in Node.js.
@@ -399,6 +399,8 @@ const DEFAULT_DASHBOARD_STREAM_INTERVAL_MS = 2_000;
 const MIN_DASHBOARD_STREAM_INTERVAL_MS = 250;
 const DEFAULT_DASHBOARD_KEEPALIVE_INTERVAL_MS = 15_000;
 const MIN_DASHBOARD_KEEPALIVE_INTERVAL_MS = 1_000;
+const DASHBOARD_BROADCAST_DEBOUNCE_MIN_MS = 250;
+const DASHBOARD_BROADCAST_DEBOUNCE_MAX_MS = 500;
 
 /**
  * Resolves the dashboard HTTP host by prioritising explicit overrides, then environment
@@ -463,6 +465,19 @@ export function resolveDashboardKeepAliveInterval(
   }
   const cappedByDefault = Math.min(streamIntervalMs, DEFAULT_DASHBOARD_KEEPALIVE_INTERVAL_MS);
   return Math.max(MIN_DASHBOARD_KEEPALIVE_INTERVAL_MS, cappedByDefault);
+}
+
+/**
+ * Resolves the debounce delay applied to manual SSE broadcasts. The delay keeps
+ * updates responsive while coalescing bursts triggered by orchestration
+ * controls.
+ */
+export function resolveDashboardBroadcastDebounce(streamIntervalMs: number): number {
+  if (!Number.isFinite(streamIntervalMs) || streamIntervalMs <= 0) {
+    return DASHBOARD_BROADCAST_DEBOUNCE_MAX_MS;
+  }
+  const clamped = Math.max(DASHBOARD_BROADCAST_DEBOUNCE_MIN_MS, Math.floor(streamIntervalMs));
+  return Math.min(clamped, DASHBOARD_BROADCAST_DEBOUNCE_MAX_MS);
 }
 
 /** Zod schema validating client log payloads forwarded by the dashboard UI. */
@@ -730,22 +745,63 @@ export function createDashboardRouter(options: DashboardRouterOptions): Dashboar
   const autoBroadcast = options.autoBroadcast ?? true;
   const logJournal = options.logJournal ?? null;
   let interval: IntervalHandle | null = null;
+  const broadcastDebounceMs = resolveDashboardBroadcastDebounce(streamIntervalMs);
+  let scheduledBroadcast: TimeoutHandle | null = null;
+  let lastBroadcastAt = 0;
+
+  const clearScheduledBroadcast = () => {
+    if (scheduledBroadcast) {
+      runtimeTimers.clearTimeout(scheduledBroadcast);
+      scheduledBroadcast = null;
+    }
+  };
+
+  const flushBroadcast = () => {
+    if (clients.size === 0) {
+      clearScheduledBroadcast();
+      return;
+    }
+    clearScheduledBroadcast();
+    performBroadcast(
+      clients,
+      graphState,
+      eventStore,
+      stigmergy,
+      btStatusRegistry,
+      supervisorAgent,
+      contractNetWatcherTelemetry,
+      logger,
+    );
+    lastBroadcastAt = Date.now();
+  };
+
+  const scheduleBroadcast = () => {
+    if (clients.size === 0) {
+      clearScheduledBroadcast();
+      return;
+    }
+    const now = Date.now();
+    const elapsed = now - lastBroadcastAt;
+    if (elapsed >= broadcastDebounceMs) {
+      flushBroadcast();
+      return;
+    }
+    if (scheduledBroadcast) {
+      return;
+    }
+    const delay = Math.max(1, broadcastDebounceMs - elapsed);
+    scheduledBroadcast = runtimeTimers.setTimeout(() => {
+      scheduledBroadcast = null;
+      flushBroadcast();
+    }, delay);
+  };
 
   if (autoBroadcast) {
     interval = runtimeTimers.setInterval(() => {
       if (clients.size === 0) {
         return;
       }
-      broadcast(
-        clients,
-        graphState,
-        eventStore,
-        stigmergy,
-        btStatusRegistry,
-        supervisorAgent,
-        contractNetWatcherTelemetry,
-        logger,
-      );
+      flushBroadcast();
     }, streamIntervalMs);
   }
 
@@ -790,6 +846,11 @@ export function createDashboardRouter(options: DashboardRouterOptions): Dashboar
             contractNetWatcherTelemetry,
           ),
         );
+        return;
+      }
+
+      if (req.method === "GET" && pathname === "/api/search/summary") {
+        writeJson(res, 200, summariseSearchActivity(eventStore));
         return;
       }
 
@@ -848,46 +909,19 @@ export function createDashboardRouter(options: DashboardRouterOptions): Dashboar
 
       if (req.method === "POST" && pathname === "/controls/pause") {
         await handlePauseRequest(req, res, graphState, logger);
-        broadcast(
-          clients,
-          graphState,
-          eventStore,
-          stigmergy,
-          btStatusRegistry,
-          supervisorAgent,
-          contractNetWatcherTelemetry,
-          logger,
-        );
+        scheduleBroadcast();
         return;
       }
 
       if (req.method === "POST" && pathname === "/controls/cancel") {
         await handleCancelRequest(req, res, graphState, supervisor, logger);
-        broadcast(
-          clients,
-          graphState,
-          eventStore,
-          stigmergy,
-          btStatusRegistry,
-          supervisorAgent,
-          contractNetWatcherTelemetry,
-          logger,
-        );
+        scheduleBroadcast();
         return;
       }
 
       if (req.method === "POST" && pathname === "/controls/prioritise") {
         await handlePrioritiseRequest(req, res, graphState, logger);
-        broadcast(
-          clients,
-          graphState,
-          eventStore,
-          stigmergy,
-          btStatusRegistry,
-          supervisorAgent,
-          contractNetWatcherTelemetry,
-          logger,
-        );
+        scheduleBroadcast();
         return;
       }
 
@@ -913,22 +947,13 @@ export function createDashboardRouter(options: DashboardRouterOptions): Dashboar
   return {
     streamIntervalMs,
     handleRequest: handler,
-    broadcast: () =>
-      broadcast(
-        clients,
-        graphState,
-        eventStore,
-        stigmergy,
-        btStatusRegistry,
-        supervisorAgent,
-        contractNetWatcherTelemetry,
-        logger,
-      ),
+    broadcast: () => scheduleBroadcast(),
     async close() {
       if (interval) {
         runtimeTimers.clearInterval(interval);
         interval = null;
       }
+      clearScheduledBroadcast();
       for (const client of Array.from(clients)) {
         releaseDashboardClient(clients, client);
         try {
@@ -1340,7 +1365,7 @@ function handleStreamRequest(
 }
 
 /** Pushes a fresh snapshot to every connected SSE client. */
-function broadcast(
+function performBroadcast(
   clients: Set<DashboardSseClient>,
   graphState: GraphState,
   eventStore: EventStore,
@@ -1450,7 +1475,7 @@ function buildDashboardTimeline(eventStore: EventStore, limit = 40): DashboardTi
 
 const SEARCH_DOCS_WINDOW_MS = 60_000;
 const SEARCH_COMPLETION_WINDOW_MS = 60 * 60 * 1000;
-const SEARCH_DOMAIN_LIMIT = 12;
+const SEARCH_DOMAIN_LIMIT = 20;
 
 /**
  * Aggregates recent search activity so dashboards can render dedicated panels
@@ -1502,7 +1527,8 @@ function summariseSearchActivity(eventStore: EventStore, now = Date.now()): Dash
         const mime = payload ? coerceString(payload.mime_type ?? payload.mimetype) : null;
         const category = classifyContentType(mime);
         const fetchedAt = payload ? toOptionalNumber(payload.fetched_at ?? payload.fetchedAt) : null;
-        if (fetchedAt !== null) {
+        const contributesToLatency = payload ? shouldContributeToLatencyAverages(payload) : false;
+        if (contributesToLatency && fetchedAt !== null) {
           const latencyMs = Math.max(0, now - fetchedAt);
           incrementLatencyBucket(latencyBuckets, category, latencyMs);
         }
@@ -1594,6 +1620,20 @@ function normaliseTopDomains(counters: Map<string, number>): DashboardSearchDoma
     return left.domain.localeCompare(right.domain);
   });
   return entries.slice(0, SEARCH_DOMAIN_LIMIT);
+}
+
+/**
+ * Decides whether an ingested document should contribute to latency averages.
+ * The dashboard only charts latency for documents that either produced
+ * artefacts (graph/vector ingestion) or surfaced explicit ingestion errors.
+ * This avoids skewing the averages with documents skipped by downstream
+ * stages (for instance, duplicates filtered before ingestion).
+ */
+function shouldContributeToLatencyAverages(payload: Record<string, unknown>): boolean {
+  const graphIngested = toOptionalBoolean(payload.graph_ingested ?? payload.graphIngested);
+  const vectorIngested = toOptionalBoolean(payload.vector_ingested ?? payload.vectorIngested);
+  const errorCount = toOptionalNumber(payload.error_count ?? payload.errorCount);
+  return Boolean(graphIngested) || Boolean(vectorIngested) || (errorCount !== null && errorCount > 0);
 }
 
 function classifyContentType(mime: string | null): string {
@@ -4044,4 +4084,5 @@ function serialiseSnapshotForInlineScript(snapshot: DashboardSnapshot): string {
 export const __testing = {
   buildSchedulerSnapshot,
   summariseSearchActivity,
+  resolveDashboardBroadcastDebounce,
 };

@@ -302,6 +302,31 @@ describe("monitor/dashboard", function () {
     });
     error.ts = now - 10_000;
 
+    for (let index = 0; index < 25; index += 1) {
+      const extra = eventStore.emit({
+        kind: "search:doc_ingested",
+        level: "info",
+        source: "orchestrator",
+        payload: {
+          doc_id: `extra-${index}`,
+          url: `https://overflow${index}.example.com/article-${index}.html`,
+          title: `Overflow ${index}`,
+          language: "en",
+          checksum: `sha-extra-${index}`,
+          size: 512,
+          fetched_at: now - 25_000,
+          mime_type: "text/html",
+          searx_position: index,
+          graph_ingested: false,
+          graph_triples: 0,
+          vector_ingested: false,
+          vector_chunks: 0,
+          error_count: 0,
+        },
+      });
+      extra.ts = now - 25_000;
+    }
+
     const completed = eventStore.emit({
       kind: "search:job_completed",
       level: "info",
@@ -324,12 +349,13 @@ describe("monitor/dashboard", function () {
 
     expect(summary.queue.running).to.equal(0);
     expect(summary.queue.completedLastHour).to.equal(1);
-    expect(summary.queue.docsPerMinute).to.equal(1);
+    expect(summary.queue.docsPerMinute).to.be.greaterThan(20);
     expect(summary.queue.errorsByStage).to.deep.equal([{ stage: "fetch", count: 1 }]);
 
     const domains = summary.topDomains.map((entry) => entry.domain);
     expect(domains).to.include("example.com");
     expect(domains).to.include("files.example.org");
+    expect(summary.topDomains).to.have.lengthOf(20);
 
     const htmlLatency = summary.contentLatency.find((entry) => entry.contentType === "html");
     expect(htmlLatency?.samples).to.equal(1);

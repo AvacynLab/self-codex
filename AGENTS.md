@@ -398,3 +398,12 @@ Historique rapide :
 - EventStore `search:*` : payloads versionnés (`version=1`) et messages d'erreur tronqués à 1 000 caractères, avec tests unitaires dédiés.
 - KnowledgeGraph : déduplication des triples par lot (`dedupeTripleBatch`) et fusion de provenance sans doublons, couverte par des tests ciblés.
 - Mémoire vectorielle : métadonnées normalisées (`docId` trim + langue lowercase), limite configurable de chunks/doc appliquée au runtime (`MCP_MEMORY_VECTOR_MAX_CHUNKS_PER_DOC`) et tests garantissant l'éviction des anciens chunks.
+
+### 2024-05-12 – Agent Update
+- Orchestrateur : initialisation Search regroupée dans `ensureSearchRuntime` (config gelée, pipeline figée, teardown du downloader) avec ajout du hook de fermeture et mise à jour des contextes tools.
+- Dashboard : diffusion SSE débouncée (250–500 ms), top domaines plafonnés à 20, endpoint JSON `/api/search/summary` et batteries de tests adaptées pour la nouvelle cadence.
+
+### 2024-05-13 – Agent Update
+- Résolution du faux-positif dans le panneau search : seuls les documents réellement ingérés (graph/vector) ou en échec contribuent désormais aux latences, ce qui corrige `tests/monitor.dashboard.test.ts`.
+- Passage en revue et succès des suites ciblées (`tests/unit/search/downloader.test.ts`, `tests/monitor/dashboard.http.test.ts`, `tests/monitor.dashboard.test.ts`) puis `npm run build` pour valider le runtime orchestrateur refactoré.
+- Aucun blocage restant sur la checklist Dashboard ; poursuivre la validation E2E (S01→S10) et la consolidation `validation_run/` lors des prochaines passes.

@@ -1119,25 +1119,108 @@ export const __serverLogInternals = {
   appendLoggerRedactionTokens,
 };
 
-const searchConfig = loadSearchConfig();
-appendLoggerRedactionTokens(collectSearchRedactionTokens(searchConfig));
-const searchMetricsRecorder = new SearchMetricsRecorder();
-const searchSearxClient = new SearxClient(searchConfig);
-const searchDownloader = new SearchDownloader(searchConfig.fetch);
-const searchExtractor = new UnstructuredExtractor(searchConfig);
-const searchKnowledgeIngestor = searchConfig.pipeline.injectGraph
-  ? new KnowledgeGraphIngestor({ graph: knowledgeGraph })
-  : null;
+/**
+ * Aggregated dependencies powering the search pipeline. The structure keeps the
+ * composition local to the orchestrator runtime so tests can reinitialise the
+ * environment without reaching into module-scoped globals.
+ */
+interface SearchRuntimeContext {
+  readonly config: ReturnType<typeof loadSearchConfig>;
+  readonly metrics: SearchMetricsRecorder;
+  readonly searxClient: SearxClient;
+  readonly downloader: SearchDownloader;
+  readonly extractor: UnstructuredExtractor;
+  readonly knowledgeIngestor: KnowledgeGraphIngestor | null;
+  readonly vectorIngestor: VectorStoreIngestor | null;
+  readonly pipeline: SearchPipeline;
+  dispose(): void;
+}
 
-let searchVectorIngestor: VectorStoreIngestor | null = null;
-let searchPipeline: SearchPipeline | null = null;
+let searchRuntimeInstance: SearchRuntimeContext | null = null;
+let searchRuntimeInitialisation: Promise<SearchRuntimeContext> | null = null;
+
+/**
+ * Lazily materialises the search runtime by loading the immutable config,
+ * instantiating the downloader/extractor, and wiring the pipeline with
+ * observability dependencies.
+ */
+async function buildSearchRuntime(): Promise<SearchRuntimeContext> {
+  const config = loadSearchConfig();
+  appendLoggerRedactionTokens(collectSearchRedactionTokens(config));
+
+  const metrics = new SearchMetricsRecorder();
+  const searxClient = new SearxClient(config);
+  const downloader = new SearchDownloader(config.fetch);
+  const extractor = new UnstructuredExtractor(config);
+  const knowledgeIngestor = config.pipeline.injectGraph
+    ? new KnowledgeGraphIngestor({ graph: knowledgeGraph })
+    : null;
+
+  let vectorIngestor: VectorStoreIngestor | null = null;
+  if (config.pipeline.injectVector) {
+    const vectorMemory = await getRagMemoryInstance();
+    vectorIngestor = new VectorStoreIngestor({ memory: vectorMemory });
+  }
+
+  const pipeline = new SearchPipeline({
+    config,
+    searxClient,
+    downloader,
+    extractor,
+    ...(knowledgeIngestor ? { knowledgeIngestor } : {}),
+    ...(vectorIngestor ? { vectorIngestor } : {}),
+    eventStore,
+    logger,
+    metrics,
+  });
+
+  return {
+    config,
+    metrics,
+    searxClient,
+    downloader,
+    extractor,
+    knowledgeIngestor,
+    vectorIngestor,
+    pipeline,
+    dispose() {
+      downloader.dispose();
+    },
+  };
+}
+
+/** Resolves (or initialises) the shared search runtime context. */
+async function ensureSearchRuntime(): Promise<SearchRuntimeContext> {
+  if (searchRuntimeInstance) {
+    return searchRuntimeInstance;
+  }
+  if (!searchRuntimeInitialisation) {
+    searchRuntimeInitialisation = buildSearchRuntime().then((runtime) => {
+      searchRuntimeInstance = runtime;
+      return runtime;
+    });
+  }
+  return searchRuntimeInitialisation;
+}
 
 function ensureSearchPipeline(): SearchPipeline {
-  if (!searchPipeline) {
+  if (!searchRuntimeInstance) {
     throw new Error("Search pipeline not initialised");
   }
-  return searchPipeline;
+  return searchRuntimeInstance.pipeline;
 }
+
+process.once("exit", () => {
+  if (!searchRuntimeInstance) {
+    return;
+  }
+  try {
+    searchRuntimeInstance.dispose();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    logger.warn("search_runtime_dispose_failed", { message });
+  }
+});
 
 let orchestratorController: OrchestratorController | null = null;
 
@@ -4244,21 +4327,7 @@ function ensureToolRegistry(): ToolRegistry {
 }
 
 async function initialiseRuntimeInner(): Promise<void> {
-  if (!searchPipeline) {
-    const vectorMemory = searchConfig.pipeline.injectVector ? await getRagMemoryInstance() : null;
-    searchVectorIngestor = vectorMemory ? new VectorStoreIngestor({ memory: vectorMemory }) : null;
-    searchPipeline = new SearchPipeline({
-      config: searchConfig,
-      searxClient: searchSearxClient,
-      downloader: searchDownloader,
-      extractor: searchExtractor,
-      ...(searchKnowledgeIngestor ? { knowledgeIngestor: searchKnowledgeIngestor } : {}),
-      ...(searchVectorIngestor ? { vectorIngestor: searchVectorIngestor } : {}),
-      eventStore,
-      logger,
-      metrics: searchMetricsRecorder,
-    });
-  }
+  await ensureSearchRuntime();
 
   if (!toolRegistry) {
     toolRegistry = await ToolRegistry.create({

@@ -229,6 +229,11 @@ class RobotsEvaluator {
     }
   }
 
+  /** Clears the cached robots.txt directives so future runs refetch policies. */
+  clear(): void {
+    this.cache.clear();
+  }
+
   private parseRobots(content: string): RobotsRuleset | null {
     const lines = content.split(/\r?\n/);
     let activeAgents: string[] = [];
@@ -616,6 +621,18 @@ export class SearchDownloader {
     }
 
     return result;
+  }
+
+  /**
+   * Releases cached content, throttling metadata and robots decisions. Invoked
+   * when the orchestrator shuts down so subsequent validation runs start with a
+   * clean slate and reclaim memory held by large downloads.
+   */
+  dispose(): void {
+    this.domainLocks.clear();
+    this.domainAvailableAt.clear();
+    this.contentCache?.clear();
+    this.robots?.clear();
   }
 
   /** Ensures sequential requests to the same domain respect the configured delay. */

@@ -397,4 +397,44 @@ describe("SearchDownloader", () => {
     expect(recovered.body.toString()).to.equal("ok");
     sinon.assert.calledTwice(fetchStub);
   });
+
+  it("clears cached entries and throttling state when disposed", async () => {
+    const fetchStub = sinon.stub();
+    fetchStub.onCall(0).resolves(
+      new TestResponse("first", {
+        status: 200,
+        headers: { "Content-Type": "text/plain" },
+        url: "https://example.com/cache",
+      }),
+    );
+    fetchStub.onCall(1).resolves(
+      new TestResponse("second", {
+        status: 200,
+        headers: { "Content-Type": "text/plain" },
+        url: "https://example.com/cache",
+      }),
+    );
+
+    const config: FetchConfig = {
+      ...BASE_CONFIG,
+      cache: {
+        maxEntriesPerDomain: 4,
+        defaultTtlMs: 60_000,
+        clientErrorTtlMs: 60_000,
+        serverErrorTtlMs: 60_000,
+        domainTtlOverrides: {},
+      },
+    };
+
+    const downloader = new SearchDownloader(config, { fetchImpl: fetchStub, now: () => 1_700_000_000_000 });
+
+    await downloader.fetchUrl("https://example.com/cache");
+    await downloader.fetchUrl("https://example.com/cache");
+    sinon.assert.calledOnce(fetchStub);
+
+    downloader.dispose();
+
+    await downloader.fetchUrl("https://example.com/cache");
+    sinon.assert.calledTwice(fetchStub);
+  });
 });
