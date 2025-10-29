@@ -22,10 +22,7 @@ services:
         - CMD-SHELL
         - |
           curl --fail --silent --show-error \
-            --request POST \
-            --data-urlencode 'q=healthcheck' \
-            --data 'format=json' \
-            http://127.0.0.1:8080/search \
+            'http://127.0.0.1:8080/search?q=healthcheck&format=json' \
             --output /dev/null || exit 1
       interval: 15s
       timeout: 10s

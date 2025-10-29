@@ -20,9 +20,8 @@ describe('docker/docker-compose.search.yml', () => {
     expect(probe, 'healthcheck test command').to.be.an('array');
     expect(probe?.[0]).to.equal('CMD-SHELL');
     const command = String(probe?.[1] ?? '');
-    expect(command).to.include('--request POST');
-    expect(command).to.include("--data-urlencode 'q=healthcheck'");
-    expect(command).to.include('http://127.0.0.1:8080/search');
+    expect(command).to.not.include('--request POST');
+    expect(command).to.include('http://127.0.0.1:8080/search?q=healthcheck&format=json');
   });
 
   it('waits for searxng via service_healthy to honour the healthcheck', () => {
