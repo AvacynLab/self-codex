@@ -162,23 +162,13 @@ export function formatBudgetUsage(charge: BudgetCharge | null | undefined): Norm
     return undefined;
   }
 
-  const snapshot: NormalisedBudgetUsage = {};
-
-  if (charge.timeMs > 0) {
-    snapshot.time_ms = Math.round(charge.timeMs);
-  }
-  if (charge.tokens > 0) {
-    snapshot.tokens = Math.round(charge.tokens);
-  }
-  if (charge.toolCalls > 0) {
-    snapshot.tool_calls = Math.round(charge.toolCalls);
-  }
-  if (charge.bytesIn > 0) {
-    snapshot.bytes_in = Math.round(charge.bytesIn);
-  }
-  if (charge.bytesOut > 0) {
-    snapshot.bytes_out = Math.round(charge.bytesOut);
-  }
+  const snapshot: NormalisedBudgetUsage = {
+    ...(charge.timeMs > 0 ? { time_ms: Math.round(charge.timeMs) } : {}),
+    ...(charge.tokens > 0 ? { tokens: Math.round(charge.tokens) } : {}),
+    ...(charge.toolCalls > 0 ? { tool_calls: Math.round(charge.toolCalls) } : {}),
+    ...(charge.bytesIn > 0 ? { bytes_in: Math.round(charge.bytesIn) } : {}),
+    ...(charge.bytesOut > 0 ? { bytes_out: Math.round(charge.bytesOut) } : {}),
+  };
 
   return Object.keys(snapshot).length > 0 ? snapshot : undefined;
 }
