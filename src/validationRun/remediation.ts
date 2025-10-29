@@ -7,6 +7,7 @@ import {
 } from "./layout.js";
 import {
   generateValidationSummary,
+  type GenerateValidationSummaryOptions,
   type ValidationSummaryReport,
 } from "./reports.js";
 
@@ -68,13 +69,13 @@ export async function generateRemediationPlan(
   options: GenerateRemediationPlanOptions = {},
 ): Promise<RemediationPlan> {
   const layout = options.layout ?? (await ensureValidationRunLayout(options.baseRoot));
-  const summary =
-    options.summary ??
-    (await generateValidationSummary({
-      layout,
-      baseRoot: options.baseRoot,
-      now: options.now,
-    }));
+  const summaryOptions: GenerateValidationSummaryOptions = {
+    layout,
+    ...(options.baseRoot !== undefined ? { baseRoot: options.baseRoot } : {}),
+    ...(options.now ? { now: options.now } : {}),
+  };
+
+  const summary = options.summary ?? (await generateValidationSummary(summaryOptions));
 
   const actions: RemediationAction[] = [];
   const notes: string[] = [];
@@ -244,15 +245,13 @@ function collectAcceptanceRemediations(acceptance: ValidationSummaryReport["acce
     }
 
     const severity = check.status === "fail" ? blueprint.severityOnFail : blueprint.severityOnUnknown;
-    const scenarios = check.scenarios && check.scenarios.length > 0 ? check.scenarios : undefined;
     const description = `${check.details}`;
-
     actions.push({
       criterion: key,
       severity,
       description,
       recommendations: blueprint.recommendations,
-      scenarios,
+      ...(check.scenarios && check.scenarios.length > 0 ? { scenarios: check.scenarios } : {}),
     });
   }
 

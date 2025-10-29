@@ -10,6 +10,7 @@ import {
 import {
   ensureValidationRuntime,
   verifyHttpHealth,
+  type HttpHealthOptions,
   type HttpProbeResult,
   type ValidationRuntimeContext,
 } from "./runtime";
@@ -152,7 +153,7 @@ export async function startValidationServer(
   options: StartValidationServerOptions = {},
 ): Promise<StartValidationServerResult> {
   const runtime = await ensureValidationRuntime({
-    root: options.root,
+    ...(options.root !== undefined ? { root: options.root } : {}),
     createChildrenDir: options.createChildrenDir ?? true,
   });
 
@@ -203,14 +204,17 @@ export async function startValidationServer(
     process: child,
     logFile,
     exitStateRef: () => exitState,
-    readiness: options.readiness,
+    ...(options.readiness ? { readiness: options.readiness } : {}),
   });
 
   if (!readiness.ok) {
     await handle.stop("SIGTERM");
   }
 
-  return { handle, readiness: readiness.ok ? readiness : { ...readiness, exitState }, healthUrl };
+  const readinessResult = readiness.ok
+    ? readiness
+    : { ...readiness, ...(exitState ? { exitState } : {}) };
+  return { handle, readiness: readinessResult, healthUrl };
 }
 
 /** Builds the MCP server environment by merging defaults and user overrides. */
@@ -275,14 +279,23 @@ async function waitForReadiness(args: {
         args.logFile,
         `[health] process exited before readiness (code=${exitState?.code ?? "null"}, signal=${exitState?.signal ?? "null"})`,
       );
-      return { ok: false, attempts: attempt - 1, lastResult, exitState };
+      const baseResult: ServerReadinessResult = {
+        ok: false,
+        attempts: attempt - 1,
+        ...(lastResult ? { lastResult } : {}),
+      };
+      return exitState ? { ...baseResult, exitState } : baseResult;
     }
 
-    const result = await args.verifyHealth(args.healthUrl, {
-      token: args.env.MCP_HTTP_TOKEN,
+    const token = args.env.MCP_HTTP_TOKEN;
+    const probeOptions: HttpHealthOptions = {
       expectStatus,
       timeoutMs,
-    }).catch((error) => ({ ok: false, error: formatError(error) } satisfies HttpProbeResult));
+      ...(token ? { token } : {}),
+    };
+    const result = await args
+      .verifyHealth(args.healthUrl, probeOptions)
+      .catch((error) => ({ ok: false, error: formatError(error) } satisfies HttpProbeResult));
 
     lastResult = result;
     if (result.ok) {
@@ -290,17 +303,23 @@ async function waitForReadiness(args: {
       return { ok: true, attempts: attempt, lastResult: result };
     }
 
-    await appendLogLine(
-      args.logFile,
-      `[health] attempt ${attempt} failed (${result.error ?? `status ${result.statusCode ?? "unknown"}`})`,
-    );
+    const statusInfo =
+      result.error ??
+      (("statusCode" in result && result.statusCode !== undefined)
+        ? `status ${result.statusCode}`
+        : "status unknown");
+    await appendLogLine(args.logFile, `[health] attempt ${attempt} failed (${statusInfo})`);
 
     if (attempt < maxAttempts) {
       await args.sleep(interval);
     }
   }
 
-  return { ok: false, attempts: maxAttempts, lastResult };
+  return {
+    ok: false,
+    attempts: maxAttempts,
+    ...(lastResult ? { lastResult } : {}),
+  };
 }
 
 /** Computes the health URL based on the resolved environment and options. */

@@ -29,7 +29,10 @@ export interface ValidationSnapshotPaths {
 }
 
 /** Abstraction layer allowing tests to stub the fetch implementation. */
-export type FetchLike = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+export type FetchLike = (
+  input: string | URL,
+  init?: RequestInit,
+) => Promise<Response>;
 
 /**
  * Options accepted by {@link captureValidationSnapshots}. The parameters favour

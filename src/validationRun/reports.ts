@@ -558,22 +558,28 @@ async function collectScenarioSnapshot(
 
   const serverLogLines = await countLogLines(run.serverLog, notes);
 
-  return {
+  const snapshot: ScenarioSnapshot = {
     id: scenario.id,
     slug,
     label: scenario.label,
     description: scenario.description,
-    timings,
     errorEntries,
     errorCounts,
-    documentsIngested: timings?.documentsIngested,
-    tookMs: timings?.tookMs,
-    eventsCount,
-    kgChangesCount,
-    vectorUpsertsCount,
-    serverLogLines,
     notes,
+    ...(timings
+      ? {
+          timings,
+          documentsIngested: timings.documentsIngested,
+          tookMs: timings.tookMs,
+        }
+      : {}),
+    ...(eventsCount !== undefined ? { eventsCount } : {}),
+    ...(kgChangesCount !== undefined ? { kgChangesCount } : {}),
+    ...(vectorUpsertsCount !== undefined ? { vectorUpsertsCount } : {}),
+    ...(serverLogLines !== undefined ? { serverLogLines } : {}),
   };
+
+  return snapshot;
 }
 
 /**
@@ -584,27 +590,22 @@ async function computeTotals(
   snapshots: readonly ScenarioSnapshot[],
   layout: ValidationRunLayout,
 ): Promise<ValidationTotals> {
-  const totals: ValidationTotals = {
-    documentsIngested: 0,
-    events: 0,
-    kgChanges: 0,
-    vectorUpserts: 0,
-    errors: {},
-    topDomains: [],
-    contentTypes: [],
-  };
-
+  let documentsIngested = 0;
+  let events = 0;
+  let kgChanges = 0;
+  let vectorUpserts = 0;
+  const errorTotals: Record<string, number> = {};
   const domainCounters = new Map<string, number>();
   const contentTypeCounters = new Map<string, number>();
   let documentsCount = 0;
 
   for (const snapshot of snapshots) {
-    totals.documentsIngested += snapshot.documentsIngested ?? 0;
-    totals.events += snapshot.eventsCount ?? 0;
-    totals.kgChanges += snapshot.kgChangesCount ?? 0;
-    totals.vectorUpserts += snapshot.vectorUpsertsCount ?? 0;
+    documentsIngested += snapshot.documentsIngested ?? 0;
+    events += snapshot.eventsCount ?? 0;
+    kgChanges += snapshot.kgChangesCount ?? 0;
+    vectorUpserts += snapshot.vectorUpsertsCount ?? 0;
     for (const [category, count] of Object.entries(snapshot.errorCounts)) {
-      totals.errors[category] = (totals.errors[category] ?? 0) + count;
+      errorTotals[category] = (errorTotals[category] ?? 0) + count;
     }
 
     const documentsPath = path.join(
@@ -627,23 +628,23 @@ async function computeTotals(
     }
   }
 
-  totals.topDomains = computeDistribution(domainCounters, documentsCount, (domain, count, percentage) => ({
-    domain,
-    count,
-    percentage,
-  }));
-
-  totals.contentTypes = computeDistribution(
-    contentTypeCounters,
-    documentsCount,
-    (mimeType, count, percentage) => ({
+  return {
+    documentsIngested,
+    events,
+    kgChanges,
+    vectorUpserts,
+    errors: errorTotals,
+    topDomains: computeDistribution(domainCounters, documentsCount, (domain, count, percentage) => ({
+      domain,
+      count,
+      percentage,
+    })),
+    contentTypes: computeDistribution(contentTypeCounters, documentsCount, (mimeType, count, percentage) => ({
       mimeType,
       count,
       percentage,
-    }),
-  );
-
-  return totals;
+    })),
+  };
 }
 
 /** Extracts and normalises the domain associated with a document URL. */
@@ -1150,7 +1151,7 @@ async function readJsonFile<T>(targetPath: string): Promise<{ data?: T; note?: s
 async function readJsonArrayFile<T>(targetPath: string): Promise<{ data?: readonly T[]; note?: string }> {
   const result = await readJsonFile<unknown>(targetPath);
   if (result.note || result.data === undefined) {
-    return { note: result.note };
+    return result.note ? { note: result.note } : {};
   }
   if (!Array.isArray(result.data)) {
     return { note: "format inattendu (attendu: tableau)" };

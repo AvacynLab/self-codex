@@ -165,7 +165,7 @@ async function writeServerLog(
   targetPath: string,
   payload: string | ReadonlyArray<string>,
 ): Promise<void> {
-  const content = Array.isArray(payload) ? payload.join("\n") : payload;
+  const content = typeof payload === "string" ? payload : payload.join("\n");
   const withTrailingNewline = content.endsWith("\n") ? content : `${content}\n`;
   await writeFile(targetPath, withTrailingNewline, { encoding: "utf8" });
 }

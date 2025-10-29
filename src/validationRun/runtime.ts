@@ -65,7 +65,10 @@ export async function ensureValidationRuntime(
     childrenDir = resolvedChildrenDir;
   }
 
-  return { layout, env, childrenDir };
+  if (childrenDir) {
+    return { layout, env, childrenDir };
+  }
+  return { layout, env };
 }
 
 /**
@@ -243,15 +246,21 @@ export async function verifyHttpHealth(url: string, options: HttpHealthOptions =
   const timeoutId = scheduleTimeout(() => controller.abort(), timeout);
 
   try {
-    const response = await fetchImpl(url, {
-      method: "GET",
-      headers: options.token ? { Authorization: `Bearer ${options.token}` } : undefined,
-      signal: controller.signal,
-    });
+    const init: RequestInit = { method: "GET", signal: controller.signal };
+    if (options.token) {
+      init.headers = { Authorization: `Bearer ${options.token}` };
+    }
+
+    const response = await fetchImpl(url, init);
 
     if (options.expectStatus && response.status !== options.expectStatus) {
       const snippet = await safeReadSnippet(response);
-      return { ok: false, statusCode: response.status, snippet, error: `Unexpected status code: ${response.status}` };
+      return {
+        ok: false,
+        statusCode: response.status,
+        ...(snippet !== undefined ? { snippet } : {}),
+        error: `Unexpected status code: ${response.status}`,
+      };
     }
 
     return { ok: response.ok, statusCode: response.status };
@@ -349,7 +358,11 @@ async function probeJsonEndpoint(url: string, options: ProbeEndpointOptions): Pr
       signal: controller.signal,
     });
     const snippet = await safeReadSnippet(response);
-    return { ok: response.ok, statusCode: response.status, snippet };
+    return {
+      ok: response.ok,
+      statusCode: response.status,
+      ...(snippet !== undefined ? { snippet } : {}),
+    };
   } catch (error) {
     return { ok: false, error: error instanceof Error ? error.message : String(error) };
   } finally {

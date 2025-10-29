@@ -178,7 +178,15 @@ export async function runValidationCampaign(
   const layout = options.layout ?? (await ensureValidationRunLayout(options.baseRoot));
   const hooks = options.hooks ?? {};
 
-  const steps: Partial<ValidationCampaignResult> = { layout, scenarios: [] };
+  let snapshots: ValidationCampaignStepResult<ValidationSnapshotPaths> | undefined;
+  let build: ValidationCampaignStepResult<ValidationBuildResult> | undefined;
+  let runtime: ValidationCampaignStepResult<ValidationRuntimeContext> | undefined;
+  const scenarioResults: ValidationCampaignScenarioResult[] = [];
+  let report: ValidationCampaignStepResult<PersistedValidationReport> | undefined;
+  let idempotence: ValidationCampaignStepResult<ScenarioIdempotenceComparison> | undefined;
+  let audit: ValidationCampaignStepResult<ValidationAuditReport> | undefined;
+  let remediation: ValidationCampaignStepResult<PersistedRemediationPlan> | undefined;
+
   const notes: string[] = [];
   const skipped: string[] = [];
 
@@ -189,9 +197,9 @@ export async function runValidationCampaign(
     const snapshotArgs: CaptureValidationSnapshotsOptions = {
       ...options.snapshotOptions,
       layout,
-      baseRoot: options.baseRoot,
+      ...(options.baseRoot !== undefined ? { baseRoot: options.baseRoot } : {}),
     };
-    steps.snapshots = await executeStep(
+    snapshots = await executeStep(
       () => (hooks.captureSnapshots ?? captureValidationSnapshots)(snapshotArgs),
     );
   }
@@ -204,7 +212,7 @@ export async function runValidationCampaign(
       ...options.buildOptions,
       root: layout.root,
     };
-    steps.build = await executeStep(
+    build = await executeStep(
       () => (hooks.runBuild ?? runValidationBuild)(buildArgs),
       {
         validate: (result) => result.success,
@@ -220,18 +228,17 @@ export async function runValidationCampaign(
     const runtimeArgs: EnsureValidationRuntimeOptions = {
       ...options.runtimeOptions,
       root: layout.root,
+      ...(options.createChildrenDir !== undefined
+        ? { createChildrenDir: options.createChildrenDir }
+        : {}),
     };
-    if (options.createChildrenDir !== undefined) {
-      runtimeArgs.createChildrenDir = options.createChildrenDir;
-    }
-    steps.runtime = await executeStep(
+    runtime = await executeStep(
       () => (hooks.ensureRuntime ?? ensureValidationRuntime)(runtimeArgs),
     );
   }
 
   // Scenario executions (section 4).
   const scenarioIds = normaliseScenarioIds(options.scenarioIds ?? DEFAULT_SCENARIO_IDS);
-  const scenarioResults: ValidationCampaignScenarioResult[] = [];
   for (const scenarioId of scenarioIds) {
     const scenario = resolveScenarioById(scenarioId);
     const slug = formatScenarioSlug(scenario);
@@ -240,10 +247,10 @@ export async function runValidationCampaign(
     const scenarioArgs: ExecuteSearchScenarioOptions = {
       scenarioId,
       layout,
-      baseRoot: options.baseRoot,
-      jobId,
       persistArtifacts: options.persistArtifacts ?? true,
-      overrides: options.scenarioOverrides,
+      ...(options.baseRoot !== undefined ? { baseRoot: options.baseRoot } : {}),
+      ...(jobId ? { jobId } : {}),
+      ...(options.scenarioOverrides ? { overrides: options.scenarioOverrides } : {}),
     };
 
     const result = await executeStep(
@@ -262,7 +269,6 @@ export async function runValidationCampaign(
       break;
     }
   }
-  steps.scenarios = scenarioResults;
 
   // Summary report (section 8).
   if (options.generateReport === false) {
@@ -271,9 +277,9 @@ export async function runValidationCampaign(
     const reportArgs: GenerateValidationSummaryOptions = {
       ...options.reportOptions,
       layout,
-      baseRoot: options.baseRoot,
+      ...(options.baseRoot !== undefined ? { baseRoot: options.baseRoot } : {}),
     };
-    steps.report = await executeStep(
+    report = await executeStep(
       () => (hooks.writeReport ?? writeValidationReport)(reportArgs),
     );
   }
@@ -285,9 +291,9 @@ export async function runValidationCampaign(
     const idempotenceArgs: CompareScenarioIdempotenceOptions = {
       ...options.idempotenceOptions,
       layout,
-      baseRoot: options.baseRoot,
+      ...(options.baseRoot !== undefined ? { baseRoot: options.baseRoot } : {}),
     };
-    steps.idempotence = await executeStep(
+    idempotence = await executeStep(
       () => (hooks.compareIdempotence ?? compareScenarioIdempotence)(idempotenceArgs),
       {
         validate: (comparison) => comparison.status === "pass",
@@ -299,8 +305,8 @@ export async function runValidationCampaign(
         },
       },
     );
-    if (steps.idempotence?.result) {
-      for (const note of steps.idempotence.result.notes) {
+    if (idempotence?.result) {
+      for (const note of idempotence.result.notes) {
         notes.push(`Idempotence: ${note}`);
       }
     }
@@ -313,18 +319,18 @@ export async function runValidationCampaign(
     const auditArgs: AuditValidationRunOptions = {
       ...options.auditOptions,
       layout,
-      baseRoot: options.baseRoot,
+      ...(options.baseRoot !== undefined ? { baseRoot: options.baseRoot } : {}),
     };
-    steps.audit = await executeStep(
+    audit = await executeStep(
       () => (hooks.audit ?? auditValidationRun)(auditArgs),
       {
         validate: (report) => !report.hasBlockingIssues,
         describeFailure: () => STEP_FAILURE_MESSAGES.audit,
       },
     );
-    if (steps.audit?.result?.secretFindings.length) {
+    if (audit?.result?.secretFindings.length) {
       notes.push(
-        `Audit: ${steps.audit.result.secretFindings.length} indice(s) de secret à vérifier.`,
+        `Audit: ${audit.result.secretFindings.length} indice(s) de secret à vérifier.`,
       );
     }
   }
@@ -336,34 +342,34 @@ export async function runValidationCampaign(
     const remediationArgs: GenerateRemediationPlanOptions = {
       ...options.remediationOptions,
       layout,
-      baseRoot: options.baseRoot,
+      ...(options.baseRoot !== undefined ? { baseRoot: options.baseRoot } : {}),
     };
-    steps.remediation = await executeStep(
+    remediation = await executeStep(
       () => (hooks.writeRemediationPlan ?? writeRemediationPlan)(remediationArgs),
     );
   }
 
   const success = computeOverallSuccess({
-    snapshots: steps.snapshots,
-    build: steps.build,
-    runtime: steps.runtime,
+    ...(snapshots ? { snapshots } : {}),
+    ...(build ? { build } : {}),
+    ...(runtime ? { runtime } : {}),
     scenarios: scenarioResults,
-    report: steps.report,
-    idempotence: steps.idempotence,
-    audit: steps.audit,
-    remediation: steps.remediation,
+    ...(report ? { report } : {}),
+    ...(idempotence ? { idempotence } : {}),
+    ...(audit ? { audit } : {}),
+    ...(remediation ? { remediation } : {}),
   });
 
   return {
     layout,
-    snapshots: steps.snapshots,
-    build: steps.build,
-    runtime: steps.runtime,
+    ...(snapshots ? { snapshots } : {}),
+    ...(build ? { build } : {}),
+    ...(runtime ? { runtime } : {}),
     scenarios: scenarioResults,
-    report: steps.report,
-    idempotence: steps.idempotence,
-    audit: steps.audit,
-    remediation: steps.remediation,
+    ...(report ? { report } : {}),
+    ...(idempotence ? { idempotence } : {}),
+    ...(audit ? { audit } : {}),
+    ...(remediation ? { remediation } : {}),
     success,
     notes,
     skipped,
@@ -434,14 +440,14 @@ function buildScenarioJobId(
 
 /** Computes the overall success flag across every orchestrated step. */
 function computeOverallSuccess(steps: {
-  readonly snapshots?: ValidationCampaignStepResult<unknown>;
+  readonly snapshots?: ValidationCampaignStepResult<ValidationSnapshotPaths>;
   readonly build?: ValidationCampaignStepResult<ValidationBuildResult>;
-  readonly runtime?: ValidationCampaignStepResult<unknown>;
+  readonly runtime?: ValidationCampaignStepResult<ValidationRuntimeContext>;
   readonly scenarios: readonly ValidationCampaignScenarioResult[];
-  readonly report?: ValidationCampaignStepResult<unknown>;
+  readonly report?: ValidationCampaignStepResult<PersistedValidationReport>;
   readonly idempotence?: ValidationCampaignStepResult<ScenarioIdempotenceComparison>;
   readonly audit?: ValidationCampaignStepResult<ValidationAuditReport>;
-  readonly remediation?: ValidationCampaignStepResult<unknown>;
+  readonly remediation?: ValidationCampaignStepResult<PersistedRemediationPlan>;
 }): boolean {
   const booleans: boolean[] = [];
   if (steps.snapshots) booleans.push(steps.snapshots.ok);

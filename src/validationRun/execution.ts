@@ -208,9 +208,9 @@ export async function executeSearchScenario(
   if (scenario.id === 10) {
     return executeRagQualityScenario({
       scenario,
-      jobId: options.jobId,
-      layout: options.layout,
-      baseRoot: options.baseRoot,
+      ...(options.jobId ? { jobId: options.jobId } : {}),
+      ...(options.layout ? { layout: options.layout } : {}),
+      ...(options.baseRoot !== undefined ? { baseRoot: options.baseRoot } : {}),
       persistArtifacts: options.persistArtifacts ?? true,
     });
   }
@@ -222,7 +222,7 @@ export async function executeSearchScenario(
     scenario,
     layout,
     runPaths,
-    overrides: options.overrides,
+    ...(options.overrides ? { overrides: options.overrides } : {}),
   });
 
   const jobId = normaliseJobId(options.jobId, scenario);
@@ -317,7 +317,7 @@ async function runScenarioPipeline(args: {
   readonly errors: readonly SearchJobError[];
   readonly documents: readonly DocumentSummary[];
 }> {
-  const { runtime, scenario, jobId, input, direct } = args;
+  const { runtime, jobId, input, direct } = args;
 
   let executionResult: SearchJobResult | DirectIngestResult;
   if (direct) {
@@ -351,9 +351,36 @@ function buildSearchParameters(jobId: string, input: unknown): SearchJobParamete
     throw new Error("Scenario input must expose a non-empty query.");
   }
 
+  const categories = Array.isArray(candidate.categories)
+    ? (candidate.categories.filter((value): value is string => typeof value === "string") as ReadonlyArray<string>)
+    : undefined;
+  const engines = Array.isArray(candidate.engines)
+    ? (candidate.engines.filter((value): value is string => typeof value === "string") as ReadonlyArray<string>)
+    : undefined;
+  const maxResults =
+    typeof candidate.maxResults === "number" && Number.isFinite(candidate.maxResults)
+      ? candidate.maxResults
+      : undefined;
+  const language = typeof candidate.language === "string" ? candidate.language : undefined;
+  const safeSearch =
+    candidate.safeSearch === 0 || candidate.safeSearch === 1 || candidate.safeSearch === 2
+      ? candidate.safeSearch
+      : undefined;
+  const fetchContent = typeof candidate.fetchContent === "boolean" ? candidate.fetchContent : undefined;
+  const injectGraph = typeof candidate.injectGraph === "boolean" ? candidate.injectGraph : undefined;
+  const injectVector = typeof candidate.injectVector === "boolean" ? candidate.injectVector : undefined;
+
   return {
-    ...(candidate as SearchJobParameters),
+    query: candidate.query.trim(),
     jobId,
+    ...(categories !== undefined ? { categories } : {}),
+    ...(engines !== undefined ? { engines } : {}),
+    ...(maxResults !== undefined ? { maxResults } : {}),
+    ...(language !== undefined ? { language } : {}),
+    ...(safeSearch !== undefined ? { safeSearch } : {}),
+    ...(fetchContent !== undefined ? { fetchContent } : {}),
+    ...(injectGraph !== undefined ? { injectGraph } : {}),
+    ...(injectVector !== undefined ? { injectVector } : {}),
   };
 }
 
@@ -400,7 +427,7 @@ function normaliseBoolean(value: unknown, fallback: boolean): boolean {
 }
 
 /** Converts structured documents into the lightweight summaries stored on disk. */
-function summariseDocuments(documents: readonly SearchJobResult["documents"]): DocumentSummary[] {
+function summariseDocuments(documents: SearchJobResult["documents"]): DocumentSummary[] {
   return documents.map((document) => ({
     id: document.id,
     url: document.url,
@@ -414,12 +441,12 @@ function summariseDocuments(documents: readonly SearchJobResult["documents"]): D
     segmentCount: document.segments.length,
     provenance: [
       {
-        query: document.provenance.query,
+        searxQuery: document.provenance.searxQuery,
         engines: [...document.provenance.engines],
         categories: [...document.provenance.categories],
         position: document.provenance.position,
         sourceUrl: document.provenance.sourceUrl,
-      },
+      } satisfies Record<string, unknown>,
     ],
   }));
 }
@@ -429,8 +456,8 @@ function convertErrors(errors: readonly SearchJobError[]): ScenarioErrorEntry[] 
   return errors.map((error) => ({
     category: error.stage,
     message: error.message,
-    url: error.url ?? undefined,
-    metadata: error.code ? { code: error.code } : undefined,
+    ...(error.url ? { url: error.url } : {}),
+    ...(error.code ? { metadata: { code: error.code } } : {}),
   }));
 }
 
@@ -656,7 +683,7 @@ async function executeRagQualityScenario(args: {
 
   const knowledgeGraph = aggregation.knowledgeGraph;
   const vectorMemory = await LocalVectorMemory.create({ directory: vectorIndexDir });
-  const logger = new StructuredLogger({ name: `validation:${slug}` });
+  const logger = new StructuredLogger();
   const retriever = new HybridRetriever(vectorMemory, logger);
 
   const { query, limit, domainTags, context } = normaliseRagScenarioInput(scenario.input);
@@ -664,11 +691,11 @@ async function executeRagQualityScenario(args: {
   const assist = await assistKnowledgeQuery(knowledgeGraph, {
     query,
     limit,
-    context,
+    ...(context ? { context } : {}),
     ragRetriever: retriever,
     ragLimit: Math.max(limit, 6),
     ragMinScore: 0.15,
-    domainTags,
+    domainTags: [...domainTags],
   });
   const tookMs = Date.now() - startedAt;
 
@@ -735,7 +762,6 @@ async function executeRagQualityScenario(args: {
     scenario,
     jobId,
     events,
-    timings: undefined,
     timingNotes: aggregation.notes,
     response,
     documents: [],
@@ -974,7 +1000,7 @@ function normaliseRagScenarioInput(raw: unknown): {
         .filter((item) => item.length > 0)
     : [];
   const context = typeof raw.context === "string" && raw.context.trim().length > 0 ? raw.context.trim() : undefined;
-  return { query, limit, domainTags, context };
+  return context ? { query, limit, domainTags, context } : { query, limit, domainTags };
 }
 
 /** Reads and parses a JSON file, returning `undefined` when missing. */
@@ -1007,9 +1033,10 @@ function normaliseKnowledgeSnapshot(
   const insertedAt = Number.isFinite(entry.insertedAt) ? Number(entry.insertedAt) : Date.now();
   const updatedAt = Number.isFinite(entry.updatedAt) ? Number(entry.updatedAt) : insertedAt;
   const revision = Number.isFinite(entry.revision) ? Math.max(0, Math.floor(Number(entry.revision))) : 0;
+  const scenarioProvenance: Provenance = { sourceId: `validation:${slug}`, type: "kg" };
   const provenance = mergeProvenance(
     Array.isArray(entry.provenance) ? (entry.provenance as Provenance[]) : [],
-    [{ sourceId: `validation:${slug}`, type: "kg" }],
+    [scenarioProvenance],
   );
 
   return {
@@ -1017,7 +1044,7 @@ function normaliseKnowledgeSnapshot(
     subject,
     predicate,
     object,
-    source: typeof entry.source === "string" ? entry.source : undefined,
+    source: typeof entry.source === "string" ? entry.source : null,
     confidence,
     provenance,
     insertedAt,
@@ -1040,9 +1067,10 @@ function normaliseVectorRecord(entry: Record<string, unknown>, slug: string): Ag
   const metadata = isPlainObject(entry.metadata)
     ? { ...(entry.metadata as Record<string, unknown>), validationScenario: slug }
     : { validationScenario: slug };
+  const scenarioProvenance: Provenance = { sourceId: `validation:${slug}`, type: "kg" };
   const provenance = Array.isArray(entry.provenance)
-    ? mergeProvenance(entry.provenance as Provenance[], [{ sourceId: `validation:${slug}`, type: "kg" }])
-    : [{ sourceId: `validation:${slug}`, type: "kg" }];
+    ? mergeProvenance(entry.provenance as Provenance[], [scenarioProvenance])
+    : [scenarioProvenance];
   const createdAt = Number.isFinite(entry.created_at) ? Number(entry.created_at) : Date.now();
   const updatedAt = Number.isFinite(entry.updated_at) ? Number(entry.updated_at) : createdAt;
   const embedding = isPlainObject(entry.embedding) ? (entry.embedding as Record<string, number>) : {};
@@ -1134,10 +1162,8 @@ async function createSearchScenarioRuntime(args: {
   readonly runPaths: ScenarioRunPaths;
   readonly overrides?: SearchScenarioDependencyOverrides;
 }): Promise<SearchScenarioRuntime> {
-  const { scenario, layout, runPaths, overrides } = args;
-  const slug = formatScenarioSlug(scenario);
-
-  const logger = overrides?.logger ?? new StructuredLogger({ name: `validation:${slug}` });
+  const { layout, runPaths, overrides } = args;
+  const logger = overrides?.logger ?? new StructuredLogger();
   const eventStore = overrides?.eventStore ?? new EventStore({
     maxHistory: overrides?.eventHistoryLimit ?? DEFAULT_EVENT_HISTORY,
     logger,

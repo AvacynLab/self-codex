@@ -367,9 +367,9 @@ function buildScenarioSample(
       createErrorEvent({
         category: error.category,
         message: error.message,
-        stage: error.stage,
-        url: error.url,
-        metadata: error.metadata,
+        ...(error.stage ? { stage: error.stage } : {}),
+        ...(error.url ? { url: error.url } : {}),
+        ...(error.metadata ? { metadata: error.metadata } : {}),
       }),
     );
   });

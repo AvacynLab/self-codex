@@ -254,7 +254,7 @@ export function extractScenarioMetricsFromEvents(
     const stage = resolveStage(extractString(event, stageExtractor), stageLookup);
     if (stage) {
       const duration = extractNumber(event, durationExtractor);
-      if (Number.isFinite(duration)) {
+      if (typeof duration === "number" && Number.isFinite(duration)) {
         const container = stageDurations[stage] ?? (stageDurations[stage] = []);
         container.push(duration);
       } else if (duration !== undefined) {
@@ -265,7 +265,7 @@ export function extractScenarioMetricsFromEvents(
     }
 
     const totalDuration = extractNumber(event, totalDurationExtractor);
-    if (Number.isFinite(totalDuration)) {
+    if (typeof totalDuration === "number" && Number.isFinite(totalDuration)) {
       totalDurations.push(totalDuration);
     } else if (totalDuration !== undefined) {
       notes.push(`L'événement #${index + 1} expose une durée totale invalide.`);
@@ -278,7 +278,7 @@ export function extractScenarioMetricsFromEvents(
     }
 
     const documentCount = extractNumber(event, documentCountExtractor);
-    if (Number.isFinite(documentCount)) {
+    if (typeof documentCount === "number" && Number.isFinite(documentCount)) {
       documentCountIncrements.push(documentCount);
     } else if (documentCount !== undefined) {
       notes.push(`L'événement #${index + 1} porte un compteur de documents invalide.`);

@@ -131,7 +131,9 @@ export async function runValidationBuild(
   const runner = options.runner ?? defaultRunner;
   const now = options.now ?? (() => new Date());
 
-  const commands = computeValidationBuildCommands({ npmExecutable: options.npmExecutable });
+  const commands = computeValidationBuildCommands(
+    options.npmExecutable ? { npmExecutable: options.npmExecutable } : {},
+  );
   const steps: ValidationBuildStepResult[] = [];
   let success = true;
 
