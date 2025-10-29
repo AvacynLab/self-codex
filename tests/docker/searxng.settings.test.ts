@@ -11,11 +11,23 @@ describe('docker/searxng/settings.yml', () => {
   const settingsContent = readFileSync(settingsPath, 'utf8');
   const config = parse(settingsContent) as Record<string, unknown>;
 
-  it('inherits upstream defaults without redefining the engine catalogue', () => {
-    expect(config.use_default_settings).to.equal(true);
+  it('declares a curated engine catalogue with safe defaults', () => {
+    expect(config.use_default_settings).to.equal(false);
 
-    const engines = config.engines as Array<Record<string, unknown>> | undefined;
-    expect(engines, 'engines overrides').to.be.undefined;
+    const engines = config.engines as Array<{ name?: unknown }> | undefined;
+    expect(engines, 'engines overrides').to.be.an('array');
+
+    const engineNames = new Set((engines ?? []).map((engine) => String(engine?.name ?? '')));
+    expect(engineNames).to.include('duckduckgo');
+    expect(engineNames).to.include('wikipedia');
+    expect(engineNames).to.include('arxiv');
+    expect(engineNames).to.include('github');
+    expect(engineNames).to.include('mojeek');
+  });
+
+  it('defaults safe_search to 0 so callers can opt-in via env overrides', () => {
+    const search = config.search as { safe_search?: unknown } | undefined;
+    expect(search?.safe_search).to.equal(0);
   });
 
   it('disables the limiter to avoid requiring an external Valkey service', () => {
@@ -38,5 +50,6 @@ describe('docker/searxng/settings.yml', () => {
   it('documents the runtime allow-list to avoid configuration drift', () => {
     const fileContent = readFileSync(settingsPath, 'utf8');
     expect(fileContent).to.contain('SEARCH_SEARX_ENGINES');
+    expect(fileContent).to.contain('SEARCH_SEARX_CATEGORIES');
   });
 });

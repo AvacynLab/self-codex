@@ -21,6 +21,10 @@ search:
     - html
     - json
 
+# Engines listed below mirror the SEARCH_SEARX_ENGINES and
+# SEARCH_SEARX_CATEGORIES runtime defaults documented in env/.env.example. Keep
+# this catalogue minimal so contributors can run the stack without additional
+# API keys while retaining decent coverage in tests.
 engines:
   # DuckDuckGo covers most general queries with permissive rate limits.
   - name: duckduckgo

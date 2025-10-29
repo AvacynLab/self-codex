@@ -125,21 +125,24 @@ describe("search.run integration", () => {
         strategy: "hi_res",
         apiKey: null,
       },
-      fetch: {
-        timeoutMs: 5_000,
-        maxBytes: 2_000_000,
-        userAgent: "TestBot/1.0",
-        respectRobotsTxt: false,
-        parallelism: 2,
-        minDomainDelayMs: 0,
-        cache: null,
-      },
-      pipeline: {
-        injectGraph: true,
-        injectVector: true,
-        parallelExtract: 2,
-      },
-    };
+    fetch: {
+      timeoutMs: 5_000,
+      maxBytes: 2_000_000,
+      userAgent: "TestBot/1.0",
+      respectRobotsTxt: false,
+      parallelism: 2,
+      minDomainDelayMs: 0,
+      cache: null,
+    },
+    pipeline: {
+      injectGraph: true,
+      injectVector: true,
+      parallelExtract: 2,
+      // Provide an explicit ceiling so the pipeline fallback never yields NaN
+      // when normalising `maxResults` in tests executed without env defaults.
+      maxResults: 12,
+    },
+  };
 
     const searxScope = nock("http://searx.test")
       .get("/search")

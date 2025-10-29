@@ -39,6 +39,9 @@ describe("search/extractor", () => {
       injectGraph: true,
       injectVector: true,
       parallelExtract: 1,
+      // Explicit fallback keeps helper utilities stable when they inspect the
+      // search config outside of the pipeline tests.
+      maxResults: 12,
     },
   };
 

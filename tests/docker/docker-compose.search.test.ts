@@ -10,16 +10,21 @@ describe('docker/docker-compose.search.yml', () => {
   const composePath = path.resolve(__dirname, '../../docker/docker-compose.search.yml');
   const config = parse(readFileSync(composePath, 'utf8')) as Record<string, unknown>;
 
-  it('omits a searxng healthcheck so Docker start failures do not block the stack', () => {
-    const services = config.services as Record<string, { healthcheck?: unknown }>;
+  it('exposes a HTTP healthcheck for searxng so Docker waits for readiness', () => {
+    const services = config.services as Record<string, { healthcheck?: { test?: unknown[] } }>;
     expect(services, 'services block').to.be.ok;
-    expect(services.searxng, 'searxng service').to.be.ok;
-    expect(services.searxng?.healthcheck).to.be.undefined;
+    const searxng = services.searxng;
+    expect(searxng, 'searxng service').to.be.ok;
+
+    const probe = searxng?.healthcheck?.test as unknown[] | undefined;
+    expect(probe, 'healthcheck test command').to.be.an('array');
+    expect(probe?.[0]).to.equal('CMD-SHELL');
+    expect(String(probe?.[1] ?? '')).to.contain('/healthz');
   });
 
-  it('waits for searxng via service_started since no healthcheck is available', () => {
+  it('waits for searxng via service_healthy to honour the healthcheck', () => {
     const services = config.services as Record<string, Record<string, unknown>>;
     const server = services.server as { depends_on?: Record<string, { condition?: string }> } | undefined;
-    expect(server?.depends_on?.searxng?.condition).to.equal('service_started');
+    expect(server?.depends_on?.searxng?.condition).to.equal('service_healthy');
   });
 });
