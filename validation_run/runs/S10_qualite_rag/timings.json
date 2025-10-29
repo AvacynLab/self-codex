@@ -1,0 +1,30 @@
+{
+  "searxQuery": {
+    "p50": 0,
+    "p95": 0,
+    "p99": 0
+  },
+  "fetchUrl": {
+    "p50": 0,
+    "p95": 0,
+    "p99": 0
+  },
+  "extractWithUnstructured": {
+    "p50": 0,
+    "p95": 0,
+    "p99": 0
+  },
+  "ingestToGraph": {
+    "p50": 0,
+    "p95": 0,
+    "p99": 0
+  },
+  "ingestToVector": {
+    "p50": 0,
+    "p95": 0,
+    "p99": 0
+  },
+  "tookMs": 1200,
+  "documentsIngested": 3,
+  "errors": {}
+}

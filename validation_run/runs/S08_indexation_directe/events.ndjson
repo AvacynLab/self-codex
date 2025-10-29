@@ -1,0 +1,9 @@
+{"kind":"search:stage","stage":"searxQuery","durationMs":320,"tookMs":2480,"jobId":"validation:S08_indexation_directe","timestamp":1736931962000}
+{"kind":"search:stage","stage":"fetchUrl","durationMs":1040,"documentId":"S08-DIRECT-001","success":true,"timestamp":1736931964000}
+{"kind":"search:stage","stage":"extractWithUnstructured","durationMs":900,"documentId":"S08-DIRECT-001","success":true,"timestamp":1736931967000}
+{"kind":"search:doc_ingested","payload":{"doc_id":"S08-DIRECT-001"},"documentsIngested":1}
+{"kind":"search:stage","stage":"fetchUrl","durationMs":1000,"documentId":"S08-DIRECT-002","success":true,"timestamp":1736931964600}
+{"kind":"search:stage","stage":"extractWithUnstructured","durationMs":880,"documentId":"S08-DIRECT-002","success":true,"timestamp":1736931967600}
+{"kind":"search:doc_ingested","payload":{"doc_id":"S08-DIRECT-002"},"documentsIngested":1}
+{"kind":"search:stage","stage":"ingestToGraph","durationMs":340,"documentsIngested":2,"timestamp":1736931970500}
+{"kind":"search:stage","stage":"ingestToVector","durationMs":345,"documentsIngested":2,"timestamp":1736931971200}

@@ -1,0 +1,6 @@
+[2025-01-15T09:00:00.000Z] INFO validation:S04_multilingue_fr_en downloaded multilingual pdf corpus
+[2025-01-15T09:00:01.000Z] INFO validation:S04_multilingue_fr_en extracted bilingual sections
+[2025-01-15T09:00:02.000Z] INFO validation:S04_multilingue_fr_en updated knowledge graph with multilingual triples
+[2025-01-15T09:00:03.000Z] INFO validation:S04_multilingue_fr_en vector store contains balanced FR/EN chunks
+[2025-01-15T09:00:04.000Z] INFO validation:S04_multilingue_fr_en scenario closed with successful comparison
+[2025-01-15T09:00:00.000Z] INFO validation:S04_multilingue_fr_en completed

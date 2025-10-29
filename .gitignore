@@ -7,6 +7,9 @@ graph-forge/dist/
 
 # Dossiers d'exécution persistants.
 runs/
+!validation_run/
+!validation_run/runs/
+!validation_run/runs/.gitkeep
 children/
 !src/children/
 !tests/children/
@@ -16,6 +19,7 @@ graph-forge/test/**/*.js
 
 # Journaux applicatifs et traces éventuelles.
 *.log
+!validation_run/runs/**/server.log
 
 # Fichiers temporaires créés durant les validations locales.
 tmp/

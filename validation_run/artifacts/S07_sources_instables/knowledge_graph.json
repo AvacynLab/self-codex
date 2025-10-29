@@ -1,0 +1,74 @@
+[
+  {
+    "id": "kg:S07_sources_instables:701",
+    "subject": "doc:S07-NEWS-001",
+    "predicate": "details",
+    "object": "Retry jitter for 5xx errors",
+    "source": "https://status.example.com/blog/search-outage-analysis",
+    "provenance": [
+      {
+        "sourceId": "S07-NEWS-001",
+        "type": "url"
+      }
+    ],
+    "confidence": 0.79,
+    "insertedAt": 1736932232400,
+    "updatedAt": 1736932232400,
+    "revision": 0,
+    "ordinal": 701
+  },
+  {
+    "id": "kg:S07_sources_instables:702",
+    "subject": "doc:S07-NEWS-001",
+    "predicate": "recommends",
+    "object": "Circuit breaker for flaky domains",
+    "source": "https://status.example.com/blog/search-outage-analysis",
+    "provenance": [
+      {
+        "sourceId": "S07-NEWS-001",
+        "type": "url"
+      }
+    ],
+    "confidence": 0.77,
+    "insertedAt": 1736932232400,
+    "updatedAt": 1736932232400,
+    "revision": 0,
+    "ordinal": 702
+  },
+  {
+    "id": "kg:S07_sources_instables:703",
+    "subject": "doc:S07-GUIDE-002",
+    "predicate": "lists",
+    "object": "Backoff parameters for fetch",
+    "source": "https://docs.example.org/reliability/rag-retry-guide",
+    "provenance": [
+      {
+        "sourceId": "S07-GUIDE-002",
+        "type": "url"
+      }
+    ],
+    "confidence": 0.78,
+    "insertedAt": 1736932234400,
+    "updatedAt": 1736932234400,
+    "revision": 0,
+    "ordinal": 703
+  },
+  {
+    "id": "kg:S07_sources_instables:704",
+    "subject": "doc:S07-GUIDE-002",
+    "predicate": "suggests",
+    "object": "Mark flaky domains for review",
+    "source": "https://docs.example.org/reliability/rag-retry-guide",
+    "provenance": [
+      {
+        "sourceId": "S07-GUIDE-002",
+        "type": "url"
+      }
+    ],
+    "confidence": 0.76,
+    "insertedAt": 1736932234400,
+    "updatedAt": 1736932234400,
+    "revision": 0,
+    "ordinal": 704
+  }
+]

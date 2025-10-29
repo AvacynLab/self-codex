@@ -1,0 +1,4 @@
+{"scenario":"S08_indexation_directe","docId":"S08-DIRECT-001","triple":{"predicate":"proposes","object":"Graph-augmented retrieval agent"},"insertedAt":1736932310400}
+{"scenario":"S08_indexation_directe","docId":"S08-DIRECT-001","triple":{"predicate":"evaluates","object":"Hybrid RAG pipelines"},"insertedAt":1736932310400}
+{"scenario":"S08_indexation_directe","docId":"S08-DIRECT-002","triple":{"predicate":"explains","object":"Direct indexing governance"},"insertedAt":1736932312400}
+{"scenario":"S08_indexation_directe","docId":"S08-DIRECT-002","triple":{"predicate":"highlights","object":"Audit trails for ingestion"},"insertedAt":1736932312400}

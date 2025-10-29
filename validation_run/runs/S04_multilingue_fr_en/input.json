@@ -1,0 +1,8 @@
+{
+  "query": "évaluation RAG comparaison méthodes site:aclanthology.org",
+  "categories": [
+    "files",
+    "general"
+  ],
+  "maxResults": 4
+}

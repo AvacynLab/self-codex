@@ -1,0 +1,35 @@
+[
+  {
+    "subject": "doc:S04-ACL-001",
+    "tripleCount": 2,
+    "created": 1736931987000,
+    "updated": 1736931987600,
+    "mentions": [
+      "multilingual",
+      "qa",
+      "rag"
+    ]
+  },
+  {
+    "subject": "doc:S04-ACL-002",
+    "tripleCount": 2,
+    "created": 1736931989000,
+    "updated": 1736931989600,
+    "mentions": [
+      "code-switch",
+      "dialogue",
+      "graph"
+    ]
+  },
+  {
+    "subject": "doc:S04-ACL-003",
+    "tripleCount": 2,
+    "created": 1736931991000,
+    "updated": 1736931991600,
+    "mentions": [
+      "français",
+      "évaluation",
+      "rag"
+    ]
+  }
+]

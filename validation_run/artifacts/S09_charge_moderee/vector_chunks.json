@@ -1,0 +1,242 @@
+[
+  {
+    "chunkId": "chunk:S09-GRAPH-001:intro",
+    "tokenCount": 190,
+    "segmentIds": [
+      "seg:S09-GRAPH-001:intro"
+    ],
+    "metadata": {
+      "docId": "S09-GRAPH-001",
+      "section": "intro"
+    },
+    "tags": [
+      "html",
+      "intro"
+    ],
+    "provenance": [
+      {
+        "sourceId": "S09-GRAPH-001",
+        "type": "url"
+      }
+    ],
+    "createdAt": 1736932388200,
+    "updatedAt": 1736932388200,
+    "textLength": 760
+  },
+  {
+    "chunkId": "chunk:S09-GRAPH-001:patterns",
+    "tokenCount": 184,
+    "segmentIds": [
+      "seg:S09-GRAPH-001:patterns"
+    ],
+    "metadata": {
+      "docId": "S09-GRAPH-001",
+      "section": "patterns"
+    },
+    "tags": [
+      "html",
+      "patterns"
+    ],
+    "provenance": [
+      {
+        "sourceId": "S09-GRAPH-001",
+        "type": "url"
+      }
+    ],
+    "createdAt": 1736932388200,
+    "updatedAt": 1736932388200,
+    "textLength": 736
+  },
+  {
+    "chunkId": "chunk:S09-GRAPH-002:abstract",
+    "tokenCount": 240,
+    "segmentIds": [
+      "seg:S09-GRAPH-002:abstract"
+    ],
+    "metadata": {
+      "docId": "S09-GRAPH-002",
+      "section": "abstract"
+    },
+    "tags": [
+      "pdf",
+      "abstract"
+    ],
+    "provenance": [
+      {
+        "sourceId": "S09-GRAPH-002",
+        "type": "url"
+      }
+    ],
+    "createdAt": 1736932390200,
+    "updatedAt": 1736932390200,
+    "textLength": 960
+  },
+  {
+    "chunkId": "chunk:S09-GRAPH-002:results",
+    "tokenCount": 232,
+    "segmentIds": [
+      "seg:S09-GRAPH-002:results"
+    ],
+    "metadata": {
+      "docId": "S09-GRAPH-002",
+      "section": "results"
+    },
+    "tags": [
+      "pdf",
+      "results"
+    ],
+    "provenance": [
+      {
+        "sourceId": "S09-GRAPH-002",
+        "type": "url"
+      }
+    ],
+    "createdAt": 1736932390200,
+    "updatedAt": 1736932390200,
+    "textLength": 928
+  },
+  {
+    "chunkId": "chunk:S09-GRAPH-003:intro",
+    "tokenCount": 188,
+    "segmentIds": [
+      "seg:S09-GRAPH-003:intro"
+    ],
+    "metadata": {
+      "docId": "S09-GRAPH-003",
+      "section": "intro"
+    },
+    "tags": [
+      "html",
+      "intro"
+    ],
+    "provenance": [
+      {
+        "sourceId": "S09-GRAPH-003",
+        "type": "url"
+      }
+    ],
+    "createdAt": 1736932392200,
+    "updatedAt": 1736932392200,
+    "textLength": 752
+  },
+  {
+    "chunkId": "chunk:S09-GRAPH-003:tradeoffs",
+    "tokenCount": 176,
+    "segmentIds": [
+      "seg:S09-GRAPH-003:tradeoffs"
+    ],
+    "metadata": {
+      "docId": "S09-GRAPH-003",
+      "section": "tradeoffs"
+    },
+    "tags": [
+      "html",
+      "tradeoffs"
+    ],
+    "provenance": [
+      {
+        "sourceId": "S09-GRAPH-003",
+        "type": "url"
+      }
+    ],
+    "createdAt": 1736932392200,
+    "updatedAt": 1736932392200,
+    "textLength": 704
+  },
+  {
+    "chunkId": "chunk:S09-GRAPH-004:abstract",
+    "tokenCount": 236,
+    "segmentIds": [
+      "seg:S09-GRAPH-004:abstract"
+    ],
+    "metadata": {
+      "docId": "S09-GRAPH-004",
+      "section": "abstract"
+    },
+    "tags": [
+      "pdf",
+      "abstract"
+    ],
+    "provenance": [
+      {
+        "sourceId": "S09-GRAPH-004",
+        "type": "url"
+      }
+    ],
+    "createdAt": 1736932394200,
+    "updatedAt": 1736932394200,
+    "textLength": 944
+  },
+  {
+    "chunkId": "chunk:S09-GRAPH-004:metrics",
+    "tokenCount": 224,
+    "segmentIds": [
+      "seg:S09-GRAPH-004:metrics"
+    ],
+    "metadata": {
+      "docId": "S09-GRAPH-004",
+      "section": "metrics"
+    },
+    "tags": [
+      "pdf",
+      "metrics"
+    ],
+    "provenance": [
+      {
+        "sourceId": "S09-GRAPH-004",
+        "type": "url"
+      }
+    ],
+    "createdAt": 1736932394200,
+    "updatedAt": 1736932394200,
+    "textLength": 896
+  },
+  {
+    "chunkId": "chunk:S09-GRAPH-005:intro",
+    "tokenCount": 180,
+    "segmentIds": [
+      "seg:S09-GRAPH-005:intro"
+    ],
+    "metadata": {
+      "docId": "S09-GRAPH-005",
+      "section": "intro"
+    },
+    "tags": [
+      "html",
+      "intro"
+    ],
+    "provenance": [
+      {
+        "sourceId": "S09-GRAPH-005",
+        "type": "url"
+      }
+    ],
+    "createdAt": 1736932396200,
+    "updatedAt": 1736932396200,
+    "textLength": 720
+  },
+  {
+    "chunkId": "chunk:S09-GRAPH-005:visuals",
+    "tokenCount": 170,
+    "segmentIds": [
+      "seg:S09-GRAPH-005:visuals"
+    ],
+    "metadata": {
+      "docId": "S09-GRAPH-005",
+      "section": "visuals"
+    },
+    "tags": [
+      "html",
+      "visuals"
+    ],
+    "provenance": [
+      {
+        "sourceId": "S09-GRAPH-005",
+        "type": "url"
+      }
+    ],
+    "createdAt": 1736932396200,
+    "updatedAt": 1736932396200,
+    "textLength": 680
+  }
+]

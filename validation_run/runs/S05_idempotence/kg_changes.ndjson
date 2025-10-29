@@ -1,0 +1,6 @@
+{"scenario":"S05_idempotence","docId":"S01-ARX-001","triple":{"predicate":"type","object":"ResearchPaper"},"insertedAt":1736932072400}
+{"scenario":"S05_idempotence","docId":"S01-ARX-001","triple":{"predicate":"focuses_on","object":"Multimodal LLM evaluation"},"insertedAt":1736932072400}
+{"scenario":"S05_idempotence","docId":"S01-ARX-002","triple":{"predicate":"compares","object":"Graph-grounded RAG"},"insertedAt":1736932075400}
+{"scenario":"S05_idempotence","docId":"S01-ARX-002","triple":{"predicate":"compares","object":"Vector-grounded RAG"},"insertedAt":1736932075400}
+{"scenario":"S05_idempotence","docId":"S01-ARX-003","triple":{"predicate":"studies","object":"Cross-modal context windows"},"insertedAt":1736932077400}
+{"scenario":"S05_idempotence","docId":"S01-ARX-003","triple":{"predicate":"proposes","object":"Adaptive attention spans"},"insertedAt":1736932077400}

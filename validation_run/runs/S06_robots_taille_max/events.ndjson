@@ -1,0 +1,11 @@
+{"kind":"search:stage","stage":"searxQuery","durationMs":780,"tookMs":2940,"jobId":"validation:S06_robots_taille_max","timestamp":1736931872000}
+{"kind":"search:stage","stage":"fetchUrl","durationMs":1050,"documentId":"S06-DATA-001","success":true,"timestamp":1736931874000}
+{"kind":"search:stage","stage":"extractWithUnstructured","durationMs":810,"documentId":"S06-DATA-001","success":true,"timestamp":1736931877000}
+{"kind":"search:doc_ingested","payload":{"doc_id":"S06-DATA-001"},"documentsIngested":1}
+{"kind":"search:stage","stage":"fetchUrl","durationMs":1020,"documentId":"S06-DATA-002","success":true,"timestamp":1736931874600}
+{"kind":"search:stage","stage":"extractWithUnstructured","durationMs":820,"documentId":"S06-DATA-002","success":true,"timestamp":1736931877600}
+{"kind":"search:doc_ingested","payload":{"doc_id":"S06-DATA-002"},"documentsIngested":1}
+{"kind":"search:stage","stage":"ingestToGraph","durationMs":340,"documentsIngested":2,"timestamp":1736931880500}
+{"kind":"search:stage","stage":"ingestToVector","durationMs":350,"documentsIngested":2,"timestamp":1736931881200}
+{"kind":"search:error","category":"robots_denied","message":"Access disallowed by robots.txt","stage":"fetchUrl","url":"https://datasets.example.com/private/report.pdf"}
+{"kind":"search:error","category":"max_size_exceeded","message":"Content length 32MB exceeds configured maximum.","stage":"fetchUrl","url":"https://oversized.example.org/rag/huge.pdf","metadata":{"limitBytes":15000000}}

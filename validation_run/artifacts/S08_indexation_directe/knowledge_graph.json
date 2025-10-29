@@ -1,0 +1,74 @@
+[
+  {
+    "id": "kg:S08_indexation_directe:801",
+    "subject": "doc:S08-DIRECT-001",
+    "predicate": "proposes",
+    "object": "Graph-augmented retrieval agent",
+    "source": "https://arxiv.org/pdf/2407.12345.pdf",
+    "provenance": [
+      {
+        "sourceId": "S08-DIRECT-001",
+        "type": "url"
+      }
+    ],
+    "confidence": 0.88,
+    "insertedAt": 1736932310400,
+    "updatedAt": 1736932310400,
+    "revision": 0,
+    "ordinal": 801
+  },
+  {
+    "id": "kg:S08_indexation_directe:802",
+    "subject": "doc:S08-DIRECT-001",
+    "predicate": "evaluates",
+    "object": "Hybrid RAG pipelines",
+    "source": "https://arxiv.org/pdf/2407.12345.pdf",
+    "provenance": [
+      {
+        "sourceId": "S08-DIRECT-001",
+        "type": "url"
+      }
+    ],
+    "confidence": 0.86,
+    "insertedAt": 1736932310400,
+    "updatedAt": 1736932310400,
+    "revision": 0,
+    "ordinal": 802
+  },
+  {
+    "id": "kg:S08_indexation_directe:803",
+    "subject": "doc:S08-DIRECT-002",
+    "predicate": "explains",
+    "object": "Direct indexing governance",
+    "source": "https://research.facebook.com/publications/2025-direct-indexing.pdf",
+    "provenance": [
+      {
+        "sourceId": "S08-DIRECT-002",
+        "type": "url"
+      }
+    ],
+    "confidence": 0.85,
+    "insertedAt": 1736932312400,
+    "updatedAt": 1736932312400,
+    "revision": 0,
+    "ordinal": 803
+  },
+  {
+    "id": "kg:S08_indexation_directe:804",
+    "subject": "doc:S08-DIRECT-002",
+    "predicate": "highlights",
+    "object": "Audit trails for ingestion",
+    "source": "https://research.facebook.com/publications/2025-direct-indexing.pdf",
+    "provenance": [
+      {
+        "sourceId": "S08-DIRECT-002",
+        "type": "url"
+      }
+    ],
+    "confidence": 0.82,
+    "insertedAt": 1736932312400,
+    "updatedAt": 1736932312400,
+    "revision": 0,
+    "ordinal": 804
+  }
+]

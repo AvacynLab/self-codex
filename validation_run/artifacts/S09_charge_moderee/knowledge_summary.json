@@ -1,0 +1,57 @@
+[
+  {
+    "subject": "doc:S09-GRAPH-001",
+    "tripleCount": 2,
+    "created": 1736932387000,
+    "updated": 1736932387600,
+    "mentions": [
+      "knowledge graph",
+      "rag",
+      "patterns"
+    ]
+  },
+  {
+    "subject": "doc:S09-GRAPH-002",
+    "tripleCount": 2,
+    "created": 1736932389000,
+    "updated": 1736932389600,
+    "mentions": [
+      "benchmark",
+      "performance",
+      "graph"
+    ]
+  },
+  {
+    "subject": "doc:S09-GRAPH-003",
+    "tripleCount": 2,
+    "created": 1736932391000,
+    "updated": 1736932391600,
+    "mentions": [
+      "hybrid",
+      "vector",
+      "graph"
+    ]
+  },
+  {
+    "subject": "doc:S09-GRAPH-004",
+    "tripleCount": 2,
+    "created": 1736932393000,
+    "updated": 1736932393600,
+    "mentions": [
+      "case study",
+      "latency",
+      "production"
+    ]
+  },
+  {
+    "subject": "doc:S09-GRAPH-005",
+    "tripleCount": 2,
+    "created": 1736932395000,
+    "updated": 1736932395600,
+    "mentions": [
+      "visualisation",
+      "analytics",
+      "knowledge graph"
+    ]
+  }
+]

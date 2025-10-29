@@ -1,0 +1,98 @@
+[
+  {
+    "chunkId": "chunk:S06-DATA-001:intro",
+    "tokenCount": 160,
+    "segmentIds": [
+      "seg:S06-DATA-001:intro"
+    ],
+    "metadata": {
+      "docId": "S06-DATA-001",
+      "section": "intro"
+    },
+    "tags": [
+      "html",
+      "intro"
+    ],
+    "provenance": [
+      {
+        "sourceId": "S06-DATA-001",
+        "type": "url"
+      }
+    ],
+    "createdAt": 1736932155200,
+    "updatedAt": 1736932155200,
+    "textLength": 640
+  },
+  {
+    "chunkId": "chunk:S06-DATA-001:download",
+    "tokenCount": 150,
+    "segmentIds": [
+      "seg:S06-DATA-001:download"
+    ],
+    "metadata": {
+      "docId": "S06-DATA-001",
+      "section": "download"
+    },
+    "tags": [
+      "html",
+      "download"
+    ],
+    "provenance": [
+      {
+        "sourceId": "S06-DATA-001",
+        "type": "url"
+      }
+    ],
+    "createdAt": 1736932155200,
+    "updatedAt": 1736932155200,
+    "textLength": 600
+  },
+  {
+    "chunkId": "chunk:S06-DATA-002:abstract",
+    "tokenCount": 220,
+    "segmentIds": [
+      "seg:S06-DATA-002:abstract"
+    ],
+    "metadata": {
+      "docId": "S06-DATA-002",
+      "section": "abstract"
+    },
+    "tags": [
+      "pdf",
+      "abstract"
+    ],
+    "provenance": [
+      {
+        "sourceId": "S06-DATA-002",
+        "type": "url"
+      }
+    ],
+    "createdAt": 1736932157200,
+    "updatedAt": 1736932157200,
+    "textLength": 900
+  },
+  {
+    "chunkId": "chunk:S06-DATA-002:guidelines",
+    "tokenCount": 208,
+    "segmentIds": [
+      "seg:S06-DATA-002:guidelines"
+    ],
+    "metadata": {
+      "docId": "S06-DATA-002",
+      "section": "guidelines"
+    },
+    "tags": [
+      "pdf",
+      "guidelines"
+    ],
+    "provenance": [
+      {
+        "sourceId": "S06-DATA-002",
+        "type": "url"
+      }
+    ],
+    "createdAt": 1736932157200,
+    "updatedAt": 1736932157200,
+    "textLength": 840
+  }
+]

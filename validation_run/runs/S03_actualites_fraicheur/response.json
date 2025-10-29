@@ -1,0 +1,40 @@
+{
+  "scenarioId": 3,
+  "slug": "S03_actualites_fraicheur",
+  "label": "Actualités (fraîcheur)",
+  "query": "actualité LLM Europe 2025",
+  "summary": "Actualités européennes et nationales sur le financement et la sécurité des LLMs.",
+  "highlights": [
+    "Couverture FR/EN respectant la fraîcheur",
+    "Mise à jour du graphe de connaissances avec des politiques publiques"
+  ],
+  "recommendations": [
+    "Surveiller l'impact du benchmark français sur les évaluations futures"
+  ],
+  "documents": [
+    {
+      "id": "S03-NEWS-001",
+      "title": "EU Funds Responsible AI Research in 2025",
+      "url": "https://www.euronews.com/tech/2025/01/10/eu-funds-responsible-ai",
+      "snippet": "New €150M programme boosting responsible LLM development across Europe.",
+      "language": "en",
+      "score": 0.9
+    },
+    {
+      "id": "S03-NEWS-002",
+      "title": "France Launches National RAG Benchmark",
+      "url": "https://www.lemonde.fr/technologies/article/2025/01/12/benchmark-rag-national",
+      "snippet": "Public-private consortium introduces open benchmark for retrieval systems.",
+      "language": "fr",
+      "score": 0.86
+    },
+    {
+      "id": "S03-NEWS-003",
+      "title": "German Universities Share LLM Safety Findings",
+      "url": "https://www.dw.com/en/germany-llm-safety-report-2025/a-123456",
+      "snippet": "Research hubs publish guidance on mitigating hallucinations in LLMs.",
+      "language": "en",
+      "score": 0.81
+    }
+  ]
+}

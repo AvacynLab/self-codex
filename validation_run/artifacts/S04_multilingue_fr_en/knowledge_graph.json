@@ -1,0 +1,110 @@
+[
+  {
+    "id": "kg:S04_multilingue_fr_en:401",
+    "subject": "doc:S04-ACL-001",
+    "predicate": "evaluates",
+    "object": "Multilingual RAG pipelines",
+    "source": "https://aclanthology.org/2024.acl-long.123",
+    "provenance": [
+      {
+        "sourceId": "S04-ACL-001",
+        "type": "url"
+      }
+    ],
+    "confidence": 0.9,
+    "insertedAt": 1736931987400,
+    "updatedAt": 1736931987400,
+    "revision": 0,
+    "ordinal": 401
+  },
+  {
+    "id": "kg:S04_multilingue_fr_en:402",
+    "subject": "doc:S04-ACL-001",
+    "predicate": "reports",
+    "object": "Precision gains on FR corpora",
+    "source": "https://aclanthology.org/2024.acl-long.123",
+    "provenance": [
+      {
+        "sourceId": "S04-ACL-001",
+        "type": "url"
+      }
+    ],
+    "confidence": 0.85,
+    "insertedAt": 1736931987400,
+    "updatedAt": 1736931987400,
+    "revision": 0,
+    "ordinal": 402
+  },
+  {
+    "id": "kg:S04_multilingue_fr_en:403",
+    "subject": "doc:S04-ACL-002",
+    "predicate": "introduces",
+    "object": "Graph augmentation for code-switched dialogue",
+    "source": "https://aclanthology.org/2024.acl-long.210",
+    "provenance": [
+      {
+        "sourceId": "S04-ACL-002",
+        "type": "url"
+      }
+    ],
+    "confidence": 0.87,
+    "insertedAt": 1736931989400,
+    "updatedAt": 1736931989400,
+    "revision": 0,
+    "ordinal": 403
+  },
+  {
+    "id": "kg:S04_multilingue_fr_en:404",
+    "subject": "doc:S04-ACL-002",
+    "predicate": "observes",
+    "object": "Stability gains for bilingual queries",
+    "source": "https://aclanthology.org/2024.acl-long.210",
+    "provenance": [
+      {
+        "sourceId": "S04-ACL-002",
+        "type": "url"
+      }
+    ],
+    "confidence": 0.84,
+    "insertedAt": 1736931989400,
+    "updatedAt": 1736931989400,
+    "revision": 0,
+    "ordinal": 404
+  },
+  {
+    "id": "kg:S04_multilingue_fr_en:405",
+    "subject": "doc:S04-ACL-003",
+    "predicate": "analyse",
+    "object": "Performances RAG francophones",
+    "source": "https://aclanthology.org/2024.acl-long.333",
+    "provenance": [
+      {
+        "sourceId": "S04-ACL-003",
+        "type": "url"
+      }
+    ],
+    "confidence": 0.86,
+    "insertedAt": 1736931991400,
+    "updatedAt": 1736931991400,
+    "revision": 0,
+    "ordinal": 405
+  },
+  {
+    "id": "kg:S04_multilingue_fr_en:406",
+    "subject": "doc:S04-ACL-003",
+    "predicate": "propose",
+    "object": "Corpus d'évaluation mixte",
+    "source": "https://aclanthology.org/2024.acl-long.333",
+    "provenance": [
+      {
+        "sourceId": "S04-ACL-003",
+        "type": "url"
+      }
+    ],
+    "confidence": 0.82,
+    "insertedAt": 1736931991400,
+    "updatedAt": 1736931991400,
+    "revision": 0,
+    "ordinal": 406
+  }
+]

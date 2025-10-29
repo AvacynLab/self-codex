@@ -1,0 +1,6 @@
+[2025-01-15T09:00:00.000Z] INFO validation:S05_idempotence reran pdf ingestion for idempotence
+[2025-01-15T09:00:01.000Z] INFO validation:S05_idempotence documents matched existing checksums
+[2025-01-15T09:00:02.000Z] INFO validation:S05_idempotence no new knowledge triples inserted
+[2025-01-15T09:00:03.000Z] INFO validation:S05_idempotence vector deduplication confirmed
+[2025-01-15T09:00:04.000Z] INFO validation:S05_idempotence scenario concluded with matching docIds
+[2025-01-15T09:00:00.000Z] INFO validation:S05_idempotence completed

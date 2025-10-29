@@ -1,0 +1,56 @@
+[
+  {
+    "id": "S03-NEWS-001",
+    "url": "https://www.euronews.com/tech/2025/01/10/eu-funds-responsible-ai",
+    "title": "EU Funds Responsible AI Research in 2025",
+    "language": "en",
+    "description": "Funding initiative supporting responsible AI research in Europe.",
+    "mimeType": "text/html",
+    "checksum": "sha256:6c8fafe981c20c7a2a50df9d72b9e933",
+    "size": 88201,
+    "fetchedAt": 1736931905000,
+    "segmentCount": 2,
+    "provenance": [
+      {
+        "sourceId": "https://www.euronews.com/tech/2025/01/10/eu-funds-responsible-ai",
+        "type": "url"
+      }
+    ]
+  },
+  {
+    "id": "S03-NEWS-002",
+    "url": "https://www.lemonde.fr/technologies/article/2025/01/12/benchmark-rag-national",
+    "title": "France Launches National RAG Benchmark",
+    "language": "fr",
+    "description": "Consortium public-privé pour évaluer les systèmes de récupération.",
+    "mimeType": "text/html",
+    "checksum": "sha256:5f2299f5a0b243f72d1fb38db58c725e",
+    "size": 74822,
+    "fetchedAt": 1736931906500,
+    "segmentCount": 2,
+    "provenance": [
+      {
+        "sourceId": "https://www.lemonde.fr/technologies/article/2025/01/12/benchmark-rag-national",
+        "type": "url"
+      }
+    ]
+  },
+  {
+    "id": "S03-NEWS-003",
+    "url": "https://www.dw.com/en/germany-llm-safety-report-2025/a-123456",
+    "title": "German Universities Share LLM Safety Findings",
+    "language": "en",
+    "description": "Guidance for mitigating hallucinations and reinforcing monitoring.",
+    "mimeType": "text/html",
+    "checksum": "sha256:aa3e4aa1c727a05ea4a7981f7fab75a5",
+    "size": 69554,
+    "fetchedAt": 1736931907200,
+    "segmentCount": 1,
+    "provenance": [
+      {
+        "sourceId": "https://www.dw.com/en/germany-llm-safety-report-2025/a-123456",
+        "type": "url"
+      }
+    ]
+  }
+]

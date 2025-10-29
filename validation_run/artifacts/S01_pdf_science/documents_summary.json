@@ -1,0 +1,56 @@
+[
+  {
+    "id": "S01-ARX-001",
+    "url": "https://arxiv.org/abs/2501.01234",
+    "title": "Evaluating Multimodal LLMs in 2025",
+    "language": "en",
+    "description": "Comparative study of evaluation protocols for multimodal models.",
+    "mimeType": "application/pdf",
+    "checksum": "sha256:7a1f37759b9e304d3ed4b9c9a51280f7",
+    "size": 154321,
+    "fetchedAt": 1736931720000,
+    "segmentCount": 2,
+    "provenance": [
+      {
+        "sourceId": "https://arxiv.org/abs/2501.01234",
+        "type": "url"
+      }
+    ]
+  },
+  {
+    "id": "S01-ARX-002",
+    "url": "https://arxiv.org/abs/2501.04567",
+    "title": "Benchmarking RAG Strategies for Scientific QA",
+    "language": "en",
+    "description": "Comparison of graph-grounded and vector-grounded RAG pipelines.",
+    "mimeType": "application/pdf",
+    "checksum": "sha256:9f5b0e90b135bb4a9d6f4bb4ac29d61f",
+    "size": 132204,
+    "fetchedAt": 1736931724000,
+    "segmentCount": 2,
+    "provenance": [
+      {
+        "sourceId": "https://arxiv.org/abs/2501.04567",
+        "type": "url"
+      }
+    ]
+  },
+  {
+    "id": "S01-ARX-003",
+    "url": "https://arxiv.org/abs/2501.07890",
+    "title": "Context Windows for Cross-Modal Reasoning",
+    "language": "en",
+    "description": "Study of adaptive context windows for multimodal reasoning tasks.",
+    "mimeType": "application/pdf",
+    "checksum": "sha256:54ecf4a8d0a8e7a22e3562dd0d3ebfa6",
+    "size": 165882,
+    "fetchedAt": 1736931727000,
+    "segmentCount": 2,
+    "provenance": [
+      {
+        "sourceId": "https://arxiv.org/abs/2501.07890",
+        "type": "url"
+      }
+    ]
+  }
+]

@@ -1,0 +1,35 @@
+[
+  {
+    "subject": "doc:S01-ARX-001",
+    "tripleCount": 2,
+    "created": 1736931722000,
+    "updated": 1736931722600,
+    "mentions": [
+      "evaluation",
+      "multimodal",
+      "benchmarks"
+    ]
+  },
+  {
+    "subject": "doc:S01-ARX-002",
+    "tripleCount": 2,
+    "created": 1736931726000,
+    "updated": 1736931726600,
+    "mentions": [
+      "rag",
+      "graph",
+      "vector"
+    ]
+  },
+  {
+    "subject": "doc:S01-ARX-003",
+    "tripleCount": 2,
+    "created": 1736931729000,
+    "updated": 1736931729600,
+    "mentions": [
+      "context",
+      "multimodal",
+      "windows"
+    ]
+  }
+]

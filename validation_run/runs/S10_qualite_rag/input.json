@@ -1,0 +1,7 @@
+{
+  "query": "Synthétise les points clés du dernier rapport RAG ingéré",
+  "categories": [],
+  "maxResults": 0,
+  "injectGraph": true,
+  "injectVector": true
+}

@@ -1,0 +1,38 @@
+[
+  {
+    "id": "S07-NEWS-001",
+    "url": "https://status.example.com/blog/search-outage-analysis",
+    "title": "Search Outage Analysis and Mitigation",
+    "language": "en",
+    "description": "Blog post analysant les incidents 5xx récurrents.",
+    "mimeType": "text/html",
+    "checksum": "sha256:1010aa55bb55cc55dd55ee55ff55aa55",
+    "size": 64102,
+    "fetchedAt": 1736932230000,
+    "segmentCount": 2,
+    "provenance": [
+      {
+        "sourceId": "https://status.example.com/blog/search-outage-analysis",
+        "type": "url"
+      }
+    ]
+  },
+  {
+    "id": "S07-GUIDE-002",
+    "url": "https://docs.example.org/reliability/rag-retry-guide",
+    "title": "RAG Retry Guide for Unstable Sources",
+    "language": "en",
+    "description": "Guide de bonnes pratiques pour gérer les erreurs intermittentes.",
+    "mimeType": "text/html",
+    "checksum": "sha256:2222bb66cc66dd66ee66ff6600112233",
+    "size": 59880,
+    "fetchedAt": 1736932232000,
+    "segmentCount": 2,
+    "provenance": [
+      {
+        "sourceId": "https://docs.example.org/reliability/rag-retry-guide",
+        "type": "url"
+      }
+    ]
+  }
+]

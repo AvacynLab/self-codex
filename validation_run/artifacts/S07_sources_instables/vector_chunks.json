@@ -1,0 +1,98 @@
+[
+  {
+    "chunkId": "chunk:S07-NEWS-001:intro",
+    "tokenCount": 170,
+    "segmentIds": [
+      "seg:S07-NEWS-001:intro"
+    ],
+    "metadata": {
+      "docId": "S07-NEWS-001",
+      "section": "intro"
+    },
+    "tags": [
+      "html",
+      "intro"
+    ],
+    "provenance": [
+      {
+        "sourceId": "S07-NEWS-001",
+        "type": "url"
+      }
+    ],
+    "createdAt": 1736932233200,
+    "updatedAt": 1736932233200,
+    "textLength": 680
+  },
+  {
+    "chunkId": "chunk:S07-NEWS-001:mitigation",
+    "tokenCount": 162,
+    "segmentIds": [
+      "seg:S07-NEWS-001:mitigation"
+    ],
+    "metadata": {
+      "docId": "S07-NEWS-001",
+      "section": "mitigation"
+    },
+    "tags": [
+      "html",
+      "mitigation"
+    ],
+    "provenance": [
+      {
+        "sourceId": "S07-NEWS-001",
+        "type": "url"
+      }
+    ],
+    "createdAt": 1736932233200,
+    "updatedAt": 1736932233200,
+    "textLength": 648
+  },
+  {
+    "chunkId": "chunk:S07-GUIDE-002:intro",
+    "tokenCount": 165,
+    "segmentIds": [
+      "seg:S07-GUIDE-002:intro"
+    ],
+    "metadata": {
+      "docId": "S07-GUIDE-002",
+      "section": "intro"
+    },
+    "tags": [
+      "html",
+      "intro"
+    ],
+    "provenance": [
+      {
+        "sourceId": "S07-GUIDE-002",
+        "type": "url"
+      }
+    ],
+    "createdAt": 1736932235200,
+    "updatedAt": 1736932235200,
+    "textLength": 660
+  },
+  {
+    "chunkId": "chunk:S07-GUIDE-002:checklist",
+    "tokenCount": 158,
+    "segmentIds": [
+      "seg:S07-GUIDE-002:checklist"
+    ],
+    "metadata": {
+      "docId": "S07-GUIDE-002",
+      "section": "checklist"
+    },
+    "tags": [
+      "html",
+      "checklist"
+    ],
+    "provenance": [
+      {
+        "sourceId": "S07-GUIDE-002",
+        "type": "url"
+      }
+    ],
+    "createdAt": 1736932235200,
+    "updatedAt": 1736932235200,
+    "textLength": 632
+  }
+]

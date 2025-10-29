@@ -1,0 +1,29 @@
+[
+  {
+    "docId": "S01-ARX-001",
+    "chunkIds": [
+      "chunk:S01-ARX-001:abstract",
+      "chunk:S01-ARX-001:conclusion"
+    ],
+    "tokenTotal": 480,
+    "tookMs": 180
+  },
+  {
+    "docId": "S01-ARX-002",
+    "chunkIds": [
+      "chunk:S01-ARX-002:abstract",
+      "chunk:S01-ARX-002:discussion"
+    ],
+    "tokenTotal": 500,
+    "tookMs": 185
+  },
+  {
+    "docId": "S01-ARX-003",
+    "chunkIds": [
+      "chunk:S01-ARX-003:abstract",
+      "chunk:S01-ARX-003:analysis"
+    ],
+    "tokenTotal": 488,
+    "tookMs": 190
+  }
+]

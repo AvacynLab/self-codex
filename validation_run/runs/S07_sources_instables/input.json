@@ -1,0 +1,7 @@
+{
+  "query": "site:example.com unavailable test",
+  "categories": [
+    "general"
+  ],
+  "maxResults": 3
+}

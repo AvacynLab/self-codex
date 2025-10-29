@@ -1,0 +1,67 @@
+{
+  "generatedAt": "2025-10-28T23:30:35.368Z",
+  "status": "attention",
+  "actions": [
+    {
+      "criterion": "S10_qualite_rag",
+      "severity": "attention",
+      "description": "Des notes subsistent pour ce scénario (fichiers manquants, journaux incomplets ou artefacts partiels).",
+      "recommendations": [
+        "kg_changes.ndjson vide"
+      ],
+      "scenarios": [
+        "S10_qualite_rag"
+      ]
+    },
+    {
+      "criterion": "erreur:network_error",
+      "severity": "attention",
+      "description": "Erreurs réseau détectées lors de la collecte (timeouts/5xx). (6 occurrences).",
+      "recommendations": [
+        "Stabiliser les sources instables ou réduire le parallélisme (`SEARCH_PARALLEL_FETCH`).",
+        "Consigner les URLs fautives dans `errors.json` puis envisager un rerun ciblé."
+      ],
+      "scenarios": [
+        "S01_pdf_science",
+        "S07_sources_instables"
+      ]
+    },
+    {
+      "criterion": "erreur:parse_error",
+      "severity": "attention",
+      "description": "Échecs de parsing détectés (HTML/PDF non traités). (2 occurrences).",
+      "recommendations": [
+        "Inspecter les payloads dans `artifacts/` et ajuster la stratégie Unstructured.",
+        "Relancer l'extraction après correction pour vérifier la résilience."
+      ],
+      "scenarios": [
+        "S02_html_long_images"
+      ]
+    },
+    {
+      "criterion": "erreur:robots_denied",
+      "severity": "attention",
+      "description": "Des robots.txt ont refusé l'accès à certaines ressources. (2 occurrences).",
+      "recommendations": [
+        "Activer `SEARCH_FETCH_RESPECT_ROBOTS=1` et ajouter un throttle par domaine si nécessaire.",
+        "Documenter les domaines bloqués et ajuster la stratégie de crawling."
+      ],
+      "scenarios": [
+        "S06_robots_taille_max"
+      ]
+    },
+    {
+      "criterion": "erreur:max_size_exceeded",
+      "severity": "attention",
+      "description": "Des contenus ont dépassé la taille maximale autorisée. (2 occurrences).",
+      "recommendations": [
+        "Augmenter `SEARCH_FETCH_MAX_BYTES` pour les scénarios nécessitant de gros fichiers.",
+        "Filtrer les requêtes ou limiter les domaines renvoyant des archives volumineuses."
+      ],
+      "scenarios": [
+        "S06_robots_taille_max"
+      ]
+    }
+  ],
+  "notes": []
+}

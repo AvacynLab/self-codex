@@ -1,0 +1,146 @@
+[
+  {
+    "chunkId": "chunk:S01-ARX-001:abstract_rerun",
+    "tokenCount": 249,
+    "segmentIds": [
+      "seg:S01-ARX-001:abstract_rerun"
+    ],
+    "metadata": {
+      "docId": "S01-ARX-001",
+      "section": "abstract_rerun"
+    },
+    "tags": [
+      "pdf",
+      "abstract_rerun"
+    ],
+    "provenance": [
+      {
+        "sourceId": "S01-ARX-001",
+        "type": "url"
+      }
+    ],
+    "createdAt": 1736932073200,
+    "updatedAt": 1736932073200,
+    "textLength": 1028
+  },
+  {
+    "chunkId": "chunk:S01-ARX-001:conclusion_rerun",
+    "tokenCount": 231,
+    "segmentIds": [
+      "seg:S01-ARX-001:conclusion_rerun"
+    ],
+    "metadata": {
+      "docId": "S01-ARX-001",
+      "section": "conclusion_rerun"
+    },
+    "tags": [
+      "pdf",
+      "conclusion_rerun"
+    ],
+    "provenance": [
+      {
+        "sourceId": "S01-ARX-001",
+        "type": "url"
+      }
+    ],
+    "createdAt": 1736932073200,
+    "updatedAt": 1736932073200,
+    "textLength": 908
+  },
+  {
+    "chunkId": "chunk:S01-ARX-002:abstract_rerun",
+    "tokenCount": 255,
+    "segmentIds": [
+      "seg:S01-ARX-002:abstract_rerun"
+    ],
+    "metadata": {
+      "docId": "S01-ARX-002",
+      "section": "abstract_rerun"
+    },
+    "tags": [
+      "pdf",
+      "abstract_rerun"
+    ],
+    "provenance": [
+      {
+        "sourceId": "S01-ARX-002",
+        "type": "url"
+      }
+    ],
+    "createdAt": 1736932076200,
+    "updatedAt": 1736932076200,
+    "textLength": 1036
+  },
+  {
+    "chunkId": "chunk:S01-ARX-002:discussion_rerun",
+    "tokenCount": 243,
+    "segmentIds": [
+      "seg:S01-ARX-002:discussion_rerun"
+    ],
+    "metadata": {
+      "docId": "S01-ARX-002",
+      "section": "discussion_rerun"
+    },
+    "tags": [
+      "pdf",
+      "discussion_rerun"
+    ],
+    "provenance": [
+      {
+        "sourceId": "S01-ARX-002",
+        "type": "url"
+      }
+    ],
+    "createdAt": 1736932076200,
+    "updatedAt": 1736932076200,
+    "textLength": 960
+  },
+  {
+    "chunkId": "chunk:S01-ARX-003:abstract_rerun",
+    "tokenCount": 251,
+    "segmentIds": [
+      "seg:S01-ARX-003:abstract_rerun"
+    ],
+    "metadata": {
+      "docId": "S01-ARX-003",
+      "section": "abstract_rerun"
+    },
+    "tags": [
+      "pdf",
+      "abstract_rerun"
+    ],
+    "provenance": [
+      {
+        "sourceId": "S01-ARX-003",
+        "type": "url"
+      }
+    ],
+    "createdAt": 1736932078200,
+    "updatedAt": 1736932078200,
+    "textLength": 1030
+  },
+  {
+    "chunkId": "chunk:S01-ARX-003:analysis_rerun",
+    "tokenCount": 237,
+    "segmentIds": [
+      "seg:S01-ARX-003:analysis_rerun"
+    ],
+    "metadata": {
+      "docId": "S01-ARX-003",
+      "section": "analysis_rerun"
+    },
+    "tags": [
+      "pdf",
+      "analysis_rerun"
+    ],
+    "provenance": [
+      {
+        "sourceId": "S01-ARX-003",
+        "type": "url"
+      }
+    ],
+    "createdAt": 1736932078200,
+    "updatedAt": 1736932078200,
+    "textLength": 934
+  }
+]

@@ -1,0 +1,5 @@
+{"scenario":"S03_actualites_fraicheur","docId":"S03-NEWS-001","triple":{"predicate":"announces","object":"€150M responsible AI programme"},"insertedAt":1736931907400}
+{"scenario":"S03_actualites_fraicheur","docId":"S03-NEWS-001","triple":{"predicate":"targets","object":"European LLM research"},"insertedAt":1736931907400}
+{"scenario":"S03_actualites_fraicheur","docId":"S03-NEWS-002","triple":{"predicate":"launches","object":"Benchmark RAG national"},"insertedAt":1736931908900}
+{"scenario":"S03_actualites_fraicheur","docId":"S03-NEWS-002","triple":{"predicate":"partners_with","object":"Public-private consortium"},"insertedAt":1736931908900}
+{"scenario":"S03_actualites_fraicheur","docId":"S03-NEWS-003","triple":{"predicate":"reports","object":"LLM hallucination mitigation"},"insertedAt":1736931909600}

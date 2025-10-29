@@ -1,0 +1,110 @@
+[
+  {
+    "id": "kg:S05_idempotence:501",
+    "subject": "doc:S01-ARX-001",
+    "predicate": "type",
+    "object": "ResearchPaper",
+    "source": "https://arxiv.org/abs/2501.01234",
+    "provenance": [
+      {
+        "sourceId": "S01-ARX-001",
+        "type": "url"
+      }
+    ],
+    "confidence": 0.94,
+    "insertedAt": 1736932072400,
+    "updatedAt": 1736932072400,
+    "revision": 0,
+    "ordinal": 501
+  },
+  {
+    "id": "kg:S05_idempotence:502",
+    "subject": "doc:S01-ARX-001",
+    "predicate": "focuses_on",
+    "object": "Multimodal LLM evaluation",
+    "source": "https://arxiv.org/abs/2501.01234",
+    "provenance": [
+      {
+        "sourceId": "S01-ARX-001",
+        "type": "url"
+      }
+    ],
+    "confidence": 0.9,
+    "insertedAt": 1736932072400,
+    "updatedAt": 1736932072400,
+    "revision": 0,
+    "ordinal": 502
+  },
+  {
+    "id": "kg:S05_idempotence:503",
+    "subject": "doc:S01-ARX-002",
+    "predicate": "compares",
+    "object": "Graph-grounded RAG",
+    "source": "https://arxiv.org/abs/2501.04567",
+    "provenance": [
+      {
+        "sourceId": "S01-ARX-002",
+        "type": "url"
+      }
+    ],
+    "confidence": 0.9,
+    "insertedAt": 1736932075400,
+    "updatedAt": 1736932075400,
+    "revision": 0,
+    "ordinal": 503
+  },
+  {
+    "id": "kg:S05_idempotence:504",
+    "subject": "doc:S01-ARX-002",
+    "predicate": "compares",
+    "object": "Vector-grounded RAG",
+    "source": "https://arxiv.org/abs/2501.04567",
+    "provenance": [
+      {
+        "sourceId": "S01-ARX-002",
+        "type": "url"
+      }
+    ],
+    "confidence": 0.88,
+    "insertedAt": 1736932075400,
+    "updatedAt": 1736932075400,
+    "revision": 0,
+    "ordinal": 504
+  },
+  {
+    "id": "kg:S05_idempotence:505",
+    "subject": "doc:S01-ARX-003",
+    "predicate": "studies",
+    "object": "Cross-modal context windows",
+    "source": "https://arxiv.org/abs/2501.07890",
+    "provenance": [
+      {
+        "sourceId": "S01-ARX-003",
+        "type": "url"
+      }
+    ],
+    "confidence": 0.91,
+    "insertedAt": 1736932077400,
+    "updatedAt": 1736932077400,
+    "revision": 0,
+    "ordinal": 505
+  },
+  {
+    "id": "kg:S05_idempotence:506",
+    "subject": "doc:S01-ARX-003",
+    "predicate": "proposes",
+    "object": "Adaptive attention spans",
+    "source": "https://arxiv.org/abs/2501.07890",
+    "provenance": [
+      {
+        "sourceId": "S01-ARX-003",
+        "type": "url"
+      }
+    ],
+    "confidence": 0.87,
+    "insertedAt": 1736932077400,
+    "updatedAt": 1736932077400,
+    "revision": 0,
+    "ordinal": 506
+  }
+]

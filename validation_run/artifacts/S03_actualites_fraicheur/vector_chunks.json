@@ -1,0 +1,122 @@
+[
+  {
+    "chunkId": "chunk:S03-NEWS-001:intro",
+    "tokenCount": 198,
+    "segmentIds": [
+      "seg:S03-NEWS-001:intro"
+    ],
+    "metadata": {
+      "docId": "S03-NEWS-001",
+      "section": "intro"
+    },
+    "tags": [
+      "html",
+      "intro"
+    ],
+    "provenance": [
+      {
+        "sourceId": "S03-NEWS-001",
+        "type": "url"
+      }
+    ],
+    "createdAt": 1736931908200,
+    "updatedAt": 1736931908200,
+    "textLength": 790
+  },
+  {
+    "chunkId": "chunk:S03-NEWS-001:quote",
+    "tokenCount": 182,
+    "segmentIds": [
+      "seg:S03-NEWS-001:quote"
+    ],
+    "metadata": {
+      "docId": "S03-NEWS-001",
+      "section": "quote"
+    },
+    "tags": [
+      "html",
+      "quote"
+    ],
+    "provenance": [
+      {
+        "sourceId": "S03-NEWS-001",
+        "type": "url"
+      }
+    ],
+    "createdAt": 1736931908200,
+    "updatedAt": 1736931908200,
+    "textLength": 702
+  },
+  {
+    "chunkId": "chunk:S03-NEWS-002:intro",
+    "tokenCount": 176,
+    "segmentIds": [
+      "seg:S03-NEWS-002:intro"
+    ],
+    "metadata": {
+      "docId": "S03-NEWS-002",
+      "section": "intro"
+    },
+    "tags": [
+      "html",
+      "intro"
+    ],
+    "provenance": [
+      {
+        "sourceId": "S03-NEWS-002",
+        "type": "url"
+      }
+    ],
+    "createdAt": 1736931909700,
+    "updatedAt": 1736931909700,
+    "textLength": 680
+  },
+  {
+    "chunkId": "chunk:S03-NEWS-002:details",
+    "tokenCount": 168,
+    "segmentIds": [
+      "seg:S03-NEWS-002:details"
+    ],
+    "metadata": {
+      "docId": "S03-NEWS-002",
+      "section": "details"
+    },
+    "tags": [
+      "html",
+      "details"
+    ],
+    "provenance": [
+      {
+        "sourceId": "S03-NEWS-002",
+        "type": "url"
+      }
+    ],
+    "createdAt": 1736931909700,
+    "updatedAt": 1736931909700,
+    "textLength": 640
+  },
+  {
+    "chunkId": "chunk:S03-NEWS-003:intro",
+    "tokenCount": 170,
+    "segmentIds": [
+      "seg:S03-NEWS-003:intro"
+    ],
+    "metadata": {
+      "docId": "S03-NEWS-003",
+      "section": "intro"
+    },
+    "tags": [
+      "html",
+      "intro"
+    ],
+    "provenance": [
+      {
+        "sourceId": "S03-NEWS-003",
+        "type": "url"
+      }
+    ],
+    "createdAt": 1736931910400,
+    "updatedAt": 1736931910400,
+    "textLength": 660
+  }
+]

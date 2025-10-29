@@ -1,0 +1,38 @@
+[
+  {
+    "id": "S06-DATA-001",
+    "url": "https://datasets.example.org/llm/benchmark-dataset.zip",
+    "title": "Benchmark Dataset for LLM Evaluation",
+    "language": "en",
+    "description": "Dataset landing page compliant with robots.txt.",
+    "mimeType": "text/html",
+    "checksum": "sha256:1122aabbccddeeff0011223344556677",
+    "size": 58200,
+    "fetchedAt": 1736932152000,
+    "segmentCount": 2,
+    "provenance": [
+      {
+        "sourceId": "https://datasets.example.org/llm/benchmark-dataset.zip",
+        "type": "url"
+      }
+    ]
+  },
+  {
+    "id": "S06-DATA-002",
+    "url": "https://datahub.example.net/rag/large-pdf-guide.pdf",
+    "title": "Handling Large PDFs for Retrieval Pipelines",
+    "language": "en",
+    "description": "PDF respectant la taille maximale configurée (15MB).",
+    "mimeType": "application/pdf",
+    "checksum": "sha256:8899ddeeff0011223344556677889900",
+    "size": 14500000,
+    "fetchedAt": 1736932154000,
+    "segmentCount": 2,
+    "provenance": [
+      {
+        "sourceId": "https://datahub.example.net/rag/large-pdf-guide.pdf",
+        "type": "url"
+      }
+    ]
+  }
+]

@@ -1,0 +1,74 @@
+[
+  {
+    "id": "kg:S06_robots_taille_max:601",
+    "subject": "doc:S06-DATA-001",
+    "predicate": "hosts",
+    "object": "LLM benchmark dataset",
+    "source": "https://datasets.example.org/llm/benchmark-dataset.zip",
+    "provenance": [
+      {
+        "sourceId": "S06-DATA-001",
+        "type": "url"
+      }
+    ],
+    "confidence": 0.8,
+    "insertedAt": 1736932154400,
+    "updatedAt": 1736932154400,
+    "revision": 0,
+    "ordinal": 601
+  },
+  {
+    "id": "kg:S06_robots_taille_max:602",
+    "subject": "doc:S06-DATA-001",
+    "predicate": "describes",
+    "object": "Download limits for large files",
+    "source": "https://datasets.example.org/llm/benchmark-dataset.zip",
+    "provenance": [
+      {
+        "sourceId": "S06-DATA-001",
+        "type": "url"
+      }
+    ],
+    "confidence": 0.78,
+    "insertedAt": 1736932154400,
+    "updatedAt": 1736932154400,
+    "revision": 0,
+    "ordinal": 602
+  },
+  {
+    "id": "kg:S06_robots_taille_max:603",
+    "subject": "doc:S06-DATA-002",
+    "predicate": "recommends",
+    "object": "Chunking large PDFs",
+    "source": "https://datahub.example.net/rag/large-pdf-guide.pdf",
+    "provenance": [
+      {
+        "sourceId": "S06-DATA-002",
+        "type": "url"
+      }
+    ],
+    "confidence": 0.82,
+    "insertedAt": 1736932156400,
+    "updatedAt": 1736932156400,
+    "revision": 0,
+    "ordinal": 603
+  },
+  {
+    "id": "kg:S06_robots_taille_max:604",
+    "subject": "doc:S06-DATA-002",
+    "predicate": "warns",
+    "object": "Respect storage quotas",
+    "source": "https://datahub.example.net/rag/large-pdf-guide.pdf",
+    "provenance": [
+      {
+        "sourceId": "S06-DATA-002",
+        "type": "url"
+      }
+    ],
+    "confidence": 0.79,
+    "insertedAt": 1736932156400,
+    "updatedAt": 1736932156400,
+    "revision": 0,
+    "ordinal": 604
+  }
+]

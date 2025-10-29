@@ -1,0 +1,92 @@
+[
+  {
+    "id": "S09-GRAPH-001",
+    "url": "https://graphresearch.org/blog/knowledge-graphs-rag-2025",
+    "title": "Knowledge Graph Patterns for 2025 RAG Systems",
+    "language": "en",
+    "description": "Blog technique sur les patterns KG pour RAG.",
+    "mimeType": "text/html",
+    "checksum": "sha256:9090aa11bb22cc33dd44ee55ff667788",
+    "size": 78300,
+    "fetchedAt": 1736932385000,
+    "segmentCount": 2,
+    "provenance": [
+      {
+        "sourceId": "https://graphresearch.org/blog/knowledge-graphs-rag-2025",
+        "type": "url"
+      }
+    ]
+  },
+  {
+    "id": "S09-GRAPH-002",
+    "url": "https://graphresearch.org/reports/rag-benchmarks-2025.pdf",
+    "title": "RAG Benchmarks 2025",
+    "language": "en",
+    "description": "Rapport PDF sur les benchmarks RAG basés graphes.",
+    "mimeType": "application/pdf",
+    "checksum": "sha256:8080aa22bb33cc44dd55ee66ff778899",
+    "size": 5200000,
+    "fetchedAt": 1736932387000,
+    "segmentCount": 2,
+    "provenance": [
+      {
+        "sourceId": "https://graphresearch.org/reports/rag-benchmarks-2025.pdf",
+        "type": "url"
+      }
+    ]
+  },
+  {
+    "id": "S09-GRAPH-003",
+    "url": "https://vectorlabs.ai/blog/hybrid-rag-graph-vector",
+    "title": "Hybrid RAG: Graph + Vector Pipelines",
+    "language": "en",
+    "description": "Article sur l'orchestration hybride vector+graph.",
+    "mimeType": "text/html",
+    "checksum": "sha256:7070aa33bb44cc55dd66ee77ff889900",
+    "size": 72210,
+    "fetchedAt": 1736932389000,
+    "segmentCount": 2,
+    "provenance": [
+      {
+        "sourceId": "https://vectorlabs.ai/blog/hybrid-rag-graph-vector",
+        "type": "url"
+      }
+    ]
+  },
+  {
+    "id": "S09-GRAPH-004",
+    "url": "https://vectorlabs.ai/datasets/rag-graph-case-study.pdf",
+    "title": "Case Study: Graph RAG in Production",
+    "language": "en",
+    "description": "Case study PDF sur un déploiement graph RAG.",
+    "mimeType": "application/pdf",
+    "checksum": "sha256:6060aa44bb55cc66dd77ee88ff990011",
+    "size": 4600000,
+    "fetchedAt": 1736932391000,
+    "segmentCount": 2,
+    "provenance": [
+      {
+        "sourceId": "https://vectorlabs.ai/datasets/rag-graph-case-study.pdf",
+        "type": "url"
+      }
+    ]
+  },
+  {
+    "id": "S09-GRAPH-005",
+    "url": "https://vectorlabs.ai/blog/visualising-knowledge-graphs",
+    "title": "Visualising Knowledge Graphs for Analysts",
+    "language": "en",
+    "description": "Article illustrant la visualisation des KG.",
+    "mimeType": "text/html",
+    "checksum": "sha256:5050aa55bb66cc77dd88ee99ffa00112",
+    "size": 68440,
+    "fetchedAt": 1736932393000,
+    "segmentCount": 2,
+    "provenance": [
+      {
+        "sourceId": "https://vectorlabs.ai/blog/visualising-knowledge-graphs",
+        "type": "url"
+      }
+    ]
+  }
+]

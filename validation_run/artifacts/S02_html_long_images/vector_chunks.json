@@ -1,0 +1,98 @@
+[
+  {
+    "chunkId": "chunk:S02-TDS-001:intro",
+    "tokenCount": 210,
+    "segmentIds": [
+      "seg:S02-TDS-001:intro"
+    ],
+    "metadata": {
+      "docId": "S02-TDS-001",
+      "section": "intro"
+    },
+    "tags": [
+      "html",
+      "intro"
+    ],
+    "provenance": [
+      {
+        "sourceId": "S02-TDS-001",
+        "type": "url"
+      }
+    ],
+    "createdAt": 1736931818200,
+    "updatedAt": 1736931818200,
+    "textLength": 860
+  },
+  {
+    "chunkId": "chunk:S02-TDS-001:table",
+    "tokenCount": 198,
+    "segmentIds": [
+      "seg:S02-TDS-001:table"
+    ],
+    "metadata": {
+      "docId": "S02-TDS-001",
+      "section": "table"
+    },
+    "tags": [
+      "html",
+      "table"
+    ],
+    "provenance": [
+      {
+        "sourceId": "S02-TDS-001",
+        "type": "url"
+      }
+    ],
+    "createdAt": 1736931818200,
+    "updatedAt": 1736931818200,
+    "textLength": 780
+  },
+  {
+    "chunkId": "chunk:S02-TDS-002:intro",
+    "tokenCount": 205,
+    "segmentIds": [
+      "seg:S02-TDS-002:intro"
+    ],
+    "metadata": {
+      "docId": "S02-TDS-002",
+      "section": "intro"
+    },
+    "tags": [
+      "html",
+      "intro"
+    ],
+    "provenance": [
+      {
+        "sourceId": "S02-TDS-002",
+        "type": "url"
+      }
+    ],
+    "createdAt": 1736931821200,
+    "updatedAt": 1736931821200,
+    "textLength": 832
+  },
+  {
+    "chunkId": "chunk:S02-TDS-002:gallery",
+    "tokenCount": 192,
+    "segmentIds": [
+      "seg:S02-TDS-002:gallery"
+    ],
+    "metadata": {
+      "docId": "S02-TDS-002",
+      "section": "gallery"
+    },
+    "tags": [
+      "html",
+      "gallery"
+    ],
+    "provenance": [
+      {
+        "sourceId": "S02-TDS-002",
+        "type": "url"
+      }
+    ],
+    "createdAt": 1736931821200,
+    "updatedAt": 1736931821200,
+    "textLength": 768
+  }
+]

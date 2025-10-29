@@ -1,0 +1,32 @@
+{
+  "scenarioId": 7,
+  "slug": "S07_sources_instables",
+  "label": "Sources instables (5xx/timeout)",
+  "query": "site:example.com unavailable test",
+  "summary": "Gestion des sources instables : deux documents ingérés, erreurs classées.",
+  "highlights": [
+    "Deux timeouts classés network_error",
+    "Circuit breaker conseillé pour example.net"
+  ],
+  "recommendations": [
+    "Configurer un cache de 10 minutes pour les domaines instables"
+  ],
+  "documents": [
+    {
+      "id": "S07-NEWS-001",
+      "title": "Search Outage Analysis and Mitigation",
+      "url": "https://status.example.com/blog/search-outage-analysis",
+      "snippet": "Post-mortem describing mitigation strategies for flaky domains.",
+      "language": "en",
+      "score": 0.74
+    },
+    {
+      "id": "S07-GUIDE-002",
+      "title": "RAG Retry Guide for Unstable Sources",
+      "url": "https://docs.example.org/reliability/rag-retry-guide",
+      "snippet": "Checklist for handling intermittent failures in data pipelines.",
+      "language": "en",
+      "score": 0.72
+    }
+  ]
+}

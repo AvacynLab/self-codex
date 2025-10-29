@@ -1,0 +1,92 @@
+[
+  {
+    "id": "kg:S03_actualites_fraicheur:301",
+    "subject": "doc:S03-NEWS-001",
+    "predicate": "announces",
+    "object": "€150M responsible AI programme",
+    "source": "https://www.euronews.com/tech/2025/01/10/eu-funds-responsible-ai",
+    "provenance": [
+      {
+        "sourceId": "S03-NEWS-001",
+        "type": "url"
+      }
+    ],
+    "confidence": 0.85,
+    "insertedAt": 1736931907400,
+    "updatedAt": 1736931907400,
+    "revision": 0,
+    "ordinal": 301
+  },
+  {
+    "id": "kg:S03_actualites_fraicheur:302",
+    "subject": "doc:S03-NEWS-001",
+    "predicate": "targets",
+    "object": "European LLM research",
+    "source": "https://www.euronews.com/tech/2025/01/10/eu-funds-responsible-ai",
+    "provenance": [
+      {
+        "sourceId": "S03-NEWS-001",
+        "type": "url"
+      }
+    ],
+    "confidence": 0.82,
+    "insertedAt": 1736931907400,
+    "updatedAt": 1736931907400,
+    "revision": 0,
+    "ordinal": 302
+  },
+  {
+    "id": "kg:S03_actualites_fraicheur:303",
+    "subject": "doc:S03-NEWS-002",
+    "predicate": "launches",
+    "object": "Benchmark RAG national",
+    "source": "https://www.lemonde.fr/technologies/article/2025/01/12/benchmark-rag-national",
+    "provenance": [
+      {
+        "sourceId": "S03-NEWS-002",
+        "type": "url"
+      }
+    ],
+    "confidence": 0.83,
+    "insertedAt": 1736931908900,
+    "updatedAt": 1736931908900,
+    "revision": 0,
+    "ordinal": 303
+  },
+  {
+    "id": "kg:S03_actualites_fraicheur:304",
+    "subject": "doc:S03-NEWS-002",
+    "predicate": "partners_with",
+    "object": "Public-private consortium",
+    "source": "https://www.lemonde.fr/technologies/article/2025/01/12/benchmark-rag-national",
+    "provenance": [
+      {
+        "sourceId": "S03-NEWS-002",
+        "type": "url"
+      }
+    ],
+    "confidence": 0.8,
+    "insertedAt": 1736931908900,
+    "updatedAt": 1736931908900,
+    "revision": 0,
+    "ordinal": 304
+  },
+  {
+    "id": "kg:S03_actualites_fraicheur:305",
+    "subject": "doc:S03-NEWS-003",
+    "predicate": "reports",
+    "object": "LLM hallucination mitigation",
+    "source": "https://www.dw.com/en/germany-llm-safety-report-2025/a-123456",
+    "provenance": [
+      {
+        "sourceId": "S03-NEWS-003",
+        "type": "url"
+      }
+    ],
+    "confidence": 0.82,
+    "insertedAt": 1736931909600,
+    "updatedAt": 1736931909600,
+    "revision": 0,
+    "ordinal": 305
+  }
+]

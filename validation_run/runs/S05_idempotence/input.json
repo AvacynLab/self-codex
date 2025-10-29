@@ -1,0 +1,11 @@
+{
+  "query": "site:arxiv.org multimodal LLM evaluation 2025 filetype:pdf",
+  "categories": [
+    "files",
+    "general"
+  ],
+  "maxResults": 4,
+  "fetchContent": true,
+  "injectGraph": true,
+  "injectVector": true
+}

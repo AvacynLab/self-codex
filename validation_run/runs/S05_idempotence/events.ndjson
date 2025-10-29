@@ -1,0 +1,12 @@
+{"kind":"search:stage","stage":"searxQuery","durationMs":830,"tookMs":3520,"jobId":"validation:S05_idempotence","timestamp":1736931827000}
+{"kind":"search:stage","stage":"fetchUrl","durationMs":1100,"documentId":"S01-ARX-001","success":true,"timestamp":1736931829000}
+{"kind":"search:stage","stage":"extractWithUnstructured","durationMs":930,"documentId":"S01-ARX-001","success":true,"timestamp":1736931832000}
+{"kind":"search:doc_ingested","payload":{"doc_id":"S01-ARX-001"},"documentsIngested":1}
+{"kind":"search:stage","stage":"fetchUrl","durationMs":1070,"documentId":"S01-ARX-002","success":true,"timestamp":1736931829600}
+{"kind":"search:stage","stage":"extractWithUnstructured","durationMs":900,"documentId":"S01-ARX-002","success":true,"timestamp":1736931832600}
+{"kind":"search:doc_ingested","payload":{"doc_id":"S01-ARX-002"},"documentsIngested":1}
+{"kind":"search:stage","stage":"fetchUrl","durationMs":1030,"documentId":"S01-ARX-003","success":true,"timestamp":1736931830200}
+{"kind":"search:stage","stage":"extractWithUnstructured","durationMs":890,"documentId":"S01-ARX-003","success":true,"timestamp":1736931833200}
+{"kind":"search:doc_ingested","payload":{"doc_id":"S01-ARX-003"},"documentsIngested":1}
+{"kind":"search:stage","stage":"ingestToGraph","durationMs":410,"documentsIngested":3,"timestamp":1736931835500}
+{"kind":"search:stage","stage":"ingestToVector","durationMs":420,"documentsIngested":3,"timestamp":1736931836200}

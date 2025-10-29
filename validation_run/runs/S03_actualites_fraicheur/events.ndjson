@@ -1,0 +1,12 @@
+{"kind":"search:stage","stage":"searxQuery","durationMs":760,"tookMs":2880,"jobId":"validation:S03_actualites_fraicheur","timestamp":1736931737000}
+{"kind":"search:stage","stage":"fetchUrl","durationMs":980,"documentId":"S03-NEWS-001","success":true,"timestamp":1736931739000}
+{"kind":"search:stage","stage":"extractWithUnstructured","durationMs":820,"documentId":"S03-NEWS-001","success":true,"timestamp":1736931742000}
+{"kind":"search:doc_ingested","payload":{"doc_id":"S03-NEWS-001"},"documentsIngested":1}
+{"kind":"search:stage","stage":"fetchUrl","durationMs":940,"documentId":"S03-NEWS-002","success":true,"timestamp":1736931739600}
+{"kind":"search:stage","stage":"extractWithUnstructured","durationMs":780,"documentId":"S03-NEWS-002","success":true,"timestamp":1736931742600}
+{"kind":"search:doc_ingested","payload":{"doc_id":"S03-NEWS-002"},"documentsIngested":1}
+{"kind":"search:stage","stage":"fetchUrl","durationMs":930,"documentId":"S03-NEWS-003","success":true,"timestamp":1736931740200}
+{"kind":"search:stage","stage":"extractWithUnstructured","durationMs":760,"documentId":"S03-NEWS-003","success":true,"timestamp":1736931743200}
+{"kind":"search:doc_ingested","payload":{"doc_id":"S03-NEWS-003"},"documentsIngested":1}
+{"kind":"search:stage","stage":"ingestToGraph","durationMs":360,"documentsIngested":3,"timestamp":1736931745500}
+{"kind":"search:stage","stage":"ingestToVector","durationMs":370,"documentsIngested":3,"timestamp":1736931746200}

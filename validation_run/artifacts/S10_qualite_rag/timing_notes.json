@@ -1,0 +1,7 @@
+[
+  "Aucun échantillon de durée n'a été trouvé pour la phase searxQuery.",
+  "Aucun échantillon de durée n'a été trouvé pour la phase fetchUrl.",
+  "Aucun échantillon de durée n'a été trouvé pour la phase extractWithUnstructured.",
+  "Aucun échantillon de durée n'a été trouvé pour la phase ingestToGraph.",
+  "Aucun échantillon de durée n'a été trouvé pour la phase ingestToVector."
+]

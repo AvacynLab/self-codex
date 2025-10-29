@@ -1,0 +1,182 @@
+[
+  {
+    "id": "kg:S09_charge_moderee:901",
+    "subject": "doc:S09-GRAPH-001",
+    "predicate": "lists",
+    "object": "Topology patterns for retrieval",
+    "source": "https://graphresearch.org/blog/knowledge-graphs-rag-2025",
+    "provenance": [
+      {
+        "sourceId": "S09-GRAPH-001",
+        "type": "url"
+      }
+    ],
+    "confidence": 0.83,
+    "insertedAt": 1736932387400,
+    "updatedAt": 1736932387400,
+    "revision": 0,
+    "ordinal": 901
+  },
+  {
+    "id": "kg:S09_charge_moderee:902",
+    "subject": "doc:S09-GRAPH-001",
+    "predicate": "recommends",
+    "object": "Hybrid scoring for RAG",
+    "source": "https://graphresearch.org/blog/knowledge-graphs-rag-2025",
+    "provenance": [
+      {
+        "sourceId": "S09-GRAPH-001",
+        "type": "url"
+      }
+    ],
+    "confidence": 0.82,
+    "insertedAt": 1736932387400,
+    "updatedAt": 1736932387400,
+    "revision": 0,
+    "ordinal": 902
+  },
+  {
+    "id": "kg:S09_charge_moderee:903",
+    "subject": "doc:S09-GRAPH-002",
+    "predicate": "evaluates",
+    "object": "Graph retrieval latency",
+    "source": "https://graphresearch.org/reports/rag-benchmarks-2025.pdf",
+    "provenance": [
+      {
+        "sourceId": "S09-GRAPH-002",
+        "type": "url"
+      }
+    ],
+    "confidence": 0.84,
+    "insertedAt": 1736932389400,
+    "updatedAt": 1736932389400,
+    "revision": 0,
+    "ordinal": 903
+  },
+  {
+    "id": "kg:S09_charge_moderee:904",
+    "subject": "doc:S09-GRAPH-002",
+    "predicate": "summarises",
+    "object": "p95 results across datasets",
+    "source": "https://graphresearch.org/reports/rag-benchmarks-2025.pdf",
+    "provenance": [
+      {
+        "sourceId": "S09-GRAPH-002",
+        "type": "url"
+      }
+    ],
+    "confidence": 0.82,
+    "insertedAt": 1736932389400,
+    "updatedAt": 1736932389400,
+    "revision": 0,
+    "ordinal": 904
+  },
+  {
+    "id": "kg:S09_charge_moderee:905",
+    "subject": "doc:S09-GRAPH-003",
+    "predicate": "describes",
+    "object": "Hybrid orchestration",
+    "source": "https://vectorlabs.ai/blog/hybrid-rag-graph-vector",
+    "provenance": [
+      {
+        "sourceId": "S09-GRAPH-003",
+        "type": "url"
+      }
+    ],
+    "confidence": 0.81,
+    "insertedAt": 1736932391400,
+    "updatedAt": 1736932391400,
+    "revision": 0,
+    "ordinal": 905
+  },
+  {
+    "id": "kg:S09_charge_moderee:906",
+    "subject": "doc:S09-GRAPH-003",
+    "predicate": "notes",
+    "object": "Trade-offs between recall and cost",
+    "source": "https://vectorlabs.ai/blog/hybrid-rag-graph-vector",
+    "provenance": [
+      {
+        "sourceId": "S09-GRAPH-003",
+        "type": "url"
+      }
+    ],
+    "confidence": 0.8,
+    "insertedAt": 1736932391400,
+    "updatedAt": 1736932391400,
+    "revision": 0,
+    "ordinal": 906
+  },
+  {
+    "id": "kg:S09_charge_moderee:907",
+    "subject": "doc:S09-GRAPH-004",
+    "predicate": "reports",
+    "object": "p95 latency improvements",
+    "source": "https://vectorlabs.ai/datasets/rag-graph-case-study.pdf",
+    "provenance": [
+      {
+        "sourceId": "S09-GRAPH-004",
+        "type": "url"
+      }
+    ],
+    "confidence": 0.83,
+    "insertedAt": 1736932393400,
+    "updatedAt": 1736932393400,
+    "revision": 0,
+    "ordinal": 907
+  },
+  {
+    "id": "kg:S09_charge_moderee:908",
+    "subject": "doc:S09-GRAPH-004",
+    "predicate": "details",
+    "object": "Cost profile of graph ingestion",
+    "source": "https://vectorlabs.ai/datasets/rag-graph-case-study.pdf",
+    "provenance": [
+      {
+        "sourceId": "S09-GRAPH-004",
+        "type": "url"
+      }
+    ],
+    "confidence": 0.81,
+    "insertedAt": 1736932393400,
+    "updatedAt": 1736932393400,
+    "revision": 0,
+    "ordinal": 908
+  },
+  {
+    "id": "kg:S09_charge_moderee:909",
+    "subject": "doc:S09-GRAPH-005",
+    "predicate": "explains",
+    "object": "Dashboard patterns",
+    "source": "https://vectorlabs.ai/blog/visualising-knowledge-graphs",
+    "provenance": [
+      {
+        "sourceId": "S09-GRAPH-005",
+        "type": "url"
+      }
+    ],
+    "confidence": 0.79,
+    "insertedAt": 1736932395400,
+    "updatedAt": 1736932395400,
+    "revision": 0,
+    "ordinal": 909
+  },
+  {
+    "id": "kg:S09_charge_moderee:910",
+    "subject": "doc:S09-GRAPH-005",
+    "predicate": "encourages",
+    "object": "Aligning RAG metrics with KG views",
+    "source": "https://vectorlabs.ai/blog/visualising-knowledge-graphs",
+    "provenance": [
+      {
+        "sourceId": "S09-GRAPH-005",
+        "type": "url"
+      }
+    ],
+    "confidence": 0.77,
+    "insertedAt": 1736932395400,
+    "updatedAt": 1736932395400,
+    "revision": 0,
+    "ordinal": 910
+  }
+]

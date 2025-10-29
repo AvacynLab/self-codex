@@ -1,0 +1,6 @@
+[2025-01-15T09:00:00.000Z] INFO validation:S08_indexation_directe processing direct ingestion urls
+[2025-01-15T09:00:01.000Z] INFO validation:S08_indexation_directe downloaded arxiv preprint
+[2025-01-15T09:00:02.000Z] INFO validation:S08_indexation_directe fetched enterprise whitepaper
+[2025-01-15T09:00:03.000Z] INFO validation:S08_indexation_directe persisted knowledge graph and vectors
+[2025-01-15T09:00:04.000Z] INFO validation:S08_indexation_directe scenario done without searx usage
+[2025-01-15T09:00:00.000Z] INFO validation:S08_indexation_directe completed

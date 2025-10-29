@@ -1,0 +1,98 @@
+[
+  {
+    "chunkId": "chunk:S08-DIRECT-001:abstract",
+    "tokenCount": 238,
+    "segmentIds": [
+      "seg:S08-DIRECT-001:abstract"
+    ],
+    "metadata": {
+      "docId": "S08-DIRECT-001",
+      "section": "abstract"
+    },
+    "tags": [
+      "pdf",
+      "abstract"
+    ],
+    "provenance": [
+      {
+        "sourceId": "S08-DIRECT-001",
+        "type": "url"
+      }
+    ],
+    "createdAt": 1736932311200,
+    "updatedAt": 1736932311200,
+    "textLength": 960
+  },
+  {
+    "chunkId": "chunk:S08-DIRECT-001:method",
+    "tokenCount": 226,
+    "segmentIds": [
+      "seg:S08-DIRECT-001:method"
+    ],
+    "metadata": {
+      "docId": "S08-DIRECT-001",
+      "section": "method"
+    },
+    "tags": [
+      "pdf",
+      "method"
+    ],
+    "provenance": [
+      {
+        "sourceId": "S08-DIRECT-001",
+        "type": "url"
+      }
+    ],
+    "createdAt": 1736932311200,
+    "updatedAt": 1736932311200,
+    "textLength": 904
+  },
+  {
+    "chunkId": "chunk:S08-DIRECT-002:abstract",
+    "tokenCount": 232,
+    "segmentIds": [
+      "seg:S08-DIRECT-002:abstract"
+    ],
+    "metadata": {
+      "docId": "S08-DIRECT-002",
+      "section": "abstract"
+    },
+    "tags": [
+      "pdf",
+      "abstract"
+    ],
+    "provenance": [
+      {
+        "sourceId": "S08-DIRECT-002",
+        "type": "url"
+      }
+    ],
+    "createdAt": 1736932313200,
+    "updatedAt": 1736932313200,
+    "textLength": 928
+  },
+  {
+    "chunkId": "chunk:S08-DIRECT-002:governance",
+    "tokenCount": 220,
+    "segmentIds": [
+      "seg:S08-DIRECT-002:governance"
+    ],
+    "metadata": {
+      "docId": "S08-DIRECT-002",
+      "section": "governance"
+    },
+    "tags": [
+      "pdf",
+      "governance"
+    ],
+    "provenance": [
+      {
+        "sourceId": "S08-DIRECT-002",
+        "type": "url"
+      }
+    ],
+    "createdAt": 1736932313200,
+    "updatedAt": 1736932313200,
+    "textLength": 880
+  }
+]

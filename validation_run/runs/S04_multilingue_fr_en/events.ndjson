@@ -1,0 +1,12 @@
+{"kind":"search:stage","stage":"searxQuery","durationMs":890,"tookMs":3180,"jobId":"validation:S04_multilingue_fr_en","timestamp":1736931782000}
+{"kind":"search:stage","stage":"fetchUrl","durationMs":1050,"documentId":"S04-ACL-001","success":true,"timestamp":1736931784000}
+{"kind":"search:stage","stage":"extractWithUnstructured","durationMs":930,"documentId":"S04-ACL-001","success":true,"timestamp":1736931787000}
+{"kind":"search:doc_ingested","payload":{"doc_id":"S04-ACL-001"},"documentsIngested":1}
+{"kind":"search:stage","stage":"fetchUrl","durationMs":1030,"documentId":"S04-ACL-002","success":true,"timestamp":1736931784600}
+{"kind":"search:stage","stage":"extractWithUnstructured","durationMs":910,"documentId":"S04-ACL-002","success":true,"timestamp":1736931787600}
+{"kind":"search:doc_ingested","payload":{"doc_id":"S04-ACL-002"},"documentsIngested":1}
+{"kind":"search:stage","stage":"fetchUrl","durationMs":1020,"documentId":"S04-ACL-003","success":true,"timestamp":1736931785200}
+{"kind":"search:stage","stage":"extractWithUnstructured","durationMs":920,"documentId":"S04-ACL-003","success":true,"timestamp":1736931788200}
+{"kind":"search:doc_ingested","payload":{"doc_id":"S04-ACL-003"},"documentsIngested":1}
+{"kind":"search:stage","stage":"ingestToGraph","durationMs":410,"documentsIngested":3,"timestamp":1736931790500}
+{"kind":"search:stage","stage":"ingestToVector","durationMs":420,"documentsIngested":3,"timestamp":1736931791200}

@@ -94,6 +94,22 @@ describe('gateway hygiene', () => {
         'src/validation/performance.ts',
         'src/validation/security.ts',
         'src/validation/finalReport.ts',
+        // Validation run automation materialises artefacts, reports, and metrics on disk.
+        'src/validationRun/artefacts.ts',
+        'src/validationRun/audit.ts',
+        'src/validationRun/build.ts',
+        'src/validationRun/execution.ts',
+        'src/validationRun/idempotence.ts',
+        'src/validationRun/layout.ts',
+        'src/validationRun/logs.ts',
+        'src/validationRun/metrics.ts',
+        'src/validationRun/remediation.ts',
+        'src/validationRun/reports.ts',
+        'src/validationRun/runtime.ts',
+        'src/validationRun/sampleData.ts',
+        'src/validationRun/scenario.ts',
+        'src/validationRun/server.ts',
+        'src/validationRun/snapshots.ts',
       ]),
     },
     {
@@ -135,6 +151,10 @@ describe('gateway hygiene', () => {
       allowList: new Set([
         'src/childRuntime.ts',
         'src/gateways/childProcess.ts',
+        // Validation campaign helpers spawn npm/node subprocesses for build and server orchestration.
+        'src/validationRun/build.ts',
+        'src/validationRun/server.ts',
+        'src/validationRun/snapshots.ts',
       ]),
     },
     {

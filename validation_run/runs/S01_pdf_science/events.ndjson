@@ -1,0 +1,13 @@
+{"kind":"search:stage","stage":"searxQuery","durationMs":840,"tookMs":3650,"jobId":"validation:S01_pdf_science","timestamp":1736931647000}
+{"kind":"search:stage","stage":"fetchUrl","durationMs":1120,"documentId":"S01-ARX-001","success":true,"timestamp":1736931649000}
+{"kind":"search:stage","stage":"extractWithUnstructured","durationMs":940,"documentId":"S01-ARX-001","success":true,"timestamp":1736931652000}
+{"kind":"search:doc_ingested","payload":{"doc_id":"S01-ARX-001"},"documentsIngested":1}
+{"kind":"search:stage","stage":"fetchUrl","durationMs":1080,"documentId":"S01-ARX-002","success":true,"timestamp":1736931649600}
+{"kind":"search:stage","stage":"extractWithUnstructured","durationMs":910,"documentId":"S01-ARX-002","success":true,"timestamp":1736931652600}
+{"kind":"search:doc_ingested","payload":{"doc_id":"S01-ARX-002"},"documentsIngested":1}
+{"kind":"search:stage","stage":"fetchUrl","durationMs":1040,"documentId":"S01-ARX-003","success":true,"timestamp":1736931650200}
+{"kind":"search:stage","stage":"extractWithUnstructured","durationMs":900,"documentId":"S01-ARX-003","success":true,"timestamp":1736931653200}
+{"kind":"search:doc_ingested","payload":{"doc_id":"S01-ARX-003"},"documentsIngested":1}
+{"kind":"search:stage","stage":"ingestToGraph","durationMs":420,"documentsIngested":3,"timestamp":1736931655500}
+{"kind":"search:stage","stage":"ingestToVector","durationMs":430,"documentsIngested":3,"timestamp":1736931656200}
+{"kind":"search:error","category":"network_error","message":"Timeout during warm-up fetch retried successfully.","stage":"fetchUrl","url":"https://arxiv.org/abs/2501.07890","metadata":{"retry":true}}

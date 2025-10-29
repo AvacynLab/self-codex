@@ -1,0 +1,4 @@
+{"scenario":"S02_html_long_images","docId":"S02-TDS-001","triple":{"predicate":"advises","object":"Online evaluation for RAG"},"insertedAt":1736931817400}
+{"scenario":"S02_html_long_images","docId":"S02-TDS-001","triple":{"predicate":"lists","object":"Precision, recall, answer relevance"},"insertedAt":1736931817400}
+{"scenario":"S02_html_long_images","docId":"S02-TDS-002","triple":{"predicate":"describes","object":"Heatmap-based error analysis"},"insertedAt":1736931820400}
+{"scenario":"S02_html_long_images","docId":"S02-TDS-002","triple":{"predicate":"highlights","object":"Importance of multimodal assets"},"insertedAt":1736931820400}

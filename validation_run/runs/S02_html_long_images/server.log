@@ -1,0 +1,6 @@
+[2025-01-15T09:00:00.000Z] INFO validation:S02_html_long_images received 2 rich HTML documents
+[2025-01-15T09:00:01.000Z] INFO validation:S02_html_long_images extracted hero images and captions
+[2025-01-15T09:00:02.000Z] INFO validation:S02_html_long_images persisted metrics to validation_run
+[2025-01-15T09:00:03.000Z] INFO validation:S02_html_long_images vector store chunks normalised
+[2025-01-15T09:00:04.000Z] INFO validation:S02_html_long_images scenario finished with minor parse warnings
+[2025-01-15T09:00:00.000Z] INFO validation:S02_html_long_images completed

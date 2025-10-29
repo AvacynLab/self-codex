@@ -1,0 +1,11 @@
+{"kind":"search:stage","stage":"searxQuery","durationMs":800,"tookMs":3060,"jobId":"validation:S07_sources_instables","timestamp":1736931917000}
+{"kind":"search:stage","stage":"fetchUrl","durationMs":1180,"documentId":"S07-NEWS-001","success":true,"timestamp":1736931919000}
+{"kind":"search:stage","stage":"extractWithUnstructured","durationMs":860,"documentId":"S07-NEWS-001","success":true,"timestamp":1736931922000}
+{"kind":"search:doc_ingested","payload":{"doc_id":"S07-NEWS-001"},"documentsIngested":1}
+{"kind":"search:stage","stage":"fetchUrl","durationMs":1140,"documentId":"S07-GUIDE-002","success":true,"timestamp":1736931919600}
+{"kind":"search:stage","stage":"extractWithUnstructured","durationMs":840,"documentId":"S07-GUIDE-002","success":true,"timestamp":1736931922600}
+{"kind":"search:doc_ingested","payload":{"doc_id":"S07-GUIDE-002"},"documentsIngested":1}
+{"kind":"search:stage","stage":"ingestToGraph","durationMs":360,"documentsIngested":2,"timestamp":1736931925500}
+{"kind":"search:stage","stage":"ingestToVector","durationMs":365,"documentsIngested":2,"timestamp":1736931926200}
+{"kind":"search:error","category":"network_error","message":"504 Gateway Timeout from example.net","stage":"fetchUrl","url":"https://example.net/flaky.pdf","metadata":{"attempts":3}}
+{"kind":"search:error","category":"network_error","message":"Connection reset by peer","stage":"fetchUrl","url":"https://unstable.example.org/resource.html"}

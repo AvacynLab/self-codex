@@ -1,0 +1,33 @@
+{
+  "searxQuery": {
+    "p50": 780,
+    "p95": 780,
+    "p99": 780
+  },
+  "fetchUrl": {
+    "p50": 1035,
+    "p95": 1048.5,
+    "p99": 1049.7
+  },
+  "extractWithUnstructured": {
+    "p50": 815,
+    "p95": 819.5,
+    "p99": 819.9
+  },
+  "ingestToGraph": {
+    "p50": 340,
+    "p95": 340,
+    "p99": 340
+  },
+  "ingestToVector": {
+    "p50": 350,
+    "p95": 350,
+    "p99": 350
+  },
+  "tookMs": 2940,
+  "documentsIngested": 6,
+  "errors": {
+    "robots_denied": 1,
+    "max_size_exceeded": 1
+  }
+}
