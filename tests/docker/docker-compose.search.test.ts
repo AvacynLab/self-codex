@@ -19,7 +19,7 @@ describe('docker/docker-compose.search.yml', () => {
     const probe = searxng?.healthcheck?.test as unknown[] | undefined;
     expect(probe, 'healthcheck test command').to.be.an('array');
     expect(probe?.[0]).to.equal('CMD-SHELL');
-    expect(String(probe?.[1] ?? '')).to.contain('/healthz');
+    expect(String(probe?.[1] ?? '')).to.contain('/search?q=healthcheck');
   });
 
   it('waits for searxng via service_healthy to honour the healthcheck', () => {

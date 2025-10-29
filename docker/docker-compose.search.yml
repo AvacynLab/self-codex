@@ -15,10 +15,15 @@ services:
       - ./searxng/settings.yml:/etc/searxng/settings.yml:ro
     healthcheck:
       # HTTP based readiness probe so `depends_on` can rely on the
-      # `service_healthy` condition.
+      # `service_healthy` condition. We target the JSON endpoint to
+      # ensure the search API is fully initialised instead of merely
+      # exposing the landing page.
       test:
         - CMD-SHELL
-        - curl --fail --silent --show-error http://127.0.0.1:8080/healthz || exit 1
+        - |
+          curl --fail --silent --show-error \
+            "http://127.0.0.1:8080/search?q=healthcheck&format=json" \
+            --output /dev/null || exit 1
       interval: 15s
       timeout: 10s
       retries: 5
