@@ -52,4 +52,21 @@ describe('docker/searxng/settings.yml', () => {
     expect(fileContent).to.contain('SEARCH_SEARX_ENGINES');
     expect(fileContent).to.contain('SEARCH_SEARX_CATEGORIES');
   });
+
+  it('defines categories_as_tabs as a dict mapping tabs to engine categories', () => {
+    const categories = config.categories_as_tabs as Record<string, unknown> | undefined;
+    expect(categories, 'categories_as_tabs should be an object').to.be.an('object');
+
+    const generalTab = categories?.['general'];
+    expect(generalTab, 'general tab mapping').to.deep.equal(['general']);
+
+    const newsTab = categories?.['news'];
+    expect(newsTab, 'news tab mapping').to.deep.equal(['news']);
+
+    const filesTab = categories?.['files'];
+    expect(filesTab, 'files tab mapping').to.deep.equal(['files']);
+
+    const imagesTab = categories?.['images'];
+    expect(imagesTab, 'images tab mapping').to.deep.equal(['images']);
+  });
 });

@@ -77,8 +77,16 @@ result_proxy:
   url: ""
   rewrite_result_links: false
 
+# Expose the most common categories as UI tabs while mapping each tab to its
+# underlying engine category list. Keeping the structure as a mapping (dict)
+# aligns with the upstream schema expectations and avoids runtime validation
+# failures when the service boots.
 categories_as_tabs:
-  - general
-  - news
-  - files
-  - images
+  general:
+    - general
+  news:
+    - news
+  files:
+    - files
+  images:
+    - images
