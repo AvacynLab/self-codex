@@ -18,11 +18,12 @@ describe('docker/docker-compose.search.yml', () => {
 
     const probe = searxng?.healthcheck?.test as unknown[] | undefined;
     expect(probe, 'healthcheck test command').to.be.an('array');
-    expect(probe?.[0]).to.equal('CMD-SHELL');
-    const command = String(probe?.[1] ?? '');
-    expect(command).to.include('python3 -c');
-    expect(command).to.include("request.urlopen('http://127.0.0.1:8080/'");
-    expect(command).to.include("getattr(resp, 'status'");
+    expect(probe?.[0]).to.equal('CMD');
+    expect(probe?.[1]).to.equal('python3');
+    expect(probe?.[2]).to.equal('-c');
+    const command = String(probe?.[3] ?? '');
+    expect(command).to.include('request.urlopen("http://127.0.0.1:8080/"');
+    expect(command).to.include('status < 500');
   });
 
   it('waits for searxng via service_healthy to honour the healthcheck', () => {

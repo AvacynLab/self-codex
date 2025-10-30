@@ -26,9 +26,22 @@ services:
       # every response below 500 as healthy to avoid flapping on those
       # configurations while still failing on server-side errors.
       test:
-        - CMD-SHELL
-        - >-
-          python3 -c "import sys; from urllib import request, error;\ntry:\n    resp = request.urlopen('http://127.0.0.1:8080/', timeout=10)\n    sys.exit(0 if getattr(resp, 'status', 500) < 500 else 1)\nexcept error.URLError:\n    sys.exit(1)\nexcept Exception:\n    sys.exit(1)"
+        - CMD
+        - python3
+        - -c
+        - |
+            import sys
+            from urllib import request, error
+
+            try:
+                response = request.urlopen("http://127.0.0.1:8080/", timeout=10)
+            except error.URLError:
+                sys.exit(1)
+            except Exception:
+                sys.exit(1)
+            else:
+                status = getattr(response, "status", 500)
+                sys.exit(0 if status < 500 else 1)
       interval: 15s
       timeout: 10s
       retries: 5
