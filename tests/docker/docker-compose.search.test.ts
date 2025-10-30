@@ -31,4 +31,19 @@ describe('docker/docker-compose.search.yml', () => {
     const server = services.server as { depends_on?: Record<string, { condition?: string }> } | undefined;
     expect(server?.depends_on?.searxng?.condition).to.equal('service_healthy');
   });
+
+  it('exposes a curl-based GET healthcheck for unstructured', () => {
+    const services = config.services as Record<string, { healthcheck?: { test?: unknown[] } }>;
+    const unstructured = services.unstructured;
+    expect(unstructured, 'unstructured service').to.be.ok;
+
+    const probe = unstructured?.healthcheck?.test as unknown[] | undefined;
+    expect(probe, 'healthcheck test command').to.be.an('array');
+    expect(probe?.[0]).to.equal('CMD-SHELL');
+    const command = String(probe?.[1] ?? '');
+    expect(command).to.include('curl');
+    expect(command).to.include('--fail');
+    expect(command).to.not.include('--request POST');
+    expect(command).to.include('http://127.0.0.1:8000/healthcheck');
+  });
 });

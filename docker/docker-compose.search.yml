@@ -65,15 +65,12 @@ services:
     ports:
       - "127.0.0.1:8000:8000"
     healthcheck:
-      # POST ping mirroring the production readiness probe exposed by the
-      # Unstructured container.
+      # Lightweight GET probe so readiness does not depend on JSON body
+      # handling (the upstream image accepts GET on /healthcheck).
       test:
         - CMD-SHELL
         - |
           curl --fail --silent --show-error \
-            --request POST \
-            --header 'Content-Type: application/json' \
-            --data '{"ping": "search-stack"}' \
             http://127.0.0.1:8000/healthcheck || exit 1
       interval: 15s
       timeout: 10s
