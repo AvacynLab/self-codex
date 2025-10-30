@@ -1,57 +1,10 @@
 # Minimal SearxNG configuration tailored for the MCP search module. The goal is
 # to provide deterministic defaults that work in development and CI while
 # keeping the list of enabled engines compliant with permissive licences.
-# Rely on upstream defaults for most ancillary UI metadata (locales, themes,
-# etc.) but provide an explicit categories_as_tabs mapping because SearxNG 2025
-# requires fully materialised tab descriptors whenever `use_default_settings`
-# is disabled or engines are overridden. Keeping the map here prevents schema
-# validation failures when the container boots in CI.
-use_default_settings: false
-
-# Tab definitions mirror the upstream defaults with lightweight documentation.
-# Keeping every category explicit guarantees that SearxNG's schema validation
-# always receives dictionaries instead of null placeholders.
-categories_as_tabs:
-  general:
-    name: "General"
-    categories:
-      - general
-  images:
-    name: "Images"
-    categories:
-      - images
-  videos:
-    name: "Videos"
-    categories:
-      - videos
-  news:
-    name: "News"
-    categories:
-      - news
-  map:
-    name: "Map"
-    categories:
-      - map
-  it:
-    name: "IT"
-    categories:
-      - it
-  science:
-    name: "Science"
-    categories:
-      - science
-  files:
-    name: "Files"
-    categories:
-      - files
-  music:
-    name: "Music"
-    categories:
-      - music
-  "social media":
-    name: "Social"
-    categories:
-      - "social media"
+# By keeping `use_default_settings` enabled we inherit upstream UI metadata
+# (including `categories_as_tabs`), which avoids chasing schema changes every
+# time SearxNG adds or reshuffles tabs.
+use_default_settings: true
 
 server:
   # Deterministic default secret for local work. Replace in production via env.
@@ -115,11 +68,6 @@ engines:
     categories:
       - general
       - news
-
-ui:
-  theme_args:
-    header_logo: ""
-  infinite_scroll: false
 
 result_proxy:
   # Keep the proxy disabled by default so local testing remains simple. Define

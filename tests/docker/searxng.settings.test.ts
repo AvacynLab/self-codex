@@ -12,7 +12,7 @@ describe('docker/searxng/settings.yml', () => {
   const config = parse(settingsContent) as Record<string, unknown>;
 
   it('declares a curated engine catalogue with safe defaults', () => {
-    expect(config.use_default_settings).to.equal(false);
+    expect(config.use_default_settings).to.equal(true);
 
     const engines = config.engines as Array<{ name?: unknown }> | undefined;
     expect(engines, 'engines overrides').to.be.an('array');
@@ -53,29 +53,7 @@ describe('docker/searxng/settings.yml', () => {
     expect(fileContent).to.contain('SEARCH_SEARX_CATEGORIES');
   });
 
-  it('materialises every categories_as_tabs entry to satisfy the schema', () => {
-    const categories = config.categories_as_tabs as Record<string, unknown> | undefined;
-    expect(categories, 'categories_as_tabs override').to.be.an('object');
-
-    const expectedTabs = [
-      'general',
-      'images',
-      'videos',
-      'news',
-      'map',
-      'it',
-      'science',
-      'files',
-      'music',
-      'social media',
-    ];
-
-    for (const tab of expectedTabs) {
-      expect(categories, `${tab} tab map`).to.have.property(tab);
-      const descriptor = categories?.[tab] as { categories?: unknown } | undefined;
-      expect(descriptor, `${tab} descriptor`).to.be.an('object');
-      expect(descriptor?.categories, `${tab} categories`).to.be.an('array');
-      expect((descriptor?.categories as unknown[]).length, `${tab} categories length`).to.be.greaterThan(0);
-    }
+  it('inherits categories_as_tabs from upstream defaults to satisfy schema validation', () => {
+    expect(config).to.not.have.property('categories_as_tabs');
   });
 });
