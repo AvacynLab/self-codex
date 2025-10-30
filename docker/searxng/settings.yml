@@ -10,7 +10,10 @@ server:
   bind_address: "0.0.0.0"
   public_instance: false
   limiter: false
-  method: "POST"
+  # Keep the legacy GET search endpoint enabled so tooling and health probes can
+  # query without negotiating CSRF tokens. Production deployments can override
+  # this value to POST if they want stricter caching controls.
+  method: "GET"
 
 search:
   # Safe-search defaults to 0 (off) so integration tests can cover unrestricted

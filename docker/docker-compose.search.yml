@@ -22,11 +22,8 @@ services:
         - CMD-SHELL
         - |
           curl --fail --silent --show-error \
-            --request POST \
-            --header 'Content-Type: application/x-www-form-urlencoded' \
-            --data-urlencode 'q=healthcheck' \
-            --data-urlencode 'format=json' \
-            http://127.0.0.1:8080/search \
+            --request GET \
+            "http://127.0.0.1:8080/search?q=healthcheck&format=json" \
             --output /dev/null || exit 1
       interval: 15s
       timeout: 10s
