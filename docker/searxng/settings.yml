@@ -66,31 +66,32 @@ engines:
       - general
       - news
 
+# When `use_default_settings: false` is set the SearxNG schema requires a
+# top-level `categories_as_tabs` mapping. Defining it here keeps the instance
+# bootable without inheriting the upstream defaults while still allowing us to
+# label tabs explicitly in the UI.
+categories_as_tabs:
+  general:
+    name: "General"
+    categories:
+      - general
+  news:
+    name: "News"
+    categories:
+      - news
+  files:
+    name: "Documents"
+    categories:
+      - files
+  images:
+    name: "Images"
+    categories:
+      - images
+
 ui:
   theme_args:
     header_logo: ""
   infinite_scroll: false
-  # Expose the most common categories as UI tabs. The SearxNG schema expects
-  # `categories_as_tabs` to live under `ui` and be a mapping. We provide empty
-  # objects so validation passes while the engine categories above continue to
-  # control filtering.
-  categories_as_tabs:
-    general:
-      name: "General"
-      categories:
-        - general
-    news:
-      name: "News"
-      categories:
-        - news
-    files:
-      name: "Documents"
-      categories:
-        - files
-    images:
-      name: "Images"
-      categories:
-        - images
 
 result_proxy:
   # Keep the proxy disabled by default so local testing remains simple. Define

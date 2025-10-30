@@ -54,10 +54,7 @@ describe('docker/searxng/settings.yml', () => {
   });
 
   it('defines categories_as_tabs as a dict with schema-compliant tab objects', () => {
-    const ui = config.ui as { categories_as_tabs?: Record<string, unknown> } | undefined;
-    expect(ui, 'ui section').to.be.an('object');
-
-    const categories = ui?.categories_as_tabs;
+    const categories = config.categories_as_tabs as Record<string, unknown> | undefined;
     expect(categories, 'categories_as_tabs should be an object').to.be.an('object');
 
     const generalTab = categories?.['general'] as
