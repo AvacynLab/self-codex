@@ -57,30 +57,22 @@ describe('docker/searxng/settings.yml', () => {
     const categories = config.categories_as_tabs as Record<string, unknown> | undefined;
     expect(categories, 'categories_as_tabs should be an object').to.be.an('object');
 
-    const generalTab = categories?.['general'] as
-      | { name?: unknown; categories?: unknown }
-      | undefined;
-    expect(generalTab, 'general tab config').to.deep.equal({
-      name: 'General',
-      categories: ['general'],
-    });
+    const expectedTabs: Record<string, { name: string; categories: string[] }> = {
+      general: { name: 'General', categories: ['general'] },
+      images: { name: 'Images', categories: ['images'] },
+      videos: { name: 'Videos', categories: ['videos'] },
+      news: { name: 'News', categories: ['news'] },
+      map: { name: 'Maps', categories: ['map'] },
+      music: { name: 'Music', categories: ['music'] },
+      it: { name: 'IT', categories: ['it'] },
+      science: { name: 'Science', categories: ['science'] },
+      files: { name: 'Documents', categories: ['files'] },
+      'social media': { name: 'Social', categories: ['social media'] },
+    };
 
-    const newsTab = categories?.['news'] as { name?: unknown; categories?: unknown } | undefined;
-    expect(newsTab, 'news tab config').to.deep.equal({
-      name: 'News',
-      categories: ['news'],
-    });
-
-    const filesTab = categories?.['files'] as { name?: unknown; categories?: unknown } | undefined;
-    expect(filesTab, 'files tab config').to.deep.equal({
-      name: 'Documents',
-      categories: ['files'],
-    });
-
-    const imagesTab = categories?.['images'] as { name?: unknown; categories?: unknown } | undefined;
-    expect(imagesTab, 'images tab config').to.deep.equal({
-      name: 'Images',
-      categories: ['images'],
-    });
+    for (const [key, descriptor] of Object.entries(expectedTabs)) {
+      const tab = categories?.[key] as { name?: unknown; categories?: unknown } | undefined;
+      expect(tab, `${key} tab config`).to.deep.equal(descriptor);
+    }
   });
 });
