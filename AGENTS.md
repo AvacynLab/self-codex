@@ -407,3 +407,8 @@ Historique rapide :
 - Résolution du faux-positif dans le panneau search : seuls les documents réellement ingérés (graph/vector) ou en échec contribuent désormais aux latences, ce qui corrige `tests/monitor.dashboard.test.ts`.
 - Passage en revue et succès des suites ciblées (`tests/unit/search/downloader.test.ts`, `tests/monitor/dashboard.http.test.ts`, `tests/monitor.dashboard.test.ts`) puis `npm run build` pour valider le runtime orchestrateur refactoré.
 - Aucun blocage restant sur la checklist Dashboard ; poursuivre la validation E2E (S01→S10) et la consolidation `validation_run/` lors des prochaines passes.
+
+### 2024-05-14 – Agent Update
+- Santé SearxNG stabilisée : la sonde Docker Compose utilise désormais une requête POST `application/x-www-form-urlencoded` qui respecte le `server.method: POST` des settings, garantissant la disponibilité avant le démarrage du serveur MCP.
+- Tests mis à jour (`tests/docker/docker-compose.search.test.ts`) pour vérifier la présence des indicateurs `--request POST` et `--data-urlencode`, assurant le maintien de la sonde.
+- Suite `npm run test:unit` rejouée (1713 tests) pour confirmer l'absence de régressions CI.
