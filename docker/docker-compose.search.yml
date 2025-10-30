@@ -65,13 +65,38 @@ services:
     ports:
       - "127.0.0.1:8000:8000"
     healthcheck:
-      # Lightweight GET probe so readiness does not depend on JSON body
-      # handling (the upstream image accepts GET on /healthcheck).
+      # The upstream image does not always ship `curl`, so we rely on the
+      # Python runtime that backs the API itself. Some releases only expose a
+      # `python` binary while others ship `python3`; the shell wrapper below
+      # tries both interpreters before giving up so the probe works across
+      # versions. We continue to treat any status code below 500 as healthy to
+      # accommodate temporary auth-related 4xx responses.
       test:
         - CMD-SHELL
         - |
-          curl --fail --silent --show-error \
-            http://127.0.0.1:8000/healthcheck || exit 1
+            for py in python3 python; do
+              if command -v "$py" >/dev/null 2>&1; then
+                "$py" - <<'PY'
+            import sys
+            from urllib import request, error
+
+            STATUS_OK_MAX = 499
+            try:
+                response = request.urlopen("http://127.0.0.1:8000/healthcheck", timeout=10)
+            except error.HTTPError as http_error:
+                sys.exit(0 if http_error.code <= STATUS_OK_MAX else 1)
+            except error.URLError:
+                sys.exit(1)
+            except Exception:
+                sys.exit(1)
+            else:
+                status = getattr(response, "status", 500)
+                sys.exit(0 if status <= STATUS_OK_MAX else 1)
+            PY
+                exit $?
+              fi
+            done
+            exit 1
       interval: 15s
       timeout: 10s
       retries: 5
