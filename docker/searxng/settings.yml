@@ -70,20 +70,18 @@ ui:
   theme_args:
     header_logo: ""
   infinite_scroll: false
+  # Expose the most common categories as UI tabs. The SearxNG schema expects
+  # `categories_as_tabs` to live under `ui` and be a mapping. We provide empty
+  # objects so validation passes while the engine categories above continue to
+  # control filtering.
+  categories_as_tabs:
+    general: {}
+    news: {}
+    files: {}
+    images: {}
 
 result_proxy:
   # Keep the proxy disabled by default so local testing remains simple. Define
   # `url` to enable it when routing traffic through a hardened instance.
   url: ""
   rewrite_result_links: false
-
-# Expose the most common categories as UI tabs. The SearxNG schema expects each
-# tab entry to be an object (dict), so we keep them empty and rely on the
-# declared engine categories above to control the SERP filtering. This keeps the
-# configuration schema-compliant while still surfacing the curated tabs in the
-# UI.
-categories_as_tabs:
-  general: {}
-  news: {}
-  files: {}
-  images: {}
