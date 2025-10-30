@@ -15,11 +15,12 @@ services:
       - ./searxng/settings.yml:/etc/searxng/settings.yml:ro
     healthcheck:
       # HTTP based readiness probe so `depends_on` can rely on the
-      # `service_healthy` condition. We target the JSON endpoint to
-      # ensure the search API is fully initialised instead of merely
-      # exposing the landing page. The probe uses the bundled Python
-      # runtime (always present in the SearxNG image) to avoid depending
-      # on curl or wget binaries that may be removed in future releases.
+      # `service_healthy` condition. We target the landing page instead
+      # of the `/search` endpoint so the check stays local to the
+      # container and avoids contacting external engines during CI. The
+      # probe uses the bundled Python runtime (always present in the
+      # SearxNG image) to avoid depending on curl or wget binaries that
+      # may be removed in future releases.
       test:
         - CMD-SHELL
         - |
@@ -29,10 +30,12 @@ services:
 
           try:
               with urlopen(
-                  "http://127.0.0.1:8080/search?q=healthcheck&format=json",
+                  "http://127.0.0.1:8080/",
                   timeout=10,
               ) as response:
-                  if response.status != 200:
+                  # Treat any 2xx/3xx response as healthy so redirects to the
+                  # home page (e.g. 302) don't fail the probe.
+                  if not (200 <= response.status < 400):
                       sys.exit(1)
           except Exception:
               sys.exit(1)
