@@ -75,10 +75,22 @@ ui:
   # objects so validation passes while the engine categories above continue to
   # control filtering.
   categories_as_tabs:
-    general: {}
-    news: {}
-    files: {}
-    images: {}
+    general:
+      name: "General"
+      categories:
+        - general
+    news:
+      name: "News"
+      categories:
+        - news
+    files:
+      name: "Documents"
+      categories:
+        - files
+    images:
+      name: "Images"
+      categories:
+        - images
 
 result_proxy:
   # Keep the proxy disabled by default so local testing remains simple. Define

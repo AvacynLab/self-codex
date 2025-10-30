@@ -60,16 +60,30 @@ describe('docker/searxng/settings.yml', () => {
     const categories = ui?.categories_as_tabs;
     expect(categories, 'categories_as_tabs should be an object').to.be.an('object');
 
-    const generalTab = categories?.['general'];
-    expect(generalTab, 'general tab config').to.deep.equal({});
+    const generalTab = categories?.['general'] as
+      | { name?: unknown; categories?: unknown }
+      | undefined;
+    expect(generalTab, 'general tab config').to.deep.equal({
+      name: 'General',
+      categories: ['general'],
+    });
 
-    const newsTab = categories?.['news'];
-    expect(newsTab, 'news tab config').to.deep.equal({});
+    const newsTab = categories?.['news'] as { name?: unknown; categories?: unknown } | undefined;
+    expect(newsTab, 'news tab config').to.deep.equal({
+      name: 'News',
+      categories: ['news'],
+    });
 
-    const filesTab = categories?.['files'];
-    expect(filesTab, 'files tab config').to.deep.equal({});
+    const filesTab = categories?.['files'] as { name?: unknown; categories?: unknown } | undefined;
+    expect(filesTab, 'files tab config').to.deep.equal({
+      name: 'Documents',
+      categories: ['files'],
+    });
 
-    const imagesTab = categories?.['images'];
-    expect(imagesTab, 'images tab config').to.deep.equal({});
+    const imagesTab = categories?.['images'] as { name?: unknown; categories?: unknown } | undefined;
+    expect(imagesTab, 'images tab config').to.deep.equal({
+      name: 'Images',
+      categories: ['images'],
+    });
   });
 });
