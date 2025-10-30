@@ -77,16 +77,13 @@ result_proxy:
   url: ""
   rewrite_result_links: false
 
-# Expose the most common categories as UI tabs while mapping each tab to its
-# underlying engine category list. Keeping the structure as a mapping (dict)
-# aligns with the upstream schema expectations and avoids runtime validation
-# failures when the service boots.
+# Expose the most common categories as UI tabs. The SearxNG schema expects each
+# tab entry to be an object (dict), so we keep them empty and rely on the
+# declared engine categories above to control the SERP filtering. This keeps the
+# configuration schema-compliant while still surfacing the curated tabs in the
+# UI.
 categories_as_tabs:
-  general:
-    - general
-  news:
-    - news
-  files:
-    - files
-  images:
-    - images
+  general: {}
+  news: {}
+  files: {}
+  images: {}
