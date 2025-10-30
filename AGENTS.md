@@ -412,3 +412,8 @@ Historique rapide :
 - Santé SearxNG stabilisée : la sonde Docker Compose utilise désormais une requête POST `application/x-www-form-urlencoded` qui respecte le `server.method: POST` des settings, garantissant la disponibilité avant le démarrage du serveur MCP.
 - Tests mis à jour (`tests/docker/docker-compose.search.test.ts`) pour vérifier la présence des indicateurs `--request POST` et `--data-urlencode`, assurant le maintien de la sonde.
 - Suite `npm run test:unit` rejouée (1713 tests) pour confirmer l'absence de régressions CI.
+
+### 2024-05-15 – Agent Update
+- Healthcheck SearxNG déplacé vers un script Python (`python3 - <<'PY' ...`) afin d'éviter la dépendance à `curl`/`wget` dans l'image officielle — la sonde reste alignée sur l'endpoint JSON `/search`.
+- Test de composition mis à jour pour vérifier la présence de l'invocation Python et de l'URL de sonde.
+- Suite `npm run test:unit` rejouée (1713 tests) pour valider le changement.
