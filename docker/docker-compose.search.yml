@@ -20,24 +20,31 @@ services:
       # container and avoids contacting external engines during CI. The
       # probe uses the bundled Python runtime (always present in the
       # SearxNG image) to avoid depending on curl or wget binaries that
-      # may be removed in future releases.
+      # may be removed in future releases. Some SearxNG builds return
+      # HTTP 4xx codes for the landing page when `public_instance: false`
+      # (e.g. 403 Forbidden) even though the service is ready. We treat
+      # every response below 500 as healthy to avoid flapping on those
+      # configurations while still failing on server-side errors.
       test:
         - CMD-SHELL
         - |
           python3 - <<'PY'
+          import http.client
           import sys
-          from urllib.request import urlopen
 
           try:
-              with urlopen(
-                  "http://127.0.0.1:8080/",
-                  timeout=10,
-              ) as response:
-                  # Treat any 2xx/3xx response as healthy so redirects to the
-                  # home page (e.g. 302) don't fail the probe.
-                  if not (200 <= response.status < 400):
-                      sys.exit(1)
+              connection = http.client.HTTPConnection("127.0.0.1", 8080, timeout=10)
+              connection.request("GET", "/")
+              response = connection.getresponse()
           except Exception:
+              sys.exit(1)
+          finally:
+              try:
+                  connection.close()
+              except Exception:
+                  pass
+
+          if response.status >= 500:
               sys.exit(1)
           PY
       interval: 15s

@@ -21,9 +21,8 @@ describe('docker/docker-compose.search.yml', () => {
     expect(probe?.[0]).to.equal('CMD-SHELL');
     const command = String(probe?.[1] ?? '');
     expect(command).to.include('python3');
-    expect(command).to.include('http://127.0.0.1:8080/');
-    expect(command).to.include('200 <=');
-    expect(command).to.include('< 400');
+    expect(command).to.include('HTTPConnection("127.0.0.1", 8080');
+    expect(command).to.include('response.status >= 500');
   });
 
   it('waits for searxng via service_healthy to honour the healthcheck', () => {
