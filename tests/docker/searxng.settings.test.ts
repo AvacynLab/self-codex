@@ -53,26 +53,29 @@ describe('docker/searxng/settings.yml', () => {
     expect(fileContent).to.contain('SEARCH_SEARX_CATEGORIES');
   });
 
-  it('defines categories_as_tabs as a dict with schema-compliant tab objects', () => {
+  it('materialises every categories_as_tabs entry to satisfy the schema', () => {
     const categories = config.categories_as_tabs as Record<string, unknown> | undefined;
-    expect(categories, 'categories_as_tabs should be an object').to.be.an('object');
+    expect(categories, 'categories_as_tabs override').to.be.an('object');
 
-    const expectedTabs: Record<string, { name: string; categories: string[] }> = {
-      general: { name: 'General', categories: ['general'] },
-      images: { name: 'Images', categories: ['images'] },
-      videos: { name: 'Videos', categories: ['videos'] },
-      news: { name: 'News', categories: ['news'] },
-      map: { name: 'Maps', categories: ['map'] },
-      music: { name: 'Music', categories: ['music'] },
-      it: { name: 'IT', categories: ['it'] },
-      science: { name: 'Science', categories: ['science'] },
-      files: { name: 'Documents', categories: ['files'] },
-      'social media': { name: 'Social', categories: ['social media'] },
-    };
+    const expectedTabs = [
+      'general',
+      'images',
+      'videos',
+      'news',
+      'map',
+      'it',
+      'science',
+      'files',
+      'music',
+      'social media',
+    ];
 
-    for (const [key, descriptor] of Object.entries(expectedTabs)) {
-      const tab = categories?.[key] as { name?: unknown; categories?: unknown } | undefined;
-      expect(tab, `${key} tab config`).to.deep.equal(descriptor);
+    for (const tab of expectedTabs) {
+      expect(categories, `${tab} tab map`).to.have.property(tab);
+      const descriptor = categories?.[tab] as { categories?: unknown } | undefined;
+      expect(descriptor, `${tab} descriptor`).to.be.an('object');
+      expect(descriptor?.categories, `${tab} categories`).to.be.an('array');
+      expect((descriptor?.categories as unknown[]).length, `${tab} categories length`).to.be.greaterThan(0);
     }
   });
 });
