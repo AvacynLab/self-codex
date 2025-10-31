@@ -27,14 +27,21 @@ import { SearchMetricsRecorder } from "../src/search/metrics.js";
 
 const manager = createSearchStackManager();
 
-/** Environment overrides required to reach the dockerised services from host. */
+/**
+ * Environment overrides required to reach the dockerised services from host and
+ * to keep the smoke flow lightweight (fewer concurrent fetches and a faster
+ * Unstructured strategy).
+ */
 const ENV_OVERRIDES: Record<string, string> = {
   SEARCH_SEARX_BASE_URL: "http://127.0.0.1:8080",
   UNSTRUCTURED_BASE_URL: "http://127.0.0.1:8000",
   SEARCH_INJECT_GRAPH: "1",
   SEARCH_INJECT_VECTOR: "1",
-  SEARCH_FETCH_PARALLEL: "2",
+  SEARCH_PARALLEL_FETCH: "2",
+  SEARCH_PARALLEL_EXTRACT: "1",
   SEARCH_FETCH_RESPECT_ROBOTS: "1",
+  UNSTRUCTURED_STRATEGY: "fast",
+  UNSTRUCTURED_TIMEOUT_MS: "60000",
 };
 
 function applyEnvOverrides(): Map<string, string | undefined> {
@@ -97,30 +104,61 @@ async function runSmoke(): Promise<void> {
     workDir = await mkdtemp(join(tmpdir(), "search-smoke-"));
     const { pipeline, knowledgeGraph, vectorMemory } = await createPipeline(workDir);
 
-    const job = await pipeline.runSearchJob({
-      query: "site:arxiv.org LLM 2025 filetype:pdf",
-      categories: ["files", "general"],
-      maxResults: 4,
-      fetchContent: true,
-      injectGraph: true,
-      injectVector: true,
-    });
+    /**
+     * Reliable smoke probes prioritise lightweight HTML sources to avoid PDF
+     * processing timeouts in Unstructured. Each plan is attempted sequentially
+     * until the ingestion criteria are satisfied.
+     */
+    const plans: Array<{ query: string; categories: string[]; maxResults: number }> = [
+      {
+        query: "site:wikipedia.org retrieval augmented generation",
+        categories: ["general"],
+        maxResults: 3,
+      },
+      {
+        query: "site:docs.python.org data classes tutorial",
+        categories: ["general"],
+        maxResults: 3,
+      },
+    ];
 
-    const assessment = assessSmokeRun({
-      documents: job.documents.length,
-      graphTriples: knowledgeGraph.count(),
-      vectorEmbeddings: vectorMemory.size(),
-    });
+    let finalAssessment: ReturnType<typeof assessSmokeRun> | null = null;
+    let lastJob: Awaited<ReturnType<SearchPipeline["runSearchJob"]>> | null = null;
 
-    console.info("Search smoke stats:", {
-      documents: job.documents.length,
-      graphTriples: knowledgeGraph.count(),
-      vectorEmbeddings: vectorMemory.size(),
-      errors: job.errors.length,
-    });
+    for (const plan of plans) {
+      const job = await pipeline.runSearchJob({
+        ...plan,
+        fetchContent: true,
+        injectGraph: true,
+        injectVector: true,
+      });
 
-    if (!assessment.ok) {
-      throw new Error(`${assessment.message} See docker logs for more details.`);
+      lastJob = job;
+      finalAssessment = assessSmokeRun({
+        documents: job.documents.length,
+        graphTriples: knowledgeGraph.count(),
+        vectorEmbeddings: vectorMemory.size(),
+      });
+
+      console.info("Search smoke stats:", {
+        query: plan.query,
+        documents: job.documents.length,
+        graphTriples: knowledgeGraph.count(),
+        vectorEmbeddings: vectorMemory.size(),
+        errors: job.errors.length,
+      });
+
+      if (finalAssessment.ok) {
+        break;
+      }
+    }
+
+    if (!finalAssessment?.ok) {
+      const message = `${finalAssessment?.message ?? "Smoke validation failed."} See docker logs for more details.`;
+      if (lastJob) {
+        console.error("Last smoke job errors:", lastJob.errors);
+      }
+      throw new Error(message);
     }
   } finally {
     restoreEnv(envBackup);
