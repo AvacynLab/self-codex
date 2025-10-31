@@ -20,7 +20,16 @@ async function runMochaSuite(): Promise<void> {
     "tests/setup.ts",
     "tests/e2e/search/search_run.e2e.test.ts",
   ];
-  const env = { ...process.env, TSX_EXTENSIONS: "ts", SEARCH_E2E_ALLOW_RUN: "1" };
+  const env = {
+    ...process.env,
+    TSX_EXTENSIONS: "ts",
+    SEARCH_E2E_ALLOW_RUN: "1",
+    // Allow the mocha harness to reach the local stub servers (Searx + HTTP
+    // fixture) exposed on the loopback interface. The generic test bootstrap
+    // denies network traffic by default, so we have to opt-in explicitly for
+    // end-to-end scenarios that rely on in-process HTTP fixtures.
+    MCP_TEST_ALLOW_LOOPBACK: "yes",
+  };
   await manager.runCommand("node", mochaArgs, { env });
 }
 
