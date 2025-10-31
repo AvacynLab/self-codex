@@ -42,14 +42,17 @@ const searxResultSchema = z
 
 /** Envelope returned by SearxNG when requesting the JSON format. */
 const searxResponseSchema = z
-  .strictObject({
+  .object({
     query: z.string().optional(),
     number_of_results: z.number().optional(),
-    results: z.array(z.record(z.unknown())),
+    // Allow SearxNG responses that omit the results array (some engines fail and drop it).
+    results: z.array(z.record(z.unknown())).default([]),
   })
+  // SearxNG may include auxiliary fields such as answers/infoboxes; keep them without validation noise.
+  .passthrough()
   .transform((payload) => ({
     query: payload.query ?? "",
-    results: payload.results,
+    results: payload.results ?? [],
   }));
 
 /** Helper discriminating whether an error should trigger a retry. */
