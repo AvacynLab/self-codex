@@ -29,7 +29,7 @@ import {
   SearchRunErrorSchema,
 } from "../rpc/searchSchemas.js";
 import type { SearchIndexDocument, SearchIndexInput, SearchIndexOutput } from "../rpc/searchSchemas.js";
-import { buildToolErrorResult, buildToolSuccessResult } from "./shared.js";
+import { buildToolErrorResult, buildToolSuccessResult, formatBudgetUsage } from "./shared.js";
 
 /** Canonical façade identifier registered with the MCP server. */
 export const SEARCH_INDEX_TOOL_NAME = "search.index" as const;
@@ -43,13 +43,13 @@ export const SearchIndexManifestDraft: ToolManifestDraft = {
   name: SEARCH_INDEX_TOOL_NAME,
   title: "Indexation directe d'URL",
   description:
-    "Télécharge et structure une liste d'URL puis ingère les documents dans le graphe de connaissances et l'index vectoriel.",
+    "Télécharge et structure une liste d'URL puis ingère les documents dans le graphe de connaissances et l'index vectoriel. Exemple : search.index {\"urls\":[\"https://example.org\"]}",
   kind: "dynamic",
   category: "runtime",
   tags: ["search", "web", "ingest", "rag", "ops"],
   hidden: false,
   budgets: {
-    time_ms: 45_000,
+    time_ms: 60_000,
     tool_calls: 1,
     bytes_out: 64_000,
   },
@@ -123,6 +123,7 @@ function normaliseJobError(error: SearchJobError) {
 function buildSuccessResponse(
   idempotencyKey: string,
   result: Awaited<ReturnType<SearchPipeline["ingestDirect"]>>,
+  budgetUsed: ReturnType<typeof formatBudgetUsage>,
 ): SearchIndexSuccessOutput {
   const docs: Array<SearchIndexDocument> = result.documents.map((doc) =>
     SearchIndexDocumentSchema.parse({
@@ -140,7 +141,7 @@ function buildSuccessResponse(
     summary: `indexation terminée (${docs.length} document${docs.length > 1 ? "s" : ""})`,
     count: docs.length,
     docs,
-    errors,
+    ...(errors.length > 0 ? { errors } : {}),
     stats: {
       requested: result.stats.requestedResults,
       received: result.stats.receivedResults,
@@ -149,7 +150,60 @@ function buildSuccessResponse(
       graph_ingested: result.stats.graphIngested,
       vector_ingested: result.stats.vectorIngested,
     },
+    ...(budgetUsed ? { budget_used: budgetUsed } : {}),
   }) as SearchIndexSuccessOutput;
+}
+
+/**
+ * Accepts legacy payloads that use `url`/`urls` fields and converts them to the
+ * canonical `items` array before Zod validation. The helper keeps backwards
+ * compatibility with early clients while ensuring the handler only deals with
+ * the modern schema internally.
+ */
+function normaliseIndexInputPayload(input: unknown): unknown {
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    return input;
+  }
+
+  const source = input as Record<string, unknown>;
+  if (Array.isArray(source.items)) {
+    return input;
+  }
+
+  const urls = new Set<string>();
+
+  const pushUrl = (value: unknown) => {
+    if (typeof value !== "string") {
+      return;
+    }
+    const trimmed = value.trim();
+    if (trimmed.length > 0) {
+      urls.add(trimmed);
+    }
+  };
+
+  pushUrl(source.url);
+  const rawUrls = source.urls;
+  if (Array.isArray(rawUrls)) {
+    for (const entry of rawUrls) {
+      pushUrl(entry);
+    }
+  } else {
+    pushUrl(rawUrls);
+  }
+
+  if (urls.size === 0) {
+    return input;
+  }
+
+  const rest: Record<string, unknown> = { ...source };
+  delete rest.url;
+  delete rest.urls;
+
+  return {
+    ...rest,
+    items: Array.from(urls).map((url) => ({ url })),
+  };
 }
 
 /**
@@ -157,7 +211,7 @@ function buildSuccessResponse(
  */
 export function createSearchIndexHandler(context: SearchIndexToolContext): ToolImplementation {
   return async (input: unknown, extra: RpcExtra): Promise<CallToolResult> => {
-    const parsed: ParsedInput = SearchIndexInputSchema.parse(input);
+    const parsed: ParsedInput = SearchIndexInputSchema.parse(normaliseIndexInputPayload(input));
     const rpcContext = getJsonRpcContext();
     const traceContext = getActiveTraceContext();
 
@@ -227,7 +281,7 @@ export function createSearchIndexHandler(context: SearchIndexToolContext): ToolI
       return buildToolErrorResult(asJsonPayload(degraded), degraded);
     }
 
-    const structured = buildSuccessResponse(idempotencyKey, result);
+    const structured = buildSuccessResponse(idempotencyKey, result, formatBudgetUsage(charge));
 
     context.logger.info("search_index_completed", {
       request_id: rpcContext?.requestId ?? extra.requestId ?? null,
@@ -235,8 +289,9 @@ export function createSearchIndexHandler(context: SearchIndexToolContext): ToolI
       idempotency_key: idempotencyKey,
       items: parsed.items.length,
       documents: structured.count,
-      errors: structured.errors.length,
+      errors: structured.errors?.length ?? 0,
       stats: structured.stats,
+      budget_used: structured.budget_used ?? null,
     });
 
     if (rpcContext?.budget && charge) {

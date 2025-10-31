@@ -149,6 +149,7 @@ describe("search.index facade", () => {
     expect(structured.docs[0]?.url).to.equal("https://example.net/doc");
     expect(structured.errors).to.have.lengthOf(1);
     expect(structured.stats.requested).to.equal(1);
+    expect(structured.budget_used?.tool_calls).to.equal(1);
     const expectedIdempotencyKey = computeIndexDeterministicKey({
       items: [
         {
@@ -226,5 +227,53 @@ describe("search.index facade", () => {
     } catch (error) {
       expect(String(error)).to.match(/items/);
     }
+  });
+
+  it("normalises legacy url payloads before validation", async () => {
+    const logger = new StructuredLogger();
+    let capturedParameters: import("../../../src/search/index.js").DirectIngestParameters | undefined;
+    const pipeline = {
+      async ingestDirect(parameters: import("../../../src/search/index.js").DirectIngestParameters) {
+        capturedParameters = parameters;
+        return {
+          documents: [],
+          errors: [],
+          stats: {
+            requestedResults: parameters.sources.length,
+            receivedResults: parameters.sources.length,
+            fetchedDocuments: 0,
+            structuredDocuments: 0,
+            graphIngested: 0,
+            vectorIngested: 0,
+          },
+          metrics: null,
+        };
+      },
+    } as unknown as import("../../../src/search/index.js").SearchPipeline;
+
+    const handler = createSearchIndexHandler({ pipeline, logger });
+    const extras = createRequestExtras("req-search-index-legacy");
+
+    const result = await runWithRpcTrace(
+      { method: `tools/${SEARCH_INDEX_TOOL_NAME}`, traceId: "trace-search-index-legacy", requestId: extras.requestId },
+      async () =>
+        runWithJsonRpcContext({ requestId: extras.requestId }, () =>
+          handler(
+            {
+              url: "https://legacy.example/doc",
+              label: "legacy-single",
+            },
+            extras,
+          ),
+        ),
+    );
+
+    expect(capturedParameters?.sources).to.have.lengthOf(1);
+    expect(capturedParameters?.sources[0]?.url).to.equal("https://legacy.example/doc");
+    expect(capturedParameters?.label).to.equal("legacy-single");
+    const structured = result.structuredContent as Record<string, any>;
+    expect(structured.ok).to.equal(true);
+    expect(structured.count).to.equal(0);
+    expect(structured.docs).to.be.an("array").that.is.empty;
   });
 });

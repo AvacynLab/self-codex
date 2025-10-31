@@ -30,7 +30,7 @@ import {
   SearchRunInputSchema,
   SearchRunOutputSchema,
 } from "../rpc/searchSchemas.js";
-import { buildToolErrorResult, buildToolSuccessResult } from "./shared.js";
+import { buildToolErrorResult, buildToolSuccessResult, formatBudgetUsage } from "./shared.js";
 
 /** Canonical façade identifier registered with the MCP server. */
 export const SEARCH_RUN_TOOL_NAME = "search.run" as const;
@@ -44,13 +44,13 @@ export const SearchRunManifestDraft: ToolManifestDraft = {
   name: SEARCH_RUN_TOOL_NAME,
   title: "Recherche web structurée",
   description:
-    "Interroge SearxNG, extrait les contenus pertinents puis les ingère dans le graphe de connaissances et l'index vectoriel.",
+    "Interroge SearxNG, extrait les contenus pertinents puis les ingère dans le graphe de connaissances et l'index vectoriel. Exemple : search.run {\"query\":\"site:arxiv.org rag pdf\"}",
   kind: "dynamic",
   category: "runtime",
   tags: ["search", "web", "ingest", "rag", "ops"],
   hidden: false,
   budgets: {
-    time_ms: 60_000,
+    time_ms: 90_000,
     tool_calls: 1,
     bytes_out: 96_000,
   },
@@ -118,6 +118,7 @@ function buildSuccessResponse(
   parsed: ParsedInput,
   idempotencyKey: string,
   job: SearchJobResult,
+  budgetUsed: ReturnType<typeof formatBudgetUsage>,
 ): SearchRunSuccessOutput {
   const docs = job.documents.map((doc) =>
     SearchRunDocumentSchema.parse({
@@ -128,7 +129,7 @@ function buildSuccessResponse(
     }),
   );
 
-  const errors = job.errors.map((error) => normaliseJobError(error));
+  const warnings = job.errors.map((error) => normaliseJobWarning(error));
 
   return SearchRunOutputSchema.parse({
     ok: true,
@@ -137,7 +138,7 @@ function buildSuccessResponse(
     job_id: normaliseJobId(parsed.job_id),
     count: docs.length,
     docs,
-    errors,
+    ...(warnings.length > 0 ? { warnings } : {}),
     stats: {
       requested: job.stats.requestedResults,
       received: job.stats.receivedResults,
@@ -146,11 +147,12 @@ function buildSuccessResponse(
       graph_ingested: job.stats.graphIngested,
       vector_ingested: job.stats.vectorIngested,
     },
+    ...(budgetUsed ? { budget_used: budgetUsed } : {}),
   }) as SearchRunSuccessOutput;
 }
 
 /** Normalises pipeline errors so they pass schema validation. */
-function normaliseJobError(error: SearchJobError) {
+function normaliseJobWarning(error: SearchJobError) {
   return SearchRunErrorSchema.parse({
     stage: error.stage,
     url: error.url,
@@ -206,7 +208,7 @@ export function createSearchRunHandler(context: SearchRunToolContext): ToolImple
       query: parsed.query,
       ...(parsed.categories ? { categories: parsed.categories } : {}),
       ...(parsed.engines ? { engines: parsed.engines } : {}),
-      ...(parsed.max_results !== undefined ? { maxResults: parsed.max_results } : {}),
+      maxResults: parsed.max_results,
       ...(parsed.language ? { language: parsed.language } : {}),
       ...(parsed.safe_search !== undefined ? { safeSearch: parsed.safe_search } : {}),
       ...(parsed.job_id ? { jobId: parsed.job_id } : {}),
@@ -230,7 +232,7 @@ export function createSearchRunHandler(context: SearchRunToolContext): ToolImple
       return buildToolErrorResult(asJsonPayload(degraded), degraded);
     }
 
-    const structured = buildSuccessResponse(parsed, idempotencyKey, result);
+    const structured = buildSuccessResponse(parsed, idempotencyKey, result, formatBudgetUsage(charge));
 
     context.logger.info("search_run_completed", {
       request_id: rpcContext?.requestId ?? extra.requestId ?? null,
@@ -240,8 +242,9 @@ export function createSearchRunHandler(context: SearchRunToolContext): ToolImple
       categories: parsed.categories ?? null,
       engines: parsed.engines ?? null,
       documents: structured.count,
-      errors: structured.errors.length,
+      warnings: structured.warnings?.length ?? 0,
       stats: structured.stats,
+      budget_used: structured.budget_used ?? null,
     });
 
     if (rpcContext?.budget && charge) {

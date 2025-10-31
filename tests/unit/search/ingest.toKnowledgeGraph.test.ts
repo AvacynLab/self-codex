@@ -5,6 +5,7 @@ import {
   KnowledgeGraphIngestor,
   extractKeyTerms,
   type StructuredDocument,
+  P,
 } from "../../../src/search/index.js";
 import { KnowledgeGraph } from "../../../src/knowledge/knowledgeGraph.js";
 
@@ -28,12 +29,12 @@ describe("search/ingest/toKnowledgeGraph", () => {
       {
         id: "seg-2",
         kind: "paragraph",
-        text: "The pipeline fetches documents and populates the knowledge graph.",
+        text: "The pipeline fetches documents and populates the knowledge graph, making the pipeline resilient.",
       },
       {
         id: "seg-3",
         kind: "paragraph",
-        text: "Graph ingestion deduplicates mentions and attaches provenance.",
+        text: "Graph ingestion deduplicates mentions and attaches provenance to the pipeline output.",
       },
     ],
     provenance: {
@@ -59,10 +60,10 @@ describe("search/ingest/toKnowledgeGraph", () => {
       .exportAll()
       .filter((triple) => triple.subject === result.subject);
 
-    expect(storedTriples.some((triple) => triple.predicate === "type")).to.equal(true);
-    expect(storedTriples.some((triple) => triple.predicate === "source_url")).to.equal(true);
+    expect(storedTriples.some((triple) => triple.predicate === P.type)).to.equal(true);
+    expect(storedTriples.some((triple) => triple.predicate === P.src)).to.equal(true);
 
-    const mentionTriple = storedTriples.find((triple) => triple.predicate === "mentions");
+    const mentionTriple = storedTriples.find((triple) => triple.predicate === P.mentions);
     expect(mentionTriple).to.not.equal(undefined);
     expect(result.mentions).to.include(mentionTriple?.object ?? "");
     expect(mentionTriple?.provenance.length ?? 0).to.be.greaterThan(0);
@@ -84,5 +85,29 @@ describe("search/ingest/toKnowledgeGraph", () => {
     expect(terms).to.include("pipeline");
     expect(terms).to.not.include("les");
     expect(terms.length).to.be.lessThanOrEqual(12);
+  });
+
+  it("does not insert duplicate triples when the payload repeats data", () => {
+    const graph = new KnowledgeGraph({ now: () => 42 });
+    const ingestor = new KnowledgeGraphIngestor({ graph });
+
+    const noisyDocument: StructuredDocument = {
+      ...baseDocument,
+      description: baseDocument.description,
+      segments: [
+        ...baseDocument.segments,
+        { id: "seg-4", kind: "paragraph", text: "The pipeline remains the pipeline of record." },
+      ],
+    };
+
+    const first = ingestor.ingest(noisyDocument);
+    const second = ingestor.ingest(noisyDocument);
+
+    expect(first.triples.length).to.be.greaterThan(0);
+    expect(second.triples.length).to.equal(first.triples.length);
+
+    const triples = graph.exportAll().filter((triple) => triple.subject === first.subject);
+    const keySet = new Set(triples.map((triple) => `${triple.subject}|${triple.predicate}|${triple.object}`));
+    expect(keySet.size).to.equal(triples.length);
   });
 });

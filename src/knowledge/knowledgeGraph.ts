@@ -166,6 +166,34 @@ export interface KnowledgeTripleInput {
   provenance?: ReadonlyArray<Provenance | null | undefined>;
 }
 
+/**
+ * Removes duplicate triples from a batch while preserving insertion order. The
+ * helper keeps the first occurrence of each `(subject, predicate, object)`
+ * fingerprint so ingestion pipelines can enqueue redundant entries without
+ * producing duplicate writes during the same transaction.
+ */
+export function dedupeTripleBatch(triples: Iterable<KnowledgeTripleInput>): KnowledgeTripleInput[] {
+  const seen = new Set<string>();
+  const unique: KnowledgeTripleInput[] = [];
+
+  for (const triple of triples) {
+    const subject = triple.subject.trim();
+    const predicate = triple.predicate.trim();
+    const object = triple.object.trim();
+    if (!subject || !predicate || !object) {
+      continue;
+    }
+    const fingerprint = `${subject}\u0000${predicate}\u0000${object}`;
+    if (seen.has(fingerprint)) {
+      continue;
+    }
+    seen.add(fingerprint);
+    unique.push(triple);
+  }
+
+  return unique;
+}
+
 interface KnowledgeTripleRecord extends KnowledgeTripleSnapshot {
   key: string;
 }
@@ -784,5 +812,20 @@ export function withProvenance(
     merged = merged.length === 0 ? [...normalised] : mergeProvenance(merged, normalised);
   }
 
-  return merged.length === 0 ? [] : [...merged];
+  if (merged.length === 0) {
+    return [];
+  }
+
+  const seen = new Set<string>();
+  const deduped: Provenance[] = [];
+  for (const entry of merged) {
+    const key = `${entry.type}:${entry.sourceId}:${entry.span ? `${entry.span[0]}-${entry.span[1]}` : ""}`;
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    deduped.push(entry);
+  }
+
+  return deduped;
 }

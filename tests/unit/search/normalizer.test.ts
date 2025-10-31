@@ -46,6 +46,19 @@ describe("search/normalizer", () => {
     expect(deduped.segments[0]?.text).to.equal("Title");
     expect(deduped.segments[1]?.text).to.equal("Paragraph");
   });
+
+  it("derives the document title from the first title segment when missing", () => {
+    const document = createDocument({
+      title: null,
+      segments: [
+        createSegment({ id: "doc#raw-1", text: "  Synthèse   ", kind: "title" }),
+        createSegment({ id: "doc#raw-2", text: "Contenu", kind: "paragraph" }),
+      ],
+    });
+
+    const deduped = deduplicateSegments(document);
+    expect(deduped.title).to.equal("Synthèse");
+  });
 });
 
 function createDocument(overrides: Partial<StructuredDocument>): StructuredDocument {

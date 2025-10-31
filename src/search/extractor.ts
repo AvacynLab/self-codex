@@ -2,7 +2,8 @@ import { detect } from "tinyld";
 import { z } from "zod";
 
 import type { SearchConfig } from "./config.js";
-import type { RawFetched, StructuredDocument, StructuredSegment, StructuredSegmentKind } from "./types.js";
+import type { RawFetched, StructuredDocument, StructuredSegment } from "./types.js";
+import { type SegmentKind } from "./types.js";
 
 /** Error code emitted when the unstructured API responds with an HTTP failure. */
 const ERROR_UNSTRUCTURED_HTTP = "E-SEARCH-UNSTRUCTURED-HTTP" as const;
@@ -97,7 +98,7 @@ export interface ExtractionRequest {
 }
 
 /** Mapping between the raw element `type` emitted by unstructured and our internal segment kinds. */
-const SEGMENT_KIND_MAP: Readonly<Record<string, StructuredSegmentKind>> = {
+const SEGMENT_KIND_MAP: Readonly<Record<string, SegmentKind>> = {
   title: "title",
   header: "title",
   heading: "title",
@@ -120,7 +121,7 @@ const SEGMENT_KIND_MAP: Readonly<Record<string, StructuredSegmentKind>> = {
 };
 
 /** Set of kinds considered textual for deduplication and language detection. */
-const TEXTUAL_KINDS: ReadonlySet<StructuredSegmentKind> = new Set([
+const TEXTUAL_KINDS: ReadonlySet<SegmentKind> = new Set([
   "title",
   "paragraph",
   "list",
@@ -130,6 +131,8 @@ const TEXTUAL_KINDS: ReadonlySet<StructuredSegmentKind> = new Set([
 
 /** Maximum number of characters forwarded to the language detector. */
 const LANGUAGE_SAMPLE_LIMIT = 8_000;
+/** Maximum number of PDF pages forwarded to the extractor before truncation. */
+const PDF_PAGE_LIMIT = 40;
 
 /**
  * Extractor responsible for invoking the `unstructured` API and mapping its
@@ -151,9 +154,10 @@ export class UnstructuredExtractor {
    * ingested into the graph/vector subsystems.
    */
   async extract(request: ExtractionRequest): Promise<StructuredDocument> {
-    const response = await this.callUnstructured(request.raw);
+    const languageHint = deriveLanguageHint(request.raw, request.provenance);
+    const response = await this.callUnstructured(request.raw, languageHint);
     const parsed = this.parseResponse(response);
-    const segments = this.materialiseSegments(request.docId, parsed);
+    const { segments, truncated } = this.materialiseSegments(request.docId, parsed, request.raw.contentType);
     const language = detectLanguage(segments);
     const title = chooseTitle(request.provenance.titleHint, segments);
     const description = chooseDescription(request.provenance.snippetHint, segments);
@@ -176,10 +180,11 @@ export class UnstructuredExtractor {
         position: request.provenance.position,
         sourceUrl: request.provenance.sourceUrl,
       },
+      ...(truncated ? { metadata: { truncated: true as const } } : {}),
     };
   }
 
-  private async callUnstructured(raw: RawFetched): Promise<unknown> {
+  private async callUnstructured(raw: RawFetched, languageHint: string | null): Promise<unknown> {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.config.timeoutMs);
 
@@ -190,10 +195,16 @@ export class UnstructuredExtractor {
       const blob = new Blob([raw.body], { type: raw.contentType ?? "application/octet-stream" });
       form.append("files", blob, fileName);
       form.append("strategy", this.config.strategy);
+      if (languageHint) {
+        form.append("language", languageHint);
+      }
 
       const headers = new Headers({ Accept: "application/json" });
       if (this.config.apiKey) {
         headers.set("Authorization", `Bearer ${this.config.apiKey}`);
+      }
+      if (languageHint) {
+        headers.set("Accept-Language", languageHint);
       }
 
       const response = await this.fetchImpl(endpoint, {
@@ -248,9 +259,12 @@ export class UnstructuredExtractor {
   private materialiseSegments(
     docId: string,
     elements: ReadonlyArray<z.infer<typeof unstructuredElementSchema>>,
-  ): StructuredSegment[] {
+    rawMimeType: string | null,
+  ): { segments: StructuredSegment[]; truncated: boolean } {
     const segments: StructuredSegment[] = [];
     let ordinal = 0;
+    const pageLimit = isPdfMime(rawMimeType) ? PDF_PAGE_LIMIT : Number.POSITIVE_INFINITY;
+    let truncated = false;
 
     for (const element of elements) {
       const kind = resolveKind(element.type);
@@ -268,6 +282,10 @@ export class UnstructuredExtractor {
       const pageNumber = extractPageNumber(element.metadata);
       const boundingBox = extractBoundingBox(element.metadata);
       const sourceId = typeof element.id === "string" && element.id.trim().length > 0 ? element.id.trim() : null;
+      if (pageNumber !== null && pageNumber > pageLimit) {
+        truncated = true;
+        continue;
+      }
       const segment: StructuredSegment = {
         id: `${docId}#raw-${++ordinal}`,
         kind,
@@ -281,7 +299,11 @@ export class UnstructuredExtractor {
       segments.push(segment);
     }
 
-    return segments;
+    if (!truncated && pageLimit !== Number.POSITIVE_INFINITY && elements.length > segments.length) {
+      truncated = true;
+    }
+
+    return { segments, truncated };
   }
 }
 
@@ -300,17 +322,24 @@ function deriveFileName(url: string): string {
 }
 
 /** Maps the unstructured element type to our internal segment kind. */
-function resolveKind(rawType: string | undefined): StructuredSegmentKind | null {
+function resolveKind(rawType: string | undefined): SegmentKind | null {
   if (typeof rawType !== "string") {
     return null;
   }
-  const key = rawType.trim().toLowerCase().replace(/\s+/g, "_");
+  const key = rawType
+    .trim()
+    .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
+    .replace(/[\s-]+/g, "_")
+    .toLowerCase();
   return SEGMENT_KIND_MAP[key] ?? (key.startsWith("title") ? "title" : key.startsWith("list") ? "list" : null);
 }
 
 /** Collapses whitespace so deduplication and chunking receive clean content. */
 function normaliseText(value: string): string {
-  return value.replace(/\s+/g, " ").trim();
+  return value
+    .normalize("NFC")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 /** Extracts the page number from the element metadata, if available. */
@@ -322,7 +351,7 @@ function extractPageNumber(metadata: unknown): number | null {
   const candidates = [record.page_number, record.pageNumber, record.page];
   for (const candidate of candidates) {
     if (typeof candidate === "number" && Number.isFinite(candidate)) {
-      return Math.max(0, Math.floor(candidate));
+      return Math.max(1, Math.floor(candidate));
     }
   }
   return null;
@@ -419,5 +448,50 @@ function detectLanguage(segments: readonly StructuredSegment[]): string | null {
   } catch {
     return null;
   }
+}
+
+/** Returns `true` for PDF-like MIME types so the extractor can enforce limits. */
+function isPdfMime(mime: string | null): boolean {
+  if (!mime) {
+    return false;
+  }
+  const normalised = mime.toLowerCase();
+  return normalised === "application/pdf" || normalised === "application/x-pdf";
+}
+
+/**
+ * Derives a lightweight language hint relying on HTTP metadata and provenance
+ * snippets.  The hint is forwarded to Unstructured to bias OCR/NLP models
+ * towards the expected locale without waiting for the extraction result.
+ */
+function deriveLanguageHint(raw: RawFetched, provenance: SearxProvenanceContext): string | null {
+  const headerLanguage = raw.headers.get("content-language");
+  if (headerLanguage) {
+    const primary = headerLanguage.split(",")[0]?.trim();
+    if (primary) {
+      return primary.toLowerCase();
+    }
+  }
+
+  const hints: string[] = [];
+  if (provenance.titleHint) {
+    hints.push(provenance.titleHint);
+  }
+  if (provenance.snippetHint) {
+    hints.push(provenance.snippetHint);
+  }
+
+  if (hints.length > 0) {
+    try {
+      const detected = detect(hints.join(" "));
+      if (detected && detected.trim().length > 0) {
+        return detected.toLowerCase();
+      }
+    } catch {
+      // Ignore detection errors to keep the extractor resilient when hints fail.
+    }
+  }
+
+  return null;
 }
 

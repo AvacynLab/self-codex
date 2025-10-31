@@ -47,7 +47,7 @@ describe("search.status facade", () => {
     const structured = result.structuredContent as Record<string, any>;
     expect(result.isError).to.equal(false);
     expect(structured.ok).to.equal(false);
-    expect(structured.reason).to.equal("not_implemented");
+    expect(structured.code).to.equal("not_implemented");
     expect(structured.message).to.be.a("string").and.to.have.length.greaterThan(0);
   });
 });

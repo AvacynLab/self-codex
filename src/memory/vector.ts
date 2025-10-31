@@ -12,6 +12,8 @@ import { normaliseProvenanceList, type Provenance } from "../types/provenance.js
  * configure an extremely large `MCP_MEMORY_VECTOR_MAX_DOCS` override.
  */
 export const VECTOR_MEMORY_MAX_CAPACITY = 4096;
+/** Default number of chunks retained per logical document when no override is provided. */
+const DEFAULT_MAX_CHUNKS_PER_DOCUMENT = 24;
 
 /** Normalised representation of a single vectorised memory document. */
 export interface VectorMemoryDocument {
@@ -51,6 +53,8 @@ export interface VectorMemoryIndexOptions {
   fileName?: string;
   /** Optional clock used by tests to inject deterministic timestamps. */
   now?: () => number;
+  /** Optional cap on the number of chunks retained per logical document. */
+  maxChunksPerDocument?: number;
 }
 
 /** Input payload accepted when storing a new vector document. */
@@ -127,8 +131,10 @@ interface VectorDocumentRecord extends VectorMemoryDocument {}
 export class VectorMemoryIndex {
   private readonly filePath: string;
   private readonly maxDocuments: number;
+  private readonly maxChunksPerDocument: number | null;
   private readonly now: () => number;
   private readonly records = new Map<string, VectorDocumentRecord>();
+  private readonly docIndex = new Map<string, Set<string>>();
 
   private constructor(options: VectorMemoryIndexOptions) {
     // Persist the index inside the caller-provided directory while forbidding
@@ -141,6 +147,15 @@ export class VectorMemoryIndex {
       ? Math.floor(requestedCapacity)
       : 512;
     this.maxDocuments = Math.max(1, Math.min(VECTOR_MEMORY_MAX_CAPACITY, normalisedCapacity));
+    const requestedPerDoc = options.maxChunksPerDocument;
+    if (requestedPerDoc === undefined || requestedPerDoc === null) {
+      this.maxChunksPerDocument = Math.min(this.maxDocuments, DEFAULT_MAX_CHUNKS_PER_DOCUMENT);
+    } else if (!Number.isFinite(requestedPerDoc) || requestedPerDoc <= 0) {
+      this.maxChunksPerDocument = null;
+    } else {
+      const normalisedPerDoc = Math.floor(requestedPerDoc);
+      this.maxChunksPerDocument = Math.max(1, Math.min(this.maxDocuments, normalisedPerDoc));
+    }
     this.now = options.now ?? (() => Date.now());
   }
 
@@ -182,7 +197,8 @@ export class VectorMemoryIndex {
     const timestamp = this.now();
     const tags = normaliseTags(input.tags);
     const text = input.text.trim();
-    const metadata = input.metadata ? { ...input.metadata } : {};
+    const metadata = normaliseMetadata(input.metadata);
+    const docId = extractDocId(metadata);
     const provenance = normaliseProvenanceList(input.provenance);
 
     const tokens = tokenise(text);
@@ -191,6 +207,10 @@ export class VectorMemoryIndex {
 
     const existing = this.records.get(id);
     const createdAt = input.createdAt ?? existing?.createdAt ?? timestamp;
+
+    if (existing) {
+      this.unregisterDocReference(extractDocId(existing.metadata), id);
+    }
 
     const record: VectorDocumentRecord = {
       id,
@@ -206,7 +226,9 @@ export class VectorMemoryIndex {
     };
 
     this.records.set(id, record);
+    this.registerDocReference(docId, id);
     this.enforceCapacity();
+    this.enforcePerDocumentCapacity(docId);
     await this.persist();
     return { ...record, metadata: { ...record.metadata }, provenance: [...record.provenance] };
   }
@@ -274,7 +296,7 @@ export class VectorMemoryIndex {
     }
 
     for (const id of unique) {
-      if (this.records.delete(id)) {
+      if (this.deleteRecord(id)) {
         removed += 1;
       }
     }
@@ -289,6 +311,7 @@ export class VectorMemoryIndex {
   /** Removes every stored document and truncates the on-disk index. */
   async clear(): Promise<void> {
     this.records.clear();
+    this.docIndex.clear();
     await this.persist();
   }
 
@@ -298,9 +321,11 @@ export class VectorMemoryIndex {
     }
 
     const sorted = Array.from(this.records.values()).sort((a, b) => a.createdAt - b.createdAt);
-    const overflow = this.records.size - this.maxDocuments;
-    for (let i = 0; i < overflow; i += 1) {
-      this.records.delete(sorted[i].id);
+    while (this.records.size > this.maxDocuments && sorted.length > 0) {
+      const oldest = sorted.shift();
+      if (oldest) {
+        this.deleteRecord(oldest.id);
+      }
     }
   }
 
@@ -332,7 +357,7 @@ export class VectorMemoryIndex {
         id: entry.id,
         text: entry.text,
         tags: Array.isArray(entry.tags) ? entry.tags.map(String) : [],
-        metadata: entry.metadata ?? {},
+        metadata: normaliseMetadata(entry.metadata),
         provenance: normaliseProvenanceList(entry.provenance),
         createdAt: entry.created_at,
         updatedAt: entry.updated_at,
@@ -341,6 +366,7 @@ export class VectorMemoryIndex {
         tokenCount: entry.token_count ?? 0,
       };
       this.records.set(record.id, record);
+      this.registerDocReference(extractDocId(record.metadata), record.id);
     }
   }
 
@@ -364,6 +390,67 @@ export class VectorMemoryIndex {
     await mkdir(dirname(this.filePath), { recursive: true });
     await writeFile(tmpPath, JSON.stringify(serialized, null, 2), "utf8");
     await rename(tmpPath, this.filePath);
+  }
+
+  private registerDocReference(docId: string | null, recordId: string): void {
+    if (!docId) {
+      return;
+    }
+    const bucket = this.docIndex.get(docId);
+    if (bucket) {
+      bucket.add(recordId);
+    } else {
+      this.docIndex.set(docId, new Set([recordId]));
+    }
+  }
+
+  private unregisterDocReference(docId: string | null, recordId: string): void {
+    if (!docId) {
+      return;
+    }
+    const bucket = this.docIndex.get(docId);
+    if (!bucket) {
+      return;
+    }
+    bucket.delete(recordId);
+    if (bucket.size === 0) {
+      this.docIndex.delete(docId);
+    }
+  }
+
+  private enforcePerDocumentCapacity(docId: string | null): void {
+    if (!docId || this.maxChunksPerDocument === null) {
+      return;
+    }
+    const bucket = this.docIndex.get(docId);
+    if (!bucket) {
+      return;
+    }
+    if (bucket.size <= this.maxChunksPerDocument) {
+      return;
+    }
+
+    const ordered = Array.from(bucket)
+      .map((recordId) => this.records.get(recordId))
+      .filter((record): record is VectorDocumentRecord => Boolean(record))
+      .sort((a, b) => a.createdAt - b.createdAt);
+
+    while (bucket.size > this.maxChunksPerDocument && ordered.length > 0) {
+      const oldest = ordered.shift();
+      if (oldest) {
+        this.deleteRecord(oldest.id);
+      }
+    }
+  }
+
+  private deleteRecord(id: string): boolean {
+    const record = this.records.get(id);
+    if (!record) {
+      return false;
+    }
+    this.records.delete(id);
+    this.unregisterDocReference(extractDocId(record.metadata), id);
+    return true;
   }
 }
 
@@ -417,6 +504,52 @@ export function embedText(options: EmbedTextOptions): EmbedTextResult {
     norm,
     tokenCount: tokens.length,
   };
+}
+
+function normaliseMetadata(metadata: Record<string, unknown> | undefined): Record<string, unknown> {
+  const clone: Record<string, unknown> = {};
+  if (metadata) {
+    for (const [key, value] of Object.entries(metadata)) {
+      clone[key] = value;
+    }
+  }
+
+  const docId = extractDocId(clone);
+  if (docId) {
+    clone.docId = docId;
+  } else {
+    delete clone.docId;
+  }
+
+  if ("document_id" in clone) {
+    delete clone.document_id;
+  }
+
+  const languageValue = clone.language;
+  if (typeof languageValue === "string") {
+    const trimmed = languageValue.trim();
+    if (trimmed) {
+      clone.language = trimmed.toLowerCase();
+    } else {
+      delete clone.language;
+    }
+  }
+
+  return clone;
+}
+
+function extractDocId(metadata: Record<string, unknown>): string | null {
+  const candidates: unknown[] = [metadata.docId, metadata.document_id];
+  for (const candidate of candidates) {
+    if (typeof candidate !== "string") {
+      continue;
+    }
+    const trimmed = candidate.trim();
+    if (trimmed.length > 0) {
+      return trimmed;
+    }
+  }
+  return null;
 }
 
 function normaliseTags(tags: string[] | undefined): string[] {

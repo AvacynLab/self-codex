@@ -1,56 +1,76 @@
 # Minimal SearxNG configuration tailored for the MCP search module. The goal is
 # to provide deterministic defaults that work in development and CI while
 # keeping the list of enabled engines compliant with permissive licences.
-#
-# Keep the upstream defaults for every section so the container benefits from
-# future engine updates and security fixes. The orchestrator narrows the engines
-# used at runtime through `SEARCH_SEARX_ENGINES`, avoiding configuration drift
-# in this file and preventing duplicate shortcut registrations during startup.
+# By keeping `use_default_settings` enabled we inherit upstream UI metadata
+# (including `categories_as_tabs`), which avoids chasing schema changes every
+# time SearxNG adds or reshuffles tabs.
 use_default_settings: true
 
 server:
-  # Use a deterministic but sufficiently long default secret so the container
-  # boots without requiring manual overrides during local development. The
-  # sample value below is 48 characters long, satisfying SearxNG's minimum
-  # length requirements while remaining safe to replace in production via
-  # environment overrides or Docker secrets.
+  # Deterministic default secret for local work. Replace in production via env.
   secret_key: "please-change-me-please-change-me-please-change-me"
   port: 8080
   bind_address: "0.0.0.0"
   public_instance: false
-  # The limiter requires a Valkey/Redis backend; keep it disabled in the
-  # self-contained development stack to avoid depending on external services.
   limiter: false
-  # SearxNG only supports GET or POST as the incoming request method. Rely on
-  # POST so queries remain private from intermediaries and match the upstream
-  # default, avoiding startup validation errors.
-  method: "POST"
+  # Keep the legacy GET search endpoint enabled so tooling and health probes can
+  # query without negotiating CSRF tokens. Production deployments can override
+  # this value to POST if they want stricter caching controls.
+  method: "GET"
 
 search:
-  safe_search: 1
+  # Safe-search defaults to 0 (off) so integration tests can cover unrestricted
+  # SERP results. Switch to 1 in production environments needing filtering.
+  safe_search: 0
   autocomplete: ""
   formats:
     - html
     - json
 
-# Rely on the upstream engine catalogue so the container automatically benefits
-# from security fixes and API updates. The orchestrator narrows the actual
-# engines used via `SEARCH_SEARX_ENGINES`, avoiding configuration drift in this
-# file and preventing duplicate shortcut registrations during startup.
-
-ui:
-  theme_args:
-    header_logo: ""
-  infinite_scroll: false
+# Engines listed below mirror the SEARCH_SEARX_ENGINES and
+# SEARCH_SEARX_CATEGORIES runtime defaults documented in env/.env.example. Keep
+# this catalogue minimal so contributors can run the stack without additional
+# API keys while retaining decent coverage in tests.
+engines:
+  # DuckDuckGo covers most general queries with permissive rate limits.
+  - name: duckduckgo
+    engine: duckduckgo
+    shortcut: ddg
+    categories:
+      - general
+      - news
+      - images
+  # Wikipedia offers structured encyclopedic results for factual lookups.
+  - name: wikipedia
+    engine: wikipedia
+    shortcut: wiki
+    categories:
+      - general
+      - news
+  # ArXiv exposes recent research papers, critical for the PDF scenario.
+  - name: arxiv
+    engine: arxiv
+    shortcut: arxiv
+    categories:
+      - files
+      - science
+  # GitHub search powers code-oriented workflows while remaining API free.
+  - name: github
+    engine: github
+    shortcut: gh
+    categories:
+      - it
+      - general
+  # Mojeek is an independent crawler that improves redundancy when DDG throttles.
+  - name: mojeek
+    engine: mojeek
+    shortcut: mojeek
+    categories:
+      - general
+      - news
 
 result_proxy:
+  # Keep the proxy disabled by default so local testing remains simple. Define
+  # `url` to enable it when routing traffic through a hardened instance.
   url: ""
   rewrite_result_links: false
-
-categories_as_tabs:
-  - general
-  - news
-  - science
-  - it
-  - files
-  - images

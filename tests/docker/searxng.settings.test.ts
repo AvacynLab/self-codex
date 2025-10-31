@@ -11,11 +11,23 @@ describe('docker/searxng/settings.yml', () => {
   const settingsContent = readFileSync(settingsPath, 'utf8');
   const config = parse(settingsContent) as Record<string, unknown>;
 
-  it('inherits upstream defaults without redefining the engine catalogue', () => {
+  it('declares a curated engine catalogue with safe defaults', () => {
     expect(config.use_default_settings).to.equal(true);
 
-    const engines = config.engines as Array<Record<string, unknown>> | undefined;
-    expect(engines, 'engines overrides').to.be.undefined;
+    const engines = config.engines as Array<{ name?: unknown }> | undefined;
+    expect(engines, 'engines overrides').to.be.an('array');
+
+    const engineNames = new Set((engines ?? []).map((engine) => String(engine?.name ?? '')));
+    expect(engineNames).to.include('duckduckgo');
+    expect(engineNames).to.include('wikipedia');
+    expect(engineNames).to.include('arxiv');
+    expect(engineNames).to.include('github');
+    expect(engineNames).to.include('mojeek');
+  });
+
+  it('defaults safe_search to 0 so callers can opt-in via env overrides', () => {
+    const search = config.search as { safe_search?: unknown } | undefined;
+    expect(search?.safe_search).to.equal(0);
   });
 
   it('disables the limiter to avoid requiring an external Valkey service', () => {
@@ -24,9 +36,9 @@ describe('docker/searxng/settings.yml', () => {
     expect(server?.limiter).to.equal(false);
   });
 
-  it('uses POST as the HTTP method so requests remain compatible with defaults', () => {
+  it('keeps GET available so automated tooling can query without CSRF negotiation', () => {
     const server = config.server as { method?: unknown } | undefined;
-    expect(server?.method).to.equal('POST');
+    expect(server?.method).to.equal('GET');
   });
 
   it('ships with a sufficiently long default secret key for development', () => {
@@ -38,5 +50,10 @@ describe('docker/searxng/settings.yml', () => {
   it('documents the runtime allow-list to avoid configuration drift', () => {
     const fileContent = readFileSync(settingsPath, 'utf8');
     expect(fileContent).to.contain('SEARCH_SEARX_ENGINES');
+    expect(fileContent).to.contain('SEARCH_SEARX_CATEGORIES');
+  });
+
+  it('inherits categories_as_tabs from upstream defaults to satisfy schema validation', () => {
+    expect(config).to.not.have.property('categories_as_tabs');
   });
 });

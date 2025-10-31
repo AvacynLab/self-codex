@@ -9,7 +9,7 @@ import { EventStore } from "../../src/eventStore.js";
 import { StructuredLogger } from "../../src/logger.js";
 import { StigmergyField } from "../../src/coord/stigmergy.js";
 import { BehaviorTreeStatusRegistry } from "../../src/monitor/btStatusRegistry.js";
-import { createDashboardRouter } from "../../src/monitor/dashboard.js";
+import { createDashboardRouter, __testing as dashboardTesting } from "../../src/monitor/dashboard.js";
 import type { OrchestratorSupervisorContract } from "../../src/agents/supervisor.js";
 import { createHttpRequest, MemoryHttpResponse } from "../helpers/http.js";
 import { StreamResponse, waitForSseEvents } from "./helpers/streamResponse.js";
@@ -114,6 +114,12 @@ describe("monitor/dashboard http", () => {
       expect(metricsResponse.statusCode).to.equal(200);
       const metricsPayload = JSON.parse(metricsResponse.body) as { metrics: unknown };
       expect(metricsPayload).to.have.property("metrics");
+
+      const summaryResponse = new MemoryHttpResponse();
+      await router.handleRequest(createRequest("GET", "/api/search/summary"), summaryResponse);
+      expect(summaryResponse.statusCode).to.equal(200);
+      const summaryPayload = JSON.parse(summaryResponse.body) as Record<string, unknown>;
+      expect(summaryPayload).to.include.all.keys("queue", "topDomains", "contentLatency");
     } finally {
       await router.close();
     }
@@ -174,7 +180,8 @@ describe("monitor/dashboard http", () => {
     }
   });
 
-  it("drops buffered frames when the client backpressure persists", async () => {
+  it("drops buffered frames when the client backpressure persists", async function () {
+    this.timeout(5000);
     process.env.MCP_SSE_MAX_BUFFER = "128";
     const logger = new CapturingLogger();
     const graphState = new GraphState();
@@ -195,9 +202,13 @@ describe("monitor/dashboard http", () => {
       await router.handleRequest(createRequest("GET", "/stream"), response);
       response.triggerBackpressure(5);
 
+      const debounceMs = dashboardTesting.resolveDashboardBroadcastDebounce(router.streamIntervalMs);
       for (let i = 0; i < 8; i += 1) {
         router.broadcast();
+        await delay(debounceMs + 10);
       }
+
+      await delay(debounceMs + 10);
 
       expect(logger.warnings.some((entry) => entry.event === "resources_sse_buffer_overflow")).to.equal(true);
 

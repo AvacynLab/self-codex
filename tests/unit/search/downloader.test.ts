@@ -9,7 +9,9 @@ import {
   SearchDownloader,
   computeDocId,
 } from "../../../src/search/downloader.js";
+import type { DownloaderDependencies } from "../../../src/search/downloader.js";
 import type { FetchConfig } from "../../../src/search/config.js";
+import type { RawFetched } from "../../../src/search/types.js";
 
 /** Minimal Response wrapper letting tests control the final URL value. */
 class TestResponse extends Response {
@@ -115,6 +117,19 @@ describe("SearchDownloader", () => {
     expect(id2).to.equal(id);
   });
 
+  it("falls back to the payload sample when validators are missing", () => {
+    const headers = new Map<string, string>();
+    const bodyA = Buffer.from("sample-a");
+    const bodyB = Buffer.from("sample-b");
+
+    const idA = computeDocId("https://example.com/no-validators", headers, bodyA);
+    const idB = computeDocId("https://example.com/no-validators", headers, bodyB);
+
+    expect(idA).to.have.length(64);
+    expect(idB).to.have.length(64);
+    expect(idA).to.not.equal(idB);
+  });
+
   it("guesses the content type using the file extension when missing", async () => {
     const fetchStub = sinon.stub().resolves(
       new TestResponse(Buffer.from("%PDF-1.7"), {
@@ -127,6 +142,20 @@ describe("SearchDownloader", () => {
     const downloader = new SearchDownloader(BASE_CONFIG, { fetchImpl: fetchStub });
     const result = await downloader.fetchUrl("https://example.com/report.pdf");
     expect(result.contentType).to.equal("application/pdf");
+  });
+
+  it("sniffs the content type when the URL lacks an extension", async () => {
+    const fetchStub = sinon.stub().resolves(
+      new TestResponse(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00]), {
+        status: 200,
+        headers: {},
+        url: "https://cdn.example.com/resource",
+      }),
+    );
+
+    const downloader = new SearchDownloader(BASE_CONFIG, { fetchImpl: fetchStub });
+    const result = await downloader.fetchUrl("https://cdn.example.com/resource");
+    expect(result.contentType).to.equal("image/png");
   });
 
   it("wraps timeouts into a DownloadTimeoutError", async () => {
@@ -206,6 +235,55 @@ describe("SearchDownloader", () => {
     expect(second.finalUrl).to.equal("https://example.com/another");
 
     sinon.assert.callCount(fetchStub, 3);
+  });
+
+  it("issues conditional requests using cached validators and returns cached payload on 304", async () => {
+    const canonicalUrl = "https://example.com/asset";
+    const cachedPayload: RawFetched = {
+      requestedUrl: canonicalUrl,
+      finalUrl: canonicalUrl,
+      status: 200,
+      fetchedAt: 1,
+      headers: new Map<string, string>([["etag", "\"v1\""]]),
+      contentType: "text/plain",
+      size: 4,
+      checksum: "hash",
+      body: Buffer.from("data"),
+    };
+
+    const storeStub = sinon.stub();
+    const cache: NonNullable<DownloaderDependencies["contentCache"]> = {
+      get: sinon.stub().callsFake((url: string, validator?: string) => {
+        if (validator) {
+          expect(validator).to.equal("\"v1\"");
+          return cachedPayload;
+        }
+        expect(url).to.equal(canonicalUrl);
+        return null;
+      }),
+      getValidatorMetadata: sinon.stub().returns({ validator: "\"v1\"", etag: "\"v1\"", lastModified: null }),
+      getFailure: sinon.stub().returns(null),
+      recordFailure: sinon.stub(),
+      store: storeStub,
+      clearFailure: sinon.stub(),
+    };
+
+    const fetchStub = sinon.stub().callsFake((input: RequestInfo | URL, init?: RequestInit) => {
+      const headers = new Headers(init?.headers);
+      expect(headers.get("If-None-Match")).to.equal("\"v1\"");
+      return Promise.resolve(
+        new TestResponse(null, {
+          status: 304,
+          headers: {},
+          url: typeof input === "string" ? input : input.toString(),
+        }),
+      );
+    });
+
+    const downloader = new SearchDownloader(BASE_CONFIG, { fetchImpl: fetchStub, contentCache: cache });
+    const result = await downloader.fetchUrl(canonicalUrl);
+    expect(result).to.equal(cachedPayload);
+    sinon.assert.notCalled(storeStub);
   });
 
   it("throttles sequential requests hitting the same domain", async () => {
@@ -317,6 +395,46 @@ describe("SearchDownloader", () => {
     now = 120_000;
     const recovered = await downloader.fetchUrl("https://example.com/unreliable");
     expect(recovered.body.toString()).to.equal("ok");
+    sinon.assert.calledTwice(fetchStub);
+  });
+
+  it("clears cached entries and throttling state when disposed", async () => {
+    const fetchStub = sinon.stub();
+    fetchStub.onCall(0).resolves(
+      new TestResponse("first", {
+        status: 200,
+        headers: { "Content-Type": "text/plain" },
+        url: "https://example.com/cache",
+      }),
+    );
+    fetchStub.onCall(1).resolves(
+      new TestResponse("second", {
+        status: 200,
+        headers: { "Content-Type": "text/plain" },
+        url: "https://example.com/cache",
+      }),
+    );
+
+    const config: FetchConfig = {
+      ...BASE_CONFIG,
+      cache: {
+        maxEntriesPerDomain: 4,
+        defaultTtlMs: 60_000,
+        clientErrorTtlMs: 60_000,
+        serverErrorTtlMs: 60_000,
+        domainTtlOverrides: {},
+      },
+    };
+
+    const downloader = new SearchDownloader(config, { fetchImpl: fetchStub, now: () => 1_700_000_000_000 });
+
+    await downloader.fetchUrl("https://example.com/cache");
+    await downloader.fetchUrl("https://example.com/cache");
+    sinon.assert.calledOnce(fetchStub);
+
+    downloader.dispose();
+
+    await downloader.fetchUrl("https://example.com/cache");
     sinon.assert.calledTwice(fetchStub);
   });
 });

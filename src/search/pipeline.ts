@@ -9,7 +9,11 @@ import { UnstructuredExtractor, UnstructuredExtractorError } from "./extractor.j
 import { KnowledgeGraphIngestor, type KnowledgeGraphIngestResult } from "./ingest/toKnowledgeGraph.js";
 import { VectorStoreIngestor, type VectorStoreIngestResult } from "./ingest/toVectorStore.js";
 import { deduplicateSegments, finalizeDocId } from "./normalizer.js";
-import { SearchMetricsRecorder, type SearchMetricsSnapshot } from "./metrics.js";
+import {
+  SearchMetricsRecorder,
+  type SearchMetricContext,
+  type SearchMetricsSnapshot,
+} from "./metrics.js";
 import { computeDocId } from "./downloader.js";
 import type { SearxResult, StructuredDocument } from "./types.js";
 
@@ -136,7 +140,7 @@ export class SearchPipeline {
   async runSearchJob(parameters: SearchJobParameters): Promise<SearchJobResult> {
     const jobId = normaliseJobId(parameters.jobId);
     const query = parameters.query.trim();
-    const maxResults = normaliseMaxResults(parameters.maxResults);
+    const maxResults = normaliseMaxResults(parameters.maxResults, this.config.pipeline.maxResults);
     const effectiveCategories = normaliseList(parameters.categories, this.config.searx.categories);
     const effectiveEngines = normaliseList(parameters.engines, this.config.searx.engines);
     const fetchContent = parameters.fetchContent ?? true;
@@ -167,6 +171,7 @@ export class SearchPipeline {
       "searxQuery",
       () => this.searxClient.search(query, queryOptions),
       (error) => (error instanceof SearxClientError ? error.code : null),
+      { domain: deriveDomain(this.config.searx.baseUrl), contentType: "application/json" },
     ).catch((error) => {
       const failure = buildError("search", null, error);
       errors.push(failure);
@@ -339,12 +344,28 @@ export class SearchPipeline {
 
     const fetchOutcomes = await mapWithConcurrency(results, this.config.fetch.parallelism, async (result) => {
       try {
-        const raw = await this.executeWithMetrics("fetchUrl", () => this.downloader.fetchUrl(result.url), (error) => {
-          if (error instanceof DownloadError) {
-            return error.name;
-          }
-          return error instanceof Error ? error.name : null;
-        });
+        const raw = await this.executeWithMetrics(
+          "fetchUrl",
+          () => this.downloader.fetchUrl(result.url),
+          (error) => {
+            if (error instanceof DownloadError) {
+              return error.name;
+            }
+            return error instanceof Error ? error.name : null;
+          },
+          (outcome) => {
+            if (outcome.ok) {
+              return {
+                domain: deriveDomain(outcome.value.finalUrl) ?? deriveDomain(result.url),
+                contentType: outcome.value.contentType ?? result.mime,
+              };
+            }
+            return {
+              domain: deriveDomain(result.url),
+              contentType: result.mime,
+            };
+          },
+        );
         fetchedDocuments += 1;
         return { result, raw } as const;
       } catch (error) {
@@ -366,7 +387,7 @@ export class SearchPipeline {
     const extractionInputs = successfulFetches.map((entry) => ({
       result: entry.result,
       raw: entry.raw,
-      docId: computeDocId(entry.raw.finalUrl, entry.raw.headers),
+      docId: computeDocId(entry.raw.finalUrl, entry.raw.headers, entry.raw.body),
     }));
 
     const extractionOutcomes = await mapWithConcurrency(extractionInputs, this.config.pipeline.parallelExtract, async (input) => {
@@ -388,6 +409,19 @@ export class SearchPipeline {
               },
             }),
           (error) => (error instanceof UnstructuredExtractorError ? error.code : null),
+          (outcome) => {
+            if (outcome.ok) {
+              return {
+                domain: deriveDomain(outcome.value.url) ?? deriveDomain(input.raw.finalUrl),
+                contentType:
+                  outcome.value.mimeType ?? input.raw.contentType ?? input.result.mime ?? null,
+              };
+            }
+            return {
+              domain: deriveDomain(input.raw.finalUrl),
+              contentType: input.raw.contentType ?? input.result.mime ?? null,
+            };
+          },
         );
         const deduped = deduplicateSegments(structured);
         const finalDocument = finalizeDocId(deduped, input.docId);
@@ -422,6 +456,7 @@ export class SearchPipeline {
               "ingestGraph",
               async () => this.knowledgeIngestor!.ingest(document),
               (error) => (error instanceof Error ? error.name : null),
+              { domain: deriveDomain(document.url), contentType: document.mimeType },
             );
             graphIngested += 1;
           } catch (error) {
@@ -453,6 +488,7 @@ export class SearchPipeline {
               "ingestVector",
               () => this.vectorIngestor!.ingest(document),
               (error) => (error instanceof Error ? error.name : null),
+              { domain: deriveDomain(document.url), contentType: document.mimeType },
             );
             vectorIngested += 1;
           } catch (error) {
@@ -493,9 +529,10 @@ export class SearchPipeline {
     operation: Parameters<SearchMetricsRecorder["measure"]>[0],
     callback: () => Promise<T>,
     errorCodeResolver?: (error: unknown) => string | null,
+    context?: SearchMetricContext<T>,
   ): Promise<T> {
     if (this.metrics) {
-      return this.metrics.measure(operation, callback, errorCodeResolver);
+      return this.metrics.measure(operation, callback, errorCodeResolver, context);
     }
     return callback();
   }
@@ -618,11 +655,12 @@ function normaliseJobId(jobId: string | null | undefined): string | null {
   return trimmed.length > 0 ? trimmed : null;
 }
 
-function normaliseMaxResults(maxResults: number | undefined): number {
+function normaliseMaxResults(maxResults: number | undefined, configuredMax: number): number {
+  const upperBound = Math.min(50, Math.max(1, Math.floor(configuredMax)));
   if (typeof maxResults !== "number" || Number.isNaN(maxResults) || maxResults <= 0) {
-    return 10;
+    return upperBound;
   }
-  return Math.min(20, Math.floor(maxResults));
+  return Math.min(upperBound, Math.floor(maxResults));
 }
 
 function normaliseList(values: readonly string[] | undefined, fallback: readonly string[]): string[] {
@@ -661,7 +699,8 @@ function buildSyntheticResult(source: DirectIngestSource, index: number): SearxR
     categories,
     position,
     thumbnailUrl: null,
-    mimeType: null,
+    mime: null,
+    publishedAt: null,
     score: null,
   };
 }
@@ -694,6 +733,25 @@ function deduplicateByUrl(results: readonly SearxResult[]): SearxResult[] {
     unique.push(result);
   }
   return unique;
+}
+
+/** Extracts a lower-cased hostname from a URL or returns null when unavailable. */
+function deriveDomain(url: string | null | undefined): string | null {
+  if (!url) {
+    return null;
+  }
+  const trimmed = url.trim();
+  if (trimmed.length === 0) {
+    return null;
+  }
+  try {
+    const value = trimmed.includes("://") ? trimmed : `https://${trimmed}`;
+    const { hostname } = new URL(value);
+    return hostname.toLowerCase();
+  } catch {
+    const candidate = trimmed.split("/")[0]?.toLowerCase();
+    return candidate && candidate.length > 0 ? candidate : null;
+  }
 }
 
 function buildError(stage: SearchJobError["stage"], url: string | null, cause: unknown): SearchJobError {

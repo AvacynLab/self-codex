@@ -37,6 +37,7 @@ describe("search/searxClient", () => {
       injectGraph: true,
       injectVector: true,
       parallelExtract: 1,
+      maxResults: 6,
     },
   };
 
@@ -76,10 +77,35 @@ describe("search/searxClient", () => {
     expect(result.snippet).to.equal("A synthetic snippet");
     expect(result.engines).to.deep.equal(["ddg"]);
     expect(result.categories).to.deep.equal(["general"]);
-    expect(result.mimeType).to.equal("text/html");
+    expect(result.mime).to.equal("text/html");
     expect(result.thumbnailUrl).to.equal("https://example.com/thumb.jpg");
     expect(result.score).to.equal(1.23);
     expect(result.id).to.have.length(64);
+  });
+
+  it("ignores additional keys returned by SearxNG", async () => {
+    const payload = {
+      query: "llm",
+      results: [
+        {
+          url: "https://example.com/extra",
+          title: "Extra fields",
+        },
+      ],
+      answers: ["42"],
+      corrections: { original: "lln", correction: "llm" },
+      suggestions: ["llm research"],
+    };
+
+    const client = new SearxClient(
+      baseConfig,
+      createFetchStub([createJsonResponse(payload, 200, "application/json")]),
+    );
+
+    const response = await client.search("llm");
+    expect(response.query).to.equal("llm");
+    expect(response.results).to.have.lengthOf(1);
+    expect((response.results[0] as SearxResult).url).to.equal("https://example.com/extra");
   });
 
   it("throws informative errors when Searx responds with HTTP failures", async () => {
@@ -99,7 +125,10 @@ describe("search/searxClient", () => {
   });
 
   it("validates the response schema", async () => {
-    const client = new SearxClient(baseConfig, createFetchStub([createJsonResponse({ wrong: [] }, 200)]));
+    const client = new SearxClient(
+      baseConfig,
+      createFetchStub([createJsonResponse({ query: "bad", results: "oops" }, 200)]),
+    );
     const error = await expectSearxFailure(client.search("oops"));
     expect(error.code).to.equal("E-SEARCH-SEARX-SCHEMA");
   });

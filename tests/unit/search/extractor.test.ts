@@ -39,6 +39,9 @@ describe("search/extractor", () => {
       injectGraph: true,
       injectVector: true,
       parallelExtract: 1,
+      // Explicit fallback keeps helper utilities stable when they inspect the
+      // search config outside of the pipeline tests.
+      maxResults: 12,
     },
   };
 
@@ -97,6 +100,7 @@ describe("search/extractor", () => {
     const headers = call.init?.headers as Headers | undefined;
     expect(headers?.get("accept")).to.equal("application/json");
     expect(headers?.get("authorization")).to.equal("Bearer secret");
+    expect(headers?.get("accept-language")).to.equal("en");
 
     expect(document.id).to.equal("doc-1");
     expect(document.url).to.equal("https://example.com/doc.pdf");
@@ -113,10 +117,86 @@ describe("search/extractor", () => {
       sourceUrl: "https://example.com/source",
     });
 
-    expect(document.segments).to.have.lengthOf(3);
+    expect(document.segments).to.have.lengthOf(4);
     const [titleSegment] = document.segments;
     expect(titleSegment.kind).to.equal("title");
     expect(titleSegment.pageNumber).to.equal(1);
+    const paragraphSegment = document.segments.find((segment) => segment.kind === "paragraph");
+    expect(paragraphSegment?.text).to.include("Search pipelines connect searx results");
+  });
+
+  it("caps PDF extraction at 40 pages and flags truncation", async () => {
+    const payload = Array.from({ length: 45 }, (_, index) => ({
+      type: "NarrativeText",
+      id: `seg-${index + 1}`,
+      text: `Paragraph ${index + 1}`,
+      metadata: { page_number: index + 1 },
+    }));
+
+    const recorder: FetchRecorder = [];
+    const extractor = new UnstructuredExtractor(
+      baseConfig,
+      createFetchStub([createJsonResponse(payload, 200, "application/json")], recorder),
+    );
+
+    const request: ExtractionRequest = {
+      docId: "doc-truncated",
+      raw: createRawFetched({ url: "https://example.com/truncated.pdf" }),
+      provenance: {
+        query: "pdf truncation",
+        engines: ["ddg"],
+        categories: ["files"],
+        position: 1,
+        sourceUrl: "https://example.com/truncated",
+      },
+    };
+
+    const document = await extractor.extract(request);
+    expect(recorder).to.have.lengthOf(1);
+    expect(document.metadata?.truncated).to.equal(true);
+    expect(document.segments).to.have.lengthOf(40);
+    expect(document.segments.every((segment) => (segment.pageNumber ?? 0) <= 40)).to.equal(true);
+  });
+
+  it("derives the language hint from HTTP headers when provided", async () => {
+    const recorder: FetchRecorder = [];
+    const extractor = new UnstructuredExtractor(
+      baseConfig,
+      createFetchStub(
+        [
+          createJsonResponse(
+            [
+              { type: "Title", id: "seg-1", text: "Bonjour", metadata: { page_number: 1 } },
+              { type: "NarrativeText", id: "seg-2", text: "Le document est en français.", metadata: { page_number: 1 } },
+            ],
+            200,
+            "application/json",
+          ),
+        ],
+        recorder,
+      ),
+    );
+
+    const request: ExtractionRequest = {
+      docId: "doc-fr",
+      raw: createRawFetched({
+        url: "https://example.com/fr.pdf",
+        headers: [["content-language", "fr-FR"]],
+      }),
+      provenance: {
+        query: "document français",
+        engines: ["ddg"],
+        categories: ["general"],
+        position: 1,
+        sourceUrl: "https://example.com/fr",
+      },
+    };
+
+    const document = await extractor.extract(request);
+    const [call] = recorder;
+    const headers = call.init?.headers as Headers | undefined;
+    expect(headers?.get("accept-language")).to.equal("fr-fr");
+    expect(document.language).to.equal("fr");
   });
 
   it("wraps HTTP failures into extractor errors", async () => {
@@ -190,14 +270,24 @@ function createJsonResponse(payload: unknown, status = 200, contentType = "appli
     });
 }
 
-function createRawFetched(overrides: { url: string }): RawFetched {
+function createRawFetched(overrides: {
+  url: string;
+  headers?: ReadonlyArray<[string, string]>;
+  contentType?: string;
+}): RawFetched {
+  const contentType = overrides.contentType ?? "application/pdf";
+  const headerMap = new Map<string, string>();
+  headerMap.set("content-type", contentType);
+  for (const [key, value] of overrides.headers ?? []) {
+    headerMap.set(key.toLowerCase(), value);
+  }
   return {
     requestedUrl: overrides.url,
     finalUrl: overrides.url,
     status: 200,
     fetchedAt: Date.now(),
-    headers: new Map<string, string>([["content-type", "application/pdf"]]),
-    contentType: "application/pdf",
+    headers: headerMap,
+    contentType,
     size: 100,
     checksum: "abc123",
     body: Buffer.from("test"),

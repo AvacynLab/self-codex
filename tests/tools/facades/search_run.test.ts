@@ -178,9 +178,11 @@ describe("search.run facade", () => {
     expect(structured.ok).to.equal(true);
     expect(structured.count).to.equal(1);
     expect(structured.docs[0]?.id).to.equal("doc-1");
-    expect(structured.errors).to.have.lengthOf(1);
+    expect(structured.warnings).to.have.lengthOf(1);
     expect(structured.stats.requested).to.equal(4);
     expect(structured.job_id).to.equal("job-search-run");
+    expect(structured.budget_used?.tool_calls).to.equal(1);
+    expect(structured.budget_used?.tokens).to.be.greaterThan(0);
     const expectedIdempotencyKey = computeDeterministicIdempotencyKey({
       query: "benchmarks multimodaux",
       categories: ["general", "files"],
@@ -254,5 +256,37 @@ describe("search.run facade", () => {
     }
 
     expect(captured).to.be.instanceOf(z.ZodError);
+  });
+
+  it("defaults max_results to six when omitted", async () => {
+    const logger = new StructuredLogger();
+    let capturedParameters: SearchJobParameters | undefined;
+    const pipeline = {
+      async runSearchJob(parameters: SearchJobParameters) {
+        capturedParameters = parameters;
+        return createSearchJobResult({ documents: [] });
+      },
+    } as unknown as import("../../../src/search/index.js").SearchPipeline;
+
+    const handler = createSearchRunHandler({ pipeline, logger });
+    const extras = createRequestExtras("req-search-run-defaults");
+
+    const result = await runWithRpcTrace(
+      { method: `tools/${SEARCH_RUN_TOOL_NAME}`, traceId: "trace-search-run-defaults", requestId: extras.requestId },
+      async () =>
+        runWithJsonRpcContext({ requestId: extras.requestId }, () =>
+          handler(
+            {
+              query: "benchmarks multimodaux",
+            },
+            extras,
+          ),
+        ),
+    );
+
+    expect(capturedParameters?.maxResults).to.equal(6);
+    const structured = result.structuredContent as Record<string, any>;
+    expect(structured.ok).to.equal(true);
+    expect(structured.count).to.equal(0);
   });
 });

@@ -181,6 +181,8 @@ function buildStubSearchConfig(): SearchConfig {
       injectGraph: true,
       injectVector: true,
       parallelExtract: 2,
+      // Align with production defaults when validation harness constructs stub pipelines.
+      maxResults: 12,
     },
   };
 }
