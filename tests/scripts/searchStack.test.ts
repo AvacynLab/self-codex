@@ -92,6 +92,26 @@ describe("scripts/lib/searchStack", () => {
     sinon.assert.calledTwice(delayStub);
   });
 
+  it("treats accepted status codes as success when waiting for a service", async () => {
+    const fetchStub = sinon.stub().resolves({ ok: false, status: 422 } as Response);
+    const manager = createSearchStackManager({ fetchImpl: fetchStub });
+    await manager.waitForService("http://service.test/legacy", {
+      acceptStatus: (status) => status === 422,
+    });
+    sinon.assert.calledOnce(fetchStub);
+  });
+
+  it("coerces string status codes before evaluating accepted statuses", async () => {
+    const fetchStub = sinon
+      .stub()
+      .resolves({ ok: false, status: "422" } as unknown as Response);
+    const manager = createSearchStackManager({ fetchImpl: fetchStub });
+    await manager.waitForService("http://service.test/legacy", {
+      acceptStatus: (status) => status === 422,
+    });
+    sinon.assert.calledOnce(fetchStub);
+  });
+
   it("brings up and tears down the docker stack with the compose file", async () => {
     const spawnStub = sinon.stub().callsFake(() => createFakeChild({ closeCode: 0 }));
     const composeFile = "/tmp/compose.yml";

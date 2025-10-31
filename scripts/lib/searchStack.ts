@@ -32,6 +32,7 @@ export interface WaitForServiceOptions {
   readonly method?: "GET" | "POST";
   readonly body?: string;
   readonly headers?: Record<string, string>;
+  readonly acceptStatus?: (status: number) => boolean;
 }
 
 /**
@@ -119,15 +120,20 @@ export function createSearchStackManager(deps: SearchStackDependencies = {}): Se
     const method = options.method ?? "GET";
     const headers = options.headers ?? {};
     const body = options.body ?? undefined;
+    const acceptStatus = options.acceptStatus;
     const deadline = Date.now() + timeoutMs;
     let lastError: Error | null = null;
     while (Date.now() < deadline) {
       try {
         const response = await fetchImpl(url, { method, headers, body });
-        if (response.ok) {
+        const rawStatus = (response as { status: unknown }).status;
+        const statusCode =
+          typeof rawStatus === "number" ? rawStatus : Number.parseInt(String(rawStatus), 10);
+        if (response.ok || (acceptStatus && acceptStatus(statusCode))) {
           return;
         }
-        lastError = new Error(`status ${response.status}`);
+        const statusLabel = Number.isNaN(statusCode) ? rawStatus : statusCode;
+        lastError = new Error(`status ${statusLabel}`);
       } catch (error) {
         lastError = error instanceof Error ? error : new Error(String(error));
       }
@@ -146,12 +152,24 @@ export function createSearchStackManager(deps: SearchStackDependencies = {}): Se
   }
 
   async function waitForUnstructuredReady(): Promise<void> {
+    try {
+      await waitForService("http://127.0.0.1:8000/healthcheck", {
+        timeoutMs: 90_000,
+        intervalMs: 2_000,
+      });
+      return;
+    } catch (healthError) {
+      // fall through to the legacy inference endpoint if /healthcheck is missing
+      void healthError; // suppress unused variable lint complaints
+    }
+
     await waitForService("http://127.0.0.1:8000/general/v0/general", {
       timeoutMs: 90_000,
       intervalMs: 2_000,
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ text: "ping" }),
+      acceptStatus: (status) => status === 422,
     });
   }
 
