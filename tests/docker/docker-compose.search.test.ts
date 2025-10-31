@@ -41,9 +41,11 @@ describe('docker/docker-compose.search.yml', () => {
     expect(probe, 'healthcheck test command').to.be.an('array');
     expect(probe?.[0]).to.equal('CMD-SHELL');
     const command = String(probe?.[1] ?? '');
-    expect(command).to.include('request.urlopen("http://127.0.0.1:8000/healthcheck"');
+    expect(command).to.include('command -v python3');
+    expect(command).to.include('command -v python');
+    expect(command).to.include("python3 - <<'PY'");
+    expect(command).to.include('URL = "http://127.0.0.1:8000/healthcheck"');
     expect(command).to.include('error.HTTPError');
     expect(command).to.include('STATUS_OK_MAX');
-    expect(command).to.include('for py in python3 python');
   });
 });
