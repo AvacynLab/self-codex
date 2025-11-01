@@ -35,15 +35,27 @@ services:
             import sys
             from urllib import request, error
 
+            STATUS_OK_MAX = 499
+            URL = "http://127.0.0.1:8080/"
+            # SearxNG rejects requests that lack loopback forwarding headers, so we
+            # provide deterministic values to keep the readiness probe stable.
+            HEADERS = {
+                "X-Forwarded-For": "127.0.0.1",
+                "X-Real-IP": "127.0.0.1",
+            }
+
+            req = request.Request(URL, headers=HEADERS)
             try:
-                response = request.urlopen("http://127.0.0.1:8080/", timeout=10)
+                response = request.urlopen(req, timeout=10)
+            except error.HTTPError as http_error:
+                sys.exit(0 if http_error.code <= STATUS_OK_MAX else 1)
             except error.URLError:
                 sys.exit(1)
             except Exception:
                 sys.exit(1)
             else:
                 status = getattr(response, "status", 500)
-                sys.exit(0 if status < 500 else 1)
+                sys.exit(0 if status <= STATUS_OK_MAX else 1)
       interval: 15s
       timeout: 10s
       retries: 5

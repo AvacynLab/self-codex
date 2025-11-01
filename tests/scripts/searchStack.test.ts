@@ -120,6 +120,11 @@ describe("scripts/lib/searchStack", () => {
     const manager = createSearchStackManager({ fetchImpl: fetchStub });
     await manager.waitForSearxReady();
     sinon.assert.calledOnce(fetchStub);
+    const [, requestInit] = fetchStub.getCall(0).args as [string, RequestInit];
+    expect(requestInit?.headers).to.deep.equal({
+      "X-Forwarded-For": "127.0.0.1",
+      "X-Real-IP": "127.0.0.1",
+    });
   });
 
   it("brings up and tears down the docker stack with the compose file", async () => {

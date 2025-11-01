@@ -148,17 +148,26 @@ export function createSearchStackManager(deps: SearchStackDependencies = {}): Se
     // tolerates SearxNG configurations that intentionally return 4xx responses
     // on the landing page while still rejecting server errors.
     const acceptSearxStatus = (status: number): boolean => status >= 200 && status < 500;
+    // SearxNG enables loopback protections that expect reverse-proxy headers.
+    // We forward deterministic values matching the Docker host so the instance
+    // keeps the connection open instead of dropping it with "fetch failed".
+    const forwardedHeaders = {
+      "X-Forwarded-For": "127.0.0.1",
+      "X-Real-IP": "127.0.0.1",
+    } as const;
     try {
       await waitForService("http://127.0.0.1:8080/healthz", {
         timeoutMs: 90_000,
         intervalMs: 2_000,
         acceptStatus: acceptSearxStatus,
+        headers: forwardedHeaders,
       });
     } catch {
       await waitForService("http://127.0.0.1:8080", {
         timeoutMs: 30_000,
         intervalMs: 2_000,
         acceptStatus: acceptSearxStatus,
+        headers: forwardedHeaders,
       });
     }
   }
