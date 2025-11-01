@@ -22,8 +22,13 @@ describe('docker/docker-compose.search.yml', () => {
     expect(probe?.[1]).to.equal('python3');
     expect(probe?.[2]).to.equal('-c');
     const command = String(probe?.[3] ?? '');
-    expect(command).to.include('request.urlopen("http://127.0.0.1:8080/"');
-    expect(command).to.include('status < 500');
+    // The probe constructs a Request so it can attach loopback forwarding headers.
+    expect(command).to.include('request.Request(');
+    expect(command).to.include('"http://127.0.0.1:8080/"');
+    expect(command).to.include('"X-Forwarded-For": "127.0.0.1"');
+    expect(command).to.include('"X-Real-IP": "127.0.0.1"');
+    expect(command).to.include('STATUS_OK_MAX = 499');
+    expect(command).to.include('status <= STATUS_OK_MAX');
   });
 
   it('waits for searxng via service_healthy to honour the healthcheck', () => {
