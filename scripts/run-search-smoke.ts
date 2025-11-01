@@ -9,12 +9,14 @@
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 
 import {
   createSearchStackManager,
   resolveStackLifecyclePolicy,
 } from "./lib/searchStack.js";
 import { assessSmokeRun } from "./lib/searchSmokePlan.js";
+import { createSearchSmokeFixture, type SearchSmokeFixture } from "./lib/searchSmokeFixture.js";
 import { StructuredLogger } from "../src/logger.js";
 import { EventStore } from "../src/eventStore.js";
 import { loadSearchConfig } from "../src/search/config.js";
@@ -54,8 +56,7 @@ const SMOKE_SCENARIO: ValidationScenarioDefinition = {
  * to keep the smoke flow lightweight (fewer concurrent fetches and a faster
  * Unstructured strategy).
  */
-const ENV_OVERRIDES: Record<string, string> = {
-  SEARCH_SEARX_BASE_URL: "http://127.0.0.1:8080",
+const BASE_ENV_OVERRIDES: Record<string, string> = {
   UNSTRUCTURED_BASE_URL: "http://127.0.0.1:8000",
   SEARCH_INJECT_GRAPH: "1",
   SEARCH_INJECT_VECTOR: "1",
@@ -64,11 +65,19 @@ const ENV_OVERRIDES: Record<string, string> = {
   SEARCH_FETCH_RESPECT_ROBOTS: "1",
   UNSTRUCTURED_STRATEGY: "fast",
   UNSTRUCTURED_TIMEOUT_MS: "60000",
+  /** Disable outbound proxies so loopback traffic reaches the local fixtures. */
+  HTTP_PROXY: "",
+  http_proxy: "",
+  HTTPS_PROXY: "",
+  https_proxy: "",
+  /** Ensure local loopback hosts bypass any residual proxy auto-configuration. */
+  NO_PROXY: "127.0.0.1,localhost,::1",
+  no_proxy: "127.0.0.1,localhost,::1",
 };
 
-function applyEnvOverrides(): Map<string, string | undefined> {
+function applyEnvOverrides(overrides: Record<string, string>): Map<string, string | undefined> {
   const backup = new Map<string, string | undefined>();
-  for (const [key, value] of Object.entries(ENV_OVERRIDES)) {
+  for (const [key, value] of Object.entries(overrides)) {
     backup.set(key, process.env[key]);
     process.env[key] = value;
   }
@@ -123,10 +132,22 @@ async function runSmoke(): Promise<void> {
     await manager.bringUpStack();
   }
   let workDir: string | null = null;
-  const envBackup = applyEnvOverrides();
+  let envBackup: Map<string, string | undefined> | null = null;
+  let fixture: SearchSmokeFixture | null = null;
+  let appliedOverrides: Record<string, string> | null = null;
   try {
     await manager.waitForSearxReady();
     await manager.waitForUnstructuredReady();
+
+    fixture = await createSearchSmokeFixture();
+    appliedOverrides = {
+      ...BASE_ENV_OVERRIDES,
+      SEARCH_SEARX_BASE_URL: fixture.baseUrl,
+      SEARCH_SEARX_API_PATH: "/search",
+      SEARCH_SEARX_ENGINES: "fixture",
+      SEARCH_SEARX_CATEGORIES: "general",
+    };
+    envBackup = applyEnvOverrides(appliedOverrides);
 
     workDir = await mkdtemp(join(tmpdir(), "search-smoke-"));
     const { pipeline, knowledgeGraph, vectorMemory } = await createPipeline(workDir);
@@ -150,8 +171,8 @@ async function runSmoke(): Promise<void> {
     ];
 
     let finalAssessment: ReturnType<typeof assessSmokeRun> | null = null;
-  let lastJob: Awaited<ReturnType<SearchPipeline["runSearchJob"]>> | null = null;
-  const attemptedPlans: Array<{ query: string; categories: string[]; maxResults: number }> = [];
+    let lastJob: Awaited<ReturnType<SearchPipeline["runSearchJob"]>> | null = null;
+    const attemptedPlans: Array<{ query: string; categories: string[]; maxResults: number }> = [];
 
     for (const plan of plans) {
       attemptedPlans.push(plan);
@@ -210,7 +231,7 @@ async function runSmoke(): Promise<void> {
         input: {
           attemptedPlans,
           selectedPlan: lastJob.query,
-          overrides: ENV_OVERRIDES,
+          overrides: appliedOverrides ?? BASE_ENV_OVERRIDES,
         },
         response: {
           jobId: lastJob.jobId,
@@ -241,7 +262,16 @@ async function runSmoke(): Promise<void> {
       },
     );
   } finally {
-    restoreEnv(envBackup);
+    if (envBackup) {
+      restoreEnv(envBackup);
+    }
+    if (fixture) {
+      try {
+        await fixture.close();
+      } catch (error) {
+        console.warn("Failed to close search smoke fixture:", error);
+      }
+    }
     if (workDir) {
       await rm(workDir, { recursive: true, force: true });
     }
@@ -251,10 +281,29 @@ async function runSmoke(): Promise<void> {
   }
 }
 
-runSmoke().catch((error) => {
-  console.error(error instanceof Error ? error.stack ?? error.message : error);
-  process.exitCode = 1;
-});
+/** Exported for unit tests to validate the smoke environment configuration. */
+export const __testing = {
+  BASE_ENV_OVERRIDES,
+};
+
+function isExecutedAsMain(): boolean {
+  const [, scriptPath] = process.argv;
+  if (!scriptPath) {
+    return false;
+  }
+  try {
+    return import.meta.url === pathToFileURL(scriptPath).href;
+  } catch {
+    return false;
+  }
+}
+
+if (isExecutedAsMain()) {
+  runSmoke().catch((error) => {
+    console.error(error instanceof Error ? error.stack ?? error.message : error);
+    process.exitCode = 1;
+  });
+}
 
 /**
  * Builds a compact timing summary describing when the orchestrated job started and
