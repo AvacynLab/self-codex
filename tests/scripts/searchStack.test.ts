@@ -1,3 +1,4 @@
+import { type SpawnOptions } from "node:child_process";
 import { EventEmitter } from "node:events";
 
 import { describe, it } from "mocha";
@@ -115,46 +116,36 @@ describe("scripts/lib/searchStack", () => {
     sinon.assert.calledOnce(fetchStub);
   });
 
-  it("waits for Searx even when the landing page answers with 4xx", async () => {
-    // SearxNG can purposely reply with 4xx codes (e.g. 403) on the landing page
-    // when the instance is not meant to be public. The readiness helper should
-    // still accept those responses so CI does not block on a healthy container.
-    const fetchStub = sinon.stub().resolves({ ok: false, status: 403 } as Response);
-    const manager = createSearchStackManager({ fetchImpl: fetchStub });
+  it("executes the Searx readiness probe inside the container", async () => {
+    const spawnStub = sinon.stub().returns(createFakeChild({ closeCode: 0 }));
+    const manager = createSearchStackManager({ spawn: spawnStub });
     await manager.waitForSearxReady();
-    sinon.assert.calledOnce(fetchStub);
-    const [url, requestInit] = fetchStub.getCall(0).args as [string, RequestInit];
-    expect(url).to.equal("http://127.0.0.1:8080/healthz");
-    expect(requestInit?.headers).to.deep.equal({
-      "X-Forwarded-For": "127.0.0.1",
-      "X-Real-IP": "127.0.0.1",
-    });
+    sinon.assert.calledOnce(spawnStub);
+    const [command, args, options] = spawnStub.getCall(0).args as [string, string[], SpawnOptions];
+    expect(command).to.equal("docker");
+    expect(args.slice(0, 7)).to.deep.equal([
+      "compose",
+      "-f",
+      manager.composeFile,
+      "exec",
+      "-T",
+      "searxng",
+      "python3",
+    ]);
+    expect(args[7]).to.equal("-c");
+    expect(args[8]).to.contain("X-Forwarded-For");
+    expect(options).to.include({ stdio: "pipe" });
   });
 
-  it("probes loopback variants until one responds", async () => {
+  it("retries the container probe until it succeeds", async () => {
+    const spawnStub = sinon.stub();
+    spawnStub.onCall(0).returns(createFakeChild({ closeCode: 1 }));
+    spawnStub.onCall(1).returns(createFakeChild({ closeCode: 0 }));
     const delayStub = sinon.stub().resolves();
-    const attempts: string[] = [];
-    const fetchStub = sinon.stub().callsFake(async (url: string, init: RequestInit) => {
-      attempts.push(url);
-      expect(init?.headers).to.deep.equal({
-        "X-Forwarded-For": "127.0.0.1",
-        "X-Real-IP": "127.0.0.1",
-      });
-      if (url.startsWith("http://[::1]")) {
-        return { ok: false, status: 403 } as Response;
-      }
-      throw new TypeError("fetch failed");
-    });
-    const manager = createSearchStackManager({ fetchImpl: fetchStub, delay: delayStub });
+    const manager = createSearchStackManager({ spawn: spawnStub, delay: delayStub });
     await manager.waitForSearxReady();
-    expect(attempts).to.deep.equal([
-      "http://127.0.0.1:8080/healthz",
-      "http://127.0.0.1:8080/",
-      "http://localhost:8080/healthz",
-      "http://localhost:8080/",
-      "http://[::1]:8080/healthz",
-    ]);
-    sinon.assert.callCount(delayStub, 4);
+    sinon.assert.calledTwice(spawnStub);
+    sinon.assert.calledOnce(delayStub);
   });
 
   it("brings up and tears down the docker stack with the compose file", async () => {

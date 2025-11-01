@@ -201,55 +201,77 @@ export function createSearchStackManager(deps: SearchStackDependencies = {}): Se
   }
 
   async function waitForSearxReady(): Promise<void> {
-    // Treat any client-side status (<500) as successful so the readiness check
-    // tolerates SearxNG configurations that intentionally return 4xx responses
-    // on the landing page while still rejecting server errors.
-    const acceptSearxStatus = (status: number): boolean => status >= 200 && status < 500;
-    // SearxNG enables loopback protections that expect reverse-proxy headers.
-    // We forward deterministic values matching the Docker host so the instance
-    // keeps the connection open instead of dropping it with "fetch failed".
-    const forwardedHeaders = {
-      "X-Forwarded-For": "127.0.0.1",
-      "X-Real-IP": "127.0.0.1",
-    } as const;
     /**
-     * Round-robin attempts shared across all endpoint candidates. Distributing
-     * the retries avoids waiting forty seconds on an endpoint that is
-     * unreachable on the current host (for example when IPv4 loopback is
-     * disabled but IPv6 works). The two-second delay keeps the overall probing
-     * window around two minutes while still giving Searx enough time to finish
-     * booting under load.
+     * Keep the python probe in sync with the container healthcheck so we reuse the same
+     * acceptance criteria (status codes below 500) and loopback forwarding headers. By
+     * executing the probe inside the container we bypass host-network restrictions that make
+     * Undici-based fetches fail in CI despite the service being healthy.
      */
+    const readinessProbe = [
+      "import sys",
+      "from urllib import request, error",
+      "",
+      "STATUS_OK_MAX = 499",
+      "URLS = (",
+      "    'http://127.0.0.1:8080/healthz',",
+      "    'http://127.0.0.1:8080/',",
+      "    'http://localhost:8080/healthz',",
+      "    'http://localhost:8080/',",
+      "    'http://[::1]:8080/healthz',",
+      "    'http://[::1]:8080/',",
+      ")",
+      "HEADERS = {",
+      "    'X-Forwarded-For': '127.0.0.1',",
+      "    'X-Real-IP': '127.0.0.1',",
+      "}",
+      "",
+      "def probe(url):",
+      "    req = request.Request(url, headers=HEADERS)",
+      "    try:",
+      "        response = request.urlopen(req, timeout=10)",
+      "    except error.HTTPError as http_error:",
+      "        return http_error.code <= STATUS_OK_MAX",
+      "    except Exception:",
+      "        return False",
+      "    status = getattr(response, 'status', 500)",
+      "    return status <= STATUS_OK_MAX",
+      "",
+      "if any(probe(url) for url in URLS):",
+      "    sys.exit(0)",
+      "sys.exit(1)",
+    ].join("\n");
+
     const retryDelayMs = 2_000;
-    const maxAttempts = 60;
-    const endpointCandidates = [
-      "http://127.0.0.1:8080/healthz",
-      "http://127.0.0.1:8080/",
-      "http://localhost:8080/healthz",
-      "http://localhost:8080/",
-      "http://[::1]:8080/healthz",
-      "http://[::1]:8080/",
-    ] as const;
+    const maxAttempts = 30;
+    const probeArgs = [
+      "compose",
+      "-f",
+      composeFile,
+      "exec",
+      "-T",
+      "searxng",
+      "python3",
+      "-c",
+      readinessProbe,
+    ];
 
     let lastFailure: Error | null = null;
     for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-      const endpoint = endpointCandidates[attempt % endpointCandidates.length];
       try {
-        const response = await fetchImpl(endpoint, { headers: forwardedHeaders });
-        const rawStatus = (response as { status: unknown }).status;
-        const statusCode =
-          typeof rawStatus === "number" ? rawStatus : Number.parseInt(String(rawStatus), 10);
-        if (response.ok || acceptSearxStatus(statusCode)) {
+        const exitCode = await runCommand("docker", probeArgs, {
+          allowFailure: true,
+          inheritStdio: false,
+        });
+        if (exitCode === 0) {
           return;
         }
-        const statusLabel = Number.isNaN(statusCode) ? rawStatus : statusCode;
-        lastFailure = new Error(`status ${statusLabel}`);
+        lastFailure = new Error(`probe exited with code ${exitCode}`);
       } catch (error) {
         lastFailure = error instanceof Error ? error : new Error(String(error));
       }
       await delay(retryDelayMs);
     }
-    throw lastFailure ?? new Error("Searx readiness failed after probing loopback endpoints");
+    throw lastFailure ?? new Error("Searx readiness probe failed after repeated attempts");
   }
 
   async function waitForUnstructuredReady(): Promise<void> {
