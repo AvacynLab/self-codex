@@ -24,20 +24,30 @@ function buildCorrelationHints(options) {
  * actionable telemetry without reimplementing the orchestrator logic.
  */
 export function buildChildCognitiveEvents(options) {
-    const baseCorrelation = buildCorrelationHints({
+    const correlationOptions = {
         childId: options.childId,
-        jobId: options.jobId,
-        sources: options.correlationSources,
-    });
+    };
+    if (options.jobId !== undefined) {
+        // Only attach `jobId` when callers surfaced a concrete value. This prevents
+        // `undefined` from being materialised once `exactOptionalPropertyTypes`
+        // lands while still allowing explicit `null` sentinels.
+        correlationOptions.jobId = options.jobId ?? null;
+    }
+    if (options.correlationSources !== undefined) {
+        // Forward the correlation sources exactly as provided so downstream
+        // extractors keep merging the auxiliary hints without copying `undefined`.
+        correlationOptions.sources = options.correlationSources;
+    }
+    const baseCorrelation = buildCorrelationHints(correlationOptions);
     const sharedEnvelope = {
         kind: "COGNITIVE",
         level: "info",
         childId: options.childId,
-        jobId: options.jobId ?? null,
+        jobId: baseCorrelation.jobId ?? null,
     };
     const basePayloadFields = {
         child_id: options.childId,
-        job_id: options.jobId ?? null,
+        job_id: baseCorrelation.jobId ?? null,
         run_id: baseCorrelation.runId ?? null,
         op_id: baseCorrelation.opId ?? null,
         graph_id: baseCorrelation.graphId ?? null,

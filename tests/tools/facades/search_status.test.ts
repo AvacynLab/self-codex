@@ -49,5 +49,10 @@ describe("search.status facade", () => {
     expect(structured.ok).to.equal(false);
     expect(structured.code).to.equal("not_implemented");
     expect(structured.message).to.be.a("string").and.to.have.length.greaterThan(0);
+    expect(structured).to.deep.equal({
+      ok: false,
+      code: "not_implemented",
+      message: "la persistance des jobs de recherche n'est pas encore disponible",
+    });
   });
 });

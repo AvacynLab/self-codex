@@ -193,11 +193,14 @@ function buildFragment(goal, fragmentId, groupLabel, seeds, includedTaskMap) {
         if (typeof task.weight === "number" && Number.isFinite(task.weight)) {
             attributes.kg_weight = round(task.weight);
         }
+        // Optional labels are only attached when present so the graph remains
+        // compatible with exact optional property typing.
+        const label = coerceNullToUndefined(task.label);
         return {
             id: task.id,
             kind: "task",
-            label: coerceNullToUndefined(task.label),
             attributes,
+            ...(label !== undefined ? { label } : {}),
         };
     });
     let edgeIndex = 0;
@@ -449,9 +452,10 @@ export async function assistKnowledgeQuery(knowledgeGraph, options) {
     const citations = aggregateCitations(knowledgeEvidence, ragEvidence);
     const answer = buildAssistAnswer(knowledgeEvidence, ragEvidence);
     const rationale = buildAssistRationale(knowledgeEvidence, ragEvidence, queryTokens.length, matchedTerms.size, domainTags, Boolean(options.ragRetriever));
-    return {
+    // Build the final payload while omitting optional fields when callers do not
+    // provide them, keeping the response compatible with strict optional types.
+    const response = {
         query,
-        context: context || undefined,
         answer,
         citations,
         rationale,
@@ -463,7 +467,9 @@ export async function assistKnowledgeQuery(knowledgeGraph, options) {
         },
         knowledge_evidence: knowledgeEvidence,
         rag_evidence: ragEvidence,
+        ...(context.length > 0 ? { context } : {}),
     };
+    return response;
 }
 /** Keeps the assist limit within defensive bounds. */
 function clampAssistLimit(value) {
@@ -571,11 +577,14 @@ function collectKnowledgeProvenance(triple) {
 /** Executes the RAG retriever and maps hits to evidence summaries. */
 async function collectRagEvidence(retriever, query, context, queryTokens, limit, minScore, domainTags) {
     const ragQuery = context ? `${context}\n${query}` : query;
-    const hits = await retriever.search(ragQuery, {
+    // Ensure the retriever only receives defined option overrides so
+    // `exactOptionalPropertyTypes` can enforce strict omission semantics.
+    const searchOptions = {
         limit,
         minScore,
-        requiredTags: domainTags.length > 0 ? domainTags : undefined,
-    });
+        ...(domainTags.length > 0 ? { requiredTags: domainTags } : {}),
+    };
+    const hits = await retriever.search(ragQuery, searchOptions);
     if (hits.length === 0) {
         return [];
     }

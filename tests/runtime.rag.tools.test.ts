@@ -17,7 +17,7 @@ import {
  * against the lazily initialised runtime memory/retriever stack.
  */
 describe("runtime rag tools", () => {
-  const ragMemoryDir = resolve(process.cwd(), "runs", "memory", "rag");
+  const ragMemoryDir = resolve(process.cwd(), "validation_run", "memory", "rag");
   let baselineFeatures = getRuntimeFeatures();
 
   beforeEach(() => {

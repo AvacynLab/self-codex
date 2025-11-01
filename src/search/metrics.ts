@@ -74,13 +74,13 @@ export interface LatencyBucketSnapshot {
   readonly count: number;
 }
 
-/** Mapping between operations and the metric label exposed via `/metrics`. */
-const OPERATION_LABELS: Record<SearchMetricOperation, string> = {
-  searxQuery: "search.searxQuery",
-  fetchUrl: "search.fetchUrl",
-  extractWithUnstructured: "search.extractWithUnstructured",
-  ingestGraph: "search.ingestGraph",
-  ingestVector: "search.ingestVector",
+/** Mapping between operations and the stable step label surfaced to observability. */
+const OPERATION_STEPS: Record<SearchMetricOperation, string> = {
+  searxQuery: "searxQuery",
+  fetchUrl: "fetchUrl",
+  extractWithUnstructured: "extractWithUnstructured",
+  ingestGraph: "ingestGraph",
+  ingestVector: "ingestVector",
 };
 
 interface OperationCounters {
@@ -218,10 +218,10 @@ function buildMetricLabel(
   operation: SearchMetricOperation,
   dimensions: SearchMetricDimensions | undefined,
 ): string {
-  const stepLabel = OPERATION_LABELS[operation];
+  const step = OPERATION_STEPS[operation];
   const domain = sanitiseDomain(dimensions?.domain);
   const content = sanitiseContentType(dimensions?.contentType);
-  return `${stepLabel}.content:${content}.domain:${domain}`;
+  return `search.step:${step}.contentType:${content}.domain:${domain}`;
 }
 
 function sanitiseDomain(raw: string | null | undefined): string {

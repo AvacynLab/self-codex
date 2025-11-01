@@ -1,27 +1,7 @@
 /**
- * Shared type aliases used across the orchestrator. Centralising identifiers
- * avoids sprinkling plain strings throughout the codebase and improves
- * legibility when cross-referencing logs with in-memory entities.
+ * Shared types used across the orchestrator. Grouping these definitions keeps
+ * our string unions and error helpers consistent between modules.
  */
-export type RunId = string;
-
-/** Identifier of a tool invocation or long running operation. */
-export type OpId = string;
-
-/** Identifier of a graph persisted in the registry. */
-export type GraphId = string;
-
-/** Semantic version string used to track graph revisions. */
-export type Version = string;
-
-/** Identifier assigned to a spawned child runtime. */
-export type ChildId = string;
-
-/** Identifier representing an open transaction. */
-export type TransactionId = string;
-
-/** Canonical URI referencing a resource exposed via MCP. */
-export type ResourceUri = string;
 
 /** Roles a message can carry when exchanged between agents. */
 export type Role = "system" | "user" | "assistant";
@@ -187,32 +167,43 @@ export function normaliseErrorHint(hint?: string): string | undefined {
   return `${collapsed.slice(0, ERROR_TEXT_MAX_LENGTH - 1)}…`;
 }
 
-/** Structure returned by tools when an operation succeeds. */
-export interface ToolSuccess<T> {
-  ok: true;
-  value: T;
-}
-
-/** Standard structure returned by tools when an operation fails. */
-export interface ToolError {
+/**
+ * Canonical failure payload returned by MCP tools. The structure intentionally
+ * mirrors the JSON schema enforced by the orchestrator so helpers can reuse the
+ * same shape regardless of the call site.
+ */
+export interface ToolFailure<Code extends string = string> {
+  /** Marker discriminating failures from successful payloads. */
   ok: false;
-  code: ErrorCode;
+  /** Stable error code helping clients branch on the failure kind. */
+  code: Code;
+  /** Human readable message after normalisation and truncation. */
   message: string;
+  /** Optional hint containing actionable remediation guidance. */
   hint?: string;
 }
 
-/** Convenience union describing the common tool result envelope. */
-export type ToolResult<T> = ToolSuccess<T> | ToolError;
-
 /**
- * Helper used by tools to build a failure response with the expected shape.
- * Keeping the implementation centralised guarantees a consistent structure
- * (including optional hints) across every feature surface.
+ * Builds a {@link ToolFailure} using the canonical error normalisation rules.
+ * Callers provide the error code alongside a human readable message and, when
+ * available, a concise remediation hint. The helper removes the hint entirely
+ * when it collapses to an empty string so JSON payloads never expose
+ * `undefined` values.
  */
-export function fail(code: ErrorCode, message: string, hint?: string): ToolError {
-  const normalisedMessage = normaliseErrorMessage(message);
-  const normalisedHint = normaliseErrorHint(hint);
-  return normalisedHint
-    ? { ok: false, code, message: normalisedMessage, hint: normalisedHint }
-    : { ok: false, code, message: normalisedMessage };
+export function fail<Code extends string>(
+  code: Code,
+  message: string,
+  hint?: string | null,
+): ToolFailure<Code> {
+  const failure: ToolFailure<Code> = {
+    ok: false,
+    code,
+    message: normaliseErrorMessage(message),
+  };
+  const normalisedHint = normaliseErrorHint(hint ?? undefined);
+  if (normalisedHint) {
+    failure.hint = normalisedHint;
+  }
+  return failure;
 }
+

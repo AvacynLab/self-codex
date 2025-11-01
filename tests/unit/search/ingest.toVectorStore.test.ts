@@ -126,6 +126,8 @@ describe("search/ingest/toVectorStore", () => {
 
     expect(result.descriptors).to.have.length(embedCalls.length);
     expect(result.chunks).to.have.length(embedCalls.length);
+    const firstDescriptor = result.descriptors[0];
+    expect(firstDescriptor.segmentIds).to.include.members(["seg-1", "seg-2"]);
   });
 
   it("falls back to description when segments are missing", async () => {

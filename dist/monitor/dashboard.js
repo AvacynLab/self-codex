@@ -1,3 +1,8 @@
+/**
+ * Dashboard HTTP server exposing HTML pages, JSON endpoints, and SSE streams for
+ * the orchestrator monitor. The module centralises snapshot computation and
+ * streaming lifecycles so tests exercise the same codepath as the production server.
+ */
 import { Buffer } from "node:buffer";
 import { createServer } from "node:http";
 import { runtimeTimers } from "../runtime/timers.js";
@@ -5,15 +10,114 @@ import { URL } from "node:url";
 import { z } from "zod";
 import { StructuredLogger } from "../logger.js";
 import { serialiseForSse } from "../events/sse.js";
+import { SseBuffer } from "../events/sseBuffer.js";
 import { reportOpenSseStreams } from "../infra/tracing.js";
 import { buildStigmergySummary, formatPheromoneBoundsTooltip, normalisePheromoneBoundsForTelemetry, } from "../coord/stigmergy.js";
 import { buildReplayPage } from "./replay.js";
+import { readOptionalInt, readOptionalString } from "../config/env.js";
+const DEFAULT_DASHBOARD_HOST = "127.0.0.1";
+const DEFAULT_DASHBOARD_PORT = 4100;
+const DEFAULT_DASHBOARD_STREAM_INTERVAL_MS = 2_000;
+const MIN_DASHBOARD_STREAM_INTERVAL_MS = 250;
+const DEFAULT_DASHBOARD_KEEPALIVE_INTERVAL_MS = 15_000;
+const MIN_DASHBOARD_KEEPALIVE_INTERVAL_MS = 1_000;
+const DASHBOARD_BROADCAST_DEBOUNCE_MIN_MS = 250;
+const DASHBOARD_BROADCAST_DEBOUNCE_MAX_MS = 500;
+/**
+ * Resolves the dashboard HTTP host by prioritising explicit overrides, then environment
+ * variables, and finally the documented default. The helper trims whitespace so operators
+ * can safely export values such as `" 0.0.0.0 "` without leaving stray spaces in logs.
+ */
+export function resolveDashboardHost(explicit) {
+    if (typeof explicit === "string" && explicit.trim().length > 0) {
+        return explicit.trim();
+    }
+    const envHost = readOptionalString("MCP_DASHBOARD_HOST");
+    return envHost ?? DEFAULT_DASHBOARD_HOST;
+}
+/**
+ * Resolves the dashboard HTTP port following the same precedence order as {@link resolveDashboardHost}.
+ * The helper permits `0` so the OS can allocate an ephemeral port when requested.
+ */
+export function resolveDashboardPort(explicit) {
+    if (explicit !== undefined) {
+        return explicit;
+    }
+    const envPort = readOptionalInt("MCP_DASHBOARD_PORT", { min: 0, max: 65_535 });
+    return envPort ?? DEFAULT_DASHBOARD_PORT;
+}
+/**
+ * Resolves the SSE broadcast interval while enforcing the documented lower bound (250ms).
+ * Explicit overrides are clamped to avoid starving the event loop with extremely small delays.
+ */
+export function resolveDashboardStreamInterval(explicit) {
+    if (explicit !== undefined) {
+        return Math.max(MIN_DASHBOARD_STREAM_INTERVAL_MS, explicit);
+    }
+    const envInterval = readOptionalInt("MCP_DASHBOARD_INTERVAL_MS", { min: MIN_DASHBOARD_STREAM_INTERVAL_MS });
+    return envInterval ?? DEFAULT_DASHBOARD_STREAM_INTERVAL_MS;
+}
+/**
+ * Resolves the SSE keep-alive cadence by prioritising explicit overrides, then environment
+ * variables, and finally a heuristic derived from the broadcast interval.
+ *
+ * The calculation intentionally clamps the interval between 1s and 15s so operators receive
+ * frequent enough heartbeats to keep intermediaries (reverse proxies/CDNs) from closing the
+ * connection while avoiding excessive chatter when the broadcast loop already emits snapshots
+ * more frequently than once per second. Tests can pass smaller overrides to exercise edge cases
+ * without waiting for long delays.
+ */
+export function resolveDashboardKeepAliveInterval(streamIntervalMs, explicit) {
+    if (explicit !== undefined) {
+        // Explicit overrides are clamped to the documented floor so operators cannot
+        // accidentally request sub-second keep-alive frames that would keep the event
+        // loop busy without adding meaningful resiliency for upstream proxies.
+        return Math.max(MIN_DASHBOARD_KEEPALIVE_INTERVAL_MS, explicit);
+    }
+    const envInterval = readOptionalInt("MCP_SSE_KEEPALIVE_MS", { min: MIN_DASHBOARD_KEEPALIVE_INTERVAL_MS });
+    if (envInterval !== null && envInterval !== undefined) {
+        return envInterval;
+    }
+    const cappedByDefault = Math.min(streamIntervalMs, DEFAULT_DASHBOARD_KEEPALIVE_INTERVAL_MS);
+    return Math.max(MIN_DASHBOARD_KEEPALIVE_INTERVAL_MS, cappedByDefault);
+}
+/**
+ * Resolves the debounce delay applied to manual SSE broadcasts. The delay keeps
+ * updates responsive while coalescing bursts triggered by orchestration
+ * controls.
+ */
+export function resolveDashboardBroadcastDebounce(streamIntervalMs) {
+    if (!Number.isFinite(streamIntervalMs) || streamIntervalMs <= 0) {
+        return DASHBOARD_BROADCAST_DEBOUNCE_MAX_MS;
+    }
+    const clamped = Math.max(DASHBOARD_BROADCAST_DEBOUNCE_MIN_MS, Math.floor(streamIntervalMs));
+    return Math.min(clamped, DASHBOARD_BROADCAST_DEBOUNCE_MAX_MS);
+}
 /** Zod schema validating client log payloads forwarded by the dashboard UI. */
 const ClientLogRequestSchema = z.object({
     level: z.enum(["info", "warn", "error"]),
     event: z.string().min(1, "event is required").max(128),
     context: z.unknown().optional(),
 });
+/**
+ * Normalises dashboard client log payloads by trimming optional metadata.
+ *
+ * Returning `null` for absent entries keeps the logged structure free of
+ * `undefined` placeholders so the payload remains compliant with
+ * `exactOptionalPropertyTypes` while still exposing the data operators need to
+ * triage UI issues.
+ */
+export function buildDashboardClientLogPayload(req, entry) {
+    const rawUserAgent = req.headers?.["user-agent"];
+    const userAgent = typeof rawUserAgent === "string" && rawUserAgent.trim().length > 0 ? rawUserAgent : null;
+    const remoteAddress = req.socket?.remoteAddress ?? null;
+    return {
+        event: entry.event,
+        context: entry.context ?? null,
+        userAgent,
+        remoteAddress,
+    };
+}
 /** Zod schema validating the pause endpoint payload. */
 const PauseRequestSchema = z.object({
     childId: z.string().min(1, "childId is required"),
@@ -25,6 +129,114 @@ const PrioritiseRequestSchema = z.object({
     childId: z.string().min(1, "childId is required"),
     priority: z.number().int().min(0).default(1),
 });
+let nextDashboardClientId = 1;
+function allocateDashboardClientId() {
+    const id = `dashboard-client-${nextDashboardClientId}`;
+    nextDashboardClientId += 1;
+    return id;
+}
+function addEventListener(emitter, event, listener) {
+    emitter.on(event, listener);
+    return () => {
+        if (typeof emitter.off === "function") {
+            emitter.off(event, listener);
+            return;
+        }
+        if (typeof emitter.removeListener === "function") {
+            emitter.removeListener(event, listener);
+        }
+    };
+}
+function releaseDashboardClient(clients, client) {
+    if (client.released) {
+        return;
+    }
+    client.released = true;
+    for (const cleanup of client.cleanupHandlers.splice(0)) {
+        try {
+            cleanup();
+        }
+        catch {
+            // Cleanup is best-effort; failing to remove a listener should not throw.
+        }
+    }
+    clients.delete(client);
+    client.buffer.clear();
+    client.draining = null;
+    reportOpenSseStreams(clients.size);
+}
+async function waitForResponseDrain(res) {
+    await new Promise((resolve, reject) => {
+        let settled = false;
+        const disposers = [];
+        const cleanup = () => {
+            if (settled) {
+                return;
+            }
+            settled = true;
+            while (disposers.length > 0) {
+                try {
+                    const dispose = disposers.pop();
+                    dispose?.();
+                }
+                catch {
+                    // Ignore disposal failures to mirror Node's EventEmitter semantics.
+                }
+            }
+        };
+        const handleResolve = () => {
+            cleanup();
+            resolve();
+        };
+        const handleReject = (error) => {
+            cleanup();
+            reject(error instanceof Error ? error : new Error(String(error)));
+        };
+        disposers.push(addEventListener(res, "drain", handleResolve));
+        disposers.push(addEventListener(res, "finish", handleResolve));
+        disposers.push(addEventListener(res, "close", handleResolve));
+        disposers.push(addEventListener(res, "error", handleReject));
+    });
+}
+function flushDashboardClient(clients, client, logger) {
+    if (client.released || client.draining) {
+        return;
+    }
+    client.draining = (async () => {
+        try {
+            await client.buffer.drain(async (frame) => {
+                if (client.released) {
+                    return;
+                }
+                const canContinue = client.res.write(frame);
+                if (!canContinue) {
+                    await waitForResponseDrain(client.res);
+                }
+            });
+        }
+        catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            logger.warn("dashboard_stream_flush_failed", { clientId: client.id, message });
+            releaseDashboardClient(clients, client);
+            logger.warn("dashboard_stream_disconnected", {
+                clientId: client.id,
+                reason: "flush_failed",
+                clients: clients.size,
+                message,
+            });
+        }
+        finally {
+            client.draining = null;
+        }
+    })();
+}
+function createDashboardSseMessage(snapshot, data) {
+    return {
+        id: String(snapshot.timestamp),
+        event: "message",
+        data,
+    };
+}
 /**
  * Builds the dashboard router responsible for serving JSON endpoints, SSE
  * streams and control commands. The router keeps track of connected clients so
@@ -38,19 +250,61 @@ export function createDashboardRouter(options) {
     const supervisor = options.supervisor;
     const stigmergy = options.stigmergy;
     const btStatusRegistry = options.btStatusRegistry;
-    const supervisorAgent = options.supervisorAgent;
-    const contractNetWatcherTelemetry = options.contractNetWatcherTelemetry;
-    const streamIntervalMs = Math.max(250, options.streamIntervalMs ?? 2_000);
+    // Optional collaborators are normalised to `null` so downstream helpers can
+    // forward concrete values without sprinkling explicit `undefined` placeholders
+    // through SSE payloads or JSON responses.
+    const supervisorAgent = options.supervisorAgent ?? null;
+    const contractNetWatcherTelemetry = options.contractNetWatcherTelemetry ?? null;
+    const streamIntervalMs = resolveDashboardStreamInterval(options.streamIntervalMs);
+    const keepAliveIntervalMs = resolveDashboardKeepAliveInterval(streamIntervalMs, options.keepAliveIntervalMs);
     const clients = new Set();
     const autoBroadcast = options.autoBroadcast ?? true;
     const logJournal = options.logJournal ?? null;
     let interval = null;
+    const broadcastDebounceMs = resolveDashboardBroadcastDebounce(streamIntervalMs);
+    let scheduledBroadcast = null;
+    let lastBroadcastAt = 0;
+    const clearScheduledBroadcast = () => {
+        if (scheduledBroadcast) {
+            runtimeTimers.clearTimeout(scheduledBroadcast);
+            scheduledBroadcast = null;
+        }
+    };
+    const flushBroadcast = () => {
+        if (clients.size === 0) {
+            clearScheduledBroadcast();
+            return;
+        }
+        clearScheduledBroadcast();
+        performBroadcast(clients, graphState, eventStore, stigmergy, btStatusRegistry, supervisorAgent, contractNetWatcherTelemetry, logger);
+        lastBroadcastAt = Date.now();
+    };
+    const scheduleBroadcast = () => {
+        if (clients.size === 0) {
+            clearScheduledBroadcast();
+            return;
+        }
+        const now = Date.now();
+        const elapsed = now - lastBroadcastAt;
+        if (elapsed >= broadcastDebounceMs) {
+            flushBroadcast();
+            return;
+        }
+        if (scheduledBroadcast) {
+            return;
+        }
+        const delay = Math.max(1, broadcastDebounceMs - elapsed);
+        scheduledBroadcast = runtimeTimers.setTimeout(() => {
+            scheduledBroadcast = null;
+            flushBroadcast();
+        }, delay);
+    };
     if (autoBroadcast) {
         interval = runtimeTimers.setInterval(() => {
             if (clients.size === 0) {
                 return;
             }
-            broadcast(clients, graphState, eventStore, stigmergy, btStatusRegistry, supervisorAgent, contractNetWatcherTelemetry, logger);
+            flushBroadcast();
         }, streamIntervalMs);
     }
     const handler = async (req, res) => {
@@ -72,6 +326,10 @@ export function createDashboardRouter(options) {
             }
             if (req.method === "GET" && pathname === "/metrics") {
                 writeJson(res, 200, buildSnapshot(graphState, eventStore, stigmergy, btStatusRegistry, supervisorAgent, contractNetWatcherTelemetry));
+                return;
+            }
+            if (req.method === "GET" && pathname === "/api/search/summary") {
+                writeJson(res, 200, summariseSearchActivity(eventStore));
                 return;
             }
             if (req.method === "GET" && pathname === "/logs") {
@@ -101,29 +359,29 @@ export function createDashboardRouter(options) {
                     return;
                 }
                 const page = buildReplayPage(eventStore, jobId, {
-                    limit: parsedLimit,
-                    cursor: parsedCursor,
+                    ...(parsedLimit !== undefined ? { limit: parsedLimit } : {}),
+                    ...(parsedCursor !== undefined ? { cursor: parsedCursor } : {}),
                 });
                 writeJson(res, 200, page);
                 return;
             }
             if (req.method === "GET" && pathname === "/stream") {
-                handleStreamRequest(res, clients, graphState, eventStore, stigmergy, btStatusRegistry, supervisorAgent, contractNetWatcherTelemetry, logger, streamIntervalMs);
+                handleStreamRequest(req, res, clients, graphState, eventStore, stigmergy, btStatusRegistry, supervisorAgent, contractNetWatcherTelemetry, logger, streamIntervalMs, keepAliveIntervalMs);
                 return;
             }
             if (req.method === "POST" && pathname === "/controls/pause") {
                 await handlePauseRequest(req, res, graphState, logger);
-                broadcast(clients, graphState, eventStore, stigmergy, btStatusRegistry, supervisorAgent, contractNetWatcherTelemetry, logger);
+                scheduleBroadcast();
                 return;
             }
             if (req.method === "POST" && pathname === "/controls/cancel") {
                 await handleCancelRequest(req, res, graphState, supervisor, logger);
-                broadcast(clients, graphState, eventStore, stigmergy, btStatusRegistry, supervisorAgent, contractNetWatcherTelemetry, logger);
+                scheduleBroadcast();
                 return;
             }
             if (req.method === "POST" && pathname === "/controls/prioritise") {
                 await handlePrioritiseRequest(req, res, graphState, logger);
-                broadcast(clients, graphState, eventStore, stigmergy, btStatusRegistry, supervisorAgent, contractNetWatcherTelemetry, logger);
+                scheduleBroadcast();
                 return;
             }
             if (req.method === "POST" && pathname === "/logs") {
@@ -148,15 +406,17 @@ export function createDashboardRouter(options) {
     return {
         streamIntervalMs,
         handleRequest: handler,
-        broadcast: () => broadcast(clients, graphState, eventStore, stigmergy, btStatusRegistry, supervisorAgent, contractNetWatcherTelemetry, logger),
+        broadcast: () => scheduleBroadcast(),
         async close() {
             if (interval) {
                 runtimeTimers.clearInterval(interval);
                 interval = null;
             }
-            for (const client of clients) {
+            clearScheduledBroadcast();
+            for (const client of Array.from(clients)) {
+                releaseDashboardClient(clients, client);
                 try {
-                    client.end();
+                    client.res.end();
                 }
                 catch (error) {
                     logger.warn("dashboard_client_close_error", {
@@ -164,7 +424,6 @@ export function createDashboardRouter(options) {
                     });
                 }
             }
-            clients.clear();
         },
     };
 }
@@ -174,21 +433,26 @@ export function createDashboardRouter(options) {
  * from the same request handling logic as the tests.
  */
 export async function startDashboardServer(options) {
-    const host = options.host ?? "127.0.0.1";
-    const port = options.port ?? 0;
+    const host = resolveDashboardHost(options.host);
+    const port = resolveDashboardPort(options.port);
     const logger = options.logger ?? new StructuredLogger();
+    const streamIntervalMs = resolveDashboardStreamInterval(options.streamIntervalMs);
+    const keepAliveIntervalMs = resolveDashboardKeepAliveInterval(streamIntervalMs, options.keepAliveIntervalMs);
     const router = createDashboardRouter({
         graphState: options.graphState,
         eventStore: options.eventStore,
         supervisor: options.supervisor,
         logger,
-        streamIntervalMs: options.streamIntervalMs,
         autoBroadcast: true,
         stigmergy: options.stigmergy,
         btStatusRegistry: options.btStatusRegistry,
-        supervisorAgent: options.supervisorAgent,
-        contractNetWatcherTelemetry: options.contractNetWatcherTelemetry,
-        logJournal: options.logJournal,
+        streamIntervalMs,
+        keepAliveIntervalMs,
+        ...(options.supervisorAgent !== undefined ? { supervisorAgent: options.supervisorAgent } : {}),
+        ...(options.contractNetWatcherTelemetry
+            ? { contractNetWatcherTelemetry: options.contractNetWatcherTelemetry }
+            : {}),
+        ...(options.logJournal ? { logJournal: options.logJournal } : {}),
     });
     const server = createServer((req, res) => {
         void router.handleRequest(req, res);
@@ -198,7 +462,12 @@ export async function startDashboardServer(options) {
     });
     const address = server.address();
     const resolvedPort = typeof address === "object" && address ? address.port : port;
-    logger.info("dashboard_started", { host, port: resolvedPort, streamIntervalMs: router.streamIntervalMs });
+    logger.info("dashboard_started", {
+        host,
+        port: resolvedPort,
+        streamIntervalMs: router.streamIntervalMs,
+        keepAliveIntervalMs,
+    });
     return {
         host,
         port: resolvedPort,
@@ -263,12 +532,7 @@ async function handleClientLogRequest(req, res, logger) {
         return;
     }
     const { level, event, context } = parsed.data;
-    const logPayload = {
-        event,
-        context: context ?? null,
-        userAgent: typeof req.headers["user-agent"] === "string" ? req.headers["user-agent"] : undefined,
-        remoteAddress: req.socket?.remoteAddress ?? null,
-    };
+    const logPayload = buildDashboardClientLogPayload(req, { event, context });
     switch (level) {
         case "info":
             logger.info("dashboard_client_log", logPayload);
@@ -391,40 +655,98 @@ async function handlePrioritiseRequest(req, res, graphState, logger) {
     writeJson(res, 200, { status: "prioritised", priority: parsed.data.priority });
 }
 /** Configures the HTTP response to behave as an SSE stream and pushes a snapshot. */
-function handleStreamRequest(res, clients, graphState, eventStore, stigmergy, btStatusRegistry, supervisorAgent, contractNetWatcherTelemetry, logger, streamIntervalMs) {
+function handleStreamRequest(req, res, clients, graphState, eventStore, stigmergy, btStatusRegistry, supervisorAgent, contractNetWatcherTelemetry, logger, streamIntervalMs, keepAliveIntervalMs) {
+    // Round the heartbeat cadence to seconds so the Keep-Alive header aligns with HTTP semantics while
+    // ensuring intermediaries never wait less than the actual timer interval.
+    const keepAliveSeconds = Math.max(1, Math.ceil(keepAliveIntervalMs / 1_000));
     res.writeHead(200, {
-        "Content-Type": "text/event-stream",
+        "Content-Type": "text/event-stream; charset=utf-8",
         "Cache-Control": "no-store",
         Connection: "keep-alive",
+        "X-Accel-Buffering": "no",
+        "Keep-Alive": `timeout=${keepAliveSeconds}`,
     });
     res.write(`retry: ${streamIntervalMs}\n\n`);
-    clients.add(res);
+    const clientId = allocateDashboardClientId();
+    const buffer = new SseBuffer({ clientId, logger });
+    const client = {
+        id: clientId,
+        res,
+        buffer,
+        draining: null,
+        released: false,
+        cleanupHandlers: [],
+    };
+    clients.add(client);
     reportOpenSseStreams(clients.size);
-    let released = false;
-    const release = () => {
-        if (released) {
+    const release = (reason, severity = "debug", context = {}) => {
+        if (client.released) {
             return;
         }
-        released = true;
-        clients.delete(res);
-        reportOpenSseStreams(clients.size);
+        releaseDashboardClient(clients, client);
+        const payload = { clientId, reason, clients: clients.size, ...context };
+        if (severity === "warn") {
+            logger.warn("dashboard_stream_disconnected", payload);
+        }
+        else {
+            logger.debug("dashboard_stream_disconnected", payload);
+        }
     };
-    res.on("close", release);
-    res.on("error", release);
+    client.cleanupHandlers.push(addEventListener(res, "close", () => release("response_close")));
+    client.cleanupHandlers.push(addEventListener(res, "finish", () => release("response_finish")));
+    client.cleanupHandlers.push(addEventListener(res, "error", (error) => release("response_error", "warn", {
+        message: error instanceof Error ? error.message : String(error),
+    })));
+    client.cleanupHandlers.push(addEventListener(req, "close", () => release("request_close")));
+    client.cleanupHandlers.push(addEventListener(req, "aborted", () => release("request_aborted")));
+    if (req.socket && typeof req.socket.setKeepAlive === "function" && !req.socket.destroyed) {
+        // Allow the TCP socket to remain open indefinitely so reverse proxies do not close idle connections.
+        req.socket.setKeepAlive(true);
+    }
+    if (typeof res.setTimeout === "function") {
+        // Disable the implicit HTTP server timeout; SSE responses remain active until clients disconnect.
+        res.setTimeout(0);
+    }
+    const keepAliveHandle = runtimeTimers.setInterval(() => {
+        if (client.released) {
+            return;
+        }
+        const frame = `: keep-alive ${Date.now()}\n\n`;
+        const canContinue = res.write(frame);
+        if (!canContinue) {
+            void (async () => {
+                try {
+                    await waitForResponseDrain(res);
+                }
+                catch (error) {
+                    const message = error instanceof Error ? error.message : String(error);
+                    logger.warn("dashboard_stream_keepalive_failed", { clientId, message });
+                    release("keepalive_drain_failed", "warn", { message });
+                }
+            })();
+        }
+    }, keepAliveIntervalMs);
+    client.cleanupHandlers.push(() => runtimeTimers.clearInterval(keepAliveHandle));
     const snapshot = buildSnapshot(graphState, eventStore, stigmergy, btStatusRegistry, supervisorAgent, contractNetWatcherTelemetry);
-    const payload = serialiseForSse(snapshot);
-    res.write(`data: ${payload}\n\n`);
-    logger.debug("dashboard_stream_connected", { clients: clients.size });
+    const serialised = serialiseForSse(snapshot);
+    client.buffer.enqueue([createDashboardSseMessage(snapshot, serialised)]);
+    flushDashboardClient(clients, client, logger);
+    logger.debug("dashboard_stream_connected", { clientId, clients: clients.size });
 }
 /** Pushes a fresh snapshot to every connected SSE client. */
-function broadcast(clients, graphState, eventStore, stigmergy, btStatusRegistry, supervisorAgent, contractNetWatcherTelemetry, logger) {
+function performBroadcast(clients, graphState, eventStore, stigmergy, btStatusRegistry, supervisorAgent, contractNetWatcherTelemetry, logger) {
     if (clients.size === 0) {
         return;
     }
     const snapshot = buildSnapshot(graphState, eventStore, stigmergy, btStatusRegistry, supervisorAgent, contractNetWatcherTelemetry);
-    const payload = `data: ${serialiseForSse(snapshot)}\n\n`;
-    for (const client of clients) {
-        client.write(payload);
+    const serialised = serialiseForSse(snapshot);
+    const message = createDashboardSseMessage(snapshot, serialised);
+    for (const client of Array.from(clients)) {
+        if (client.released) {
+            continue;
+        }
+        client.buffer.enqueue([message]);
+        flushDashboardClient(clients, client, logger);
     }
     logger.debug("dashboard_stream_broadcast", { clients: clients.size });
 }
@@ -440,6 +762,7 @@ function buildSnapshot(graphState, eventStore, stigmergy, btStatusRegistry, supe
     const timeline = buildDashboardTimeline(eventStore);
     const consensus = summariseConsensusDecisions(eventStore);
     const thoughtGraph = buildThoughtGraphHeatmap(graphState);
+    const searchSummary = summariseSearchActivity(eventStore);
     const children = graphState.listChildSnapshots().map((child) => {
         const lastActivityAt = child.lastTs ?? child.lastHeartbeatAt ?? child.createdAt;
         return {
@@ -469,6 +792,7 @@ function buildSnapshot(graphState, eventStore, stigmergy, btStatusRegistry, supe
         consensus,
         thoughtGraph,
         children,
+        search: searchSummary,
     };
 }
 /**
@@ -490,6 +814,87 @@ function buildDashboardTimeline(eventStore, limit = 40) {
     }));
     const filters = buildTimelineFilters(events);
     return { events, filters };
+}
+const SEARCH_DOCS_WINDOW_MS = 60_000;
+const SEARCH_COMPLETION_WINDOW_MS = 60 * 60 * 1000;
+const SEARCH_DOMAIN_LIMIT = 20;
+/**
+ * Aggregates recent search activity so dashboards can render dedicated panels
+ * (queue size, domain heatmap, latency distribution) without reprocessing the
+ * full event stream client-side.
+ */
+function summariseSearchActivity(eventStore, now = Date.now()) {
+    const runningJobs = new Set();
+    let anonymousRunningJobs = 0;
+    let docsInWindow = 0;
+    let completedLastHour = 0;
+    const errorCounters = new Map();
+    const domainCounters = new Map();
+    const latencyBuckets = new Map();
+    const window = eventStore.list({
+        kinds: ["search:job_started", "search:job_completed", "search:doc_ingested", "search:error"],
+    });
+    for (const event of window) {
+        const payload = asRecord(event.payload);
+        switch (event.kind) {
+            case "search:job_started":
+                if (event.jobId) {
+                    runningJobs.add(event.jobId);
+                }
+                else {
+                    anonymousRunningJobs += 1;
+                }
+                break;
+            case "search:job_completed":
+                if (now - event.ts <= SEARCH_COMPLETION_WINDOW_MS) {
+                    completedLastHour += 1;
+                }
+                if (event.jobId && runningJobs.delete(event.jobId)) {
+                    // deleted from the set
+                }
+                else if (!event.jobId && anonymousRunningJobs > 0) {
+                    anonymousRunningJobs -= 1;
+                }
+                break;
+            case "search:doc_ingested": {
+                if (now - event.ts <= SEARCH_DOCS_WINDOW_MS) {
+                    docsInWindow += 1;
+                }
+                const domain = payload ? extractDomain(payload.url) : null;
+                if (domain) {
+                    incrementCounter(domainCounters, domain);
+                }
+                const mime = payload ? coerceString(payload.mime_type ?? payload.mimetype) : null;
+                const category = classifyContentType(mime);
+                const fetchedAt = payload ? toOptionalNumber(payload.fetched_at ?? payload.fetchedAt) : null;
+                const contributesToLatency = payload ? shouldContributeToLatencyAverages(payload) : false;
+                if (contributesToLatency && fetchedAt !== null) {
+                    const latencyMs = Math.max(0, now - fetchedAt);
+                    incrementLatencyBucket(latencyBuckets, category, latencyMs);
+                }
+                break;
+            }
+            case "search:error": {
+                const stage = payload ? coerceString(payload.stage) : null;
+                incrementCounter(errorCounters, stage ?? "unknown");
+                break;
+            }
+            default:
+                break;
+        }
+    }
+    const docsPerMinute = docsInWindow / (SEARCH_DOCS_WINDOW_MS / 60_000);
+    const queue = {
+        running: runningJobs.size + anonymousRunningJobs,
+        completedLastHour,
+        docsPerMinute: roundToTwoDecimals(docsPerMinute),
+        errorsByStage: normaliseSearchErrors(errorCounters),
+    };
+    return {
+        queue,
+        topDomains: normaliseTopDomains(domainCounters),
+        contentLatency: normaliseContentLatency(latencyBuckets),
+    };
 }
 /** Aggregates distinct filter values for the timeline dropdowns. */
 function buildTimelineFilters(events) {
@@ -516,6 +921,111 @@ function buildTimelineFilters(events) {
         jobs: [...jobs].sort(),
         children: [...children].sort(),
     };
+}
+function asRecord(value) {
+    if (!value || typeof value !== "object") {
+        return null;
+    }
+    return value;
+}
+function incrementCounter(counters, key, delta = 1) {
+    const previous = counters.get(key) ?? 0;
+    counters.set(key, previous + delta);
+}
+function normaliseSearchErrors(counters) {
+    const entries = Array.from(counters.entries()).map(([stage, count]) => ({ stage, count }));
+    entries.sort((left, right) => {
+        if (right.count !== left.count) {
+            return right.count - left.count;
+        }
+        return left.stage.localeCompare(right.stage);
+    });
+    return entries;
+}
+function normaliseTopDomains(counters) {
+    const entries = Array.from(counters.entries()).map(([domain, count]) => ({ domain, count }));
+    entries.sort((left, right) => {
+        if (right.count !== left.count) {
+            return right.count - left.count;
+        }
+        return left.domain.localeCompare(right.domain);
+    });
+    return entries.slice(0, SEARCH_DOMAIN_LIMIT);
+}
+/**
+ * Decides whether an ingested document should contribute to latency averages.
+ * The dashboard only charts latency for documents that either produced
+ * artefacts (graph/vector ingestion) or surfaced explicit ingestion errors.
+ * This avoids skewing the averages with documents skipped by downstream
+ * stages (for instance, duplicates filtered before ingestion).
+ */
+function shouldContributeToLatencyAverages(payload) {
+    const graphIngested = toOptionalBoolean(payload.graph_ingested ?? payload.graphIngested);
+    const vectorIngested = toOptionalBoolean(payload.vector_ingested ?? payload.vectorIngested);
+    const errorCount = toOptionalNumber(payload.error_count ?? payload.errorCount);
+    return Boolean(graphIngested) || Boolean(vectorIngested) || (errorCount !== null && errorCount > 0);
+}
+function classifyContentType(mime) {
+    if (!mime) {
+        return "unknown";
+    }
+    const lower = mime.toLowerCase();
+    if (lower.includes("pdf")) {
+        return "pdf";
+    }
+    if (lower.startsWith("image/")) {
+        return "image";
+    }
+    if (lower.includes("html") || lower.includes("htm")) {
+        return "html";
+    }
+    return lower.split(";")[0] ?? "other";
+}
+function incrementLatencyBucket(buckets, category, latencyMs) {
+    const bucket = buckets.get(category) ?? { total: 0, count: 0 };
+    bucket.total += latencyMs;
+    bucket.count += 1;
+    buckets.set(category, bucket);
+}
+function normaliseContentLatency(buckets) {
+    const entries = [];
+    for (const [contentType, bucket] of buckets.entries()) {
+        if (bucket.count === 0) {
+            continue;
+        }
+        const average = bucket.total / bucket.count;
+        entries.push({ contentType, averageMs: roundToTwoDecimals(average), samples: bucket.count });
+    }
+    entries.sort((left, right) => {
+        if (right.averageMs !== left.averageMs) {
+            return right.averageMs - left.averageMs;
+        }
+        if (right.samples !== left.samples) {
+            return right.samples - left.samples;
+        }
+        return left.contentType.localeCompare(right.contentType);
+    });
+    return entries;
+}
+function roundToTwoDecimals(value) {
+    if (!Number.isFinite(value)) {
+        return 0;
+    }
+    return Number(value.toFixed(2));
+}
+function extractDomain(value) {
+    const url = coerceString(value);
+    if (!url) {
+        return null;
+    }
+    try {
+        const parsed = new URL(url);
+        const host = parsed.hostname.trim().toLowerCase();
+        return host.length > 0 ? host : null;
+    }
+    catch {
+        return null;
+    }
 }
 /** Builds a concise textual summary for the timeline entry. */
 function summariseEventForTimeline(event) {
@@ -1033,7 +1543,12 @@ export function summariseRuntimeCosts(graphState, eventStore) {
         perChild: perChildEntries,
     };
 }
-/** Builds a scheduler snapshot suitable for dashboard consumption. */
+/**
+ * Builds a scheduler snapshot suitable for dashboard consumption while also
+ * normalising the optional supervisor telemetry so the stream never leaks
+ * `undefined` placeholders once `exactOptionalPropertyTypes` is fully
+ * enforced.
+ */
 function buildSchedulerSnapshot(supervisorAgent) {
     if (!supervisorAgent) {
         return { tick: 0, backlog: 0, completed: 0, failed: 0, updatedAt: null };
@@ -2661,4 +3176,10 @@ function serialiseSnapshotForInlineScript(snapshot) {
         .replace(/\u2028/g, "\\u2028")
         .replace(/\u2029/g, "\\u2029");
 }
+/** @internal Exposes helpers exclusively used within the test-suite. */
+export const __testing = {
+    buildSchedulerSnapshot,
+    summariseSearchActivity,
+    resolveDashboardBroadcastDebounce,
+};
 //# sourceMappingURL=dashboard.js.map

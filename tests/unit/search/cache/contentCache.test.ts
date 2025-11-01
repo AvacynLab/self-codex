@@ -10,6 +10,7 @@ function createFetched(url: string, overrides: Partial<RawFetched> = {}): RawFet
     finalUrl: url,
     status: 200,
     fetchedAt: 1700000000000,
+    notModified: false,
     headers,
     contentType: "text/plain",
     size: 7,

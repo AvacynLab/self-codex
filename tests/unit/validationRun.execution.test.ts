@@ -243,6 +243,7 @@ class StubDownloader extends SearchDownloader {
       finalUrl: url,
       status: 200,
       fetchedAt: Date.now(),
+      notModified: false,
       headers: new Map([["content-type", "text/html"]]),
       contentType: "text/html",
       size: body.length,

@@ -345,6 +345,24 @@ function normaliseHeaders(headers: Headers): Map<string, string> {
   return normalised;
 }
 
+/**
+ * Merges header updates received during a conditional request into the cached
+ * snapshot while preserving the original map immutability expected by callers.
+ */
+function mergeHeaders(
+  base: ReadonlyMap<string, string>,
+  updates: ReadonlyMap<string, string>,
+): Map<string, string> {
+  const merged = new Map<string, string>();
+  for (const [key, value] of base.entries()) {
+    merged.set(key, value);
+  }
+  for (const [key, value] of updates.entries()) {
+    merged.set(key, value);
+  }
+  return merged;
+}
+
 /** Removes charset parameters from a Content-Type header. */
 function sanitiseContentType(raw: string | null): string | null {
   if (!raw) {
@@ -396,6 +414,56 @@ function sniffContentType(buffer: Buffer): string | null {
   }
 
   return null;
+}
+
+/** Content-Types considered too generic to trust without signature confirmation. */
+const GENERIC_CONTENT_TYPES = new Set([
+  "text/plain",
+  "text/html",
+  "text/xml",
+  "application/octet-stream",
+  "binary/octet-stream",
+  "application/json",
+]);
+
+/**
+ * Chooses the most reliable content type by preferring the server declaration
+ * unless it is missing or clearly contradicts the sniffed payload signature.
+ */
+function resolveContentType(
+  declared: string | null,
+  sniffed: string | null,
+  guessed: string | null,
+): string | null {
+  if (!declared) {
+    return sniffed ?? guessed ?? null;
+  }
+
+  if (sniffed && isDeclaredIncoherent(declared, sniffed)) {
+    return sniffed;
+  }
+
+  return declared ?? sniffed ?? guessed ?? null;
+}
+
+/**
+ * Flags declared MIME values that conflict with the detected payload signature.
+ * The heuristics stay conservative to avoid overriding precise declarations.
+ */
+function isDeclaredIncoherent(declared: string, sniffed: string): boolean {
+  if (declared === sniffed) {
+    return false;
+  }
+
+  if (GENERIC_CONTENT_TYPES.has(declared)) {
+    return true;
+  }
+
+  if (declared.startsWith("text/") && !sniffed.startsWith("text/")) {
+    return true;
+  }
+
+  return false;
 }
 
 /** Reads the response body while enforcing the maximum size constraint. */
@@ -580,7 +648,31 @@ export class SearchDownloader {
       if (!cachedRevalidated) {
         throw new DownloadError(`Received HTTP 304 for ${url} but no cached payload was found.`);
       }
-      return cachedRevalidated;
+
+      const responseHeaders = normaliseHeaders(response.headers);
+      const mergedHeaders = mergeHeaders(cachedRevalidated.headers, responseHeaders);
+      const refreshedAt = this.now();
+      const finalUrl = response.url || parsed.href;
+
+      const refreshed: RawFetched = {
+        ...cachedRevalidated,
+        finalUrl,
+        fetchedAt: refreshedAt,
+        headers: mergedHeaders,
+        notModified: false,
+      };
+
+      this.contentCache?.store(refreshed);
+      this.contentCache?.clearFailure(canonicalUrl);
+      if (finalUrl !== canonicalUrl) {
+        this.contentCache?.clearFailure(finalUrl);
+      }
+
+      return {
+        ...refreshed,
+        status: response.status,
+        notModified: true,
+      };
     }
 
     if (response.status >= 400) {
@@ -596,10 +688,10 @@ export class SearchDownloader {
     const body = await readClampedBody(response, this.config.maxBytes, controller);
     const finalUrl = response.url || parsed.href;
     const fetchedAt = this.now();
-    const contentType =
-      sanitiseContentType(headers.get("content-type") ?? null) ??
-      sniffContentType(body) ??
-      guessContentTypeFromUrl(finalUrl);
+    const declaredContentType = sanitiseContentType(headers.get("content-type") ?? null);
+    const sniffedContentType = sniffContentType(body);
+    const guessedContentType = guessContentTypeFromUrl(finalUrl);
+    const contentType = resolveContentType(declaredContentType, sniffedContentType, guessedContentType);
     const checksum = computePayloadChecksum(body);
 
     const result: RawFetched = {
@@ -607,6 +699,7 @@ export class SearchDownloader {
       finalUrl,
       status: response.status,
       fetchedAt,
+      notModified: false,
       headers,
       contentType,
       size: body.byteLength,

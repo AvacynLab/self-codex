@@ -46,10 +46,10 @@ export const SearchIndexManifestDraft: ToolManifestDraft = {
     "Télécharge et structure une liste d'URL puis ingère les documents dans le graphe de connaissances et l'index vectoriel. Exemple : search.index {\"urls\":[\"https://example.org\"]}",
   kind: "dynamic",
   category: "runtime",
-  tags: ["search", "web", "ingest", "rag", "ops"],
+  tags: ["search", "web", "ingest", "rag"],
   hidden: false,
   budgets: {
-    time_ms: 60_000,
+    time_ms: 90_000,
     tool_calls: 1,
     bytes_out: 64_000,
   },
@@ -139,6 +139,7 @@ function buildSuccessResponse(
     ok: true,
     idempotency_key: idempotencyKey,
     summary: `indexation terminée (${docs.length} document${docs.length > 1 ? "s" : ""})`,
+    job_id: result.jobId,
     count: docs.length,
     docs,
     ...(errors.length > 0 ? { errors } : {}),
@@ -310,6 +311,9 @@ export async function registerSearchIndexTool(
   return await registry.register(SearchIndexManifestDraft, createSearchIndexHandler(context), {
     inputSchema: SearchIndexInputSchema.shape,
     annotations: { intent: SEARCH_INDEX_TOOL_NAME },
+    meta: {
+      help: 'search.index {"urls":["https://example.org"]}',
+    },
   });
 }
 

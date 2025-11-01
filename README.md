@@ -65,7 +65,7 @@ Les contributions doivent :
 | `docs/` | Notes techniques ciblées (architecture, protocoles). |
 | `config/` | Presets et fichiers JSON/TOML chargés par les scripts ou le runtime. |
 | `scenarios/` | Scénarios YAML pour `npm run eval:scenarios`. |
-| `runs/`, `children/` | Racines générées à l'exécution pour stocker artefacts et espaces de travail (ignorées par Git, cf. `.gitignore`). |
+| `validation_run/`, `children/` | Racines générées à l'exécution pour stocker artefacts et espaces de travail (ignorées par Git, cf. `.gitignore`). |
 
 Chaque sous-arbre explicité ci-dessus possède ses propres gardes (tests unitaires, lint, hygienes) : veillez à conserver l'organisation afin que les scripts de validation référencés dans `AGENTS.md` restent valides.
 
@@ -237,8 +237,8 @@ Ces limites s'appliquent à toutes les exécutions (STDIO, HTTP, évaluations sc
     `MCP_TOOLS_BUDGET_<NOM_OUTIL>_{TIME_MS|TOOL_CALLS|BYTES_OUT}` (ex. `MCP_TOOLS_BUDGET_PLAN_COMPILE_EXECUTE_TIME_MS=240000`).
 - **Observabilité** : `scripts/record-run.mjs` pilote le serveur HTTP, enchaîne
   `mcp_info`, `tools/list`, les opérations de graphe et le cycle enfant Codex,
-  puis génère un dossier `runs/validation_<date>/` avec les requêtes JSONL,
-  réponses, événements, journaux et rapports synthétiques.
+  puis génère un dossier `validation_run/runs/<scenario>/` avec les requêtes
+  JSONL, réponses, événements, journaux et rapports synthétiques.
 
 ## Déploiement Docker
 
@@ -355,11 +355,9 @@ transport.
 - Ces signaux sont persistés par `LessonsStore` (`src/learning/lessons.ts`) qui
   applique une déduplication, un renforcement automatique et une décroissance
   exponentielle configurable.
-- Les campagnes d'évaluation (`scripts/validation/run-eval.mjs`) peuvent
-  notifier le runtime via `registerLessonRegression` pour signaler les leçons
-  qui dégradent les performances. Le `LessonsStore.applyRegression` applique
-  alors une pénalité proportionnelle à la sévérité et supprime l'entrée si les
-  régressions s'accumulent.
+- Les campagnes d'évaluation (`scripts/validation/run-eval.mjs`) consomment
+  directement `LessonsStore.applyRegression` lors de leur post-traitement pour
+  pénaliser les leçons régressives sans exposer d'API RPC dédiée.
 - Les événements `child_meta_review` et `child_reflection` exposent la liste
   des leçons agrégées, ce qui permet aux tableaux de bord ou aux agents de
   récupérer rapidement les habitudes à renforcer ou les anti-patterns à bannir.
@@ -386,7 +384,7 @@ transport.
     "params": {
       "name": "project_scaffold_run",
       "arguments": {
-        "workspace_root": "runs/demo",
+        "workspace_root": "validation_run/runs/demo",
         "iso_date": "2025-10-14"
       }
     }
@@ -2044,7 +2042,7 @@ opérationnelle :
 3. **Tests** (`npm run test` puis `npm run coverage`) qui produisent un rapport
    `c8` publié en artefact et exécutent le smoke test `scripts/validation/run-smoke.mjs`.
 4. **Évaluation scénarisée** (`npm run eval:scenarios`) qui rejoue la batterie
-   agentique complète et publie les journaux `runs/validation_*`.
+   agentique complète et publie les journaux `validation_run/runs/SXX_*`.
 5. **Smoke Docker** : construction de l'image et vérification de `/healthz` et
    `/readyz` via un conteneur éphémère.
 

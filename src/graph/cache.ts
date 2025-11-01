@@ -134,4 +134,3 @@ export class GraphComputationCache {
   }
 }
 
-export { serialiseVariant as serialiseCacheVariant };

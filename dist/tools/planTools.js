@@ -18,13 +18,38 @@ import { compilePlannerPlan, generatePlanRunId } from "../planner/compileBT.js";
 import { PromptTemplateSchema, PromptVariablesSchema, renderPromptTemplate, } from "../prompts.js";
 import { buildLessonManifestContext, formatLessonsForPromptMessage, recallLessons, } from "../learning/lessonPrompts.js";
 import { buildLessonsPromptPayload, normalisePromptMessages, } from "../learning/lessonPromptDiff.js";
-import { applyAll, createInlineSubgraphRule, createRerouteAvoidRule, createSplitParallelRule } from "../graph/rewrite.js";
+import { applyAll, createInlineSubgraphRule, createRerouteAvoidRule, createSplitParallelRule, } from "../graph/rewrite.js";
 import { resolveOperationId } from "./operationIds.js";
 import { flatten } from "../graph/hierarchy.js";
 import { registerCancellation, unregisterCancellation, OperationCancelledError, } from "../executor/cancel.js";
 import { BehaviorTreeCancellationError } from "../executor/bt/nodes.js";
-import { GraphDescriptorSchema, normaliseDescriptor } from "./graphTools.js";
-import { coerceNullToUndefined, omitUndefinedEntries } from "../utils/object.js";
+import { GraphDescriptorSchema, normaliseDescriptor } from "./graph/snapshot.js";
+import { omitUndefinedEntries } from "../utils/object.js";
+import { resolveChildrenPlans } from "./plan/choose.js";
+import { extractPlanCorrelationHints, normalisePlanImpact, serialiseCorrelationForPayload, toEventCorrelationHints, } from "./plan/validate.js";
+import { summariseForCausalMemory } from "./plan/summary.js";
+/**
+ * Normalises the identifiers attached to plan events so optional properties
+ * vanish entirely when a correlation hint is missing.
+ *
+ * Returning an object without `undefined` values keeps the event bus contract
+ * aligned with the `exactOptionalPropertyTypes` tightening by making the
+ * omission explicit at the call site.
+ */
+function normalisePlanEventScope(jobId, childId) {
+    const scope = {};
+    if (jobId !== null && jobId !== undefined) {
+        // Preserve explicit job correlations while omitting missing values to keep the
+        // event scope aligned with `exactOptionalPropertyTypes` (no `undefined`).
+        scope.jobId = jobId;
+    }
+    if (childId !== null && childId !== undefined) {
+        // Child identifiers are forwarded only when supplied so downstream
+        // subscribers never observe `childId: undefined` placeholders.
+        scope.childId = childId;
+    }
+    return scope;
+}
 /** Error raised when Behaviour Tree tasks require a disabled blackboard module. */
 class BlackboardFeatureDisabledError extends Error {
     code = "E-BB-DISABLED";
@@ -82,47 +107,6 @@ function deriveBlackboardImportance(event) {
     return event.kind === "set" ? 1 : 0.5;
 }
 /**
- * Produces a compact JSON-serialisable summary suitable for causal memory
- * storage. Large strings are truncated and deep objects are collapsed to keep
- * artefacts lightweight while preserving signal for diagnostics.
- */
-function summariseForCausalMemory(value, depth = 0) {
-    if (value === null || typeof value === "number" || typeof value === "boolean") {
-        return value;
-    }
-    if (typeof value === "string") {
-        return value.length > 200 ? `${value.slice(0, 200)}…` : value;
-    }
-    if (Array.isArray(value)) {
-        if (depth >= 2) {
-            return `array(${value.length})`;
-        }
-        const window = value.slice(0, 5).map((item) => summariseForCausalMemory(item, depth + 1));
-        if (value.length > 5) {
-            window.push(`…${value.length - 5} more`);
-        }
-        return window;
-    }
-    if (typeof value === "object" && value !== undefined) {
-        if (depth >= 2) {
-            return "object";
-        }
-        const entries = Object.entries(value);
-        const summary = {};
-        for (const [key, entry] of entries.slice(0, 6)) {
-            summary[key] = summariseForCausalMemory(entry, depth + 1);
-        }
-        if (entries.length > 6) {
-            summary.__truncated__ = `${entries.length - 6} more`;
-        }
-        return summary;
-    }
-    if (typeof value === "undefined") {
-        return null;
-    }
-    return String(value);
-}
-/**
  * Await for a duration while respecting cooperative cancellation. The helper
  * removes listeners eagerly to keep fake timers based tests deterministic and
  * leak-free.
@@ -147,6 +131,18 @@ async function waitWithCancellation(handle, ms) {
         };
         handle.signal.addEventListener("abort", onAbort, { once: true });
     });
+}
+/**
+ * Waits for a duration using cooperative cancellation when a handle is
+ * available. The helper keeps the Behaviour Tree tool implementation concise
+ * while guaranteeing the historical semantics remain unchanged.
+ */
+async function waitForDuration(handle, ms) {
+    if (!handle) {
+        await delay(ms);
+        return;
+    }
+    await waitWithCancellation(handle, ms);
 }
 /**
  * Normalise cancellation reasons exposed by the Behaviour Tree runtime so the
@@ -249,6 +245,74 @@ export class ValueGuardRequiredError extends Error {
     }
 }
 /**
+ * Filters fan-out candidates against the value guard when enabled. The helper
+ * encapsulates the logging and rejection mechanics so the main fan-out flow can
+ * focus on correlation wiring and orchestration duties.
+ */
+function filterFanoutPlans(context, candidates, correlationLogFields) {
+    if (!context.valueGuard) {
+        return { acceptedPlans: [...candidates], rejectedPlans: [] };
+    }
+    const acceptedPlans = [];
+    const rejectedPlans = [];
+    for (const plan of candidates) {
+        if (!plan.valueImpacts?.length) {
+            plan.valueDecision = null;
+            acceptedPlans.push(plan);
+            continue;
+        }
+        const decision = context.valueGuard.graph.filter({
+            id: plan.name,
+            label: plan.name,
+            impacts: plan.valueImpacts,
+        });
+        plan.valueDecision = decision;
+        if (decision.allowed) {
+            acceptedPlans.push(plan);
+            continue;
+        }
+        rejectedPlans.push({ name: plan.name, decision });
+        context.logger.warn("plan_fanout_value_guard_reject", {
+            child_name: plan.name,
+            score: decision.score,
+            threshold: decision.threshold,
+            violations: decision.violations.length,
+            ...correlationLogFields,
+        });
+    }
+    if (acceptedPlans.length === 0) {
+        throw new ValueGuardRejectionError(rejectedPlans);
+    }
+    if (rejectedPlans.length > 0) {
+        context.logger.warn("plan_fanout_value_guard_filtered", {
+            rejected: rejectedPlans.length,
+            allowed: acceptedPlans.length,
+            ...correlationLogFields,
+        });
+    }
+    return { acceptedPlans, rejectedPlans };
+}
+/**
+ * Ensures the job entry associated with a fan-out run exists. The helper creates
+ * or updates the job record with a running status so dashboards reflect the
+ * latest progression without duplicating branching logic.
+ */
+function ensureFanoutJob(context, jobId, goal, createdAt) {
+    const existingJob = context.graphState.getJob(jobId);
+    if (!existingJob) {
+        context.graphState.createJob(jobId, {
+            createdAt,
+            state: "running",
+            ...omitUndefinedEntries({ goal }),
+        });
+        return;
+    }
+    context.graphState.patchJob(jobId, {
+        state: "running",
+        goal: goal ?? existingJob.goal ?? null,
+    });
+}
+/**
  * Error raised when consensus-based reducers cannot reach the required quorum.
  * The decision payload is embedded so operators can inspect tallies when
  * debugging the rejection.
@@ -261,6 +325,22 @@ export class ConsensusNoQuorumError extends Error {
         this.name = "ConsensusNoQuorumError";
         this.details = { decision };
     }
+}
+/**
+ * Evaluates whether a quorum policy is satisfied while preserving the
+ * historical decision threshold. The computation mirrors the previous inline
+ * logic but removes the nested `if/else` branches for clarity.
+ */
+function evaluateQuorumJoinPolicy(consensusDecision, successCount, fallbackThreshold) {
+    if (!consensusDecision) {
+        return {
+            satisfied: successCount >= fallbackThreshold,
+            threshold: fallbackThreshold,
+        };
+    }
+    const appliedThreshold = consensusDecision.threshold ?? fallbackThreshold;
+    const satisfied = consensusDecision.outcome === "success" && consensusDecision.satisfied;
+    return { satisfied, threshold: appliedThreshold };
 }
 /**
  * Error raised when Behaviour Tree execution exceeds the configured runtime
@@ -464,7 +544,6 @@ export const PlanCompileExecuteInputSchema = z
 })
     .extend(PlanCorrelationHintsSchema.shape)
     .strict();
-export const PlanCompileExecuteInputShape = PlanCompileExecuteInputSchema.shape;
 /**
  * Input payload accepted by the `plan_run_bt` tool.
  *
@@ -558,7 +637,8 @@ export const PlanResumeInputSchema = PlanLifecycleRunSchema;
 export const PlanResumeInputShape = PlanResumeInputSchema.shape;
 /** Default schema registry used by the Behaviour Tree interpreter. */
 const BehaviorTaskSchemas = {
-    noop: z.any(),
+    /** No-op tasks accept any structured payload but ignore it at runtime. */
+    noop: z.unknown(),
     bb_set: BbSetInputSchema,
     wait: z
         .object({
@@ -731,79 +811,11 @@ const BehaviorToolHandlers = {
     wait: async (context, input) => {
         const payload = BehaviorTaskSchemas.wait.parse(input ?? {});
         const handle = context.activeCancellation ?? null;
-        if (handle) {
-            await waitWithCancellation(handle, payload.duration_ms);
-        }
-        else {
-            await delay(payload.duration_ms);
-        }
+        await waitForDuration(handle, payload.duration_ms);
         context.logger.info("bt_wait", { duration_ms: payload.duration_ms });
         return null;
     },
 };
-function resolveChildrenPlans(input, defaultRuntime) {
-    if (input.children_spec) {
-        if ("list" in input.children_spec) {
-            return input.children_spec.list.map((child) => ({
-                name: child.name,
-                runtime: child.runtime ?? defaultRuntime,
-                promptVariables: { ...(child.prompt_variables ?? {}) },
-                // NOTE: keep optional fields absent rather than `undefined` so the
-                // object remains compatible with `exactOptionalPropertyTypes`.
-                ...omitUndefinedEntries({
-                    system: child.system,
-                    goals: child.goals,
-                    command: child.command,
-                    args: child.args,
-                    env: child.env,
-                    metadata: child.metadata,
-                    manifestExtras: child.manifest_extras,
-                    ttlSeconds: child.ttl_s,
-                    valueImpacts: child.value_impacts?.map((impact) => ({ ...impact })),
-                }),
-            }));
-        }
-        const plans = [];
-        const base = input.children_spec;
-        for (let index = 0; index < base.count; index += 1) {
-            plans.push({
-                name: `${base.name_prefix}-${index + 1}`,
-                runtime: base.runtime ?? defaultRuntime,
-                promptVariables: {
-                    ...(base.prompt_variables ?? {}),
-                    child_index: index + 1,
-                },
-                ...omitUndefinedEntries({
-                    system: base.system,
-                    goals: base.goals,
-                    metadata: base.metadata,
-                    manifestExtras: base.manifest_extras,
-                    valueImpacts: base.value_impacts?.map((impact) => ({ ...impact })),
-                }),
-            });
-        }
-        return plans;
-    }
-    if (input.children?.length) {
-        return input.children.map((child) => ({
-            name: child.name,
-            runtime: child.runtime ?? defaultRuntime,
-            promptVariables: { ...(child.prompt_variables ?? {}) },
-            ...omitUndefinedEntries({
-                system: child.system,
-                goals: child.goals,
-                command: child.command,
-                args: child.args,
-                env: child.env,
-                metadata: child.metadata,
-                manifestExtras: child.manifest_extras,
-                ttlSeconds: child.ttl_s,
-                valueImpacts: child.value_impacts?.map((impact) => ({ ...impact })),
-            }),
-        }));
-    }
-    throw new Error("plan_fanout requires either children_spec or children to describe the clones");
-}
 function renderPromptForChild(template, variables) {
     const messages = renderPromptTemplate(template, { variables });
     const summary = messages
@@ -964,10 +976,7 @@ async function spawnChildWithRetry(context, jobId, plan, template, sharedVariabl
                         lessons_prompt: lessonsPromptPayload,
                     },
                     correlation: eventCorrelation,
-                    ...omitUndefinedEntries({
-                        jobId,
-                        childId,
-                    }),
+                    ...normalisePlanEventScope(jobId, childId),
                 });
             }
             await context.supervisor.send(childId, {
@@ -1101,8 +1110,6 @@ export async function handlePlanFanout(context, input) {
             throw new ValueGuardRequiredError(riskyPlans);
         }
     }
-    const rejectedPlans = [];
-    const plans = [];
     const providedCorrelation = extractPlanCorrelationHints(input);
     const opId = resolveOperationId(input.op_id ?? providedCorrelation?.opId, "plan_fanout_op");
     const runId = providedCorrelation?.runId ?? input.run_label ?? `run-${Date.now()}`;
@@ -1122,66 +1129,14 @@ export async function handlePlanFanout(context, input) {
     const eventCorrelation = toEventCorrelationHints(mergedCorrelation);
     const correlationPayload = serialiseCorrelationForPayload(eventCorrelation);
     const correlationLogFields = { ...correlationPayload };
-    if (context.valueGuard) {
-        for (const plan of resolvedPlans) {
-            if (!plan.valueImpacts?.length) {
-                plan.valueDecision = null;
-                plans.push(plan);
-                continue;
-            }
-            const decision = context.valueGuard.graph.filter({
-                id: plan.name,
-                label: plan.name,
-                impacts: plan.valueImpacts,
-            });
-            plan.valueDecision = decision;
-            if (!decision.allowed) {
-                rejectedPlans.push({ name: plan.name, decision });
-                context.logger.warn("plan_fanout_value_guard_reject", {
-                    child_name: plan.name,
-                    score: decision.score,
-                    threshold: decision.threshold,
-                    violations: decision.violations.length,
-                    ...correlationLogFields,
-                });
-                continue;
-            }
-            plans.push(plan);
-        }
-        if (plans.length === 0) {
-            throw new ValueGuardRejectionError(rejectedPlans);
-        }
-        if (rejectedPlans.length > 0) {
-            context.logger.warn("plan_fanout_value_guard_filtered", {
-                rejected: rejectedPlans.length,
-                allowed: plans.length,
-                ...correlationLogFields,
-            });
-        }
-    }
-    else {
-        plans.push(...resolvedPlans);
-    }
+    const { acceptedPlans: plans, rejectedPlans } = filterFanoutPlans(context, resolvedPlans, correlationLogFields);
     const promptTemplate = {
         system: input.prompt_template.system,
         user: input.prompt_template.user,
         assistant: input.prompt_template.assistant,
     };
     const createdAt = Date.now();
-    const existingJob = context.graphState.getJob(jobId);
-    if (!existingJob) {
-        context.graphState.createJob(jobId, {
-            createdAt,
-            state: "running",
-            ...omitUndefinedEntries({ goal: input.goal }),
-        });
-    }
-    else {
-        context.graphState.patchJob(jobId, {
-            state: "running",
-            goal: input.goal ?? existingJob.goal ?? null,
-        });
-    }
+    ensureFanoutJob(context, jobId, input.goal, createdAt);
     context.logger.info("plan_fanout", {
         job_id: jobId,
         run_id: runId,
@@ -1207,10 +1162,7 @@ export async function handlePlanFanout(context, input) {
             rejected: rejectedPlans.map((entry) => entry.name),
         },
         correlation: eventCorrelation,
-        ...omitUndefinedEntries({
-            jobId,
-            childId: coerceNullToUndefined(parentChildId),
-        }),
+        ...normalisePlanEventScope(jobId, parentChildId),
     });
     const sharedVariables = {
         job_id: jobId,
@@ -1449,6 +1401,7 @@ export async function handlePlanJoin(context, input) {
             options.preferValue = "success";
         }
         const { quorum: configuredQuorum, ...baseOptions } = options;
+        const quorumOverride = configuredQuorum ?? (input.join_policy === "quorum" ? baseQuorum : undefined);
         switch (consensusConfig.mode) {
             case "majority":
                 consensusDecision = computeConsensusMajority(statusVotes, baseOptions);
@@ -1456,7 +1409,9 @@ export async function handlePlanJoin(context, input) {
             case "weighted":
                 consensusDecision = computeConsensusWeighted(statusVotes, {
                     ...baseOptions,
-                    quorum: configuredQuorum ?? (input.join_policy === "quorum" ? baseQuorum : undefined),
+                    // Only propagate the quorum override when a concrete value is available to
+                    // avoid leaking `quorum: undefined` once strict optional typing is enabled.
+                    ...(quorumOverride !== undefined ? { quorum: quorumOverride } : {}),
                 });
                 break;
             case "quorum":
@@ -1490,14 +1445,9 @@ export async function handlePlanJoin(context, input) {
             threshold = 1;
             break;
         case "quorum": {
-            threshold = consensusDecision?.threshold ?? baseQuorum;
-            if (consensusDecision) {
-                satisfied =
-                    consensusDecision.outcome === "success" && consensusDecision.satisfied;
-            }
-            else {
-                satisfied = successes.length >= (threshold ?? baseQuorum);
-            }
+            const quorumOutcome = evaluateQuorumJoinPolicy(consensusDecision, successes.length, baseQuorum);
+            satisfied = quorumOutcome.satisfied;
+            threshold = quorumOutcome.threshold;
             break;
         }
         default:
@@ -1575,13 +1525,10 @@ export async function handlePlanJoin(context, input) {
             satisfied,
             successes: successes.length,
             failures: failures.length,
-            consensus: consensusPayload,
+            ...(consensusPayload ? { consensus: consensusPayload } : {}),
         },
         correlation: correlationHints,
-        ...omitUndefinedEntries({
-            jobId: coerceNullToUndefined(correlationHints.jobId ?? null),
-            childId: coerceNullToUndefined(correlationHints.childId ?? null),
-        }),
+        ...normalisePlanEventScope(correlationHints.jobId, correlationHints.childId),
     });
     context.logger.info("plan_join_completed", {
         policy: input.join_policy,
@@ -1610,7 +1557,10 @@ export async function handlePlanJoin(context, input) {
             summary: obs.summary,
             artifacts: obs.outputs?.artifacts ?? [],
         })),
-        consensus: consensusPayload,
+        // Only surface consensus metadata when a decision was computed so JSON
+        // callers do not receive `"consensus": undefined` entries once strict
+        // optional property typing is enabled.
+        ...(consensusPayload ? { consensus: consensusPayload } : {}),
     };
 }
 function summariseChildOutputs(outputs) {
@@ -1722,10 +1672,7 @@ export async function handlePlanReduce(context, input) {
             children: summaries.map((item) => item.child_id),
         },
         correlation: correlationHints,
-        ...omitUndefinedEntries({
-            jobId: coerceNullToUndefined(correlationHints.jobId ?? null),
-            childId: coerceNullToUndefined(correlationHints.childId ?? null),
-        }),
+        ...normalisePlanEventScope(correlationHints.jobId, correlationHints.childId),
     });
     let result;
     switch (input.reducer) {
@@ -1770,7 +1717,7 @@ export async function handlePlanReduce(context, input) {
                 aggregate,
                 trace: {
                     per_child: summaries,
-                    details: Object.keys(traceDetails).length ? traceDetails : undefined,
+                    ...(Object.keys(traceDetails).length ? { details: traceDetails } : {}),
                 },
             };
             break;
@@ -1898,7 +1845,10 @@ export async function handlePlanReduce(context, input) {
  */
 export function handlePlanCompileBT(context, input) {
     context.logger.info("plan_compile_bt", { graph_id: input.graph.id });
-    const compiled = compileHierGraphToBehaviorTree(input.graph);
+    // Sanitise the parsed hierarchy so optional labels/ports omitted by callers
+    // never materialise as `undefined` when compiling the behaviour tree.
+    const graph = sanitiseHierGraphInput(input.graph);
+    const compiled = compileHierGraphToBehaviorTree(graph);
     return CompiledBehaviorTreeSchema.parse(compiled);
 }
 /**
@@ -2057,8 +2007,7 @@ async function executePlanRunBT(context, input) {
         context.emitEvent({
             kind: "BT_RUN",
             level: phase === "error" ? "error" : "info",
-            jobId: coerceNullToUndefined(jobId ?? null),
-            childId: coerceNullToUndefined(childId ?? null),
+            ...normalisePlanEventScope(jobId, childId),
             payload: eventPayload,
             correlation: eventCorrelation,
         });
@@ -2146,33 +2095,40 @@ async function executePlanRunBT(context, input) {
         cancellationSignal: cancellation.signal,
         isCancelled: () => cancellation.isCancelled(),
         throwIfCancelled: () => cancellation.throwIfCancelled(),
-        recommendTimeout: loopDetector
-            ? (category, complexityScore, fallbackMs) => {
-                try {
-                    return loopDetector.recommendTimeout(category, complexityScore ?? 1);
-                }
-                catch (error) {
-                    context.logger.warn("bt_timeout_recommendation_failed", {
-                        category,
-                        fallback_ms: fallbackMs ?? null,
-                        message: error instanceof Error ? error.message : String(error),
+        // Inject runtime hints conditionally so `TickRuntime` consumers never receive
+        // explicit `undefined` placeholders when the loop detector feature is
+        // disabled. This keeps the object compatible with
+        // `exactOptionalPropertyTypes` by omitting optional callbacks entirely.
+        // Mirror the conditional injection above so reactive runs also avoid
+        // propagating undefined optional callbacks when the loop detector is not
+        // configured.
+        ...(loopDetector
+            ? {
+                recommendTimeout: (category, complexityScore, fallbackMs) => {
+                    try {
+                        return loopDetector.recommendTimeout(category, complexityScore ?? 1);
+                    }
+                    catch (error) {
+                        context.logger.warn("bt_timeout_recommendation_failed", {
+                            category,
+                            fallback_ms: fallbackMs ?? null,
+                            message: error instanceof Error ? error.message : String(error),
+                        });
+                        return fallbackMs;
+                    }
+                },
+                recordTimeoutOutcome: (category, outcome) => {
+                    if (!Number.isFinite(outcome.durationMs) || outcome.durationMs <= 0) {
+                        return;
+                    }
+                    loopDetector.recordTaskObservation({
+                        taskType: category,
+                        durationMs: Math.max(1, Math.round(outcome.durationMs)),
+                        success: outcome.success,
                     });
-                    return fallbackMs;
-                }
+                },
             }
-            : undefined,
-        recordTimeoutOutcome: loopDetector
-            ? (category, outcome) => {
-                if (!Number.isFinite(outcome.durationMs) || outcome.durationMs <= 0) {
-                    return;
-                }
-                loopDetector.recordTaskObservation({
-                    taskType: category,
-                    durationMs: Math.max(1, Math.round(outcome.durationMs)),
-                    success: outcome.success,
-                });
-            }
-            : undefined,
+            : {}),
     };
     scheduler = new ReactiveScheduler({
         interpreter,
@@ -2198,7 +2154,7 @@ async function executePlanRunBT(context, input) {
         },
         getPheromoneIntensity: (nodeId) => context.stigmergy.getNodeIntensity(nodeId)?.intensity ?? 0,
         getPheromoneBounds: () => context.stigmergy.getIntensityBounds(),
-        causalMemory,
+        ...(causalMemory ? { causalMemory } : {}),
     });
     const schedulerRef = scheduler;
     if (!schedulerRef) {
@@ -2386,8 +2342,7 @@ async function executePlanRunReactive(context, input) {
         context.emitEvent({
             kind: "BT_RUN",
             level: phase === "error" ? "error" : "info",
-            jobId: coerceNullToUndefined(jobId ?? null),
-            childId: coerceNullToUndefined(childId ?? null),
+            ...normalisePlanEventScope(jobId, childId),
             payload: eventPayload,
             correlation: eventCorrelation,
         });
@@ -2402,8 +2357,7 @@ async function executePlanRunReactive(context, input) {
     const emitSchedulerTelemetry = (message, payload) => {
         context.emitEvent({
             kind: "SCHEDULER",
-            jobId: coerceNullToUndefined(jobId ?? null),
-            childId: coerceNullToUndefined(childId ?? null),
+            ...normalisePlanEventScope(jobId, childId),
             payload: {
                 msg: message,
                 ...correlationLogFields,
@@ -2490,33 +2444,33 @@ async function executePlanRunReactive(context, input) {
         cancellationSignal: cancellation.signal,
         isCancelled: () => cancellation.isCancelled(),
         throwIfCancelled: () => cancellation.throwIfCancelled(),
-        recommendTimeout: loopDetector
-            ? (category, complexityScore, fallbackMs) => {
-                try {
-                    return loopDetector.recommendTimeout(category, complexityScore ?? 1);
-                }
-                catch (error) {
-                    context.logger.warn("bt_timeout_recommendation_failed", {
-                        category,
-                        fallback_ms: fallbackMs ?? null,
-                        message: error instanceof Error ? error.message : String(error),
+        ...(loopDetector
+            ? {
+                recommendTimeout: (category, complexityScore, fallbackMs) => {
+                    try {
+                        return loopDetector.recommendTimeout(category, complexityScore ?? 1);
+                    }
+                    catch (error) {
+                        context.logger.warn("bt_timeout_recommendation_failed", {
+                            category,
+                            fallback_ms: fallbackMs ?? null,
+                            message: error instanceof Error ? error.message : String(error),
+                        });
+                        return fallbackMs;
+                    }
+                },
+                recordTimeoutOutcome: (category, outcome) => {
+                    if (!Number.isFinite(outcome.durationMs) || outcome.durationMs <= 0) {
+                        return;
+                    }
+                    loopDetector.recordTaskObservation({
+                        taskType: category,
+                        durationMs: Math.max(1, Math.round(outcome.durationMs)),
+                        success: outcome.success,
                     });
-                    return fallbackMs;
-                }
+                },
             }
-            : undefined,
-        recordTimeoutOutcome: loopDetector
-            ? (category, outcome) => {
-                if (!Number.isFinite(outcome.durationMs) || outcome.durationMs <= 0) {
-                    return;
-                }
-                loopDetector.recordTaskObservation({
-                    taskType: category,
-                    durationMs: Math.max(1, Math.round(outcome.durationMs)),
-                    success: outcome.success,
-                });
-            }
-            : undefined,
+            : {}),
     };
     scheduler = new ReactiveScheduler({
         interpreter,
@@ -2524,7 +2478,7 @@ async function executePlanRunReactive(context, input) {
         now: runtime.now,
         getPheromoneIntensity: (nodeId) => context.stigmergy.getNodeIntensity(nodeId)?.intensity ?? 0,
         getPheromoneBounds: () => context.stigmergy.getIntensityBounds(),
-        causalMemory,
+        ...(causalMemory ? { causalMemory } : {}),
         cancellation,
         onEvent: (telemetry) => {
             const eventPayload = summariseSchedulerEvent(telemetry.event, telemetry.payload);
@@ -2655,7 +2609,9 @@ async function executePlanRunReactive(context, input) {
     loop = new ExecutionLoop({
         intervalMs: input.tick_ms ?? 100,
         now: runtime.now,
-        budgetMs: input.budget_ms,
+        // Only forward the budget when callers explicitly configure it so the
+        // execution loop options remain free of `undefined` stubs.
+        ...(input.budget_ms !== undefined ? { budgetMs: input.budget_ms } : {}),
         reconcilers,
         afterTick: ({ reconcilers: executedReconcilers }) => {
             if (!pendingLoopEvent) {
@@ -2867,13 +2823,60 @@ function normalisePlanDryRunGraph(graph) {
     }
     const candidate = graph;
     if (isHierarchicalDryRunGraph(candidate)) {
-        return flatten(candidate);
+        return flatten(sanitiseHierGraphInput(candidate));
     }
     const parsed = GraphDescriptorSchema.safeParse(candidate);
     if (!parsed.success) {
         throw new Error("invalid graph payload supplied to plan dry-run");
     }
     return normaliseDescriptor(parsed.data);
+}
+/**
+ * Convert hierarchical graph payloads validated by zod into the richer
+ * {@link HierGraph} contract consumed by the graph tooling. The helper removes
+ * optional fields that callers left undefined so downstream consumers never see
+ * explicit `undefined` markers when `exactOptionalPropertyTypes` is enabled.
+ */
+function sanitiseHierGraphInput(graph) {
+    const sanitisedNodes = graph.nodes.map((node) => {
+        if (node.kind === "task") {
+            const base = {
+                id: node.id,
+                kind: "task",
+                attributes: node.attributes,
+                ...(node.label !== undefined ? { label: node.label } : {}),
+                ...(node.inputs ? { inputs: node.inputs } : {}),
+                ...(node.outputs ? { outputs: node.outputs } : {}),
+            };
+            return base;
+        }
+        return {
+            id: node.id,
+            kind: "subgraph",
+            ref: node.ref,
+            ...(node.params ? { params: node.params } : {}),
+        };
+    });
+    const sanitisedEdges = graph.edges.map((edge) => ({
+        id: edge.id,
+        from: {
+            nodeId: edge.from.nodeId,
+            ...(edge.from.port ? { port: edge.from.port } : {}),
+        },
+        to: {
+            nodeId: edge.to.nodeId,
+            ...(edge.to.port ? { port: edge.to.port } : {}),
+        },
+        ...omitUndefinedEntries({
+            label: edge.label,
+            attributes: edge.attributes,
+        }),
+    }));
+    return {
+        id: graph.id,
+        nodes: sanitisedNodes,
+        edges: sanitisedEdges,
+    };
 }
 /**
  * Build reroute hints by combining explicit rewrite options with heuristic signals
@@ -2947,13 +2950,13 @@ function deriveRerouteAvoidHints(graph, rewrite, rerouteAvoid) {
         }
     }
     return {
-        avoidNodeIds: avoidNodeIds.size > 0 ? avoidNodeIds : undefined,
-        avoidLabels: avoidLabels.size > 0 ? avoidLabels : undefined,
+        ...(avoidNodeIds.size > 0 ? { avoidNodeIds } : {}),
+        ...(avoidLabels.size > 0 ? { avoidLabels } : {}),
     };
 }
 export function handlePlanDryRun(context, input) {
     const hierarchicalGraph = input.graph && isHierarchicalDryRunGraph(input.graph)
-        ? input.graph
+        ? sanitiseHierGraphInput(input.graph)
         : null;
     const compiledTree = input.tree
         ? structuredClone(input.tree)
@@ -2963,8 +2966,29 @@ export function handlePlanDryRun(context, input) {
     let rewritePreview = null;
     let rerouteAvoid = null;
     const normalisedGraph = normalisePlanDryRunGraph(input.graph);
+    // Sanitise rewrite hints eagerly so spread literals never forward `undefined`
+    // markers to `deriveRerouteAvoidHints`. This keeps the optional arrays fully
+    // compliant with `exactOptionalPropertyTypes` when the caller omits them.
+    const rewriteOptionsRecord = input.rewrite
+        ? omitUndefinedEntries({
+            avoid_node_ids: input.rewrite.avoid_node_ids,
+            avoid_labels: input.rewrite.avoid_labels,
+        })
+        : null;
+    const rewriteOptions = rewriteOptionsRecord && Object.keys(rewriteOptionsRecord).length > 0
+        ? rewriteOptionsRecord
+        : null;
+    const rerouteAvoidRecord = input.reroute_avoid
+        ? omitUndefinedEntries({
+            node_ids: input.reroute_avoid.node_ids,
+            labels: input.reroute_avoid.labels,
+        })
+        : null;
+    const explicitRerouteAvoid = rerouteAvoidRecord && Object.keys(rerouteAvoidRecord).length > 0
+        ? rerouteAvoidRecord
+        : null;
     if (normalisedGraph) {
-        const rerouteHints = deriveRerouteAvoidHints(normalisedGraph, input.rewrite ?? null, input.reroute_avoid ?? null);
+        const rerouteHints = deriveRerouteAvoidHints(normalisedGraph, rewriteOptions, explicitRerouteAvoid);
         rerouteAvoid =
             rerouteHints.avoidNodeIds || rerouteHints.avoidLabels
                 ? {
@@ -3071,78 +3095,13 @@ export async function handlePlanResume(context, input) {
  * Normalises an impact payload so it matches {@link ValueImpactInput} while
  * preserving any correlation metadata declared on the plan node.
  */
-function normalisePlanImpact(impact, fallbackNodeId) {
-    const nodeId = impact.nodeId ?? impact.node_id ?? fallbackNodeId;
-    return {
-        value: impact.value,
-        impact: impact.impact,
-        severity: impact.severity,
-        rationale: impact.rationale,
-        source: impact.source,
-        nodeId: coerceNullToUndefined(nodeId ?? null),
-    };
-}
 /**
- * Convert correlation hints provided by plan tooling into the camel-cased
- * structure consumed by downstream value guard and event bus helpers.
+ * @internal Aggregates helper functions that are exclusively used in tests.
+ * Keeping the sanitiser exported ensures optional-field regressions can assert
+ * on the precise shape forwarded to the behaviour tree compiler.
  */
-function extractPlanCorrelationHints(input) {
-    const hints = {};
-    if (input.run_id !== undefined)
-        hints.runId = input.run_id;
-    if (input.op_id !== undefined)
-        hints.opId = input.op_id;
-    if (input.job_id !== undefined)
-        hints.jobId = input.job_id;
-    if (input.graph_id !== undefined)
-        hints.graphId = input.graph_id;
-    if (input.node_id !== undefined)
-        hints.nodeId = input.node_id;
-    if (input.child_id !== undefined)
-        hints.childId = input.child_id;
-    return Object.keys(hints).length > 0 ? hints : null;
-}
-/**
- * Convert plan-level correlation hints into the event-centric structure consumed by
- * the unified MCP bus. Keeping the mapping centralised ensures every tool uses the
- * same normalisation (notably the preservation of explicit `null` values).
- */
-function toEventCorrelationHints(hints) {
-    const correlation = {};
-    if (!hints) {
-        return correlation;
-    }
-    if (hints.runId !== undefined)
-        correlation.runId = hints.runId;
-    if (hints.opId !== undefined)
-        correlation.opId = hints.opId;
-    if (hints.jobId !== undefined)
-        correlation.jobId = hints.jobId;
-    if (hints.graphId !== undefined)
-        correlation.graphId = hints.graphId;
-    if (hints.nodeId !== undefined)
-        correlation.nodeId = hints.nodeId;
-    if (hints.childId !== undefined)
-        correlation.childId = hints.childId;
-    return correlation;
-}
-/**
- * Serialise correlation hints with snake_case keys for event payloads and logs.
- * The helper mirrors {@link toEventCorrelationHints} so call sites can reuse the
- * same structure without hand-crafting objects repeatedly.
- */
-function serialiseCorrelationForPayload(hints) {
-    return {
-        run_id: hints.runId ?? null,
-        op_id: hints.opId ?? null,
-        job_id: hints.jobId ?? null,
-        graph_id: hints.graphId ?? null,
-        node_id: hints.nodeId ?? null,
-        child_id: hints.childId ?? null,
-    };
-}
-/** @internal Aggregates helper functions that are exclusively used in tests. */
 export const __testing = {
     runWithConcurrency,
+    sanitiseHierGraphInput,
 };
 //# sourceMappingURL=planTools.js.map

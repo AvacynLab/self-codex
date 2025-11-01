@@ -1,4 +1,4 @@
-import { GraphDescriptorSchema } from "../tools/graphTools.js";
+import { GraphDescriptorSchema } from "../tools/graph/snapshot.js";
 // NOTE: Node built-in modules are imported with the explicit `node:` prefix to guarantee ESM resolution in Node.js.
 /** Options influencing the Mermaid serialisation. */
 /** Mapping of stigmergic tiers to CSS-like Mermaid styles. */

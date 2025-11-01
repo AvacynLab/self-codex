@@ -158,6 +158,21 @@ describe("SearchDownloader", () => {
     expect(result.contentType).to.equal("image/png");
   });
 
+  it("overrides misleading declared content types using signature sniffing", async () => {
+    const payload = Buffer.from("%PDF-1.7 sample body");
+    const fetchStub = sinon.stub().resolves(
+      new TestResponse(payload, {
+        status: 200,
+        headers: { "Content-Type": "text/html" },
+        url: "https://example.com/doc",
+      }),
+    );
+
+    const downloader = new SearchDownloader(BASE_CONFIG, { fetchImpl: fetchStub });
+    const result = await downloader.fetchUrl("https://example.com/doc");
+    expect(result.contentType).to.equal("application/pdf");
+  });
+
   it("wraps timeouts into a DownloadTimeoutError", async () => {
     const fetchStub = sinon.stub().callsFake((_: RequestInfo | URL, init?: RequestInit) => {
       return new Promise<Response>((_resolve, reject) => {
@@ -244,6 +259,7 @@ describe("SearchDownloader", () => {
       finalUrl: canonicalUrl,
       status: 200,
       fetchedAt: 1,
+      notModified: false,
       headers: new Map<string, string>([["etag", "\"v1\""]]),
       contentType: "text/plain",
       size: 4,
@@ -252,6 +268,7 @@ describe("SearchDownloader", () => {
     };
 
     const storeStub = sinon.stub();
+    const clearFailureStub = sinon.stub();
     const cache: NonNullable<DownloaderDependencies["contentCache"]> = {
       get: sinon.stub().callsFake((url: string, validator?: string) => {
         if (validator) {
@@ -265,7 +282,7 @@ describe("SearchDownloader", () => {
       getFailure: sinon.stub().returns(null),
       recordFailure: sinon.stub(),
       store: storeStub,
-      clearFailure: sinon.stub(),
+      clearFailure: clearFailureStub,
     };
 
     const fetchStub = sinon.stub().callsFake((input: RequestInfo | URL, init?: RequestInit) => {
@@ -282,8 +299,14 @@ describe("SearchDownloader", () => {
 
     const downloader = new SearchDownloader(BASE_CONFIG, { fetchImpl: fetchStub, contentCache: cache });
     const result = await downloader.fetchUrl(canonicalUrl);
-    expect(result).to.equal(cachedPayload);
-    sinon.assert.notCalled(storeStub);
+    expect(result.notModified).to.equal(true);
+    expect(result.status).to.equal(304);
+    expect(result.body.equals(cachedPayload.body)).to.equal(true);
+    sinon.assert.calledOnce(storeStub);
+    const stored = storeStub.firstCall.firstArg as RawFetched;
+    expect(stored.notModified).to.equal(false);
+    expect(stored.fetchedAt).to.equal(result.fetchedAt);
+    sinon.assert.calledWithExactly(clearFailureStub, canonicalUrl);
   });
 
   it("throttles sequential requests hitting the same domain", async () => {

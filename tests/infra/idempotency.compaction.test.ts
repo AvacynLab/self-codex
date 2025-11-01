@@ -26,7 +26,7 @@ describe("infra/file idempotency store compaction", () => {
 
   it("shrinks the ledger and rewrites the offset index during purge", async () => {
     const clock = { now: 42_000 };
-    const directory = join(sandboxRoot, "runs", "idempotency");
+    const directory = join(sandboxRoot, "validation_run", "idempotency");
     const store = await FileIdempotencyStore.create({ directory, clock: () => clock.now });
 
     const staleKey = buildIdempotencyCacheKey("graph/apply", "stale", { version: 1 });

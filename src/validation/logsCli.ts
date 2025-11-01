@@ -46,7 +46,7 @@ export interface LogCaptureCliOverrides {
  * are intentionally ignored to keep the interface forgiving when used manually.
  */
 export function parseLogCaptureCliOptions(argv: readonly string[]): LogCaptureCliOptions {
-  const options: LogCaptureCliOptions = { baseDir: "runs" };
+  const options: LogCaptureCliOptions = { baseDir: "validation_run" };
 
   for (let index = 0; index < argv.length; index += 1) {
     const token = argv[index];

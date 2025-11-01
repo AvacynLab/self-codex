@@ -332,4 +332,57 @@ describe("EventStore", () => {
     expect(stored.handler()).to.equal("ok");
     expect(Object.keys(stored)).to.deep.equal(["handler", "name"]);
   });
+
+  it("versionne les événements search et tronque les messages volumineux", () => {
+    // Ce scénario couvre les normalisations spécifiques appliquées aux
+    // événements `search:*`: ajout du champ `version` et coupe des messages
+    // trop longs pour éviter de saturer les journaux/artefacts.
+    const logger = new RecordingLogger();
+    const store = new EventStore({ maxHistory: 5, logger });
+
+    const started = store.emit({
+      kind: "search:job_started",
+      jobId: "search:job:example",
+      payload: { query: "mime sniff" },
+    });
+
+    const oversizedMessage = "x".repeat(1_500);
+    const error = store.emit({
+      kind: "search:error",
+      level: "error",
+      jobId: "search:job:example",
+      payload: {
+        stage: "fetch",
+        message: oversizedMessage,
+        code: "network_error",
+      },
+    });
+
+    const snapshot = store.getSnapshot();
+    expect(snapshot).to.have.length(2);
+
+    const startedPayload = snapshot[0]?.payload as Record<string, unknown> | undefined;
+    expect(startedPayload).to.not.be.undefined;
+    expect(startedPayload).to.deep.include({ query: "mime sniff", version: 1 });
+
+    const errorPayload = snapshot[1]?.payload as { message: string; version: number } | undefined;
+    if (!errorPayload) {
+      throw new Error("expected search error payload");
+    }
+    expect(errorPayload.version).to.equal(1);
+    expect(errorPayload.message.length).to.be.at.most(1_000);
+    expect(errorPayload.message.endsWith("…")).to.equal(true);
+    expect(errorPayload.message.startsWith(oversizedMessage.slice(0, 20))).to.equal(true);
+
+    const errorLog = logger.entries.find(
+      (entry) => entry.message === "event_recorded" && entry.level === "error",
+    );
+    const loggedPayload = (errorLog?.payload as { payload?: { message?: string } } | undefined)?.payload;
+    expect(loggedPayload?.message).to.equal(errorPayload.message);
+    expect(loggedPayload?.message?.length ?? 0).to.equal(errorPayload.message.length);
+
+    // On vérifie également que la coupe n'altère pas les métadonnées principales.
+    expect(loggedPayload).to.deep.include({ code: "network_error", version: 1, stage: "fetch" });
+    expect(started.jobId).to.equal(error.jobId);
+  });
 });

@@ -8,8 +8,8 @@ import { ensureRunDirectories, createTraceIdFactory, type RunContext } from '../
 import { ArtifactRecorder } from '../lib/artifactRecorder.js';
 import { runPlanningStage } from '../lib/plans.js';
 
-import { getRuntimeFeatures, configureRuntimeFeatures, server } from '../../../src/server.js';
-import type { FeatureToggles } from '../../../src/serverOptions.js';
+import { getRuntimeFeatures, configureRuntimeFeatures, server } from '../../../../src/server.js';
+import type { FeatureToggles } from '../../../../src/serverOptions.js';
 
 /**
  * Deterministic clock helper ensuring that artefact timestamps remain stable

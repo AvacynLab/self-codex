@@ -1,4 +1,4 @@
-import { GraphDescriptorSchema } from "../tools/graphTools.js";
+import { GraphDescriptorSchema } from "../tools/graph/snapshot.js";
 /**
  * Render a graph descriptor as a GraphViz DOT document.
  *

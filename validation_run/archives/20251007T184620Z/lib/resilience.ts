@@ -8,8 +8,8 @@ import { McpSession, McpToolCallError, type ToolCallRecord } from './mcpSession.
 import type { BaseToolCallSummary, ToolResponseSummary } from './baseTools.js';
 import { buildTransportFailureSummary, summariseToolResponse } from './responseSummary.js';
 
-import type { PlanRunBTResult } from '../../../src/tools/planTools.js';
-import type { PlanLifecycleSnapshot } from '../../../src/executor/planLifecycle.js';
+import type { PlanRunBTResult } from '../../../../src/tools/planTools.js';
+import type { PlanLifecycleSnapshot } from '../../../../src/executor/planLifecycle.js';
 
 /**
  * Summary describing how a long running operation reacted when an explicit

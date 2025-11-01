@@ -90,13 +90,14 @@ describe("search.index facade", () => {
       async ingestDirect(parameters: import("../../../src/search/index.js").DirectIngestParameters) {
         capturedParameters = parameters;
         return {
+          jobId: "job-index-1",
           documents: [createStructuredDocument()],
           errors: [
             {
               stage: "extract" as const,
               url: "https://example.net/broken",
               message: "timeout",
-              code: "UnstructuredExtractorError",
+              code: "extract_error",
             },
           ],
           stats: {
@@ -149,6 +150,7 @@ describe("search.index facade", () => {
     expect(structured.docs[0]?.url).to.equal("https://example.net/doc");
     expect(structured.errors).to.have.lengthOf(1);
     expect(structured.stats.requested).to.equal(1);
+    expect(structured.job_id).to.equal("job-index-1");
     expect(structured.budget_used?.tool_calls).to.equal(1);
     const expectedIdempotencyKey = computeIndexDeterministicKey({
       items: [
@@ -236,6 +238,7 @@ describe("search.index facade", () => {
       async ingestDirect(parameters: import("../../../src/search/index.js").DirectIngestParameters) {
         capturedParameters = parameters;
         return {
+          jobId: "search:job:legacy",
           documents: [],
           errors: [],
           stats: {
@@ -275,5 +278,70 @@ describe("search.index facade", () => {
     expect(structured.ok).to.equal(true);
     expect(structured.count).to.equal(0);
     expect(structured.docs).to.be.an("array").that.is.empty;
+  });
+
+  it("surfaces partial ingestion successes with aggregated errors", async () => {
+    const logger = new StructuredLogger();
+    const pipeline = {
+      async ingestDirect() {
+        return {
+          jobId: "job-index-partial",
+          documents: [createStructuredDocument({ id: "doc-index-a", url: "https://example.net/a" })],
+          errors: [
+            {
+              stage: "ingest_vector" as const,
+              url: "https://example.net/b",
+              message: "embedding timeout",
+              code: "ingest_error",
+            },
+          ],
+          stats: {
+            requestedResults: 2,
+            receivedResults: 2,
+            fetchedDocuments: 2,
+            structuredDocuments: 1,
+            graphIngested: 1,
+            vectorIngested: 0,
+          },
+          metrics: null,
+        } satisfies Awaited<ReturnType<import("../../../src/search/index.js").SearchPipeline["ingestDirect"]>>;
+      },
+    } as unknown as import("../../../src/search/index.js").SearchPipeline;
+
+    const handler = createSearchIndexHandler({ pipeline, logger });
+    const extras = createRequestExtras("req-search-index-partial");
+
+    const result = await runWithRpcTrace(
+      { method: `tools/${SEARCH_INDEX_TOOL_NAME}`, traceId: "trace-search-index-partial", requestId: extras.requestId },
+      async () =>
+        runWithJsonRpcContext({ requestId: extras.requestId }, () =>
+          handler(
+            {
+              items: [{ url: "https://example.net/a" }, { url: "https://example.net/b" }],
+            },
+            extras,
+          ),
+        ),
+    );
+
+    const structured = result.structuredContent as Record<string, any>;
+    expect(result.isError).to.equal(false);
+    expect(structured.ok).to.equal(true);
+    expect(structured.count).to.equal(1);
+    expect(structured.docs).to.deep.equal([
+      {
+        id: "doc-index-a",
+        url: "https://example.net/a",
+        title: "Indexed document",
+      },
+    ]);
+    expect(structured.errors).to.deep.equal([
+      {
+        stage: "ingest_vector",
+        url: "https://example.net/b",
+        message: "embedding timeout",
+        code: "ingest_error",
+      },
+    ]);
   });
 });

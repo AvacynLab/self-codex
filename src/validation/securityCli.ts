@@ -44,7 +44,7 @@ export interface SecurityCliOverrides {
 
 /** Parses CLI arguments emitted by `scripts/runSecurityPhase.ts`. */
 export function parseSecurityCliOptions(argv: readonly string[]): SecurityCliOptions {
-  const options: SecurityCliOptions = { baseDir: "runs" };
+  const options: SecurityCliOptions = { baseDir: "validation_run" };
 
   for (let index = 0; index < argv.length; index += 1) {
     const token = argv[index];

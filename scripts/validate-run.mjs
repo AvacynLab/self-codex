@@ -4,7 +4,7 @@
  *
  * The production workflow requires us to regenerate the validation artefacts
  * described in `AGENTS.md` before every release candidate.  This script is
- * responsible for preparing the filesystem layout under `runs/` and,
+ * responsible for preparing the filesystem layout under `validation_run/` and,
  * eventually, driving the full MCP validation campaign.
  *
  * The current iteration focuses on providing a safe, testable scaffold:
@@ -365,7 +365,7 @@ function resolveRootDir(explicitRoot) {
   if (envOverride) {
     return resolve(envOverride);
   }
-  return resolve("runs");
+  return resolve("validation_run");
 }
 
 function resolveSessionName(explicitName) {
@@ -543,7 +543,7 @@ function normaliseRelativePath(basePath, targetPath) {
 }
 
 /**
- * Updates the `runs/README.md` file with the latest campaign
+ * Updates the `validation_run/README.md` file with the latest campaign
  * metadata so operators can quickly identify the freshest artefacts.
  *
  * The README intentionally keeps the historical reset message at the top while

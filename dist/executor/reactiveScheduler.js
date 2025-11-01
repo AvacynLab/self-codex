@@ -52,11 +52,17 @@ export class ReactiveScheduler {
     agingHalfLifeMs;
     agingFairnessBoost;
     basePriorities;
+    /** Optional hook invoked after every tick when provided by the caller. */
     onTick;
+    /** Optional enqueue telemetry reporter advertised by the constructor. */
     onEvent;
+    /** Optional pheromone sampler returning the latest intensity for a node. */
     getPheromoneIntensity;
+    /** Optional provider exposing global pheromone bounds derived from the field. */
     getPheromoneBounds;
+    /** Optional causal memory instance recording scheduler activity. */
     causalMemory;
+    /** Optional cancellation handle propagated from upstream orchestrators. */
     cancellation;
     batchQuantumMs;
     maxBatchTicks;
@@ -97,12 +103,16 @@ export class ReactiveScheduler {
             ...DEFAULT_BASE_PRIORITIES,
             ...(options.basePriorities ?? {}),
         };
-        this.onTick = options.onTick;
-        this.onEvent = options.onEvent;
-        this.getPheromoneIntensity = options.getPheromoneIntensity;
-        this.getPheromoneBounds = options.getPheromoneBounds;
-        this.causalMemory = options.causalMemory;
-        this.cancellation = options.cancellation;
+        this.onTick = typeof options.onTick === "function" ? options.onTick : null;
+        this.onEvent = typeof options.onEvent === "function" ? options.onEvent : null;
+        this.getPheromoneIntensity = typeof options.getPheromoneIntensity === "function"
+            ? options.getPheromoneIntensity
+            : null;
+        this.getPheromoneBounds = typeof options.getPheromoneBounds === "function"
+            ? options.getPheromoneBounds
+            : null;
+        this.causalMemory = options.causalMemory ?? null;
+        this.cancellation = options.cancellation ?? null;
         this.batchQuantumMs = Math.max(0, options.batchQuantumMs ?? DEFAULT_BATCH_QUANTUM_MS);
         this.maxBatchTicks = Math.max(1, options.maxBatchTicks ?? DEFAULT_MAX_BATCH_TICKS);
         this.events.on("taskReady", this.taskReadyHandler);
@@ -173,7 +183,10 @@ export class ReactiveScheduler {
         if (event === "taskReady") {
             const ready = payload;
             if (ready.pheromone === undefined && this.getPheromoneIntensity) {
-                ready.pheromone = this.getPheromoneIntensity(ready.nodeId);
+                const derivedPheromone = this.getPheromoneIntensity(ready.nodeId);
+                if (derivedPheromone !== undefined) {
+                    ready.pheromone = derivedPheromone;
+                }
             }
             if (ready.pheromoneBounds) {
                 this.currentPheromoneBounds = { ...ready.pheromoneBounds };
@@ -184,10 +197,21 @@ export class ReactiveScheduler {
                     ready.pheromoneBounds = bounds;
                 }
             }
+            // Avoid serialising optional pheromone hints as explicit `undefined`
+            // values so upcoming `exactOptionalPropertyTypes` enforcement sees a
+            // fully sanitised payload.
+            if (ready.pheromone === undefined) {
+                Reflect.deleteProperty(ready, "pheromone");
+            }
+            // Drop empty pheromone bound placeholders so downstream consumers only
+            // observe concrete range snapshots.
+            if (ready.pheromoneBounds == null) {
+                Reflect.deleteProperty(ready, "pheromoneBounds");
+            }
         }
         if (event === "stigmergyChanged") {
             const change = payload;
-            const total = this.getPheromoneIntensity?.(change.nodeId);
+            const total = this.getPheromoneIntensity ? this.getPheromoneIntensity(change.nodeId) : undefined;
             if (total !== undefined) {
                 change.intensity = total;
             }
@@ -200,15 +224,26 @@ export class ReactiveScheduler {
                     change.bounds = bounds;
                 }
             }
+            // Ensure telemetry never surfaces `undefined` placeholders while still
+            // allowing legitimate zero intensities to flow through unchanged.
+            if (change.intensity === undefined) {
+                Reflect.deleteProperty(change, "intensity");
+            }
+            // Remove empty range snapshots to keep optional fields absent unless a
+            // provider explicitly supplies them.
+            if (change.bounds == null) {
+                Reflect.deleteProperty(change, "bounds");
+            }
             this.rebalancePheromone(change.nodeId, change.intensity ?? 0);
         }
+        const causalEventId = coerceNullToUndefined(this.recordCausalEvent(`scheduler.event.${event}`, this.serialiseEventPayload(event, payload), this.buildCauses(this.lastTickResultEventId)));
         const entry = {
             id: this.sequence,
             event,
             payload,
             enqueuedAt: this.now(),
             basePriority: this.computeBasePriority(event, payload),
-            causalEventId: coerceNullToUndefined(this.recordCausalEvent(`scheduler.event.${event}`, this.serialiseEventPayload(event, payload), this.buildCauses(this.lastTickResultEventId))),
+            ...(causalEventId !== undefined ? { causalEventId } : {}),
         };
         this.sequence += 1;
         const pendingBefore = this.queue.length;
@@ -272,22 +307,24 @@ export class ReactiveScheduler {
                 const pendingAfter = this.queue.length;
                 ticksInBatch += 1;
                 batchElapsed = finishedAt - batchStart;
-                this.onTick?.({
-                    event: next.event,
-                    payload: next.payload,
-                    priority,
-                    basePriority: next.basePriority,
-                    enqueuedAt: next.enqueuedAt,
-                    startedAt,
-                    finishedAt,
-                    result,
-                    pendingBefore,
-                    pendingAfter,
-                    sequence: next.id,
-                    batchIndex,
-                    ticksInBatch,
-                    batchElapsedMs: batchElapsed,
-                });
+                if (this.onTick) {
+                    this.onTick({
+                        event: next.event,
+                        payload: next.payload,
+                        priority,
+                        basePriority: next.basePriority,
+                        enqueuedAt: next.enqueuedAt,
+                        startedAt,
+                        finishedAt,
+                        result,
+                        pendingBefore,
+                        pendingAfter,
+                        sequence: next.id,
+                        batchIndex,
+                        ticksInBatch,
+                        batchElapsedMs: batchElapsed,
+                    });
+                }
                 const tickResultId = this.recordCausalEvent("scheduler.tick.result", {
                     event: next.event,
                     status: result.status,
@@ -359,7 +396,10 @@ export class ReactiveScheduler {
             case "taskReady": {
                 const readyPayload = payload;
                 if (readyPayload.pheromone === undefined && this.getPheromoneIntensity) {
-                    readyPayload.pheromone = this.getPheromoneIntensity(readyPayload.nodeId);
+                    const derivedPheromone = this.getPheromoneIntensity(readyPayload.nodeId);
+                    if (derivedPheromone !== undefined) {
+                        readyPayload.pheromone = derivedPheromone;
+                    }
                 }
                 if (readyPayload.pheromoneBounds) {
                     this.currentPheromoneBounds = { ...readyPayload.pheromoneBounds };
@@ -369,6 +409,14 @@ export class ReactiveScheduler {
                     if (bounds) {
                         readyPayload.pheromoneBounds = bounds;
                     }
+                }
+                // Mirror the enqueue sanitisation so telemetry observers never see
+                // transient `undefined` placeholders when computing priorities.
+                if (readyPayload.pheromone === undefined) {
+                    Reflect.deleteProperty(readyPayload, "pheromone");
+                }
+                if (readyPayload.pheromoneBounds == null) {
+                    Reflect.deleteProperty(readyPayload, "pheromoneBounds");
                 }
                 const { criticality = 0 } = readyPayload;
                 const pheromone = readyPayload.pheromone ?? 0;

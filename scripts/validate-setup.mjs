@@ -6,7 +6,7 @@
  * transport enabled, exercises the exposed endpoint with authenticated and
  * unauthenticated probes, inspects the STDIO configuration file, and persists
  * a machine-readable as well as human-friendly report under
- * `validation_runs/setup_<timestamp>/`.
+ * `validation_run/setup_<timestamp>/`.
  *
  * A deterministic fixture mode is available via `CODEX_VALIDATE_SETUP_TEST=1`
  * so unit tests can assert the filesystem layout without actually performing the
@@ -26,7 +26,7 @@ import { cloneDefinedEnv } from "./lib/env-helpers.mjs";
 
 const TEST_MODE = process.env.CODEX_VALIDATE_SETUP_TEST === "1";
 const workspaceRoot = resolve(process.cwd());
-const runsRoot = resolve(process.env.VALIDATE_SETUP_ROOT ?? "validation_runs");
+const runsRoot = resolve(process.env.VALIDATE_SETUP_ROOT ?? "validation_run");
 const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
 const runId = `setup_${timestamp}`;
 const runRoot = resolve(runsRoot, runId);

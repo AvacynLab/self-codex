@@ -54,7 +54,7 @@ const TEST_ENV_DEFAULTS: Record<string, string> = {
   MCP_HTTP_JSON: "on",
   MCP_HTTP_STATELESS: "yes",
   MCP_HTTP_TOKEN: "test-token",
-  MCP_RUNS_ROOT: "runs",
+  MCP_RUNS_ROOT: "validation_run",
   MCP_LOG_FILE: "/tmp/self-codex.test.log",
 };
 

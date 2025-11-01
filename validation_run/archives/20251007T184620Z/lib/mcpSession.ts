@@ -5,8 +5,8 @@ import {
   server,
   configureRuntimeFeatures,
   getRuntimeFeatures,
-} from '../../../src/server.js';
-import type { FeatureToggles } from '../../../src/serverOptions.js';
+} from '../../../../src/server.js';
+import type { FeatureToggles } from '../../../../src/serverOptions.js';
 import type { RunContext } from './runContext.js';
 import { ArtifactRecorder, type ToolCallArtefacts } from './artifactRecorder.js';
 

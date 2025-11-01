@@ -5,6 +5,24 @@ import { coerceNullToUndefined } from "../utils/object.js";
 const EVENT_CANCELLED = "cancelled";
 /** Shared emitter used to fan-out cancellation notifications. */
 const cancellationEmitter = new EventEmitter();
+/**
+ * Emits the structured cancellation lifecycle payload through the shared
+ * emitter. Wrapping the logic keeps both the type-checker and readers honest
+ * about the event contract enforced by the registry.
+ */
+function emitCancellationEvent(entry, outcome, at) {
+    cancellationEmitter.emit(EVENT_CANCELLED, {
+        opId: entry.opId,
+        runId: entry.runId,
+        jobId: entry.jobId,
+        graphId: entry.graphId,
+        nodeId: entry.nodeId,
+        childId: entry.childId,
+        reason: entry.reason,
+        at,
+        outcome,
+    });
+}
 /** Registry storing the lifecycle of every cancellable operation. */
 const operations = new Map();
 /** Reverse index mapping run identifiers to their active operations. */
@@ -185,34 +203,14 @@ export function requestCancellation(opId, options = {}) {
         entry.cancelledAt = options.at ?? Date.now();
         entry.controller.abort();
         const at = entry.cancelledAt ?? Date.now();
-        cancellationEmitter.emit(EVENT_CANCELLED, {
-            opId: entry.opId,
-            runId: entry.runId,
-            jobId: entry.jobId,
-            graphId: entry.graphId,
-            nodeId: entry.nodeId,
-            childId: entry.childId,
-            reason: entry.reason,
-            at,
-            outcome: "requested",
-        });
+        emitCancellationEvent(entry, "requested", at);
         return "requested";
     }
     if (options.reason && !entry.reason) {
         entry.reason = options.reason;
     }
     const at = options.at ?? Date.now();
-    cancellationEmitter.emit(EVENT_CANCELLED, {
-        opId: entry.opId,
-        runId: entry.runId,
-        jobId: entry.jobId,
-        graphId: entry.graphId,
-        nodeId: entry.nodeId,
-        childId: entry.childId,
-        reason: entry.reason,
-        at,
-        outcome: "already_cancelled",
-    });
+    emitCancellationEvent(entry, "already_cancelled", at);
     return "already_cancelled";
 }
 /**

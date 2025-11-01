@@ -230,6 +230,38 @@ function normaliseParallelPolicy(policy, childCount) {
     const clamped = Math.max(1, Math.min(childCount, Math.floor(threshold)));
     return { kind: "quota", successThreshold: clamped };
 }
+/**
+ * Count the occurrences of each terminal state within a batch of child results.
+ * The derived summary keeps the policy handling readable while remaining a
+ * straightforward pass-through in terms of behaviour.
+ */
+function summariseChildStatuses(results) {
+    let successCount = 0;
+    let failureCount = 0;
+    let runningCount = 0;
+    for (const result of results) {
+        switch (result.status) {
+            case "success": {
+                successCount += 1;
+                break;
+            }
+            case "failure": {
+                failureCount += 1;
+                break;
+            }
+            case "running": {
+                runningCount += 1;
+                break;
+            }
+        }
+    }
+    return {
+        successCount,
+        failureCount,
+        runningCount,
+        total: results.length,
+    };
+}
 /** Behaviour Tree parallel composite node. */
 export class ParallelNode {
     id;
@@ -303,50 +335,45 @@ export class ParallelNode {
             }
             throw error;
         }
-        const statuses = results.map((result) => result.status);
-        const successes = statuses.filter((status) => status === "success").length;
-        const failures = statuses.filter((status) => status === "failure").length;
-        const running = statuses.filter((status) => status === "running").length;
+        const summary = summariseChildStatuses(results);
         switch (this.policy.kind) {
             case "all": {
-                if (failures > 0) {
+                if (summary.failureCount > 0) {
                     this.reset();
                     return FAILURE_RESULT;
                 }
-                if (running === 0 && successes === this.children.length) {
+                if (summary.runningCount === 0 && summary.successCount === summary.total) {
                     this.reset();
                     return SUCCESS_RESULT;
                 }
                 return { status: "running" };
             }
             case "any": {
-                if (successes > 0) {
+                if (summary.successCount > 0) {
                     this.reset();
                     return SUCCESS_RESULT;
                 }
-                if (running === 0 && failures === this.children.length) {
+                if (summary.runningCount === 0 && summary.failureCount === summary.total) {
                     this.reset();
                     return FAILURE_RESULT;
                 }
                 return { status: "running" };
             }
             case "quota": {
-                if (successes >= this.policy.successThreshold) {
+                if (summary.successCount >= this.policy.successThreshold) {
                     this.reset();
                     return SUCCESS_RESULT;
                 }
-                const remainingPotential = this.children.length - failures;
+                const remainingPotential = summary.total - summary.failureCount;
                 if (remainingPotential < this.policy.successThreshold) {
                     this.reset();
                     return FAILURE_RESULT;
                 }
                 return { status: "running" };
             }
-            default: {
-                const exhaustive = this.policy;
-                throw new Error(`unsupported parallel policy ${exhaustive.kind}`);
-            }
         }
+        /* c8 ignore next */
+        throw new Error("unsupported parallel policy");
     }
     /** Reset cached statuses and child nodes. */
     reset() {
@@ -654,11 +681,15 @@ export class GuardNode {
 export class TaskLeaf {
     id;
     toolName;
+    /** Optional runtime variable key resolved before invoking the tool. */
     inputKey;
+    /** Optional Zod schema validating the input payload. */
     schema;
     constructor(id, toolName, options = {}) {
         this.id = id;
         this.toolName = toolName;
+        // Preserve the explicit `undefined` union so `exactOptionalPropertyTypes`
+        // accepts constructors that receive `schema`/`inputKey` placeholders.
         this.inputKey = options.inputKey;
         this.schema = options.schema;
     }
@@ -685,7 +716,12 @@ export class TaskLeaf {
             throw error;
         }
         ensureNotCancelled(runtime);
-        return { status: "success", output };
+        // Behaviour Tree leaf nodes surface the tool output only when callers
+        // provide a meaningful value. Omitting the optional `output` key keeps the
+        // runtime compatible with `exactOptionalPropertyTypes` by avoiding
+        // `{ output: undefined }` payloads in success cases where tools return
+        // `undefined`.
+        return output === undefined ? { status: "success" } : { status: "success", output };
     }
     /** Task leaves are stateless, nothing to reset. */
     reset() {

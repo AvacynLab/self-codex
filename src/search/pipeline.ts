@@ -1,10 +1,19 @@
+import { createHash } from "node:crypto";
+
+import pLimit, { type Limit } from "p-limit";
+
 import { StructuredLogger } from "../logger.js";
 import { EventStore } from "../eventStore.js";
 
 import type { SearchConfig } from "./config.js";
 import type { SearxQueryOptions, SearxQueryResponse } from "./searxClient.js";
 import { SearxClient, SearxClientError } from "./searxClient.js";
-import { SearchDownloader, DownloadError } from "./downloader.js";
+import {
+  SearchDownloader,
+  DownloadError,
+  DownloadSizeExceededError,
+  RobotsNotAllowedError,
+} from "./downloader.js";
 import { UnstructuredExtractor, UnstructuredExtractorError } from "./extractor.js";
 import { KnowledgeGraphIngestor, type KnowledgeGraphIngestResult } from "./ingest/toKnowledgeGraph.js";
 import { VectorStoreIngestor, type VectorStoreIngestResult } from "./ingest/toVectorStore.js";
@@ -64,6 +73,7 @@ export interface SearchJobError {
 
 /** Result returned by {@link SearchPipeline.runSearchJob}. */
 export interface SearchJobResult {
+  readonly jobId: string;
   readonly query: string;
   readonly results: readonly SearxResult[];
   readonly documents: readonly StructuredDocument[];
@@ -94,6 +104,7 @@ export interface DirectIngestParameters {
 
 /** Result returned after a direct ingestion completes. */
 export interface DirectIngestResult {
+  readonly jobId: string;
   readonly documents: readonly StructuredDocument[];
   readonly errors: readonly SearchJobError[];
   readonly stats: SearchJobStats;
@@ -107,6 +118,16 @@ interface ProcessedResultSet {
   readonly graphIngested: number;
   readonly vectorIngested: number;
 }
+
+type SuccessfulFetch = {
+  readonly result: SearxResult;
+  readonly raw: Awaited<ReturnType<SearchDownloader["fetchUrl"]>>;
+};
+
+type SuccessfulExtraction = {
+  readonly result: SearxResult;
+  readonly document: StructuredDocument;
+};
 
 /**
  * Orchestrates the end-to-end search flow (Searx query → download → extraction
@@ -123,6 +144,8 @@ export class SearchPipeline {
   private readonly eventStore: EventStore | null;
   private readonly logger: StructuredLogger | null;
   private readonly metrics: SearchMetricsRecorder | null;
+  private readonly fetchLimiter: Limit;
+  private readonly extractLimiter: Limit;
 
   constructor(dependencies: SearchPipelineDependencies) {
     this.config = dependencies.config;
@@ -134,11 +157,12 @@ export class SearchPipeline {
     this.eventStore = dependencies.eventStore ?? null;
     this.logger = dependencies.logger ?? null;
     this.metrics = dependencies.metrics ?? null;
+    this.fetchLimiter = pLimit(Math.max(1, Math.floor(this.config.fetch.parallelism)));
+    this.extractLimiter = pLimit(Math.max(1, Math.floor(this.config.pipeline.parallelExtract)));
   }
 
   /** Executes the full search job and returns structured results. */
   async runSearchJob(parameters: SearchJobParameters): Promise<SearchJobResult> {
-    const jobId = normaliseJobId(parameters.jobId);
     const query = parameters.query.trim();
     const maxResults = normaliseMaxResults(parameters.maxResults, this.config.pipeline.maxResults);
     const effectiveCategories = normaliseList(parameters.categories, this.config.searx.categories);
@@ -146,6 +170,20 @@ export class SearchPipeline {
     const fetchContent = parameters.fetchContent ?? true;
     const injectGraph = parameters.injectGraph ?? this.config.pipeline.injectGraph;
     const injectVector = parameters.injectVector ?? this.config.pipeline.injectVector;
+    const jobId = resolveJobId(
+      parameters.jobId,
+      computeSearchJobFingerprint({
+        query,
+        categories: effectiveCategories,
+        engines: effectiveEngines,
+        maxResults,
+        fetchContent,
+        injectGraph,
+        injectVector,
+        language: parameters.language ?? null,
+        safeSearch: parameters.safeSearch ?? null,
+      }),
+    );
 
     const errors: SearchJobError[] = [];
 
@@ -195,6 +233,7 @@ export class SearchPipeline {
       };
       this.emitJobCompleted(jobId, query, stats, errors.length);
       return {
+        jobId,
         query,
         results: [],
         documents: [],
@@ -218,6 +257,7 @@ export class SearchPipeline {
       };
       this.emitJobCompleted(jobId, query, stats, errors.length);
       return {
+        jobId,
         query,
         results: uniqueResults,
         documents: [],
@@ -246,6 +286,7 @@ export class SearchPipeline {
     this.emitJobCompleted(jobId, query, stats, errors.length);
 
     return {
+      jobId,
       query,
       results: uniqueResults,
       documents: processingOutcome.documents,
@@ -263,10 +304,18 @@ export class SearchPipeline {
    * search jobs.
    */
   async ingestDirect(parameters: DirectIngestParameters): Promise<DirectIngestResult> {
-    const jobId = normaliseJobId(parameters.jobId);
     const injectGraph = parameters.injectGraph ?? this.config.pipeline.injectGraph;
     const injectVector = parameters.injectVector ?? this.config.pipeline.injectVector;
     const label = normaliseDirectLabel(parameters.label);
+    const jobId = resolveJobId(
+      parameters.jobId,
+      computeDirectIngestFingerprint({
+        sources: parameters.sources ?? [],
+        label,
+        injectGraph,
+        injectVector,
+      }),
+    );
 
     const errors: SearchJobError[] = [];
     const sources = parameters.sources ?? [];
@@ -315,6 +364,7 @@ export class SearchPipeline {
     this.emitJobCompleted(jobId, label, stats, errors.length);
 
     return {
+      jobId,
       documents: processingOutcome.documents,
       errors,
       stats,
@@ -323,7 +373,7 @@ export class SearchPipeline {
   }
 
   private async processResultSet(
-    jobId: string | null,
+    jobId: string,
     query: string,
     results: readonly SearxResult[],
     options: {
@@ -336,53 +386,56 @@ export class SearchPipeline {
       return { documents: [], fetchedDocuments: 0, structuredDocuments: 0, graphIngested: 0, vectorIngested: 0 };
     }
 
-    let fetchedDocuments = 0;
     let structuredDocuments = 0;
     let graphIngested = 0;
     let vectorIngested = 0;
     const documents: StructuredDocument[] = [];
 
-    const fetchOutcomes = await mapWithConcurrency(results, this.config.fetch.parallelism, async (result) => {
-      try {
-        const raw = await this.executeWithMetrics(
-          "fetchUrl",
-          () => this.downloader.fetchUrl(result.url),
-          (error) => {
-            if (error instanceof DownloadError) {
-              return error.name;
-            }
-            return error instanceof Error ? error.name : null;
-          },
-          (outcome) => {
-            if (outcome.ok) {
-              return {
-                domain: deriveDomain(outcome.value.finalUrl) ?? deriveDomain(result.url),
-                contentType: outcome.value.contentType ?? result.mime,
-              };
-            }
-            return {
-              domain: deriveDomain(result.url),
-              contentType: result.mime,
-            };
-          },
-        );
-        fetchedDocuments += 1;
-        return { result, raw } as const;
-      } catch (error) {
-        const failure = buildError("fetch", result.url, error);
-        options.errors.push(failure);
-        this.emitError(jobId, failure);
-        this.logger?.warn("search_fetch_failed", {
-          job_id: jobId,
-          url: result.url,
-          message: failure.message,
-          code: failure.code,
-        });
-        return null;
-      }
-    });
+    const fetchOutcomes = await Promise.all(
+      results.map((result) =>
+        this.fetchLimiter(async () => {
+          try {
+            const raw = await this.executeWithMetrics(
+              "fetchUrl",
+              () => this.downloader.fetchUrl(result.url),
+              (error) => {
+                if (error instanceof DownloadError) {
+                  return error.name;
+                }
+                return error instanceof Error ? error.name : null;
+              },
+              (outcome) => {
+                if (outcome.ok) {
+                  return {
+                    domain: deriveDomain(outcome.value.finalUrl) ?? deriveDomain(result.url),
+                    contentType: outcome.value.contentType ?? result.mime,
+                  };
+                }
+                return {
+                  domain: deriveDomain(result.url),
+                  contentType: result.mime,
+                };
+              },
+            );
+            return { result, raw } as const;
+          } catch (error) {
+            const failure = buildError("fetch", result.url, error);
+            options.errors.push(failure);
+            this.emitError(jobId, failure);
+            this.logger?.warn("search_fetch_failed", {
+              job_id: jobId,
+              url: result.url,
+              message: failure.message,
+              code: failure.code,
+            });
+            return null;
+          }
+        }),
+      ),
+    );
 
-    const successfulFetches = fetchOutcomes.filter((entry): entry is NonNullable<typeof entry> => entry !== null);
+    const successfulFetches = fetchOutcomes.filter((entry): entry is SuccessfulFetch => entry !== null);
+    const fetchedDocuments = successfulFetches.length;
 
     const extractionInputs = successfulFetches.map((entry) => ({
       result: entry.result,
@@ -390,61 +443,64 @@ export class SearchPipeline {
       docId: computeDocId(entry.raw.finalUrl, entry.raw.headers, entry.raw.body),
     }));
 
-    const extractionOutcomes = await mapWithConcurrency(extractionInputs, this.config.pipeline.parallelExtract, async (input) => {
-      try {
-        const structured = await this.executeWithMetrics(
-          "extractWithUnstructured",
-          () =>
-            this.extractor.extract({
-              docId: input.docId,
-              raw: input.raw,
-              provenance: {
-                query,
-                engines: input.result.engines,
-                categories: input.result.categories,
-                position: input.result.position,
-                sourceUrl: input.result.url,
-                titleHint: input.result.title,
-                snippetHint: input.result.snippet,
+    const extractionOutcomes = await Promise.all(
+      extractionInputs.map((input) =>
+        this.extractLimiter(async () => {
+          try {
+            const structured = await this.executeWithMetrics(
+              "extractWithUnstructured",
+              () =>
+                this.extractor.extract({
+                  docId: input.docId,
+                  raw: input.raw,
+                  provenance: {
+                    query,
+                    engines: input.result.engines,
+                    categories: input.result.categories,
+                    position: input.result.position,
+                    sourceUrl: input.result.url,
+                    titleHint: input.result.title,
+                    snippetHint: input.result.snippet,
+                  },
+                }),
+              (error) => (error instanceof UnstructuredExtractorError ? error.code : null),
+              (outcome) => {
+                if (outcome.ok) {
+                  return {
+                    domain: deriveDomain(outcome.value.url) ?? deriveDomain(input.raw.finalUrl),
+                    contentType:
+                      outcome.value.mimeType ?? input.raw.contentType ?? input.result.mime ?? null,
+                  };
+                }
+                return {
+                  domain: deriveDomain(input.raw.finalUrl),
+                  contentType: input.raw.contentType ?? input.result.mime ?? null,
+                };
               },
-            }),
-          (error) => (error instanceof UnstructuredExtractorError ? error.code : null),
-          (outcome) => {
-            if (outcome.ok) {
-              return {
-                domain: deriveDomain(outcome.value.url) ?? deriveDomain(input.raw.finalUrl),
-                contentType:
-                  outcome.value.mimeType ?? input.raw.contentType ?? input.result.mime ?? null,
-              };
-            }
-            return {
-              domain: deriveDomain(input.raw.finalUrl),
-              contentType: input.raw.contentType ?? input.result.mime ?? null,
-            };
-          },
-        );
-        const deduped = deduplicateSegments(structured);
-        const finalDocument = finalizeDocId(deduped, input.docId);
-        structuredDocuments += 1;
-        return { result: input.result, document: finalDocument } as const;
-      } catch (error) {
-        const failure = buildError("extract", input.raw.finalUrl, error);
-        options.errors.push(failure);
-        this.emitError(jobId, failure);
-        this.logger?.error("search_extract_failed", {
-          job_id: jobId,
-          url: input.raw.finalUrl,
-          message: failure.message,
-          code: failure.code,
-        });
-        return null;
-      }
-    });
+            );
+            const deduped = deduplicateSegments(structured);
+            const finalDocument = finalizeDocId(deduped, input.docId);
+            return { result: input.result, document: finalDocument } as const;
+          } catch (error) {
+            const failure = buildError("extract", input.raw.finalUrl, error);
+            options.errors.push(failure);
+            this.emitError(jobId, failure);
+            this.logger?.error("search_extract_failed", {
+              job_id: jobId,
+              url: input.raw.finalUrl,
+              message: failure.message,
+              code: failure.code,
+            });
+            return null;
+          }
+        }),
+      ),
+    );
 
-    for (const outcome of extractionOutcomes) {
-      if (!outcome) {
-        continue;
-      }
+    const successfulExtractions = extractionOutcomes.filter((entry): entry is SuccessfulExtraction => entry !== null);
+    structuredDocuments = successfulExtractions.length;
+
+    for (const outcome of successfulExtractions) {
       const { document, result } = outcome;
       const docErrors: SearchJobError[] = [];
 
@@ -538,7 +594,7 @@ export class SearchPipeline {
   }
 
   private emitJobStarted(
-    jobId: string | null,
+    jobId: string,
     payload: {
       query: string;
       categories: readonly string[];
@@ -551,7 +607,7 @@ export class SearchPipeline {
   ): void {
     this.eventStore?.emit({
       kind: "search:job_started",
-      ...(jobId ? { jobId } : {}),
+      jobId,
       payload: {
         query: payload.query,
         categories: [...payload.categories],
@@ -570,7 +626,7 @@ export class SearchPipeline {
   }
 
   private emitDocumentIngested(
-    jobId: string | null,
+    jobId: string,
     document: StructuredDocument,
     details: {
       graphResult: KnowledgeGraphIngestResult | null;
@@ -579,9 +635,11 @@ export class SearchPipeline {
       searxResult: SearxResult;
     },
   ): void {
+    // Emit a compact payload to keep the event bus lightweight. Large blobs such as
+    // the extracted segments are intentionally omitted so dashboards remain fast.
     this.eventStore?.emit({
       kind: "search:doc_ingested",
-      ...(jobId ? { jobId } : {}),
+      jobId,
       payload: {
         doc_id: document.id,
         url: document.url,
@@ -608,10 +666,10 @@ export class SearchPipeline {
     });
   }
 
-  private emitJobCompleted(jobId: string | null, query: string, stats: SearchJobStats, errorCount: number): void {
+  private emitJobCompleted(jobId: string, query: string, stats: SearchJobStats, errorCount: number): void {
     this.eventStore?.emit({
       kind: "search:job_completed",
-      ...(jobId ? { jobId } : {}),
+      jobId,
       payload: {
         query,
         requested_results: stats.requestedResults,
@@ -632,10 +690,10 @@ export class SearchPipeline {
     });
   }
 
-  private emitError(jobId: string | null, error: SearchJobError): void {
+  private emitError(jobId: string, error: SearchJobError): void {
     this.eventStore?.emit({
       kind: "search:error",
-      ...(jobId ? { jobId } : {}),
+      jobId,
       level: "error",
       payload: {
         stage: error.stage,
@@ -647,12 +705,14 @@ export class SearchPipeline {
   }
 }
 
-function normaliseJobId(jobId: string | null | undefined): string | null {
-  if (typeof jobId !== "string") {
-    return null;
+function resolveJobId(jobId: string | null | undefined, fingerprint: string): string {
+  if (typeof jobId === "string") {
+    const trimmed = jobId.trim();
+    if (trimmed.length > 0) {
+      return trimmed;
+    }
   }
-  const trimmed = jobId.trim();
-  return trimmed.length > 0 ? trimmed : null;
+  return `search:job:${fingerprint}`;
 }
 
 function normaliseMaxResults(maxResults: number | undefined, configuredMax: number): number {
@@ -703,6 +763,59 @@ function buildSyntheticResult(source: DirectIngestSource, index: number): SearxR
     publishedAt: null,
     score: null,
   };
+}
+
+function computeSearchJobFingerprint(payload: {
+  query: string;
+  categories: readonly string[];
+  engines: readonly string[];
+  maxResults: number;
+  fetchContent: boolean;
+  injectGraph: boolean;
+  injectVector: boolean;
+  language: string | null;
+  safeSearch: 0 | 1 | 2 | null;
+}): string {
+  return createHash("sha1")
+    .update(
+      JSON.stringify({
+        query: payload.query,
+        categories: [...payload.categories],
+        engines: [...payload.engines],
+        max_results: payload.maxResults,
+        fetch_content: payload.fetchContent,
+        inject_graph: payload.injectGraph,
+        inject_vector: payload.injectVector,
+        language: payload.language,
+        safe_search: payload.safeSearch,
+      }),
+    )
+    .digest("hex");
+}
+
+function computeDirectIngestFingerprint(payload: {
+  sources: readonly DirectIngestSource[];
+  label: string;
+  injectGraph: boolean;
+  injectVector: boolean;
+}): string {
+  return createHash("sha1")
+    .update(
+      JSON.stringify({
+        label: payload.label,
+        inject_graph: payload.injectGraph,
+        inject_vector: payload.injectVector,
+        sources: payload.sources.map((source) => ({
+          url: source.url,
+          title: source.title ?? null,
+          snippet: source.snippet ?? null,
+          engines: source.engines ?? null,
+          categories: source.categories ?? null,
+          position: source.position ?? null,
+        })),
+      }),
+    )
+    .digest("hex");
 }
 
 function collectDistinct(collections: readonly (readonly string[])[]): string[] {
@@ -756,16 +869,7 @@ function deriveDomain(url: string | null | undefined): string | null {
 
 function buildError(stage: SearchJobError["stage"], url: string | null, cause: unknown): SearchJobError {
   const message = cause instanceof Error ? cause.message : String(cause);
-  let code: string | null = null;
-  if (cause instanceof SearxClientError) {
-    code = cause.code;
-  } else if (cause instanceof DownloadError) {
-    code = cause.name;
-  } else if (cause instanceof UnstructuredExtractorError) {
-    code = cause.code;
-  } else if (cause instanceof Error) {
-    code = cause.name;
-  }
+  const code = classifyError(stage, cause);
   return {
     stage,
     url,
@@ -774,26 +878,28 @@ function buildError(stage: SearchJobError["stage"], url: string | null, cause: u
   };
 }
 
-async function mapWithConcurrency<T, R>(
-  items: readonly T[],
-  limit: number,
-  iteratee: (item: T, index: number) => Promise<R>,
-): Promise<R[]> {
-  const concurrency = Math.max(1, Math.floor(limit));
-  const results = new Array<R>(items.length);
-  let index = 0;
-
-  const workers = Array.from({ length: Math.min(concurrency, items.length) }, async () => {
-    while (true) {
-      const current = index;
-      index += 1;
-      if (current >= items.length) {
-        break;
-      }
-      results[current] = await iteratee(items[current], current);
-    }
-  });
-
-  await Promise.all(workers);
-  return results;
+function classifyError(stage: SearchJobError["stage"], cause: unknown): string | null {
+  if (cause instanceof RobotsNotAllowedError) {
+    return "robots_denied";
+  }
+  if (cause instanceof DownloadSizeExceededError) {
+    return "max_size_exceeded";
+  }
+  if (cause instanceof DownloadError) {
+    return "network_error";
+  }
+  if (cause instanceof UnstructuredExtractorError) {
+    return "extract_error";
+  }
+  if (stage === "ingest_graph" || stage === "ingest_vector") {
+    return "ingest_error";
+  }
+  if (cause instanceof SearxClientError) {
+    return cause.code ?? "network_error";
+  }
+  if (cause instanceof Error) {
+    return stage === "search" || stage === "fetch" ? "network_error" : "ingest_error";
+  }
+  return null;
 }
+

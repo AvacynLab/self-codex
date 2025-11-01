@@ -543,15 +543,6 @@ export function reportOpenSseStreams(count: number): void {
 }
 
 /**
- * Backwards compatible alias maintained for existing imports. The implementation
- * forwards to {@link reportOpenSseStreams} so the gauge exposed over `/metrics`
- * stays consistent with the hardened naming (`open_sse_streams`).
- */
-export function reportOpenSseClients(count: number): void {
-  reportOpenSseStreams(count);
-}
-
-/**
  * Updates the gauge exposing the number of active child runtimes (processes or
  * logical HTTP bridges). The supervisor refreshes the gauge whenever the
  * population changes.

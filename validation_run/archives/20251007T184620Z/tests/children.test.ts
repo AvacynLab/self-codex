@@ -8,8 +8,8 @@ import { ensureRunDirectories, createTraceIdFactory, type RunContext } from '../
 import { ArtifactRecorder } from '../lib/artifactRecorder.js';
 import { runChildOrchestrationStage } from '../lib/children.js';
 
-import { getRuntimeFeatures, configureRuntimeFeatures, server } from '../../../src/server.js';
-import type { FeatureToggles } from '../../../src/serverOptions.js';
+import { getRuntimeFeatures, configureRuntimeFeatures, server } from '../../../../src/server.js';
+import type { FeatureToggles } from '../../../../src/serverOptions.js';
 import { resolveFixture, runnerArgs } from '../../../tests/helpers/childRunner.js';
 
 /**

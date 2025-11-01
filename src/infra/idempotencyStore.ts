@@ -54,7 +54,7 @@ export interface IdempotencyStore {
  * implementations and tests.
  */
 export function resolveIdempotencyDirectory(root: string = process.cwd()): string {
-  return resolvePath(root, "runs", "idempotency");
+  return resolvePath(root, "validation_run", "idempotency");
 }
 
 /**

@@ -12,7 +12,7 @@ import {
   summariseToolResponse,
 } from './responseSummary.js';
 
-import { childProcessSupervisor, server } from '../../../src/server.js';
+import { childProcessSupervisor, server } from '../../../../src/server.js';
 import type {
   ChildAttachResult,
   ChildCancelResult,
@@ -24,8 +24,8 @@ import type {
   ChildSetRoleResult,
   ChildSpawnCodexResult,
   ChildStatusResult,
-} from '../../../src/tools/childTools.js';
-import type { PlanRunBTResult } from '../../../src/tools/planTools.js';
+} from '../../../../src/tools/childTools.js';
+import type { PlanRunBTResult } from '../../../../src/tools/planTools.js';
 
 /**
  * Structured summary of a single child instance exercised during the stage. The

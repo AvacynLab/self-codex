@@ -5,9 +5,9 @@ import { ensureDirectory, ensureGitkeep } from "../paths.js";
 /**
  * Options accepted by {@link initializeValidationRunLayout}. The helper is in
  * charge of preparing the directory structure requested in the latest
- * validation playbook (see AGENTS.md).  The structure intentionally lives under
- * `runs/validation_<DATE-ISO>/` so that it never conflicts with the historical
- * `validation_runs/` artefacts shipped with the project.
+ * validation playbook (see AGENTS.md). The structure intentionally lives under
+ * `<workspaceRoot>/runs/validation_<DATE-ISO>/` so that it never conflicts with
+ * the archived artefacts stored under `validation_run/archives/`.
  */
 export interface ValidationRunLayoutOptions {
   /**

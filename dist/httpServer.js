@@ -2,15 +2,14 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { createServer as createHttpServer } from "node:http";
 import { Buffer } from "node:buffer";
 import process from "node:process";
-import { handleJsonRpc, maybeRecordIdempotentWalEntry } from "./server.js";
 import { createHttpSessionId } from "./serverOptions.js";
 import { applySecurityHeaders, ensureRequestId } from "./http/headers.js";
-import { parseRateLimitEnvBoolean, parseRateLimitEnvNumber, rateLimitOk, } from "./http/rateLimit.js";
+import { rateLimitOk } from "./http/rateLimit.js";
 import { readJsonBody } from "./http/body.js";
 import { checkToken, resolveHttpAuthToken } from "./http/auth.js";
 import { buildIdempotencyCacheKey } from "./infra/idempotency.js";
 import { IdempotencyConflictError } from "./infra/idempotencyStore.js";
-import { readBool } from "./config/env.js";
+import { readBool, readOptionalBool, readOptionalNumber, readOptionalString } from "./config/env.js";
 import { runWithRpcTrace, annotateTraceContext, registerOutboundBytes, registerIdempotencyConflict, getActiveTraceContext, renderMetricsSnapshot, } from "./infra/tracing.js";
 import { createJsonRpcError, toJsonRpc, } from "./rpc/errors.js";
 /** Maximum payload size accepted by the lightweight JSON handler (1 MiB). */
@@ -21,14 +20,26 @@ const HEALTH_EVENT_LOOP_DELAY_BUDGET_MS = 100;
 const DEFAULT_RATE_LIMIT_RPS = 10;
 /** Default burst capacity tolerated by the HTTP limiter before throttling. */
 const DEFAULT_RATE_LIMIT_BURST = 20;
+/** Default steady-state rate (requests per second) for the search façades. */
+const DEFAULT_SEARCH_RATE_LIMIT_RPS = 2;
+/** Default burst tolerated by the dedicated search limiter before throttling. */
+const DEFAULT_SEARCH_RATE_LIMIT_BURST = 4;
 /** Default limiter configuration used when no environment overrides are supplied. */
 const DEFAULT_RATE_LIMIT_CONFIG = {
     disabled: false,
     rps: DEFAULT_RATE_LIMIT_RPS,
     burst: DEFAULT_RATE_LIMIT_BURST,
 };
+/** Default limiter configuration used when no overrides are supplied for search. */
+const DEFAULT_SEARCH_RATE_LIMIT_CONFIG = {
+    disabled: false,
+    rps: DEFAULT_SEARCH_RATE_LIMIT_RPS,
+    burst: DEFAULT_SEARCH_RATE_LIMIT_BURST,
+};
 /** Global limiter configuration shared across all HTTP server instances. */
 let rateLimiterConfig = DEFAULT_RATE_LIMIT_CONFIG;
+/** Dedicated limiter configuration guarding the search façades. */
+let searchRateLimiterConfig = DEFAULT_SEARCH_RATE_LIMIT_CONFIG;
 /**
  * Parses the user supplied `number` ensuring NaN/Infinity fall back to the
  * provided default. Returning the fallback keeps the rest of the code simple
@@ -37,9 +48,27 @@ let rateLimiterConfig = DEFAULT_RATE_LIMIT_CONFIG;
 function coerceFiniteNumber(value, fallback) {
     return typeof value === "number" && Number.isFinite(value) ? value : fallback;
 }
-/** Reads a rate-limit tuning parameter from `process.env`, tolerating garbage values. */
-function parseEnvRateLimitSetting(name) {
-    return parseRateLimitEnvNumber(name);
+/** Reads environment-sourced overrides while ignoring malformed values. */
+function readRateLimitOverridesFromEnv() {
+    const disabled = readOptionalBool("MCP_HTTP_RATE_LIMIT_DISABLE");
+    const rps = readOptionalNumber("MCP_HTTP_RATE_LIMIT_RPS");
+    const burst = readOptionalNumber("MCP_HTTP_RATE_LIMIT_BURST");
+    return {
+        ...(disabled !== undefined ? { disabled } : {}),
+        ...(rps !== undefined ? { rps } : {}),
+        ...(burst !== undefined ? { burst } : {}),
+    };
+}
+/** Reads overrides for the search-specific limiter. */
+function readSearchRateLimitOverridesFromEnv() {
+    const disabled = readOptionalBool("MCP_HTTP_SEARCH_RATE_LIMIT_DISABLE");
+    const rps = readOptionalNumber("MCP_HTTP_SEARCH_RATE_LIMIT_RPS");
+    const burst = readOptionalNumber("MCP_HTTP_SEARCH_RATE_LIMIT_BURST");
+    return {
+        ...(disabled !== undefined ? { disabled } : {}),
+        ...(rps !== undefined ? { rps } : {}),
+        ...(burst !== undefined ? { burst } : {}),
+    };
 }
 /**
  * Applies the supplied overrides on top of the existing limiter configuration.
@@ -57,16 +86,40 @@ function configureRateLimiter(overrides) {
     };
     return rateLimiterConfig;
 }
+/** Applies overrides to the dedicated search limiter. */
+function configureSearchRateLimiter(overrides) {
+    const nextRps = coerceFiniteNumber(overrides.rps, searchRateLimiterConfig.rps);
+    const nextBurst = coerceFiniteNumber(overrides.burst, searchRateLimiterConfig.burst);
+    const explicitDisable = typeof overrides.disabled === "boolean" ? overrides.disabled : searchRateLimiterConfig.disabled;
+    const shouldDisable = explicitDisable || nextRps <= 0 || nextBurst <= 0;
+    searchRateLimiterConfig = {
+        disabled: shouldDisable,
+        rps: nextRps,
+        burst: nextBurst,
+    };
+    return searchRateLimiterConfig;
+}
 /** Refreshes the limiter configuration from environment variables. */
 function refreshRateLimiterFromEnv() {
-    const envDisabledFlag = parseRateLimitEnvBoolean("MCP_HTTP_RATE_LIMIT_DISABLE");
-    const envRps = parseEnvRateLimitSetting("MCP_HTTP_RATE_LIMIT_RPS");
-    const envBurst = parseEnvRateLimitSetting("MCP_HTTP_RATE_LIMIT_BURST");
-    return configureRateLimiter({
-        disabled: envDisabledFlag,
-        rps: coerceFiniteNumber(envRps, DEFAULT_RATE_LIMIT_CONFIG.rps),
-        burst: coerceFiniteNumber(envBurst, DEFAULT_RATE_LIMIT_CONFIG.burst),
-    });
+    const envOverrides = readRateLimitOverridesFromEnv();
+    const overrides = {
+        rps: coerceFiniteNumber(envOverrides.rps, DEFAULT_RATE_LIMIT_CONFIG.rps),
+        burst: coerceFiniteNumber(envOverrides.burst, DEFAULT_RATE_LIMIT_CONFIG.burst),
+    };
+    if (envOverrides.disabled !== undefined) {
+        overrides.disabled = envOverrides.disabled;
+    }
+    const updated = configureRateLimiter(overrides);
+    const searchOverrides = readSearchRateLimitOverridesFromEnv();
+    const searchConfig = {
+        rps: coerceFiniteNumber(searchOverrides.rps, DEFAULT_SEARCH_RATE_LIMIT_CONFIG.rps),
+        burst: coerceFiniteNumber(searchOverrides.burst, DEFAULT_SEARCH_RATE_LIMIT_CONFIG.burst),
+    };
+    if (searchOverrides.disabled !== undefined) {
+        searchConfig.disabled = searchOverrides.disabled;
+    }
+    configureSearchRateLimiter(searchConfig);
+    return updated;
 }
 // Initialise the limiter from the current environment as soon as the module loads.
 refreshRateLimiterFromEnv();
@@ -98,6 +151,10 @@ export async function startHttpServer(server, options, logger, extras = {}) {
         const requestStartedAt = process.hrtime.bigint();
         const requestUrl = request.url ? new URL(request.url, `http://${request.headers.host ?? "localhost"}`) : null;
         const requestId = ensureRequestId(request, response);
+        // Preserve the original User-Agent string so access logs can be correlated with clients
+        // without re-parsing headers when the request completes.
+        const userAgentHeader = request.headers["user-agent"];
+        const userAgent = typeof userAgentHeader === "string" ? userAgentHeader : null;
         const remoteAddress = request.socket?.remoteAddress ?? "unknown";
         const route = requestUrl?.pathname ?? request.url ?? "/";
         const method = request.method ?? "UNKNOWN";
@@ -110,7 +167,7 @@ export async function startHttpServer(server, options, logger, extras = {}) {
             accessLogged = true;
             const status = typeof statusOverride === "number" ? statusOverride : response.statusCode ?? 0;
             const completedAt = process.hrtime.bigint();
-            publishHttpAccessEvent(logger, accessLogStore, remoteAddress, route, method, status, requestStartedAt, completedAt);
+            publishHttpAccessEvent(logger, accessLogStore, remoteAddress, route, method, status, requestStartedAt, completedAt, requestId, userAgent);
         };
         response.once("finish", () => logAccess());
         response.once("close", () => logAccess(response.statusCode ?? 0));
@@ -295,20 +352,27 @@ async function handleReadyCheck(req, res, logger, requestId, readiness) {
         logger.error("http_readyz_failed", { request_id: requestId, message });
     }
 }
+/** Returns the trimmed HTTP bearer token configured in the environment. */
+function getConfiguredHttpToken() {
+    return readOptionalString("MCP_HTTP_TOKEN");
+}
 /**
- * Ensures the bearer token advertised via {@link process.env.MCP_HTTP_TOKEN}
- * is present on incoming HTTP requests. A `401` JSON-RPC error response is
- * returned when the header is missing or does not match.
+ * Ensures the bearer token advertised via {@code MCP_HTTP_TOKEN} is present on
+ * incoming HTTP requests. A `401` JSON-RPC error response is returned when the
+ * header is missing or does not match.
  */
 function shouldAllowUnauthenticatedRequests() {
+    // The helper deliberately defaults to `false` so production deployments remain locked down
+    // unless operators opt into the development-only bypass (`MCP_HTTP_ALLOW_NOAUTH=1`). Allowing
+    // the shared boolean reader to interpret a small set of truthy literals keeps CLI usage
+    // ergonomic without opening accidental holes for "0"/"false" typos.
     return readBool("MCP_HTTP_ALLOW_NOAUTH", false);
 }
 function enforceBearerToken(req, res, logger, requestId, meta = {}) {
     const allowNoAuth = shouldAllowUnauthenticatedRequests();
-    const configuredTokenRaw = process.env.MCP_HTTP_TOKEN;
-    const requiredToken = typeof configuredTokenRaw === "string" ? configuredTokenRaw.trim() : "";
+    const requiredToken = getConfiguredHttpToken();
     const token = resolveHttpAuthToken(req.headers);
-    const hasValidToken = requiredToken.length > 0 && typeof token === "string" && checkToken(token, requiredToken);
+    const hasValidToken = typeof requiredToken === "string" && requiredToken.length > 0 && typeof token === "string" && checkToken(token, requiredToken);
     if (hasValidToken) {
         return true;
     }
@@ -319,7 +383,7 @@ function enforceBearerToken(req, res, logger, requestId, meta = {}) {
         }
         return true;
     }
-    const rejectionReason = requiredToken.length === 0 ? "token_not_configured" : "missing_or_invalid_token";
+    const rejectionReason = requiredToken ? "missing_or_invalid_token" : "token_not_configured";
     logger.warn("http_auth_rejected", { reason: rejectionReason, request_id: requestId });
     void respondWithJsonRpcError(res, 401, "AUTH_REQUIRED", "Authentication required", logger, requestId, meta, {
         // Keep the legacy E-MCP-AUTH marker in metadata so downstream scrapers and
@@ -344,6 +408,36 @@ function enforceRateLimit(key, res, logger, requestId, meta = {}) {
     });
     return false;
 }
+/** Applies the search-specific limiter before invoking search façades. */
+function enforceSearchRateLimit(key, res, logger, requestId, meta = {}) {
+    const config = searchRateLimiterConfig;
+    if (config.disabled || rateLimitOk(key, config.rps, config.burst)) {
+        return true;
+    }
+    logger.warn("http_search_rate_limited", { key, request_id: requestId, method: meta.method ?? null });
+    void respondWithJsonRpcError(res, 429, "RATE_LIMITED", "Rate limit exceeded", logger, requestId, meta, {
+        hint: "Search rate limit exceeded",
+    });
+    return false;
+}
+/**
+ * Memoized promise resolving to the heavy server module.  Loading the
+ * orchestrator runtime eagerly at module evaluation time would immediately
+ * trigger the top-level await inside `orchestrator/runtime.ts`, which in turn
+ * breaks the CommonJS compilation performed by the Mocha + tsx test harness.
+ *
+ * Deferring the import until we actually need the default JSON-RPC delegate or
+ * the WAL helper keeps lightweight integration tests hermetic while preserving
+ * the behaviour for production callers.  The helper caches both the promise
+ * and the resolved module so repeated invocations remain inexpensive.
+ */
+let serverModulePromise = null;
+async function loadServerModule() {
+    if (!serverModulePromise) {
+        serverModulePromise = import("./server.js");
+    }
+    return serverModulePromise;
+}
 /**
  * Attempts to service JSON-RPC POST requests directly via the in-process
  * adapter. The fast-path keeps Codex compatible with stateless HTTP clients
@@ -352,15 +446,18 @@ function enforceRateLimit(key, res, logger, requestId, meta = {}) {
 async function tryHandleJsonRpc(req, res, logger, requestIdOrDelegate, delegateParam, idempotency) {
     const startedAt = process.hrtime.bigint();
     let requestId;
-    let delegate = handleJsonRpc;
+    let delegate;
+    let serverModule = null;
     if (typeof requestIdOrDelegate === "function") {
         delegate = requestIdOrDelegate;
     }
     else {
         requestId = requestIdOrDelegate;
-        if (delegateParam) {
-            delegate = delegateParam;
-        }
+        delegate = delegateParam;
+    }
+    if (!delegate) {
+        serverModule = await loadServerModule();
+        delegate = serverModule.handleJsonRpc;
     }
     if (req.method !== "POST" || !req.headers["content-type"]?.includes("application/json")) {
         return false;
@@ -389,21 +486,15 @@ async function tryHandleJsonRpc(req, res, logger, requestIdOrDelegate, delegateP
             message,
             request_id: requestId,
         });
-        const errorDetails = status === 413
-            ? createJsonRpcError("VALIDATION_ERROR", "Payload Too Large", { code: -32600, requestId: jsonrpcId })
-            : createJsonRpcError("VALIDATION_ERROR", "Parse error", { code: -32700, requestId: jsonrpcId });
-        const payload = toJsonRpc(null, errorDetails);
-        const bytesOut = await sendJson(res, status, payload, false, logger, requestId, undefined, idempotency);
-        logJsonRpcOutcome(logger, "warn", {
-            httpRequestId: requestId,
+        const errorCode = status === 413 ? -32600 : -32700;
+        await respondWithJsonRpcError(res, status, "VALIDATION_ERROR", status === 413 ? "Payload Too Large" : "Parse error", logger, requestId, {
             startedAt,
             bytesIn: requestBytes,
-            bytesOut,
             method: methodName,
             jsonrpcId,
+        }, {
+            code: errorCode,
             status,
-            cacheStatus: "bypass",
-            errorCode: typeof payload.error?.code === "number" ? payload.error.code : undefined,
         });
         return true;
     }
@@ -411,6 +502,18 @@ async function tryHandleJsonRpc(req, res, logger, requestIdOrDelegate, delegateP
         ...buildRouteContextFromHeaders(req, parsed),
         payloadSizeBytes: requestBytes,
     };
+    const guardMeta = {
+        startedAt,
+        bytesIn: requestBytes,
+        method: methodName,
+        jsonrpcId,
+    };
+    if (typeof parsed?.method === "string" && parsed.method.startsWith("search.")) {
+        const limiterKey = `${req.socket.remoteAddress ?? "unknown"}:${parsed.method}`;
+        if (!enforceSearchRateLimit(limiterKey, res, logger, requestId ?? parsed.method, guardMeta)) {
+            return true;
+        }
+    }
     const idempotencyKey = context.idempotencyKey;
     let cacheKey = null;
     if (idempotency && idempotencyKey && typeof parsed?.method === "string") {
@@ -420,12 +523,11 @@ async function tryHandleJsonRpc(req, res, logger, requestIdOrDelegate, delegateP
         }
         catch (assertionError) {
             if (assertionError instanceof IdempotencyConflictError || assertionError?.status === 409) {
-                const conflict = createJsonRpcError("IDEMPOTENCY_CONFLICT", "Idempotency conflict", {
+                registerIdempotencyConflict();
+                const payload = jsonRpcError(jsonrpcId, "IDEMPOTENCY_CONFLICT", "Idempotency conflict", {
                     requestId: jsonrpcId,
                     hint: "Idempotency key was reused with different parameters.",
                 });
-                registerIdempotencyConflict();
-                const payload = toJsonRpc(jsonrpcId, conflict);
                 const bytesOut = await sendJson(res, 409, payload, false, logger, requestId, undefined, idempotency);
                 logJsonRpcOutcome(logger, "warn", {
                     httpRequestId: requestId,
@@ -436,7 +538,7 @@ async function tryHandleJsonRpc(req, res, logger, requestIdOrDelegate, delegateP
                     jsonrpcId,
                     status: 409,
                     cacheStatus: "conflict",
-                    errorCode: conflict.code,
+                    errorCode: typeof payload.error?.code === "number" ? payload.error.code : null,
                 });
                 return true;
             }
@@ -494,7 +596,24 @@ async function tryHandleJsonRpc(req, res, logger, requestIdOrDelegate, delegateP
             transport,
         });
         try {
-            await maybeRecordIdempotentWalEntry(parsed, context, { method: methodName });
+            if (!serverModule) {
+                serverModule = await loadServerModule();
+            }
+            try {
+                await serverModule.maybeRecordIdempotentWalEntry(parsed, context, { method: methodName });
+            }
+            catch (walError) {
+                if (walError instanceof Error &&
+                    walError.message === "Orchestrator controller not initialised") {
+                    logger.debug("http_idempotency_skip", {
+                        request_id: requestId,
+                        reason: "controller_not_initialised",
+                    });
+                }
+                else {
+                    throw walError;
+                }
+            }
             const response = await delegate(parsed, context);
             const bytesOut = await sendJson(res, 200, response, cacheKey !== null, logger, requestId, cacheKey === null ? undefined : cacheKey, idempotency);
             logJsonRpcOutcome(logger, "info", {
@@ -513,15 +632,16 @@ async function tryHandleJsonRpc(req, res, logger, requestIdOrDelegate, delegateP
                 message: error instanceof Error ? error.message : String(error),
                 request_id: requestId,
             });
+            const errorOptions = {
+                cacheKey,
+                ...(idempotency ? { idempotency } : {}),
+            };
             await respondWithJsonRpcError(res, 500, "INTERNAL", "Internal error", logger, requestId, {
                 startedAt,
                 bytesIn: requestBytes,
                 method: methodName,
                 jsonrpcId,
-            }, {
-                cacheKey,
-                idempotency,
-            });
+            }, errorOptions);
         }
     });
     return true;
@@ -553,14 +673,29 @@ function buildRouteContextFromHeaders(req, request) {
             // Ignore malformed limits to keep the request best-effort.
         }
     }
-    return {
+    const context = {
         headers,
         transport: "http",
         requestId: request?.id ?? null,
-        childId,
-        childLimits,
-        idempotencyKey,
     };
+    if (childId !== undefined) {
+        // Propagate the trimmed child identifier when available without exposing
+        // `undefined` to callers enforcing `exactOptionalPropertyTypes`.
+        context.childId = childId;
+    }
+    if (childLimits !== undefined) {
+        // Only attach the decoded limits when the header contained a valid JSON
+        // payload so downstream logic observes either a concrete object or the
+        // absence of limits.
+        context.childLimits = childLimits;
+    }
+    if (idempotencyKey !== undefined) {
+        // Idempotency metadata is optional; omit the property entirely when the
+        // header is absent to keep the context compatible with strict optional
+        // property semantics.
+        context.idempotencyKey = idempotencyKey;
+    }
+    return context;
 }
 /** Safely retrieves the bound port once the HTTP server is listening. */
 function extractListeningPort(server) {
@@ -574,19 +709,38 @@ function extractListeningPort(server) {
 export const __httpServerInternals = {
     enforceBearerToken,
     enforceRateLimit,
+    enforceSearchRateLimit,
     tryHandleJsonRpc,
     buildRouteContextFromHeaders,
     handleHealthCheck,
     handleReadyCheck,
     configureRateLimiter,
+    configureSearchRateLimiter,
     refreshRateLimiterFromEnv,
     getRateLimiterConfig: () => rateLimiterConfig,
+    getSearchRateLimiterConfig: () => searchRateLimiterConfig,
     resetNoAuthBypassWarning: () => {
         noAuthBypassLogged = false;
     },
     publishHttpAccessEvent,
+    jsonRpcError,
     respondWithJsonRpcError,
 };
+/**
+ * Builds a JSON-RPC error response payload while automatically injecting the JSON-RPC identifier
+ * into the metadata when callers omit an explicit `requestId`. Having a single helper keeps every
+ * error response aligned with the taxonomy defined in `rpc/errors.ts` and avoids ad hoc casts.
+ *
+ * The `message` parameter is optional to mirror the ergonomics of `createJsonRpcError`; omitting
+ * it causes the canonical taxonomy message to be selected automatically so transports can focus on
+ * status codes while still delivering human-friendly diagnostics.
+ */
+function jsonRpcError(id, category, message, options = {}) {
+    const shouldInjectRequestId = options.requestId === undefined && (typeof id === "string" || typeof id === "number");
+    const enrichedOptions = shouldInjectRequestId ? { ...options, requestId: id } : options;
+    const error = createJsonRpcError(category, message, enrichedOptions);
+    return toJsonRpc(id, error);
+}
 /**
  * Serialises a JSON-RPC error response while mirroring the outcome to the structured logger.
  *
@@ -596,13 +750,13 @@ export const __httpServerInternals = {
 async function respondWithJsonRpcError(res, status, category, message, logger, httpRequestId, meta = {}, options = {}) {
     const jsonId = typeof meta.jsonrpcId === "string" || typeof meta.jsonrpcId === "number" ? meta.jsonrpcId : null;
     const { cacheKey, idempotency, ...errorOptions } = options;
+    const resolvedRequestId = errorOptions.requestId !== undefined ? errorOptions.requestId : jsonId;
     const enrichedOptions = {
         ...errorOptions,
-        requestId: jsonId,
         status: errorOptions.status ?? status,
+        ...(resolvedRequestId !== undefined ? { requestId: resolvedRequestId } : {}),
     };
-    const error = createJsonRpcError(category, message, enrichedOptions);
-    const payload = toJsonRpc(jsonId, error);
+    const payload = jsonRpcError(jsonId, category, message, enrichedOptions);
     const shouldPersist = cacheKey !== null && cacheKey !== undefined;
     const bytesOut = await sendJson(res, status, payload, shouldPersist, logger, httpRequestId, shouldPersist ? (cacheKey === null ? undefined : cacheKey) : undefined, idempotency);
     const cacheStatus = shouldPersist ? "miss" : "bypass";
@@ -612,7 +766,7 @@ async function respondWithJsonRpcError(res, status, category, message, logger, h
         status,
         bytesOut,
         cacheStatus,
-        errorCode: error.code,
+        errorCode: typeof payload.error?.code === "number" ? payload.error.code : null,
     });
     return bytesOut;
 }
@@ -667,8 +821,12 @@ async function sendJson(res, status, payload, shouldPersist, logger, requestId, 
  * mirroring the same payload into the orchestrator event store. Centralising
  * the logic guarantees that all transports emit consistent metadata for
  * operators and automated diagnostics.
+ *
+ * The helper now captures the request identifier and original User-Agent so
+ * operators can correlate per-client activity without stitching information
+ * from multiple log streams.
  */
-function publishHttpAccessEvent(logger, store, remoteAddress, route, method, status, startedAt, completedAt) {
+function publishHttpAccessEvent(logger, store, remoteAddress, route, method, status, startedAt, completedAt, requestId, userAgent) {
     const latencyNs = completedAt - startedAt;
     const latencyMs = Number(latencyNs) / 1_000_000;
     const payload = {
@@ -677,6 +835,8 @@ function publishHttpAccessEvent(logger, store, remoteAddress, route, method, sta
         method,
         status,
         latency_ms: Number.isFinite(latencyMs) && latencyMs >= 0 ? latencyMs : 0,
+        request_id: requestId ?? null,
+        user_agent: userAgent ?? null,
     };
     logger.info("http_access", payload);
     if (!store) {

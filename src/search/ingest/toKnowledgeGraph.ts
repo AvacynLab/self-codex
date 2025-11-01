@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 
 import {
+  createKnowledgeTripleRunGuard,
   dedupeTripleBatch,
   type KnowledgeGraph,
   type KnowledgeInsertResult,
@@ -234,7 +235,13 @@ export class KnowledgeGraphIngestor {
     }
 
     const aggregated: KnowledgeGraphIngestedTriple[] = [];
+    // Local debounce ensures identical (subject, predicate, object) tuples are
+    // only written once per ingest run even if upstream helpers emit duplicates.
+    const runGuard = createKnowledgeTripleRunGuard();
     for (const triple of dedupeTripleBatch(triples)) {
+      if (!runGuard.remember(triple)) {
+        continue;
+      }
       aggregated.push({
         predicate: triple.predicate,
         object: triple.object,

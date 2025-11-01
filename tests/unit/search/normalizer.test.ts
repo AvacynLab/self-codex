@@ -59,6 +59,35 @@ describe("search/normalizer", () => {
     const deduped = deduplicateSegments(document);
     expect(deduped.title).to.equal("Synthèse");
   });
+
+  it("normalises combining accents so NFD and NFC variants deduplicate", () => {
+    const composed = "Résumé"; // already NFC composed form for baseline
+    const decomposed = "Re\u0301sume\u0301"; // intentionally NFD with combining acute accents
+
+    const document = createDocument({
+      segments: [
+        createSegment({ id: "doc#raw-1", text: composed, kind: "paragraph" }),
+        createSegment({ id: "doc#raw-2", text: decomposed, kind: "paragraph" }),
+      ],
+    });
+
+    const deduped = deduplicateSegments(document);
+    expect(deduped.segments).to.have.lengthOf(1);
+    expect(deduped.segments[0]?.text).to.equal("Résumé");
+  });
+
+  it("falls back to the first meaningful title when the provided title is blank", () => {
+    const document = createDocument({
+      title: "   ",
+      segments: [
+        createSegment({ id: "doc#raw-1", text: "Rapport annuel", kind: "title" }),
+        createSegment({ id: "doc#raw-2", text: "Contenu", kind: "paragraph" }),
+      ],
+    });
+
+    const deduped = deduplicateSegments(document);
+    expect(deduped.title).to.equal("Rapport annuel");
+  });
 });
 
 function createDocument(overrides: Partial<StructuredDocument>): StructuredDocument {

@@ -98,12 +98,7 @@ import {
   SearchMetricsRecorder,
 } from "../search/index.js";
 import { HybridRetriever } from "../memory/retriever.js";
-import {
-  LessonsStore,
-  type LessonRegressionResult,
-  type LessonRegressionSignal,
-  type LessonSignal,
-} from "../learning/lessons.js";
+import { LessonsStore, type LessonSignal } from "../learning/lessons.js";
 import {
   buildLessonManifestContext,
   formatLessonsForPromptMessage,
@@ -706,7 +701,7 @@ const idempotencyRegistry = new IdempotencyRegistry(
   }),
 );
 /** Root directory storing the layered memory artefacts (vector + knowledge). */
-const MEMORY_ROOT = resolvePath(process.cwd(), "runs", "memory");
+const MEMORY_ROOT = resolvePath(process.cwd(), "validation_run", "memory");
 /** Persistent vector index capturing long form orchestrator artefacts. */
 const VECTOR_INDEX_CAPACITY = resolveVectorIndexCapacity();
 const VECTOR_PER_DOC_LIMIT = resolveVectorPerDocLimit(VECTOR_INDEX_CAPACITY);
@@ -748,7 +743,7 @@ const btStatusRegistry = new BehaviorTreeStatusRegistry();
 /** Registry tracking plan lifecycle state for pause/resume tooling. */
 const planLifecycle = new PlanLifecycleRegistry();
 /** Directory storing JSONL artefacts for correlated log tails. */
-const LOG_JOURNAL_ROOT = resolvePath(process.cwd(), "runs", "logs");
+const LOG_JOURNAL_ROOT = resolvePath(process.cwd(), "validation_run", "logs");
 /** Shared journal preserving orchestrator, run and child logs for MCP tools. */
 const logJournal = new LogJournal({
   rootDir: LOG_JOURNAL_ROOT,
@@ -1321,45 +1316,6 @@ export function seedLessons(signals: LessonSignal[]): void {
 /** Resets the shared lessons store. Intended for deterministic test setup. */
 export function resetLessons(): void {
   lessonsStore.clear();
-}
-
-/**
- * Applies regression feedback reported by the evaluation harness to the shared
- * lessons catalogue. Penalised lessons are logged and mirrored in the
- * EventStore so dashboards can surface the downgrade history.
- */
-export function registerLessonRegression(
-  feedback: LessonRegressionSignal,
-): LessonRegressionResult {
-  const result = lessonsStore.applyRegression(feedback);
-
-  const payload = {
-    lesson_id: result.record?.id ?? feedback.lessonId ?? null,
-    topic: result.record?.topic ?? feedback.topic ?? null,
-    status: result.status,
-    severity: result.appliedSeverity,
-    penalty: result.appliedPenalty,
-    reason: feedback.reason ?? result.record?.lastRegressionReason ?? null,
-  } as const;
-
-  if (result.status === "ignored") {
-    logger.info("lesson_regression_ignored", payload);
-    return result;
-  }
-
-  const level = result.status === "removed" ? "warn" : "info";
-  if (result.status === "removed") {
-    logger.warn("lesson_regression_applied", payload);
-  } else {
-    logger.info("lesson_regression_applied", payload);
-  }
-  eventStore.emit({
-    kind: "INFO",
-    level,
-    payload: { event: "lesson_regression", ...payload },
-  });
-
-  return result;
 }
 
 let DEFAULT_CHILD_RUNTIME = "codex";

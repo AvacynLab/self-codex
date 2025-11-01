@@ -52,26 +52,33 @@ export class SandboxRegistry {
         const startedAt = Date.now();
         if (!handler) {
             const finishedAt = Date.now();
-            return {
+            const clonedMetadata = cloneRecord(request.metadata);
+            // Under `exactOptionalPropertyTypes` we omit the metadata field entirely
+            // when callers do not provide any context instead of serialising
+            // `metadata: undefined`.
+            const skipped = {
                 action: request.action,
                 status: "skipped",
                 startedAt,
                 finishedAt,
                 durationMs: finishedAt - startedAt,
                 reason: "handler_missing",
-                metadata: cloneRecord(request.metadata),
             };
+            return clonedMetadata ? { ...skipped, metadata: clonedMetadata } : skipped;
         }
         const timeoutMs = normaliseTimeout(request.timeoutMs ?? this.defaultTimeoutMs);
         const controller = new AbortController();
         const abortSignal = controller.signal;
         const payloadClone = freezeDeep(cloneValue(request.payload));
+        const executionMetadata = cloneRecord(request.metadata);
+        // Preserve the loose input contract while keeping strict optional typing by
+        // only materialising the metadata property when the clone succeeded.
         const executionRequest = {
             action: request.action,
             payload: payloadClone,
-            metadata: cloneRecord(request.metadata),
             timeoutMs,
             signal: abortSignal,
+            ...(executionMetadata ? { metadata: executionMetadata } : {}),
         };
         let timeoutHandle = null;
         let timedOut = false;
@@ -105,19 +112,21 @@ export class SandboxRegistry {
         const finishedAt = Date.now();
         const durationMs = finishedAt - startedAt;
         if (timedOut) {
-            return {
+            const timeoutResult = {
                 action: request.action,
                 status: "timeout",
                 startedAt,
                 finishedAt,
                 durationMs,
                 reason: `timeout_after_${timeoutMs}ms`,
-                metadata: executionRequest.metadata,
             };
+            return executionRequest.metadata
+                ? { ...timeoutResult, metadata: executionRequest.metadata }
+                : timeoutResult;
         }
         if (caughtError) {
             const normalised = normaliseError(caughtError);
-            return {
+            const errorResult = {
                 action: request.action,
                 status: "error",
                 startedAt,
@@ -125,36 +134,38 @@ export class SandboxRegistry {
                 durationMs,
                 error: normalised,
                 reason: normalised.message,
-                metadata: executionRequest.metadata,
             };
+            return executionRequest.metadata
+                ? { ...errorResult, metadata: executionRequest.metadata }
+                : errorResult;
         }
         const result = handlerResult ?? { outcome: "success" };
         const metrics = normaliseMetrics(result.metrics);
         if (result.outcome === "failure") {
             const normalisedError = normaliseError(result.error ?? "sandbox failure");
-            return {
+            const failure = {
                 action: request.action,
                 status: "error",
                 startedAt,
                 finishedAt,
                 durationMs,
-                preview: result.preview,
-                metrics,
                 error: normalisedError,
                 reason: normalisedError.message,
-                metadata: executionRequest.metadata,
+                ...(result.preview !== undefined ? { preview: result.preview } : {}),
+                ...(metrics ? { metrics } : {}),
             };
+            return executionRequest.metadata ? { ...failure, metadata: executionRequest.metadata } : failure;
         }
-        return {
+        const success = {
             action: request.action,
             status: "ok",
             startedAt,
             finishedAt,
             durationMs,
-            preview: result.preview,
-            metrics,
-            metadata: executionRequest.metadata,
+            ...(result.preview !== undefined ? { preview: result.preview } : {}),
+            ...(metrics ? { metrics } : {}),
         };
+        return executionRequest.metadata ? { ...success, metadata: executionRequest.metadata } : success;
     }
 }
 let activeRegistry = new SandboxRegistry();
@@ -265,9 +276,12 @@ function freezeDeep(value) {
         }
     }
     else {
-        for (const key of Object.keys(value)) {
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any -- recursive walk across arbitrary payloads
-            freezeDeep(value[key]);
+        // Normalise object-like structures to a record so recursive freezing stays
+        // type-safe without falling back to `any` casts.
+        const record = value;
+        for (const key of Object.keys(record)) {
+            const entry = record[key];
+            freezeDeep(entry);
         }
     }
     return Object.freeze(value);

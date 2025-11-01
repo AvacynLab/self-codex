@@ -7,10 +7,10 @@ import { McpSession, McpToolCallError, type ToolCallRecord } from './mcpSession.
 import type { BaseToolCallSummary, ToolResponseSummary } from './baseTools.js';
 import { buildTransportFailureSummary, summariseToolResponse } from './responseSummary.js';
 
-import type { TxBeginResult, TxApplyResult, TxCommitResult } from '../../../src/tools/txTools.js';
-import type { GraphPatchResult, GraphDiffResult } from '../../../src/tools/graphDiffTools.js';
-import type { GraphDescriptorPayload } from '../../../src/tools/graphTools.js';
-import type { GraphLockResult, GraphUnlockResult } from '../../../src/tools/graphLockTools.js';
+import type { TxBeginResult, TxApplyResult, TxCommitResult } from '../../../../src/tools/txTools.js';
+import type { GraphPatchResult, GraphDiffResult } from '../../../../src/tools/graphDiffTools.js';
+import type { GraphDescriptorPayload } from '../../../../src/tools/graphTools.js';
+import type { GraphLockResult, GraphUnlockResult } from '../../../../src/tools/graphLockTools.js';
 
 /**
  * Descriptor of the aggregated signals captured while executing the transaction

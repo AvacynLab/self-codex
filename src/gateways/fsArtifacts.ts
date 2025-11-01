@@ -1,5 +1,4 @@
-import { dirname, isAbsolute, relative as relativePath, resolve, sep } from "node:path";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { isAbsolute, relative as relativePath, resolve, sep } from "node:path";
 
 import { PathResolutionError } from "../paths.js";
 
@@ -100,60 +99,3 @@ export function safePath(root: string, relativePathInput: string): string {
   return absolute;
 }
 
-/**
- * Ensures the parent directory of the provided artifact path exists before
- * writing to disk. The helper returns the absolute target path so callers can
- * chain filesystem operations fluently.
- *
- * @param root - Root directory of the artifact sandbox.
- * @param relativePath - User-supplied path resolved via {@link safePath}.
- */
-async function ensureParentDirectory(root: string, relativePath: string): Promise<string> {
-  const target = safePath(root, relativePath);
-  await mkdir(dirname(target), { recursive: true });
-  return target;
-}
-
-/**
- * Persists an artifact to disk after sanitising its relative location.
- *
- * @param root - Root directory of the artifact sandbox.
- * @param relativePath - User-provided relative location of the artifact.
- * @param payload - Bytes (or UTF-8 string) to persist.
- * @param encoding - Optional encoding when {@link payload} is textual.
- * @returns Absolute path to the persisted artifact.
- */
-export async function writeArtifactFile(
-  root: string,
-  relativePath: string,
-  payload: string | Buffer,
-  encoding: BufferEncoding = "utf8",
-): Promise<string> {
-  const target = await ensureParentDirectory(root, relativePath);
-  if (typeof payload === "string") {
-    await writeFile(target, payload, { encoding });
-  } else {
-    await writeFile(target, payload);
-  }
-  return target;
-}
-
-/**
- * Reads an artifact back from disk using a sanitised relative path.
- *
- * @param root - Root directory of the artifact sandbox.
- * @param relativePath - Relative location of the artifact inside {@link root}.
- * @param encoding - Optional encoding when textual content is expected.
- * @returns The artifact contents as a string or Buffer.
- */
-export async function readArtifactFile(
-  root: string,
-  relativePath: string,
-  encoding?: BufferEncoding,
-): Promise<string | Buffer> {
-  const target = safePath(root, relativePath);
-  if (encoding) {
-    return readFile(target, { encoding });
-  }
-  return readFile(target);
-}

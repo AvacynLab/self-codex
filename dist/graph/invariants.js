@@ -1,4 +1,5 @@
 import { ERROR_CODES } from "../types.js";
+import { omitUndefinedEntries } from "../utils/object.js";
 /** Error thrown when invariants are violated. */
 export class GraphInvariantError extends Error {
     violations;
@@ -86,14 +87,19 @@ export function assertGraphInvariants(graph, overrides = {}) {
 /** Infer invariant options from metadata and node attributes. */
 function deriveOptions(graph, overrides) {
     const metadata = normaliseRecord(graph.metadata ?? {});
-    return {
+    // The options are constructed via `omitUndefinedEntries` so callers feeding
+    // `undefined` placeholders never leak optional properties into the derived
+    // configuration. This keeps the runtime payloads consistent with
+    // `exactOptionalPropertyTypes` by materialising only the values that are
+    // explicitly defined either in metadata or overrides.
+    return omitUndefinedEntries({
         enforceDag: overrides.enforceDag ?? (metadata.graph_kind === "dag" || metadata.dag === true || metadata.enforce_dag === true),
         requireNodeLabels: overrides.requireNodeLabels ?? metadata.require_labels === true,
         requireEdgeLabels: overrides.requireEdgeLabels ?? metadata.require_edge_labels === true,
         requirePortAttributes: overrides.requirePortAttributes ?? metadata.require_ports === true,
         defaultMaxInDegree: overrides.defaultMaxInDegree ?? parseDegree(metadata.max_in_degree),
         defaultMaxOutDegree: overrides.defaultMaxOutDegree ?? parseDegree(metadata.max_out_degree),
-    };
+    });
 }
 /** Parse a degree hint from metadata. */
 function parseDegree(value) {

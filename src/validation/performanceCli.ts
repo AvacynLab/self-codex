@@ -53,7 +53,7 @@ export interface PerformanceCliOverrides {
 
 /** Parses CLI arguments emitted by `scripts/runPerformancePhase.ts`. */
 export function parsePerformanceCliOptions(argv: readonly string[]): PerformanceCliOptions {
-  const options: PerformanceCliOptions = { baseDir: "runs" };
+  const options: PerformanceCliOptions = { baseDir: "validation_run" };
 
   for (let index = 0; index < argv.length; index += 1) {
     const token = argv[index];

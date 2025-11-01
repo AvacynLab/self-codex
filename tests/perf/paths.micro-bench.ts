@@ -82,7 +82,7 @@ async function main(): Promise<void> {
     }),
   );
 
-  const baseDir = path.resolve(process.cwd(), "runs");
+  const baseDir = path.resolve(process.cwd(), "validation_run");
   samples.push(
     runBenchmark("safeJoin", (iteration) => {
       const child = `child-${iteration % 100}`;

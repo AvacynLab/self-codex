@@ -81,7 +81,7 @@ class EventStream {
     matcher;
     maxBuffer;
     buffer = [];
-    resolve;
+    resolve = null;
     closed = false;
     /**
      * Precomputed iterator result returned whenever the stream completes. The
@@ -125,9 +125,13 @@ class EventStream {
         }
         this.closed = true;
         this.emitter.removeListener(BUS_EVENT, this.handleEvent);
-        if (this.resolve) {
-            this.resolve(EventStream.DONE);
-            this.resolve = undefined;
+        const pendingResolve = this.resolve;
+        this.resolve = null;
+        if (pendingResolve) {
+            // Invoke the cached resolver after clearing the field to avoid retaining
+            // a dangling reference when `exactOptionalPropertyTypes` narrows the
+            // property type within the truthy branch.
+            pendingResolve(EventStream.DONE);
         }
         this.buffer.length = 0;
     }
@@ -135,9 +139,13 @@ class EventStream {
         if (this.closed || !this.matcher(event)) {
             return;
         }
-        if (this.resolve) {
-            this.resolve({ value: event, done: false });
-            this.resolve = undefined;
+        const pendingResolve = this.resolve;
+        if (pendingResolve) {
+            // Clearing the resolver before invoking it prevents the type guard from
+            // narrowing the property to the callable signature and therefore keeps
+            // the assignment to `null` valid once optional properties become exact.
+            this.resolve = null;
+            pendingResolve({ value: event, done: false });
             return;
         }
         this.enqueue(event);
@@ -195,12 +203,21 @@ export class EventBus {
             component,
             stage,
             elapsedMs: normaliseElapsed(input.elapsedMs ?? null),
-            // Preserve semantic PROMPT/PENDING/... identifiers whenever publishers
-            // provide them while gracefully falling back to legacy category tokens.
-            kind: normaliseKind(input.kind ?? null),
             msg: message,
-            data: input.data,
         };
+        const kind = normaliseKind(input.kind ?? null);
+        if (kind !== undefined) {
+            // Preserve the semantic identifier only when publishers provided a
+            // meaningful token, keeping the envelope free of `undefined` placeholders
+            // under strict optional typing.
+            envelope.kind = kind;
+        }
+        if (input.data !== undefined) {
+            // Forward structured payloads verbatim while avoiding the explicit
+            // `data: undefined` pattern that breaks once optional properties become
+            // exact.
+            envelope.data = input.data;
+        }
         this.history.push(envelope);
         if (this.history.length > this.historyLimit) {
             this.dropFromHistory();

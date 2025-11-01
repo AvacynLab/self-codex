@@ -4,8 +4,8 @@ import {
   buildTransportFailureSummary,
   parseToolResponseText,
   summariseToolResponse,
-} from "../validation_runs/20251007T184620Z/lib/responseSummary.js";
-import { McpToolCallError, type ToolCallRecord } from "../validation_runs/20251007T184620Z/lib/mcpSession.js";
+} from "../validation_run/archives/20251007T184620Z/lib/responseSummary.js";
+import { McpToolCallError, type ToolCallRecord } from "../validation_run/archives/20251007T184620Z/lib/mcpSession.js";
 
 /** Utility factory producing a minimal MCP tool response for the sample harness. */
 function createResponse(

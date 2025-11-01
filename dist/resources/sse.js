@@ -1,9 +1,5 @@
-import { Buffer } from "node:buffer";
-import { readInt } from "../config/env.js";
-import { setTimeout as delay } from "node:timers/promises";
-import { TextEncoder } from "node:util";
 import { serialiseForSse } from "../events/sse.js";
-import { recordSseDrop } from "../infra/tracing.js";
+import { SseBuffer, renderSseMessages, } from "../events/sseBuffer.js";
 /**
  * Normalises a run event for transport by switching to `snake_case` keys and
  * removing `undefined` values. The helper keeps the original payload intact so
@@ -114,98 +110,46 @@ export function serialiseResourceWatchResultForSse(result) {
             },
         ];
     }
-    return result.events.map((event) => {
-        if (result.kind === "run_events") {
-            const payload = buildPayload(result, normaliseRunEvent(event));
-            return {
-                id: `${result.uri}:${event.seq}`,
-                event: "resource_run_event",
-                data: serialiseForSse(payload),
-            };
-        }
-        if (result.kind === "blackboard_namespace") {
-            const payload = buildPayload(result, normaliseBlackboardEvent(event));
-            return {
-                id: `${result.uri}:${event.seq}`,
-                event: "resource_blackboard_event",
-                data: serialiseForSse(payload),
-            };
-        }
-        const payload = buildPayload(result, normaliseChildLog(event));
-        return {
-            id: `${result.uri}:${event.seq}`,
-            event: "resource_child_log",
-            data: serialiseForSse(payload),
-        };
-    });
-}
-/** Default chunk size applied to SSE payloads when the environment omits overrides. */
-const DEFAULT_MAX_CHUNK_BYTES = 32 * 1024;
-/** Default number of bytes retained across buffered frames before backpressure drops kick in. */
-const DEFAULT_MAX_BUFFERED_BYTES = 512 * 1024;
-/** Default timeout granted to downstream writers when flushing SSE frames (in milliseconds). */
-const DEFAULT_EMIT_TIMEOUT_MS = 5_000;
-function resolveMaxChunkBytes(override) {
-    if (override && override > 0) {
-        return override;
+    switch (result.kind) {
+        case "run_events":
+            return result.events.map((event) => {
+                const payload = buildPayload(result, normaliseRunEvent(event));
+                return {
+                    id: `${result.uri}:${event.seq}`,
+                    event: "resource_run_event",
+                    data: serialiseForSse(payload),
+                };
+            });
+        case "child_logs":
+            return result.events.map((entry) => {
+                const payload = buildPayload(result, normaliseChildLog(entry));
+                return {
+                    id: `${result.uri}:${entry.seq}`,
+                    event: "resource_child_log",
+                    data: serialiseForSse(payload),
+                };
+            });
+        case "blackboard_namespace":
+            return result.events.map((event) => {
+                const payload = buildPayload(result, normaliseBlackboardEvent(event));
+                return {
+                    id: `${result.uri}:${event.seq}`,
+                    event: "resource_blackboard_event",
+                    data: serialiseForSse(payload),
+                };
+            });
+        case "tool_router_decisions":
+            // Tool router snapshots are diagnostic by nature and currently surface via JSON
+            // responses only. Failing fast prevents silently emitting malformed SSE frames.
+            throw new Error("tool router decisions cannot be serialised to SSE messages");
     }
-    return readInt("MCP_SSE_MAX_CHUNK_BYTES", DEFAULT_MAX_CHUNK_BYTES, { min: 1 });
 }
-function resolveMaxBufferedBytes(override) {
-    if (override && override > 0) {
-        return override;
-    }
-    return readInt("MCP_SSE_MAX_BUFFER", DEFAULT_MAX_BUFFERED_BYTES, { min: 1 });
-}
-function resolveEmitTimeoutMs(override) {
-    if (override && override > 0) {
-        return override;
-    }
-    return readInt("MCP_SSE_EMIT_TIMEOUT_MS", DEFAULT_EMIT_TIMEOUT_MS, { min: 1 });
-}
-const utf8Encoder = new TextEncoder();
-function chunkUtf8String(value, maxBytes) {
-    if (maxBytes <= 0) {
-        return [value];
-    }
-    const chunks = [];
-    let current = "";
-    let currentBytes = 0;
-    for (const char of value) {
-        const encoded = utf8Encoder.encode(char);
-        if (encoded.length > maxBytes) {
-            if (current.length > 0) {
-                chunks.push(current);
-                current = "";
-                currentBytes = 0;
-            }
-            chunks.push(char);
-            continue;
-        }
-        if (currentBytes + encoded.length > maxBytes && current.length > 0) {
-            chunks.push(current);
-            current = char;
-            currentBytes = encoded.length;
-        }
-        else {
-            current += char;
-            currentBytes += encoded.length;
-        }
-    }
-    if (current.length > 0 || chunks.length === 0) {
-        chunks.push(current);
-    }
-    return chunks;
-}
-function renderSingleSseMessage(message, options = {}) {
-    const maxChunkBytes = resolveMaxChunkBytes(options.maxChunkBytes);
-    const dataChunks = chunkUtf8String(message.data, maxChunkBytes);
-    const header = `id: ${message.id}\nevent: ${message.event}\n`;
-    const payload = dataChunks.map((chunk) => `data: ${chunk}\n`).join("");
-    return `${header}${payload}\n`;
-}
+/**
+ * Renders resource-watch SSE messages into wire-ready frames. The helper wraps the
+ * shared renderer so every endpoint benefits from identical framing logic.
+ */
 export function renderResourceWatchSseMessages(messages, options = {}) {
-    return messages.map((message) => renderSingleSseMessage(message, options)).join("");
+    return renderSseMessages(messages, options);
 }
 /**
  * Bounded buffer guarding SSE emissions for a single client. Messages are
@@ -213,134 +157,9 @@ export function renderResourceWatchSseMessages(messages, options = {}) {
  * them. The buffer enforces a strict capacity to avoid unbounded growth when
  * consumers are slow or disconnected.
  */
-export class ResourceWatchSseBuffer {
-    maxBufferedBytes;
-    emitTimeoutMs;
-    options;
-    queue = [];
-    /**
-     * Monotonic counter tracking the number of frames discarded for this client.
-     * The metric complements the global observability signal and is primarily
-     * used by tests to ensure drops are recorded whenever backpressure triggers.
-     */
-    droppedFrames = 0;
-    /** Tracks the cumulative byte size of buffered frames for overflow checks. */
-    bufferedBytes = 0;
+export class ResourceWatchSseBuffer extends SseBuffer {
     constructor(options) {
-        this.options = options;
-        this.maxBufferedBytes = resolveMaxBufferedBytes(options.maxBufferedBytes);
-        this.emitTimeoutMs = resolveEmitTimeoutMs(options.emitTimeoutMs);
-    }
-    /** Number of SSE frames currently stored in the buffer. */
-    get size() {
-        return this.queue.length;
-    }
-    /** Total number of bytes occupied by the buffered SSE frames. */
-    get bufferedSizeBytes() {
-        return this.bufferedBytes;
-    }
-    /** Total number of frames dropped for this buffer instance. */
-    get droppedFrameCount() {
-        return this.droppedFrames;
-    }
-    /** Clears all buffered frames without notifying downstream consumers. */
-    clear() {
-        this.queue.length = 0;
-        this.bufferedBytes = 0;
-    }
-    /**
-     * Enqueues a collection of messages after rendering them into SSE frames.
-     * When the buffer overflows, the oldest frames are discarded and a warning is
-     * emitted so operators can correlate the drop with the affected client.
-     */
-    enqueue(messages) {
-        for (const message of messages) {
-            const frame = renderSingleSseMessage(message, this.options);
-            const bytes = Buffer.byteLength(frame, "utf8");
-            this.queue.push({ frame, bytes });
-            this.bufferedBytes += bytes;
-        }
-        if (this.bufferedBytes > this.maxBufferedBytes) {
-            let dropped = 0;
-            let freedBytes = 0;
-            while (this.bufferedBytes > this.maxBufferedBytes && this.queue.length > 0) {
-                const droppedFrame = this.queue.shift();
-                this.bufferedBytes -= droppedFrame.bytes;
-                dropped += 1;
-                freedBytes += droppedFrame.bytes;
-            }
-            if (dropped > 0) {
-                recordSseDrop(dropped);
-                this.droppedFrames += dropped;
-                this.options.logger.warn("resources_sse_buffer_overflow", {
-                    client_id: this.options.clientId,
-                    dropped,
-                    freed_bytes: freedBytes,
-                    capacity_bytes: this.maxBufferedBytes,
-                    buffered_bytes: this.bufferedBytes,
-                });
-            }
-        }
-    }
-    /**
-     * Flushes buffered frames sequentially using the provided writer. Each frame
-     * is awaited with a timeout so a stalled consumer does not exhaust memory.
-     */
-    async drain(writer) {
-        while (this.queue.length > 0) {
-            const payload = this.queue.shift();
-            this.bufferedBytes = Math.max(0, this.bufferedBytes - payload.bytes);
-            const writeResult = writer(payload.frame);
-            const timeout = this.emitTimeoutMs;
-            if (timeout > 0) {
-                try {
-                    const winner = await Promise.race([
-                        writeResult.then(() => "ok"),
-                        delay(timeout).then(() => "timeout"),
-                    ]);
-                    if (winner === "timeout") {
-                        recordSseDrop();
-                        this.droppedFrames += 1;
-                        this.options.logger.warn("resources_sse_emit_timeout", {
-                            client_id: this.options.clientId,
-                            timeout_ms: timeout,
-                        });
-                        void writeResult.catch((error) => {
-                            this.options.logger.warn("resources_sse_emit_failed", {
-                                client_id: this.options.clientId,
-                                error: error instanceof Error ? error.message : String(error),
-                            });
-                        });
-                        // Drop the frame silently since the consumer is not draining fast enough.
-                        continue;
-                    }
-                }
-                catch (error) {
-                    recordSseDrop();
-                    this.droppedFrames += 1;
-                    this.options.logger.warn("resources_sse_emit_failed", {
-                        client_id: this.options.clientId,
-                        error: error instanceof Error ? error.message : String(error),
-                    });
-                    continue;
-                }
-            }
-            else {
-                try {
-                    await writeResult;
-                }
-                catch (error) {
-                    recordSseDrop();
-                    this.droppedFrames += 1;
-                    this.options.logger.warn("resources_sse_emit_failed", {
-                        client_id: this.options.clientId,
-                        error: error instanceof Error ? error.message : String(error),
-                    });
-                    continue;
-                }
-            }
-        }
+        super(options);
     }
 }
-export { DEFAULT_MAX_CHUNK_BYTES, DEFAULT_MAX_BUFFERED_BYTES, DEFAULT_EMIT_TIMEOUT_MS, };
 //# sourceMappingURL=sse.js.map

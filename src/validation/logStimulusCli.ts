@@ -58,7 +58,7 @@ export interface LogStimulusCliLogger {
  * during manual operations.
  */
 export function parseLogStimulusCliOptions(argv: readonly string[]): LogStimulusCliOptions {
-  const options: LogStimulusCliOptions = { baseDir: "runs" };
+  const options: LogStimulusCliOptions = { baseDir: "validation_run" };
 
   for (let index = 0; index < argv.length; index += 1) {
     const token = argv[index];

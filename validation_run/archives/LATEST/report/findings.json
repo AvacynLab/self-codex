@@ -16,8 +16,8 @@
         {
           "traceId": "trace-99ccc3840a7e948e51c78a7374e0fd28",
           "artefacts": {
-            "inputPath": "/workspace/self-codex/validation_runs/LATEST/inputs/2025-10-09T21-04-32-580Z-0001-mcp_info-trace-99ccc3840a7e948e51c78a7374e0fd28-input.json",
-            "outputPath": "/workspace/self-codex/validation_runs/LATEST/outputs/2025-10-09T21-04-32-580Z-0001-mcp_info-trace-99ccc3840a7e948e51c78a7374e0fd28-output.json"
+            "inputPath": "/workspace/self-codex/validation_run/archives/LATEST/inputs/2025-10-09T21-04-32-580Z-0001-mcp_info-trace-99ccc3840a7e948e51c78a7374e0fd28-input.json",
+            "outputPath": "/workspace/self-codex/validation_run/archives/LATEST/outputs/2025-10-09T21-04-32-580Z-0001-mcp_info-trace-99ccc3840a7e948e51c78a7374e0fd28-output.json"
           }
         }
       ],
@@ -102,8 +102,8 @@
         {
           "traceId": "trace-eb918d72ce9de1ab58397309c0955512",
           "artefacts": {
-            "inputPath": "/workspace/self-codex/validation_runs/LATEST/inputs/2025-10-09T21-04-32-583Z-0002-mcp_capabilities-trace-eb918d72ce9de1ab58397309c0955512-input.json",
-            "outputPath": "/workspace/self-codex/validation_runs/LATEST/outputs/2025-10-09T21-04-32-583Z-0002-mcp_capabilities-trace-eb918d72ce9de1ab58397309c0955512-output.json"
+            "inputPath": "/workspace/self-codex/validation_run/archives/LATEST/inputs/2025-10-09T21-04-32-583Z-0002-mcp_capabilities-trace-eb918d72ce9de1ab58397309c0955512-input.json",
+            "outputPath": "/workspace/self-codex/validation_run/archives/LATEST/outputs/2025-10-09T21-04-32-583Z-0002-mcp_capabilities-trace-eb918d72ce9de1ab58397309c0955512-output.json"
           }
         }
       ],
@@ -378,8 +378,8 @@
         {
           "traceId": "trace-5cc09861fcc32a85837151cfecaf94e3",
           "artefacts": {
-            "inputPath": "/workspace/self-codex/validation_runs/LATEST/inputs/2025-10-09T21-04-32-597Z-0003-resources_list-trace-5cc09861fcc32a85837151cfecaf94e3-input.json",
-            "outputPath": "/workspace/self-codex/validation_runs/LATEST/outputs/2025-10-09T21-04-32-597Z-0003-resources_list-trace-5cc09861fcc32a85837151cfecaf94e3-output.json"
+            "inputPath": "/workspace/self-codex/validation_run/archives/LATEST/inputs/2025-10-09T21-04-32-597Z-0003-resources_list-trace-5cc09861fcc32a85837151cfecaf94e3-input.json",
+            "outputPath": "/workspace/self-codex/validation_run/archives/LATEST/outputs/2025-10-09T21-04-32-597Z-0003-resources_list-trace-5cc09861fcc32a85837151cfecaf94e3-output.json"
           }
         }
       ],
@@ -407,15 +407,15 @@
         {
           "traceId": "trace-7bc7b04e384f52699ee4e16a568e1279",
           "artefacts": {
-            "inputPath": "/workspace/self-codex/validation_runs/LATEST/inputs/2025-10-09T21-04-32-598Z-0004-events_subscribe-trace-7bc7b04e384f52699ee4e16a568e1279-input.json",
-            "outputPath": "/workspace/self-codex/validation_runs/LATEST/outputs/2025-10-09T21-04-32-598Z-0004-events_subscribe-trace-7bc7b04e384f52699ee4e16a568e1279-output.json"
+            "inputPath": "/workspace/self-codex/validation_run/archives/LATEST/inputs/2025-10-09T21-04-32-598Z-0004-events_subscribe-trace-7bc7b04e384f52699ee4e16a568e1279-input.json",
+            "outputPath": "/workspace/self-codex/validation_run/archives/LATEST/outputs/2025-10-09T21-04-32-598Z-0004-events_subscribe-trace-7bc7b04e384f52699ee4e16a568e1279-output.json"
           }
         },
         {
           "traceId": "trace-d930dc36e6494f09edc5d0d86b1dae03",
           "artefacts": {
-            "inputPath": "/workspace/self-codex/validation_runs/LATEST/inputs/2025-10-09T21-04-32-601Z-0005-events_subscribe-trace-d930dc36e6494f09edc5d0d86b1dae03-input.json",
-            "outputPath": "/workspace/self-codex/validation_runs/LATEST/outputs/2025-10-09T21-04-32-601Z-0005-events_subscribe-trace-d930dc36e6494f09edc5d0d86b1dae03-output.json"
+            "inputPath": "/workspace/self-codex/validation_run/archives/LATEST/inputs/2025-10-09T21-04-32-601Z-0005-events_subscribe-trace-d930dc36e6494f09edc5d0d86b1dae03-input.json",
+            "outputPath": "/workspace/self-codex/validation_run/archives/LATEST/outputs/2025-10-09T21-04-32-601Z-0005-events_subscribe-trace-d930dc36e6494f09edc5d0d86b1dae03-output.json"
           }
         }
       ],

@@ -329,11 +329,6 @@ export function bindToolIntrospectionProvider(provider: ToolIntrospectionProvide
   toolIntrospectionProvider = provider;
 }
 
-/** Reset the tool provider, primarily used in tests. */
-export function resetToolIntrospectionProvider(): void {
-  toolIntrospectionProvider = null;
-}
-
 function collectToolEntries(): ToolIntrospectionEntry[] {
   return toolIntrospectionProvider ? toolIntrospectionProvider() : [];
 }

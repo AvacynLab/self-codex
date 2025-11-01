@@ -12,7 +12,7 @@ function getRunsRoot() {
     const override = readOptionalString('MCP_RUNS_ROOT');
     const resolvedBase = override
         ? path.resolve(process.cwd(), override)
-        : path.resolve(process.cwd(), 'runs');
+        : path.resolve(process.cwd(), 'validation_run');
     return resolvedBase;
 }
 /** Absolute path hosting child workspaces (logs, manifests, artefacts). */
@@ -187,7 +187,7 @@ export function resolveWorkspacePath(requestedPath, options = {}) {
 }
 /**
  * Returns the canonical directory dedicated to the provided run identifier. The
- * directory is resolved inside `MCP_RUNS_ROOT` (or `./runs` by default) to keep
+ * directory is resolved inside `MCP_RUNS_ROOT` (or `./validation_run` by default) to keep
  * artefacts grouped per execution.
  */
 export function resolveRunDir(runId) {

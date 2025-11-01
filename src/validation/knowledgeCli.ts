@@ -47,7 +47,7 @@ export interface KnowledgeCliOverrides {
 
 /** Parses CLI arguments emitted by `scripts/runKnowledgePhase.ts`. */
 export function parseKnowledgeCliOptions(argv: readonly string[]): KnowledgeCliOptions {
-  const options: KnowledgeCliOptions = { baseDir: "runs" };
+  const options: KnowledgeCliOptions = { baseDir: "validation_run" };
 
   for (let index = 0; index < argv.length; index += 1) {
     const token = argv[index];

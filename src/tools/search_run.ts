@@ -47,7 +47,7 @@ export const SearchRunManifestDraft: ToolManifestDraft = {
     "Interroge SearxNG, extrait les contenus pertinents puis les ingère dans le graphe de connaissances et l'index vectoriel. Exemple : search.run {\"query\":\"site:arxiv.org rag pdf\"}",
   kind: "dynamic",
   category: "runtime",
-  tags: ["search", "web", "ingest", "rag", "ops"],
+  tags: ["search", "web", "ingest", "rag"],
   hidden: false,
   budgets: {
     time_ms: 90_000,
@@ -115,7 +115,6 @@ function buildOperationFailedResponse(
 
 /** Maps pipeline job results to the façade JSON payload. */
 function buildSuccessResponse(
-  parsed: ParsedInput,
   idempotencyKey: string,
   job: SearchJobResult,
   budgetUsed: ReturnType<typeof formatBudgetUsage>,
@@ -135,7 +134,7 @@ function buildSuccessResponse(
     ok: true,
     idempotency_key: idempotencyKey,
     summary: `recherche terminée (${docs.length} document${docs.length > 1 ? "s" : ""})`,
-    job_id: normaliseJobId(parsed.job_id),
+    job_id: job.jobId,
     count: docs.length,
     docs,
     ...(warnings.length > 0 ? { warnings } : {}),
@@ -232,7 +231,7 @@ export function createSearchRunHandler(context: SearchRunToolContext): ToolImple
       return buildToolErrorResult(asJsonPayload(degraded), degraded);
     }
 
-    const structured = buildSuccessResponse(parsed, idempotencyKey, result, formatBudgetUsage(charge));
+    const structured = buildSuccessResponse(idempotencyKey, result, formatBudgetUsage(charge));
 
     context.logger.info("search_run_completed", {
       request_id: rpcContext?.requestId ?? extra.requestId ?? null,
@@ -263,6 +262,9 @@ export async function registerSearchRunTool(
   return await registry.register(SearchRunManifestDraft, createSearchRunHandler(context), {
     inputSchema: SearchRunInputSchema.shape,
     annotations: { intent: SEARCH_RUN_TOOL_NAME },
+    meta: {
+      help: 'search.run {"query":"site:arxiv.org rag pdf"}',
+    },
   });
 }
 
@@ -305,10 +307,3 @@ function deriveDeterministicIdempotencyKey(parsed: ParsedInput): string | null {
   }
 }
 
-function normaliseJobId(jobId: string | null | undefined): string | null {
-  if (typeof jobId !== "string") {
-    return null;
-  }
-  const trimmed = jobId.trim();
-  return trimmed.length > 0 ? trimmed : null;
-}

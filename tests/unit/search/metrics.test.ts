@@ -14,9 +14,9 @@ describe("search/metrics", () => {
     let tick = 0;
     const metrics = new SearchMetricsRecorder({ now: () => (tick += 5) });
 
-    const searxLabel = "search.searxQuery.content:application_json.domain:search.example.test";
-    const fetchLabel = "search.fetchUrl.content:text_html.domain:docs.example.com";
-    const fallbackLabel = "search.extractWithUnstructured.content:unknown.domain:unknown";
+    const searxLabel = "search.step:searxQuery.contentType:application_json.domain:search.example.test";
+    const fetchLabel = "search.step:fetchUrl.contentType:text_html.domain:docs.example.com";
+    const fallbackLabel = "search.step:extractWithUnstructured.contentType:unknown.domain:unknown";
     const before = new Map(collectMethodMetrics().map((entry) => [entry.method, entry]));
 
     const result = await metrics.measure(

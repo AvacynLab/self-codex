@@ -1,7 +1,8 @@
 import { z } from "zod";
 import { GraphTransactionError, GraphVersionConflictError, } from "../graph/tx.js";
 import { buildIdempotencyCacheKey } from "../infra/idempotency.js";
-import { normaliseGraphPayload, serialiseNormalisedGraph, GraphDescriptorSchema, GraphMutateInputSchema, handleGraphMutate } from "./graphTools.js";
+import { GraphMutateInputSchema, handleGraphMutate, } from "./graph/mutate.js";
+import { normaliseGraphPayload, serialiseNormalisedGraph, GraphDescriptorSchema } from "./graph/snapshot.js";
 import { GraphValidationError, validateGraph, assertValidGraph } from "../graph/validate.js";
 import { recordOperation } from "../graph/oplog.js";
 import { fireAndForgetGraphWal } from "../graph/wal.js";

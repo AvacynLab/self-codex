@@ -105,7 +105,7 @@ export async function createRunContext(params: {
   /** Optional seed used to make trace identifier generation reproducible. */
   readonly traceSeed?: string;
 }): Promise<RunContext> {
-  const rootDir = path.join(params.workspaceRoot, 'validation_runs', params.runId);
+  const rootDir = path.join(params.workspaceRoot, 'validation_run', 'runs', params.runId);
   const directories = await ensureRunDirectories(rootDir);
 
   return {
