@@ -143,6 +143,20 @@ services:
       context: ..
       dockerfile: Dockerfile
     restart: unless-stopped
+    # Run the orchestrator with the HTTP transport enabled so the healthcheck can
+    # reach `/healthz`. Without these CLI flags the server only exposes STDIO,
+    # leaving the container in an unhealthy state despite the runtime being
+    # ready.
+    command:
+      - "--http"
+      - "--http-host"
+      - "0.0.0.0"
+      - "--http-port"
+      - "8765"
+      - "--http-path"
+      - "/mcp"
+      - "--http-json"
+      - "--http-stateless"
     depends_on:
       searxng:
         condition: service_healthy
