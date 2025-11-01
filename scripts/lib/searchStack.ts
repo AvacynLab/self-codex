@@ -40,7 +40,9 @@ export interface SearchStackLifecyclePolicy {
 /**
  * Computes the {@link SearchStackLifecyclePolicy} from process environment
  * variables. The helper recognises `SEARCH_STACK_REUSE` so callers can opt-in
- * to container reuse by setting it to "1", "true" or "yes" (case insensitive).
+ * to container reuse by setting it to "1", "true", "yes", "hold", "retain" or "cache"
+ * (case insensitive). Operators that provide an externally managed stack can pass
+ * "external", "skip" or "manual" to disable both the bring-up and tear-down phases.
  *
  * @param env optional bag of environment variables, exposed for unit tests so
  * they can provide deterministic maps without mutating `process.env`.
@@ -50,11 +52,34 @@ export function resolveStackLifecyclePolicy(
 ): SearchStackLifecyclePolicy {
   const rawReuseFlag = env.SEARCH_STACK_REUSE ?? "";
   const normalizedFlag = rawReuseFlag.trim().toLowerCase();
-  const reuseEnabled = normalizedFlag === "1" || normalizedFlag === "true" || normalizedFlag === "yes";
-  return {
-    shouldBringUp: !reuseEnabled,
-    shouldTearDown: !reuseEnabled,
-  };
+
+  /**
+   * Allow CI (or advanced operators) to indicate that the stack is provisioned externally.
+   * In that scenario the helper neither attempts to start the containers nor to stop them,
+   * and instead assumes some other process already manages their lifecycle.
+   */
+  const externallyManaged = normalizedFlag === "external" || normalizedFlag === "skip" || normalizedFlag === "manual";
+  if (externallyManaged) {
+    return { shouldBringUp: false, shouldTearDown: false };
+  }
+
+  /**
+   * Interpret common truthy tokens as a request to retain the stack after the suite finishes.
+   * The helper still brings the containers up so the first suite primes them, but it skips the
+   * teardown step to keep the services warm for subsequent suites (for example smoke tests).
+   */
+  const reuseEnabled =
+    normalizedFlag === "1" ||
+    normalizedFlag === "true" ||
+    normalizedFlag === "yes" ||
+    normalizedFlag === "hold" ||
+    normalizedFlag === "retain" ||
+    normalizedFlag === "cache";
+  if (reuseEnabled) {
+    return { shouldBringUp: true, shouldTearDown: false };
+  }
+
+  return { shouldBringUp: true, shouldTearDown: true };
 }
 
 /** Options accepted by {@link SearchStackManager.waitForService}. */

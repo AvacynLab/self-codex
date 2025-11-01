@@ -182,13 +182,23 @@ describe("scripts/lib/searchStack", () => {
     expect(policy).to.deep.equal({ shouldBringUp: true, shouldTearDown: true });
   });
 
-  it("skips bring up and tear down when SEARCH_STACK_REUSE requests reuse", () => {
+  it("brings the stack up but skips tear down when reuse retention is enabled", () => {
     const policy = resolveStackLifecyclePolicy({ SEARCH_STACK_REUSE: "1" });
-    expect(policy).to.deep.equal({ shouldBringUp: false, shouldTearDown: false });
+    expect(policy).to.deep.equal({ shouldBringUp: true, shouldTearDown: false });
   });
 
-  it("treats textual reuse flags as valid opt-ins", () => {
+  it("recognises textual retention flags", () => {
+    const policy = resolveStackLifecyclePolicy({ SEARCH_STACK_REUSE: "Hold" });
+    expect(policy).to.deep.equal({ shouldBringUp: true, shouldTearDown: false });
+  });
+
+  it("normalises boolean-like retention tokens", () => {
     const policy = resolveStackLifecyclePolicy({ SEARCH_STACK_REUSE: "TrUe" });
+    expect(policy).to.deep.equal({ shouldBringUp: true, shouldTearDown: false });
+  });
+
+  it("skips orchestration entirely when SEARCH_STACK_REUSE asks for external management", () => {
+    const policy = resolveStackLifecyclePolicy({ SEARCH_STACK_REUSE: "external" });
     expect(policy).to.deep.equal({ shouldBringUp: false, shouldTearDown: false });
   });
 });
