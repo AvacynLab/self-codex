@@ -112,6 +112,16 @@ describe("scripts/lib/searchStack", () => {
     sinon.assert.calledOnce(fetchStub);
   });
 
+  it("waits for Searx even when the landing page answers with 4xx", async () => {
+    // SearxNG can purposely reply with 4xx codes (e.g. 403) on the landing page
+    // when the instance is not meant to be public. The readiness helper should
+    // still accept those responses so CI does not block on a healthy container.
+    const fetchStub = sinon.stub().resolves({ ok: false, status: 403 } as Response);
+    const manager = createSearchStackManager({ fetchImpl: fetchStub });
+    await manager.waitForSearxReady();
+    sinon.assert.calledOnce(fetchStub);
+  });
+
   it("brings up and tears down the docker stack with the compose file", async () => {
     const spawnStub = sinon.stub().callsFake(() => createFakeChild({ closeCode: 0 }));
     const composeFile = "/tmp/compose.yml";

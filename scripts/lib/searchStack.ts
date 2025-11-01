@@ -144,10 +144,22 @@ export function createSearchStackManager(deps: SearchStackDependencies = {}): Se
   }
 
   async function waitForSearxReady(): Promise<void> {
+    // Treat any client-side status (<500) as successful so the readiness check
+    // tolerates SearxNG configurations that intentionally return 4xx responses
+    // on the landing page while still rejecting server errors.
+    const acceptSearxStatus = (status: number): boolean => status >= 200 && status < 500;
     try {
-      await waitForService("http://127.0.0.1:8080/healthz", { timeoutMs: 90_000, intervalMs: 2_000 });
+      await waitForService("http://127.0.0.1:8080/healthz", {
+        timeoutMs: 90_000,
+        intervalMs: 2_000,
+        acceptStatus: acceptSearxStatus,
+      });
     } catch {
-      await waitForService("http://127.0.0.1:8080", { timeoutMs: 30_000, intervalMs: 2_000 });
+      await waitForService("http://127.0.0.1:8080", {
+        timeoutMs: 30_000,
+        intervalMs: 2_000,
+        acceptStatus: acceptSearxStatus,
+      });
     }
   }
 
