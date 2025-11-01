@@ -12,14 +12,14 @@ import {
   summariseToolResponse,
 } from './responseSummary.js';
 
-import type { GraphDescriptorPayload, GraphGenerateResult, GraphMutateResult } from '../../../src/tools/graphTools.js';
+import type { GraphDescriptorPayload, GraphGenerateResult, GraphMutateResult } from '../../../../src/tools/graphTools.js';
 import type {
   ValuesExplainResult,
   ValuesFilterResult,
   ValuesScoreResult,
   ValuesSetResult,
-} from '../../../src/tools/valueTools.js';
-import type { KgExportResult, KgInsertResult, KgQueryResult } from '../../../src/tools/knowledgeTools.js';
+} from '../../../../src/tools/valueTools.js';
+import type { KgExportResult, KgInsertResult, KgQueryResult } from '../../../../src/tools/knowledgeTools.js';
 import type {
   PlanCompileBTResult,
   PlanDryRunResult,
@@ -28,9 +28,9 @@ import type {
   PlanReduceResult,
   PlanRunBTResult,
   PlanRunReactiveExecutionSnapshot,
-} from '../../../src/tools/planTools.js';
-import type { ChildSendResult } from '../../../src/tools/childTools.js';
-import type { PlanLifecycleSnapshot } from '../../../src/executor/planLifecycle.js';
+} from '../../../../src/tools/planTools.js';
+import type { ChildSendResult } from '../../../../src/tools/childTools.js';
+import type { PlanLifecycleSnapshot } from '../../../../src/executor/planLifecycle.js';
 
 /**
  * Summary describing how the plan and values validation stage exercised the MCP

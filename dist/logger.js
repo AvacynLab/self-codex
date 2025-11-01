@@ -85,6 +85,12 @@ const DEFAULT_MAX_FILE_COUNT = 5;
  * to a file. File writes are queued sequentially to guarantee ordering.
  */
 export class StructuredLogger {
+    /**
+     * Destination file used for log mirroring. The field is normalised to an
+     * explicit union so a `null` override becomes `undefined` and therefore does
+     * not materialise placeholder keys when strict optional property typing is
+     * enforced.
+     */
     logFile;
     maxFileSizeBytes;
     maxFileCount;
@@ -97,7 +103,11 @@ export class StructuredLogger {
      * `./tmp/orchestrator.log` work even when the `tmp/` folder is missing.
      */
     logDirectoryReady = false;
-    /** Optional listener invoked with the structured entry. */
+    /**
+     * Optional listener invoked with the structured entry. The union maintains
+     * compatibility with strict optional typing while keeping the runtime check
+     * simple when broadcasting log entries to observers.
+     */
     entryListener;
     /** Whether automatic header redaction is enabled via environment variable. */
     redactionEnabled;

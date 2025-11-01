@@ -6,7 +6,7 @@ import { recordOperation } from "../graph/oplog.js";
 import { fireAndForgetGraphWal } from "../graph/wal.js";
 import { GraphTransactionError, GraphVersionConflictError, } from "../graph/tx.js";
 import { ERROR_CODES } from "../types.js";
-import { GraphDescriptorSchema, normaliseGraphPayload, serialiseNormalisedGraph, } from "./graphTools.js";
+import { GraphDescriptorSchema, normaliseGraphPayload, serialiseNormalisedGraph, } from "./graph/snapshot.js";
 import { resolveOperationId } from "./operationIds.js";
 /** Schema describing a graph selector used by the diff tool. */
 const GraphSelectorSchema = z.union([

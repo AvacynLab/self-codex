@@ -135,7 +135,7 @@ describe("transactions CLI", () => {
 
   it("parses CLI flags with sensible defaults", () => {
     const defaults = parseTransactionsCliOptions([]);
-    expect(defaults).to.deep.equal({ baseDir: "runs" });
+    expect(defaults).to.deep.equal({ baseDir: "validation_run" });
 
     const options = parseTransactionsCliOptions([
       "--run-id",

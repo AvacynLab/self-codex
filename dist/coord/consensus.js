@@ -1,5 +1,7 @@
 import { EventEmitter } from "node:events";
 import { z } from "zod";
+// NOTE: Node built-in modules are imported with the explicit `node:` prefix to guarantee ESM resolution in Node.js.
+import { omitUndefinedEntries } from "../utils/object.js";
 /** Internal channel storing subscribers interested in consensus decisions. */
 const consensusEmitter = new EventEmitter();
 /** Clock function injected for deterministic tests. */
@@ -22,14 +24,13 @@ export function resetConsensusEventClock() {
  * populated.
  */
 export function publishConsensusEvent(input) {
-    const event = {
+    const event = omitUndefinedEntries({
         ...input,
         at: input.at ?? consensusNow(),
         jobId: input.jobId ?? null,
         runId: input.runId ?? null,
         opId: input.opId ?? null,
-        metadata: input.metadata,
-    };
+    });
     consensusEmitter.emit("event", event);
     return event;
 }
@@ -177,11 +178,22 @@ export function normaliseConsensusOptions(config) {
     if (!config) {
         return {};
     }
-    return {
-        weights: config.weights,
-        preferValue: config.prefer_value,
-        tieBreaker: config.tie_breaker,
-        quorum: config.quorum,
-    };
+    const options = {};
+    if (config.weights && Object.keys(config.weights).length > 0) {
+        options.weights = config.weights;
+    }
+    if (config.prefer_value !== undefined) {
+        options.preferValue = config.prefer_value;
+    }
+    // `tie_breaker` defaults to "null" through zod but callers relying on the
+    // type directly may still omit it. We always materialise the string value so
+    // downstream consumers never observe `undefined`.
+    if (config.tie_breaker !== undefined) {
+        options.tieBreaker = config.tie_breaker;
+    }
+    if (config.quorum !== undefined) {
+        options.quorum = config.quorum;
+    }
+    return options;
 }
 //# sourceMappingURL=consensus.js.map

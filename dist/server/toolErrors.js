@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { normaliseErrorHint, normaliseErrorMessage } from "../types.js";
+import { omitUndefinedEntries } from "../utils/object.js";
 import { ResourceRegistryError } from "../resources/registry.js";
 import { UnknownChildError } from "../state/childrenIndex.js";
 /**
@@ -37,11 +38,18 @@ export function normaliseToolError(error, codes) {
     else if (Object.prototype.hasOwnProperty.call(error, "details")) {
         details = error.details;
     }
+    const normalisedMessage = normaliseErrorMessage(message);
+    const normalisedHint = normaliseErrorHint(hint);
+    // NOTE: Undefined hints/details are stripped so the resulting structure stays
+    // compliant once `exactOptionalPropertyTypes` enforces exactness on optional
+    // properties across the code base.
     return {
         code,
-        message: normaliseErrorMessage(message),
-        hint: normaliseErrorHint(hint),
-        details,
+        message: normalisedMessage,
+        ...omitUndefinedEntries({
+            hint: normalisedHint,
+            details,
+        }),
     };
 }
 /** Writes the structured error into the shared logger and returns the response. */
@@ -111,7 +119,12 @@ export function planToolError(logger, toolName, error, context = {}, overrides =
         ...overrides,
     };
     if (!codes.invalidInputCode) {
-        codes.invalidInputCode = codes.defaultCode === PLAN_ERROR_CODES.defaultCode ? PLAN_ERROR_CODES.invalidInputCode : codes.defaultCode;
+        const fallbackInvalidCode = PLAN_ERROR_CODES.invalidInputCode ?? PLAN_ERROR_CODES.defaultCode;
+        // NOTE: Choosing between the plan defaults and the override must yield a
+        // concrete string so the optional property never materialises an explicit
+        // `undefined` value under `exactOptionalPropertyTypes`.
+        codes.invalidInputCode =
+            codes.defaultCode === PLAN_ERROR_CODES.defaultCode ? fallbackInvalidCode : codes.defaultCode;
     }
     const normalised = normaliseToolError(error, codes);
     return logAndWrap(logger, toolName, normalised, context);
@@ -181,8 +194,10 @@ export function resourceToolError(logger, toolName, error, context = {}, overrid
         const normalised = {
             code: error.code,
             message: error.message,
-            hint: error.hint,
-            details: error.details,
+            ...omitUndefinedEntries({
+                hint: error.hint,
+                details: error.details,
+            }),
         };
         return logAndWrap(logger, toolName, normalised, context);
     }

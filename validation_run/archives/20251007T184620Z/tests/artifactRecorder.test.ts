@@ -19,7 +19,7 @@ describe('ArtifactRecorder', () => {
 
   beforeEach(async () => {
     workspaceRoot = await mkdtemp(path.join(tmpdir(), 'artifact-recorder-'));
-    await mkdir(path.join(workspaceRoot, 'validation_runs'), { recursive: true });
+    await mkdir(path.join(workspaceRoot, 'validation_run', 'runs'), { recursive: true });
   });
 
   afterEach(async () => {

@@ -52,7 +52,7 @@ export interface ChildrenCliOverrides {
  * subsequent iterations without breaking existing automation.
  */
 export function parseChildrenCliOptions(argv: readonly string[]): ChildrenCliOptions {
-  const options: ChildrenCliOptions = { baseDir: "runs" };
+  const options: ChildrenCliOptions = { baseDir: "validation_run" };
 
   for (let index = 0; index < argv.length; index += 1) {
     const token = argv[index];

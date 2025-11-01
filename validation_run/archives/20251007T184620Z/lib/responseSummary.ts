@@ -1,4 +1,4 @@
-import { omitUndefinedEntries } from '../../../src/utils/object.js';
+import { omitUndefinedEntries } from '../../../../src/utils/object.js';
 import type { McpToolCallError, ToolCallRecord } from './mcpSession.js';
 import type { ToolResponseSummary } from './baseTools.js';
 

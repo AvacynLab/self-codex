@@ -49,7 +49,7 @@ export interface IntrospectionCliLogger {
  * automation.
  */
 export function parseIntrospectionCliOptions(argv: readonly string[]): IntrospectionCliOptions {
-  const options: IntrospectionCliOptions = { baseDir: "runs" };
+  const options: IntrospectionCliOptions = { baseDir: "validation_run" };
 
   for (let index = 0; index < argv.length; index += 1) {
     const token = argv[index];

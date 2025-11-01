@@ -234,15 +234,3 @@ export async function scanArtifacts(
 
   return Array.from(refreshed.values()).sort((a, b) => a.path.localeCompare(b.path));
 }
-
-/**
- * Backwards compatibility alias preserved for existing imports. Upcoming
- * refactors should migrate callers to {@link scanArtifacts} which more
- * accurately communicates the side effects on the manifest.
- */
-export async function listArtifacts(
-  childrenRoot: string,
-  childId: string,
-): Promise<ArtifactManifestEntry[]> {
-  return scanArtifacts(childrenRoot, childId);
-}

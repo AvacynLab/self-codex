@@ -43,7 +43,7 @@ describe('runContext utilities', () => {
     const context = await createRunContext({ runId, workspaceRoot, traceSeed: 'trace-seed' });
 
     expect(context.runId).to.equal(runId);
-    expect(context.rootDir).to.equal(path.join(workspaceRoot, 'validation_runs', runId));
+    expect(context.rootDir).to.equal(path.join(workspaceRoot, 'validation_run', 'runs', runId));
 
     const trace = context.createTraceId();
     expect(trace).to.match(/^trace-[0-9a-f]{32}$/);

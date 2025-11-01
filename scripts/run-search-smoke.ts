@@ -6,7 +6,7 @@
  * vector embeddings were produced. Designed to be human-friendly: failures are
  * reported with actionable guidance and resources are always torn down.
  */
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -24,8 +24,27 @@ import { LocalVectorMemory } from "../src/memory/vectorMemory.js";
 import { VectorStoreIngestor } from "../src/search/ingest/toVectorStore.js";
 import { SearchPipeline } from "../src/search/pipeline.js";
 import { SearchMetricsRecorder } from "../src/search/metrics.js";
+import {
+  type ValidationScenarioDefinition,
+  formatScenarioSlug,
+} from "../src/validationRun/scenario.js";
+import { persistSearchScenarioArtefacts } from "./lib/searchArtifacts.js";
+import { ensureValidationRunLayout } from "../src/validationRun/layout.js";
 
 const manager = createSearchStackManager();
+
+/**
+ * Synthetic scenario definition dedicated to the docker smoke run. Using a high id keeps
+ * the slug (`S90_search_smoke`) distinct from the formal validation scenarios while still
+ * benefiting from the shared directory preparation helpers.
+ */
+const SMOKE_SCENARIO: ValidationScenarioDefinition = {
+  id: 90,
+  label: "Recherche (smoke)",
+  slugHint: "search_smoke",
+  description: "Sanity check hitting the dockerised Searx + Unstructured stack.",
+  input: {},
+};
 
 /**
  * Environment overrides required to reach the dockerised services from host and
@@ -123,9 +142,11 @@ async function runSmoke(): Promise<void> {
     ];
 
     let finalAssessment: ReturnType<typeof assessSmokeRun> | null = null;
-    let lastJob: Awaited<ReturnType<SearchPipeline["runSearchJob"]>> | null = null;
+  let lastJob: Awaited<ReturnType<SearchPipeline["runSearchJob"]>> | null = null;
+  const attemptedPlans: Array<{ query: string; categories: string[]; maxResults: number }> = [];
 
     for (const plan of plans) {
+      attemptedPlans.push(plan);
       const job = await pipeline.runSearchJob({
         ...plan,
         fetchContent: true,
@@ -160,6 +181,57 @@ async function runSmoke(): Promise<void> {
       }
       throw new Error(message);
     }
+
+    if (!lastJob) {
+      throw new Error("Smoke run completed without producing a job result.");
+    }
+
+    if (!workDir) {
+      throw new Error("Temporary workspace directory was not initialised.");
+    }
+
+    const layout = await ensureValidationRunLayout();
+    const scenarioSlug = formatScenarioSlug(SMOKE_SCENARIO);
+    const vectorIndexPath = join(workDir, "index.json");
+    const vectorSnapshot = await readVectorIndexSafe(vectorIndexPath);
+    const eventSnapshot = eventStore.getSnapshot().map((event) => ({ ...event }));
+    const timings = buildTimingSummary(eventSnapshot, lastJob.jobId);
+
+    await persistSearchScenarioArtefacts(
+      {
+        input: {
+          attemptedPlans,
+          selectedPlan: lastJob.query,
+          overrides: ENV_OVERRIDES,
+        },
+        response: {
+          jobId: lastJob.jobId,
+          stats: lastJob.stats,
+          documents: lastJob.documents.map((doc) => ({
+            id: doc.id,
+            url: doc.url,
+            mimeType: doc.mimeType,
+            title: doc.title,
+            language: doc.language,
+            checksum: doc.checksum,
+          })),
+          errorCount: lastJob.errors.length,
+        },
+        events: eventSnapshot,
+        timings,
+        errors: lastJob.errors.map((error) => ({ ...error })),
+        kgChanges: knowledgeGraph
+          .exportAll()
+          .map((triple) => ({ ...triple })),
+        vectorUpserts: vectorSnapshot,
+        serverLog: buildServerLogPlaceholder(scenarioSlug),
+      },
+      {
+        scenario: SMOKE_SCENARIO,
+        baseRoot: layout.root,
+        slugOverride: scenarioSlug,
+      },
+    );
   } finally {
     restoreEnv(envBackup);
     if (workDir) {
@@ -173,3 +245,58 @@ runSmoke().catch((error) => {
   console.error(error instanceof Error ? error.stack ?? error.message : error);
   process.exitCode = 1;
 });
+
+/**
+ * Builds a compact timing summary describing when the orchestrated job started and
+ * completed. The helper looks at the recorded event timestamps to avoid relying on
+ * wall-clock measurements sprinkled across the script.
+ */
+function buildTimingSummary(
+  events: ReadonlyArray<Record<string, unknown>>,
+  jobId: string,
+): Record<string, unknown> {
+  const timestamps = events
+    .filter((event) => (event.jobId ?? null) === jobId)
+    .map((event) => Number.parseInt(String(event.ts ?? ""), 10))
+    .filter((value) => Number.isFinite(value));
+  const startedAt = timestamps.length > 0 ? Math.min(...timestamps) : null;
+  const completedAt = timestamps.length > 0 ? Math.max(...timestamps) : null;
+  return {
+    jobId,
+    startedAt,
+    completedAt,
+    tookMs: startedAt !== null && completedAt !== null ? completedAt - startedAt : null,
+    eventCount: events.length,
+  };
+}
+
+/**
+ * Reads the vector index snapshot written by {@link LocalVectorMemory}. The helper returns
+ * an empty array when the index does not exist yet so artefact generation remains tolerant of
+ * scenarios that skip vector ingestion.
+ */
+async function readVectorIndexSafe(indexPath: string): Promise<ReadonlyArray<Record<string, unknown>>> {
+  try {
+    const raw = await readFile(indexPath, "utf8");
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) {
+      return parsed.map((entry) => ({ ...entry }));
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+      throw error;
+    }
+  }
+  return [];
+}
+
+/**
+ * Produces a deterministic log placeholder reminding operators how to capture the docker
+ * compose logs manually. Capturing the full log stream from the script would require piping
+ * `docker compose logs`, which is intentionally deferred to operators.
+ */
+function buildServerLogPlaceholder(scenarioSlug: string): string {
+  const timestamp = new Date().toISOString();
+  return `# ${scenarioSlug}\nNo docker compose logs were captured automatically.\n` +
+    `Generated at: ${timestamp}\nInspect with: docker compose -f docker/docker-compose.search.yml logs --tail=200\n`;
+}

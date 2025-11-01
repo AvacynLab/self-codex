@@ -51,7 +51,7 @@ export interface CoordinationCliOverrides {
 
 /** Parses CLI arguments emitted by `scripts/runCoordinationPhase.ts`. */
 export function parseCoordinationCliOptions(argv: readonly string[]): CoordinationCliOptions {
-  const options: CoordinationCliOptions = { baseDir: "runs" };
+  const options: CoordinationCliOptions = { baseDir: "validation_run" };
 
   for (let index = 0; index < argv.length; index += 1) {
     const token = argv[index];

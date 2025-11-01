@@ -1,4 +1,8 @@
 /**
+ * Shared types used across the orchestrator. Grouping these definitions keeps
+ * our string unions and error helpers consistent between modules.
+ */
+/**
  * Strongly typed catalogue of stable error codes grouped by feature family.
  * Keeping a single source of truth ensures every tool emits consistent codes
  * which simplifies documentation and client handling.
@@ -124,15 +128,22 @@ export function normaliseErrorHint(hint) {
     return `${collapsed.slice(0, ERROR_TEXT_MAX_LENGTH - 1)}…`;
 }
 /**
- * Helper used by tools to build a failure response with the expected shape.
- * Keeping the implementation centralised guarantees a consistent structure
- * (including optional hints) across every feature surface.
+ * Builds a {@link ToolFailure} using the canonical error normalisation rules.
+ * Callers provide the error code alongside a human readable message and, when
+ * available, a concise remediation hint. The helper removes the hint entirely
+ * when it collapses to an empty string so JSON payloads never expose
+ * `undefined` values.
  */
 export function fail(code, message, hint) {
-    const normalisedMessage = normaliseErrorMessage(message);
-    const normalisedHint = normaliseErrorHint(hint);
-    return normalisedHint
-        ? { ok: false, code, message: normalisedMessage, hint: normalisedHint }
-        : { ok: false, code, message: normalisedMessage };
+    const failure = {
+        ok: false,
+        code,
+        message: normaliseErrorMessage(message),
+    };
+    const normalisedHint = normaliseErrorHint(hint ?? undefined);
+    if (normalisedHint) {
+        failure.hint = normalisedHint;
+    }
+    return failure;
 }
 //# sourceMappingURL=types.js.map

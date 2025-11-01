@@ -4,7 +4,18 @@
  */
 export class PlanLifecycleError extends Error {
     code;
+    /**
+     * Optional hint surfaced to operators when diagnosing lifecycle failures.
+     * The field is expressed as an explicit `string | undefined` union so
+     * `exactOptionalPropertyTypes` recognises that the property may be omitted
+     * without forcing call sites to materialise placeholder values.
+     */
     hint;
+    /**
+     * Optional structured payload attached to lifecycle errors. The union keeps
+     * the metadata compatible with strict optional typing while still omitting
+     * the key from JSON serialisations when the value is undefined.
+     */
     details;
     constructor(message, code, hint, details) {
         super(message);
@@ -52,8 +63,41 @@ export class PlanLifecycleFeatureDisabledError extends PlanLifecycleError {
 function cloneSnapshot(snapshot) {
     return structuredClone(snapshot);
 }
+/**
+ * Recursively strip `undefined` properties from structured payloads. The helper
+ * mutates the provided value in place which is safe because callers always pass
+ * a freshly cloned snapshot. Nested arrays retain their original length so test
+ * expectations relying on placeholder slots remain valid while objects lose the
+ * optional keys that would violate `exactOptionalPropertyTypes`.
+ */
+function scrubUndefinedEntries(value) {
+    if (Array.isArray(value)) {
+        for (const entry of value) {
+            scrubUndefinedEntries(entry);
+        }
+        return;
+    }
+    if (!value || typeof value !== "object") {
+        return;
+    }
+    const record = value;
+    for (const [key, entry] of Object.entries(record)) {
+        if (entry === undefined) {
+            delete record[key];
+            continue;
+        }
+        scrubUndefinedEntries(entry);
+    }
+}
+/**
+ * Clone lifecycle payloads while removing undefined metadata. Persisted
+ * snapshots therefore remain stable once strict optional typing is enforced
+ * without mutating the caller-provided event structures.
+ */
 function clonePayload(payload) {
-    return structuredClone(payload);
+    const cloned = structuredClone(payload);
+    scrubUndefinedEntries(cloned);
+    return cloned;
 }
 function sanitiseCorrelation(hints) {
     return {

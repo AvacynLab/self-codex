@@ -18,7 +18,10 @@ export function handleCausalExport(context, _input) {
 }
 /** Computes an explanation graph for a given outcome event. */
 export function handleCausalExplain(context, input) {
-    const explanation = context.causalMemory.explain(input.outcome_id, { maxDepth: input.max_depth });
+    // Avoid forwarding `undefined` so strict optional property typing is
+    // respected when delegating to the causal memory.
+    const explainOptions = typeof input.max_depth === "number" ? { maxDepth: input.max_depth } : {};
+    const explanation = context.causalMemory.explain(input.outcome_id, explainOptions);
     context.logger.info("causal_explain", {
         outcome_id: input.outcome_id,
         ancestors: explanation.ancestors.length,

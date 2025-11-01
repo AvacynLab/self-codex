@@ -14,7 +14,7 @@ import { appendWalEntry } from "../../src/state/wal.js";
  */
 async function createRunsRoot(): Promise<string> {
   const base = await mkdtemp(path.join(tmpdir(), "wal-test-"));
-  return path.join(base, "runs");
+  return path.join(base, "validation_run");
 }
 
 describe("state/wal", () => {

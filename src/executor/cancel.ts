@@ -373,18 +373,6 @@ export function requestCancellation(
   return "already_cancelled";
 }
 
-/**
- * Alias maintained for parity with earlier checklist wording. The
- * implementation defers to {@link requestCancellation} so callers benefit from
- * the stricter error handling.
- */
-export function requestCancel(
-  opId: string,
-  options: { reason?: string | null; at?: number } = {},
-): CancellationRequestOutcome {
-  return requestCancellation(opId, options);
-}
-
 /** Structured result describing the cancellation status of an operation. */
 export interface CancellationRunResult {
   opId: string;

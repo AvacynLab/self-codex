@@ -35,7 +35,7 @@ export interface FinalReportCliOverrides {
 
 /** Parses CLI arguments emitted by `scripts/runFinalReportStage.ts`. */
 export function parseFinalReportCliOptions(argv: readonly string[]): FinalReportCliOptions {
-  const options: { runId?: string; baseDir: string; runRoot?: string } = { baseDir: "runs" };
+  const options: { runId?: string; baseDir: string; runRoot?: string } = { baseDir: "validation_run" };
 
   for (let index = 0; index < argv.length; index += 1) {
     const token = argv[index];

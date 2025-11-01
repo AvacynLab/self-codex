@@ -1,4 +1,10 @@
+/**
+ * Centralised in-memory journal retaining a bounded view of orchestration
+ * events. The store enforces FIFO eviction globally, per job, and per kind while
+ * keeping log serialisation deterministic so replay artefacts remain diffable.
+ */
 import { StructuredLogger } from "./logger.js";
+import { coerceNullToUndefined, omitUndefinedEntries } from "./utils/object.js";
 import { normaliseProvenanceList } from "./types/provenance.js";
 /**
  * Maximum size (in characters) of the JSON representation we attempt to mirror
@@ -6,6 +12,8 @@ import { normaliseProvenanceList } from "./types/provenance.js";
  * orchestrator logs when callers attach verbose artefacts to an event.
  */
 const MAX_LOGGED_PAYLOAD_LENGTH = 4_096;
+/** Upper bound applied to event payload error messages before storage. */
+const MAX_ERROR_MESSAGE_LENGTH = 1_000;
 /**
  * Recursively sorts the keys of plain object payloads so JSON serialisation
  * becomes deterministic. Stable ordering keeps diffs readable when
@@ -41,6 +49,77 @@ function stabiliseForStableJson(value, stack = new Set()) {
     finally {
         stack.delete(objectValue);
     }
+}
+/**
+ * Determines whether a value is a plain object (i.e. created via object literal
+ * or with a null prototype). The helper avoids cloning complex instances such
+ * as Map/Set/Date where preserving prototype semantics is critical.
+ */
+function isPlainObject(value) {
+    if (value === null || typeof value !== "object") {
+        return false;
+    }
+    const prototype = Object.getPrototypeOf(value);
+    return prototype === Object.prototype || prototype === null;
+}
+/**
+ * Clones payloads before they are stored in the event journal so downstream
+ * consumers observe immutable snapshots even when emitters mutate their inputs
+ * afterwards. The function favours `structuredClone` for deep copies and falls
+ * back to the `stabiliseForStableJson` walk for plain objects/arrays when
+ * `structuredClone` rejects (e.g. functions). Exotic instances (Map/Set/Date)
+ * reuse the original reference as they are safe to clone via `structuredClone`
+ * and must preserve their prototype semantics.
+ */
+function clonePayloadForStorage(payload) {
+    if (payload === undefined) {
+        return undefined;
+    }
+    if (typeof structuredClone === "function") {
+        try {
+            const cloned = structuredClone(payload);
+            try {
+                return stabiliseForStableJson(cloned);
+            }
+            catch {
+                return cloned;
+            }
+        }
+        catch {
+            // Fall through to the manual clone for plain objects/arrays.
+        }
+    }
+    if (Array.isArray(payload) || isPlainObject(payload)) {
+        try {
+            return stabiliseForStableJson(payload);
+        }
+        catch {
+            return payload;
+        }
+    }
+    return payload;
+}
+/**
+ * Normalises event payloads before they are cloned for storage. Search events
+ * automatically receive a payload version tag and excessively long error
+ * messages are truncated so downstream artefacts remain readable.
+ */
+function normaliseEventPayload(kind, payload) {
+    if (!kind.startsWith("search:")) {
+        return payload;
+    }
+    const base = payload && typeof payload === "object" && !Array.isArray(payload)
+        ? { ...payload }
+        : {};
+    const message = base.message;
+    if (typeof message === "string" && message.length > MAX_ERROR_MESSAGE_LENGTH) {
+        const slice = message.slice(0, MAX_ERROR_MESSAGE_LENGTH - 1);
+        base.message = `${slice}…`;
+    }
+    if (base.version === undefined) {
+        base.version = 1;
+    }
+    return base;
 }
 /** Builds a set from the user supplied kinds while ignoring duplicates or garbage values. */
 function normaliseKindFilter(kinds) {
@@ -102,17 +181,28 @@ export class EventStore {
         this.logger = options.logger ?? new StructuredLogger();
     }
     emit(input) {
+        const normalisedPayload = normaliseEventPayload(input.kind, input.payload);
         const event = {
             seq: ++this.seq,
             ts: Date.now(),
             kind: input.kind,
             level: input.level ?? "info",
             source: input.source ?? "orchestrator",
-            jobId: input.jobId,
-            childId: input.childId,
-            payload: input.payload,
+            // Optional identifiers are coerced to `undefined` so the resulting event
+            // never materialises `null` placeholders. This keeps the EventStore API
+            // aligned with `exactOptionalPropertyTypes` and mirrors the behaviour of
+            // higher-level emitters such as `pushEvent`.
+            ...omitUndefinedEntries({
+                jobId: coerceNullToUndefined(input.jobId),
+                childId: coerceNullToUndefined(input.childId),
+                payload: clonePayloadForStorage(normalisedPayload),
+            }),
             provenance: normaliseProvenanceList(input.provenance),
         };
+        // FIFO eviction happens on every write so the global buffer never grows
+        // beyond {@link maxHistory}. Downstream buckets mirror the same limit to
+        // guarantee bounded memory usage even when callers query per-job or
+        // per-kind slices after the global window has advanced.
         this.events.push(event);
         if (this.events.length > this.maxHistory) {
             const evicted = this.events.shift();
@@ -182,7 +272,7 @@ export class EventStore {
             }
             return true;
         });
-        return applyWindow(filtered, { reverse: filters.reverse, limit: filters.limit });
+        return applyWindow(filtered, omitUndefinedEntries({ reverse: filters.reverse, limit: filters.limit }));
     }
     /**
      * Efficient helper returning events scoped to a single job. Callers can pass
@@ -211,7 +301,7 @@ export class EventStore {
             }
             return true;
         });
-        return applyWindow(filtered, { reverse: filters.reverse, limit: filters.limit });
+        return applyWindow(filtered, omitUndefinedEntries({ reverse: filters.reverse, limit: filters.limit }));
     }
     getSnapshot() {
         return [...this.events];

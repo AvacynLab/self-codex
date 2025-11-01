@@ -1,4 +1,5 @@
 import { expect } from "chai";
+import sinon from "sinon";
 
 import {
   SearxClient,
@@ -146,6 +147,81 @@ describe("search/searxClient", () => {
     const response = await client.search("retry");
     expect(response.results).to.be.empty;
     expect(recorder).to.have.lengthOf(2);
+  });
+
+  it("canonicalises URLs by stripping fragments, tracking params and sorting queries", async () => {
+    const payload = {
+      query: "tracking",
+      results: [
+        {
+          url: "https://example.com/path?utm_source=newsletter&b=2&ref=promo&a=1#fragment",
+          title: "Tracked",
+          engines: ["ddg"],
+          categories: ["general"],
+        },
+      ],
+    };
+
+    const client = new SearxClient(
+      baseConfig,
+      createFetchStub([createJsonResponse(payload, 200, "application/json")]),
+    );
+
+    const response = await client.search("tracking");
+    expect(response.results).to.have.lengthOf(1);
+    const [result] = response.results;
+    // The canonical form retains only meaningful parameters and sorts them for determinism.
+    expect(result.url).to.equal("https://example.com/path?a=1&b=2");
+  });
+
+  it("does not retry on non-retriable HTTP statuses", async () => {
+    const recorder: FetchRecorder = [];
+    const client = new SearxClient(
+      { ...baseConfig, searx: { ...baseConfig.searx, maxRetries: 3 } },
+      createFetchStub([createJsonResponse({ query: "notfound" }, 404, "application/json")], recorder),
+    );
+
+    const error = await expectSearxFailure(client.search("notfound"));
+    expect(error.code).to.equal("E-SEARCH-SEARX-HTTP");
+    // 4xx client errors must fail fast without exhausting the retry budget.
+    expect(recorder).to.have.lengthOf(1);
+  });
+
+  it("aborts slow requests according to the configured timeout", async () => {
+    const clock = sinon.useFakeTimers();
+    try {
+      let callCount = 0;
+      // Simulate a fetch call that only rejects once the abort signal fires.
+      const fetchStub: typeof fetch = (async (_input, init) => {
+        callCount += 1;
+        return new Promise((_, reject) => {
+          const abortSignal = init?.signal;
+          if (!abortSignal) {
+            reject(new Error("Missing abort signal"));
+            return;
+          }
+          abortSignal.addEventListener("abort", () => {
+            const abortError = new Error("Aborted");
+            abortError.name = "AbortError";
+            reject(abortError);
+          });
+        });
+      }) as typeof fetch;
+
+      const client = new SearxClient(
+        { ...baseConfig, searx: { ...baseConfig.searx, timeoutMs: 50, maxRetries: 0 } },
+        fetchStub,
+      );
+
+      const pending = client.search("slow");
+      const failure = expectSearxFailure(pending);
+      await clock.tickAsync(60);
+      const error = await failure;
+      expect(error.code).to.equal("E-SEARCH-SEARX-NETWORK");
+      expect(callCount).to.equal(1);
+    } finally {
+      clock.restore();
+    }
   });
 
   it("rejects empty queries", async () => {

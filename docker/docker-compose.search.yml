@@ -13,6 +13,8 @@ services:
       - "127.0.0.1:8080:8080"
     volumes:
       - ./searxng/settings.yml:/etc/searxng/settings.yml:ro
+    # The SearxNG result proxy stays disabled by default (see
+    # docker/searxng/settings.yml) so local fetches hit origin servers directly.
     healthcheck:
       # HTTP based readiness probe so `depends_on` can rely on the
       # `service_healthy` condition. We target the landing page instead
@@ -171,6 +173,34 @@ services:
       UNSTRUCTURED_STRATEGY: hi_res
       SEARCH_INJECT_GRAPH: "1"
       SEARCH_INJECT_VECTOR: "1"
+    healthcheck:
+      # The runtime image is distroless, so we rely on the bundled Node.js
+      # binary to probe the lightweight `/healthz` endpoint exposed by the
+      # search server. Any status <500 is considered healthy so intermittent
+      # 4xx responses (for example maintenance banners) do not flap the stack.
+      test:
+        - CMD
+        - /nodejs/bin/node
+        - -e
+        - |
+            const controller = new AbortController();
+            const timeout = setTimeout(() => controller.abort(), 8000);
+            fetch("http://127.0.0.1:8765/healthz", { signal: controller.signal })
+              .then((response) => {
+                clearTimeout(timeout);
+                if (response.status >= 200 && response.status < 500) {
+                  process.exit(0);
+                }
+                process.exit(1);
+              })
+              .catch(() => {
+                clearTimeout(timeout);
+                process.exit(1);
+              });
+      interval: 15s
+      timeout: 10s
+      start_period: 30s
+      retries: 5
     ports:
       - "127.0.0.1:8765:8765"
     logging:
@@ -184,3 +214,4 @@ services:
 networks:
   search_net:
     driver: bridge
+    internal: true

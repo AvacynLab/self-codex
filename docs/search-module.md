@@ -46,6 +46,20 @@ The following flow summarises the orchestration that starts in
    `pipeline.runSearchJob` publishes `search:job_*` events enriched with
    MIME-type details for dashboard consumers.
 
+### Canonicalisation, MIME sniffing, and cache reuse
+- **URL canonicalisation** removes fragments, strips tracking parameters such as
+  `utm_*`, `ref`, and `fbclid`, and sorts the remaining query parameters before
+  deduplication. The resulting document identifiers remain stable across retries
+  and façade invocations.
+- **MIME signature sniffing** inspects the first bytes of every payload when
+  `Content-Type` headers are missing or obviously incorrect. PDF (`%PDF-`), JPEG
+  (`\xFF\xD8`), PNG (`\x89PNG`), and ZIP (`PK\x03\x04`) markers keep the
+  extractor on the happy path even when upstream servers misreport types.
+- **Conditional GET revalidation** forwards cached `ETag` or `Last-Modified`
+  headers. A 304 response yields a `RawFetched` with `notModified: true`,
+  allowing the extractor and ingestors to reuse cached artefacts without
+  performing redundant work.
+
 Both the `search.run` and `search.index` façades share the same pipeline
 building blocks. `search.index` skips the Searx phase and feeds explicit URLs
 through the fetch/extract/ingest stages. `search.status` currently exposes a
@@ -191,6 +205,18 @@ cache-related headers (`ETag`, `Last-Modified`). Operators should:
 - `npm run smoke:search` *(brings up the stack, runs a real `search.run` job, and tears everything down with a summary report)*
 
 Keep the validation list updated as new automation arrives.
+
+### Validation artefact layout
+- The canonical artefact root is the singular `validation_run/` directory.
+  `ensureValidationRunLayout` provisions `logs/`, `runs/`, `artifacts/`,
+  `metrics/`, `snapshots/`, and `reports/` subdirectories on demand.
+- Each validation scenario writes `input.json`, `response.json`, `events.ndjson`,
+  `timings.json`, `errors.json`, `kg_changes.ndjson`, `vector_upserts.json`, and
+  `server.log` inside its dedicated `validation_run/runs/<scenario>/` folder so
+  analysts can reconstruct the full execution context.
+- Legacy repositories using `validation_runs/` are migrated automatically during
+  environment setup to prevent stale directories from lingering alongside the
+  canonical root.
 
 ### Continuous integration guardrails
 - The GitHub Actions job **“Search stack end-to-end”** provisions the compose

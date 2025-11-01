@@ -1,5 +1,4 @@
 import { expect } from "chai";
-import sinon from "sinon";
 
 import {
   KnowledgeGraphIngestor,
@@ -10,10 +9,6 @@ import {
 import { KnowledgeGraph } from "../../../src/knowledge/knowledgeGraph.js";
 
 describe("search/ingest/toKnowledgeGraph", () => {
-  afterEach(() => {
-    sinon.restore();
-  });
-
   const baseDocument: StructuredDocument = {
     id: "doc-42",
     url: "https://example.com/doc",
@@ -87,6 +82,19 @@ describe("search/ingest/toKnowledgeGraph", () => {
     expect(terms.length).to.be.lessThanOrEqual(12);
   });
 
+  it("only emits mentions that appear at least twice", () => {
+    const sparseTerms = extractKeyTerms({
+      ...baseDocument,
+      title: "Single mention snapshot",
+      description: null,
+      segments: [
+        { id: "seg-a", kind: "paragraph", text: "Nebula flux measurement unique" },
+      ],
+    });
+
+    expect(sparseTerms).to.deep.equal([]);
+  });
+
   it("does not insert duplicate triples when the payload repeats data", () => {
     const graph = new KnowledgeGraph({ now: () => 42 });
     const ingestor = new KnowledgeGraphIngestor({ graph });
@@ -109,5 +117,37 @@ describe("search/ingest/toKnowledgeGraph", () => {
     const triples = graph.exportAll().filter((triple) => triple.subject === first.subject);
     const keySet = new Set(triples.map((triple) => `${triple.subject}|${triple.predicate}|${triple.object}`));
     expect(keySet.size).to.equal(triples.length);
+  });
+
+  it("debounces identical triples emitted in a single pass", () => {
+    const graph = new KnowledgeGraph({ now: () => 777 });
+    const ingestor = new KnowledgeGraphIngestor({ graph });
+
+    const result = ingestor.ingest({
+      ...baseDocument,
+      segments: [
+        ...baseDocument.segments,
+        {
+          id: "seg-dup-1",
+          kind: "paragraph",
+          text: "Pipeline pipeline pipeline",
+        },
+        {
+          id: "seg-dup-2",
+          kind: "paragraph",
+          text: "Pipeline pipeline pipeline",
+        },
+      ],
+    });
+
+    expect(result.triples.length).to.be.greaterThan(0);
+    const runKeys = new Set(result.triples.map((triple) => `${triple.predicate}|${triple.object}`));
+    expect(runKeys.size).to.equal(result.triples.length);
+
+    const storedTriples = graph
+      .exportAll()
+      .filter((triple) => triple.subject === result.subject);
+    const storedKeys = new Set(storedTriples.map((triple) => `${triple.subject}|${triple.predicate}|${triple.object}`));
+    expect(storedKeys.size).to.equal(storedTriples.length);
   });
 });

@@ -10,8 +10,8 @@ import { McpSession } from '../lib/mcpSession.js';
 import { runIntrospectionStage } from '../lib/introspection.js';
 import type { RunContext } from '../lib/runContext.js';
 
-import { getRuntimeFeatures, configureRuntimeFeatures, server } from '../../../src/server.js';
-import type { FeatureToggles } from '../../../src/serverOptions.js';
+import { getRuntimeFeatures, configureRuntimeFeatures, server } from '../../../../src/server.js';
+import type { FeatureToggles } from '../../../../src/serverOptions.js';
 
 /**
  * Utility creating a deterministic clock used by the recorder to ensure tests

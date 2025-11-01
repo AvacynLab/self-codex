@@ -10,9 +10,9 @@ import {
   summariseToolResponse,
 } from './responseSummary.js';
 
-import type { GraphDescriptorPayload, GraphGenerateResult } from '../../../src/tools/graphTools.js';
-import { SUBGRAPH_REGISTRY_KEY } from '../../../src/graph/subgraphRegistry.js';
-import { omitUndefinedEntries } from '../../../src/utils/object.js';
+import type { GraphDescriptorPayload, GraphGenerateResult } from '../../../../src/tools/graphTools.js';
+import { SUBGRAPH_REGISTRY_KEY } from '../../../../src/graph/subgraphRegistry.js';
+import { omitUndefinedEntries } from '../../../../src/utils/object.js';
 
 /**
  * Summary describing the extracted payloads from an MCP tool response. Storing

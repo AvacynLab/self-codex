@@ -17,7 +17,7 @@ describe("repository hygiene", () => {
   const repoRoot = path.resolve(__dirname, "..");
 
   const DIRECTORIES_TO_SCAN = ["src", "tests", "scripts", path.join("graph-forge", "src"), path.join("graph-forge", "test")];
-  const IGNORED_DIRECTORIES = new Set(["node_modules", "dist", ".git", "tmp", "playground_codex_demo", "tmp_before.txt"]);
+  const IGNORED_DIRECTORIES = new Set(["node_modules", "dist", ".git", "tmp", "playground_codex_demo"]);
   const CODE_EXTENSIONS = new Set([".ts", ".tsx", ".js", ".mjs", ".cjs", ".mts", ".cts"]);
   const COMMENT_MARKER_PATTERN = /\/\/\s*(?:TODO|FIXME)|\/\*\s*(?:TODO|FIXME)/g;
   const hygieneConfigPath = path.resolve(repoRoot, "config", "hygiene.config.json");

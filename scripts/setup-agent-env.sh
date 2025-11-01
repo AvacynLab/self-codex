@@ -12,7 +12,11 @@ set -euo pipefail
 # La validation requiert Node.js >= 20 (fetch natif + AbortController).
 MIN_NODE_MAJOR=20
 
-# START_MCP_BG est obsolète : neutralisation pour éviter les fuites d'état.
+# START_MCP_BG pilote l'orchestration MCP en arrière-plan. On neutralise
+# volontairement la variable lors du bootstrap global afin d'éviter qu'un run
+# précédent laisse le serveur HTTP actif par inadvertance. Les scripts de
+# validation ré-exportent ensuite la valeur documentée dans
+# `docs/validation-run-runtime.md` lorsqu'un démarrage automatique est requis.
 unset START_MCP_BG || true
 
 # Neutralisation immédiate des variables npm pour éviter les surprises (proxies, devDeps omis).

@@ -1336,18 +1336,6 @@ function normaliseAbortReason(reason: unknown): Error {
   return new Error("Child process aborted");
 }
 
-/**
- * Pretty printer primarily used by tests for debugging purposes.
- */
-export function formatChildMessages(messages: ChildRuntimeMessage[]): string {
-  return messages
-    .map((message) =>
-      `${new Date(message.receivedAt).toISOString()} [${message.stream}#${message.sequence}] ${message.raw} ` +
-      (message.parsed ? inspect(message.parsed, { depth: 4 }) : "<raw>"),
-    )
-    .join("\n");
-}
-
 /** Ensures the spawned child exposes pipe-based stdio streams. */
 function ensurePipedChildProcess(child: ChildProcess): ChildProcessWithoutNullStreams {
   if (!child.stdin || !child.stdout || !child.stderr) {

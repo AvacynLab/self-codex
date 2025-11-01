@@ -63,6 +63,13 @@ export interface RawFetched {
   readonly status: number;
   /** Timestamp (ms since epoch) at which the resource was fetched. */
   readonly fetchedAt: number;
+  /**
+   * Indicates that the payload originates from a cache revalidation (`HTTP 304`).
+   *
+   * When true the caller can reuse the previously extracted artefacts instead of
+   * invoking the expensive parsing toolchain again.
+   */
+  readonly notModified: boolean;
   /** Normalised HTTP headers with lower-cased keys. */
   readonly headers: ReadonlyMap<string, string>;
   /** Content-Type header without charset or parameters. */

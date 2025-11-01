@@ -50,3 +50,21 @@ operators can fix the configuration before proceeding with the validation runs.
 
 Each helper is fully idempotent, making them safe to invoke before every
 validation scenario as part of the preparation checklist.
+
+## Background MCP automation (`START_MCP_BG`)
+
+Some validation campaigns need the MCP server to start automatically in the
+background before scenarios are replayed. The shared toggle for this behaviour
+is the environment variable `START_MCP_BG`:
+
+- When set to `1`, the validation helpers (`scripts/validate-run.mjs`,
+  `scripts/run-search-e2e.ts`, etc.) spawn the HTTP transport before launching
+  the scenarios and record the lifecycle events in
+  `validation_run/logs/self-codex.log`.
+- Any other value (or the absence of the variable) keeps the validation scripts
+  in "manual" mode so operators can start the server themselves.
+
+The bootstrap utility `scripts/setup-agent-env.sh` clears the variable on
+purpose during repository initialisation to avoid leaking a background server
+from a previous run. Downstream scripts re-export the flag as needed when a
+campaign explicitly requires automatic orchestration.

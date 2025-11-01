@@ -5,7 +5,8 @@ import { recordOperation } from "../graph/oplog.js";
 import { recordGraphWal } from "../graph/wal.js";
 import { buildIdempotencyCacheKey } from "../infra/idempotency.js";
 import { ERROR_CODES } from "../types.js";
-import { GraphMutateInputSchema, handleGraphMutate, normaliseGraphPayload, serialiseNormalisedGraph, } from "./graphTools.js";
+import { GraphMutateInputSchema, handleGraphMutate, } from "./graph/mutate.js";
+import { normaliseGraphPayload, serialiseNormalisedGraph } from "./graph/snapshot.js";
 import { resolveOperationId } from "./operationIds.js";
 const GraphBatchOperationSchema = GraphMutateInputSchema.shape.operations.element;
 /** Schema accepted by the `graph_batch_mutate` tool. */

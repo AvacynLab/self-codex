@@ -61,7 +61,7 @@ export interface GraphForgeCliOverrides {
  * flags are ignored to remain forgiving during exploratory sessions.
  */
 export function parseGraphForgeCliOptions(argv: readonly string[]): GraphForgeCliOptions {
-  const options: GraphForgeCliOptions = { baseDir: "runs" };
+  const options: GraphForgeCliOptions = { baseDir: "validation_run" };
 
   for (let index = 0; index < argv.length; index += 1) {
     const token = argv[index];

@@ -31,6 +31,11 @@ import {
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const projectRoot = resolve(scriptDir, "..");
 const scriptPath = fileURLToPath(import.meta.url);
+const validationRunRoot = resolve(projectRoot, "validation_run");
+const validationRunLogs = join(validationRunRoot, "logs");
+const defaultLogFile = join(validationRunLogs, "self-codex.log");
+const defaultRunsRoot = validationRunRoot;
+const childrenRoot = resolve(projectRoot, "children");
 const isTestEnvironment = process.env.CODEX_SCRIPT_TEST === "1";
 const isDryRun = process.env.CODEX_SCRIPT_DRY_RUN === "1";
 const invokedDirectly = (() => {
@@ -46,6 +51,57 @@ const backgroundActions = [];
 
 function recordBackground(action) {
   backgroundActions.push(action);
+}
+
+/**
+ * Ensures the provided directory exists. When running in dry-run mode the
+ * operation is recorded but no filesystem changes are performed so the test
+ * harness can assert on the intent without mutating the workspace.
+ */
+function ensureDirectory(path, label) {
+  recordBackground({ action: "ensure-dir", path, label, dryRun: isDryRun });
+  if (isDryRun) {
+    return;
+  }
+  mkdirSync(path, { recursive: true });
+}
+
+/** Creates the structured log file if absent while keeping permissions strict. */
+function ensureLogFile(path) {
+  recordBackground({ action: "ensure-log-file", path, dryRun: isDryRun });
+  if (isDryRun) {
+    return;
+  }
+  const fd = openSync(path, "a", 0o600);
+  closeSync(fd);
+}
+
+/** Sets an environment variable when unset so downstream scripts inherit defaults. */
+function coerceRuntimeEnv(key, value) {
+  if (process.env[key] && process.env[key]?.trim()) {
+    return process.env[key];
+  }
+  process.env[key] = value;
+  recordBackground({ action: "set-env", key, value, dryRun: isDryRun });
+  return value;
+}
+
+/** Emits a friendly warning when required service endpoints are missing. */
+function warnMissingServiceEndpoints() {
+  const missing = [];
+  if (!process.env.SEARCH_SEARX_BASE_URL || process.env.SEARCH_SEARX_BASE_URL.trim().length === 0) {
+    missing.push("SEARCH_SEARX_BASE_URL");
+  }
+  if (!process.env.UNSTRUCTURED_BASE_URL || process.env.UNSTRUCTURED_BASE_URL.trim().length === 0) {
+    missing.push("UNSTRUCTURED_BASE_URL");
+  }
+  if (missing.length === 0) {
+    return;
+  }
+  const message =
+    `⚠️  Recommandation: définissez ${missing.join(", ")} avant d'exécuter la stack de recherche.`;
+  recordBackground({ action: "warn", message, keys: missing });
+  console.warn(message);
 }
 
 function coerceBoolean(value) {
@@ -290,6 +346,13 @@ function ensureFsBridgeDirectories(baseDir) {
 async function main() {
   backgroundActions.length = 0;
   assertNodeVersion();
+  ensureDirectory(validationRunRoot, "validation-run-root");
+  ensureDirectory(validationRunLogs, "validation-run-logs");
+  ensureDirectory(childrenRoot, "children-root");
+  const resolvedRunsRoot = coerceRuntimeEnv("MCP_RUNS_ROOT", defaultRunsRoot);
+  const resolvedLogFile = coerceRuntimeEnv("MCP_LOG_FILE", defaultLogFile);
+  ensureLogFile(resolvedLogFile);
+  warnMissingServiceEndpoints();
   const { runCommand, recordedCommands } = createCommandRunner({
     projectRoot,
     dryRun: isDryRun,
@@ -361,6 +424,13 @@ async function main() {
     globalThis.CODEX_SCRIPT_CONFIG = tomlContent;
     globalThis.CODEX_SCRIPT_BACKGROUND = backgroundActions.slice();
     globalThis.CODEX_SCRIPT_SUMMARY = summary;
+    globalThis.CODEX_SCRIPT_RUNTIME = {
+      validationRunRoot,
+      validationRunLogs,
+      childrenRoot,
+      runsRoot: resolvedRunsRoot,
+      logFile: resolvedLogFile,
+    };
   }
 }
 

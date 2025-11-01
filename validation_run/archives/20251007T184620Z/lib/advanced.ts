@@ -7,8 +7,8 @@ import { McpSession, McpToolCallError, type ToolCallRecord } from './mcpSession.
 import type { BaseToolCallSummary, ToolResponseSummary } from './baseTools.js';
 import { buildTransportFailureSummary, summariseToolResponse } from './responseSummary.js';
 
-import type { PlanRunBTResult } from '../../../src/tools/planTools.js';
-import type { CausalExportResult, CausalExplainResult } from '../../../src/tools/causalTools.js';
+import type { PlanRunBTResult } from '../../../../src/tools/planTools.js';
+import type { CausalExportResult, CausalExplainResult } from '../../../../src/tools/causalTools.js';
 import type {
   StigMarkResult,
   StigDecayResult,
@@ -18,8 +18,8 @@ import type {
   CnpAnnounceResult,
   CnpRefreshBoundsResult,
   CnpWatcherTelemetryResult,
-} from '../../../src/tools/coordTools.js';
-import type { KgInsertResult, KgSuggestPlanResult } from '../../../src/tools/knowledgeTools.js';
+} from '../../../../src/tools/coordTools.js';
+import type { KgInsertResult, KgSuggestPlanResult } from '../../../../src/tools/knowledgeTools.js';
 
 /**
  * Structured entry returned by the `logs_tail` tool. Replicated here so the

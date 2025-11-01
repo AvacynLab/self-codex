@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import { expect } from "chai";
 import nock from "nock";
 import sinon from "sinon";
@@ -106,9 +108,15 @@ describe("search.run integration", () => {
   afterEach(() => {
     nock.cleanAll();
     nock.enableNetConnect();
+    sinon.restore();
   });
 
-  it("ingests Searx and unstructured results into the graph and vector store", async () => {
+  /**
+   * Full pipeline smoke test ensuring a mixed result set (success + failure)
+   * yields stored artefacts, typed warnings, and the deterministic job hash
+   * surfaced by the `search.run` façade.
+   */
+  it("ingests documents, surfaces typed warnings, and returns a deterministic job id", async () => {
     const config: SearchConfig = {
       searx: {
         baseUrl: "http://searx.test",
@@ -125,24 +133,24 @@ describe("search.run integration", () => {
         strategy: "hi_res",
         apiKey: null,
       },
-    fetch: {
-      timeoutMs: 5_000,
-      maxBytes: 2_000_000,
-      userAgent: "TestBot/1.0",
-      respectRobotsTxt: false,
-      parallelism: 2,
-      minDomainDelayMs: 0,
-      cache: null,
-    },
-    pipeline: {
-      injectGraph: true,
-      injectVector: true,
-      parallelExtract: 2,
-      // Provide an explicit ceiling so the pipeline fallback never yields NaN
-      // when normalising `maxResults` in tests executed without env defaults.
-      maxResults: 12,
-    },
-  };
+      fetch: {
+        timeoutMs: 5_000,
+        maxBytes: 2_000_000,
+        userAgent: "TestBot/1.0",
+        respectRobotsTxt: false,
+        parallelism: 2,
+        minDomainDelayMs: 0,
+        cache: null,
+      },
+      pipeline: {
+        injectGraph: true,
+        injectVector: true,
+        parallelExtract: 2,
+        // Provide an explicit ceiling so the pipeline fallback never yields NaN
+        // when normalising `maxResults` in tests executed without env defaults.
+        maxResults: 12,
+      },
+    };
 
     const searxScope = nock("http://searx.test")
       .get("/search")
@@ -157,6 +165,13 @@ describe("search.run integration", () => {
             engines: ["duckduckgo"],
             categories: ["general"],
           },
+          {
+            url: "https://content.test/missing.pdf",
+            title: "Doc 2",
+            content: "Snippet 2",
+            engines: ["duckduckgo"],
+            categories: ["general"],
+          },
         ],
       });
 
@@ -168,13 +183,24 @@ describe("search.run integration", () => {
       ]);
 
     const fetchStub = sinon.stub();
-    fetchStub.onCall(0).resolves(
-      new Response("<html><body>LLM integration document</body></html>", {
-        status: 200,
-        headers: { "Content-Type": "text/html" },
-        url: "https://content.test/doc-1.html",
-      }),
-    );
+    fetchStub
+      .onCall(0)
+      .resolves(
+        new Response("<html><body>LLM integration document</body></html>", {
+          status: 200,
+          headers: { "Content-Type": "text/html" },
+          url: "https://content.test/doc-1.html",
+        }),
+      );
+    fetchStub
+      .onCall(1)
+      .resolves(
+        new Response("missing", {
+          status: 404,
+          headers: { "Content-Type": "text/plain" },
+          url: "https://content.test/missing.pdf",
+        }),
+      );
 
     const logger = new StructuredLogger({ logFile: null, onEntry: () => {} });
     const eventStore = new EventStore({ maxHistory: 32, logger });
@@ -202,24 +228,43 @@ describe("search.run integration", () => {
     const handler = createSearchRunHandler({ pipeline, logger });
     const extras = createRequestExtras("req-search-integration");
 
-    const result = await handler(
-      {
-        query: "llm integration",
-        categories: ["general"],
-        engines: ["duckduckgo"],
-        max_results: 3,
-        fetch_content: true,
-        inject_graph: true,
-        inject_vector: true,
-      },
-      extras,
-    );
+    const payload = {
+      query: "llm integration",
+      categories: ["general"],
+      engines: ["duckduckgo"],
+      max_results: 3,
+      fetch_content: true,
+      inject_graph: true,
+      inject_vector: true,
+    } as const;
+    const result = await handler(payload, extras);
 
     expect(result.isError).to.equal(false);
     const structured = result.structuredContent as Record<string, any>;
     expect(structured.ok).to.equal(true);
     expect(structured.count).to.equal(1);
     expect(structured.docs[0]?.url).to.equal("https://content.test/doc-1.html");
+    expect(structured.warnings).to.have.lengthOf(1);
+    expect(structured.warnings?.[0]?.code).to.equal("network_error");
+
+    // Build the same fingerprint the pipeline uses when deriving `jobId` so
+    // the assertion covers the deterministic hashing logic as well.
+    const fingerprint = createHash("sha1")
+      .update(
+        JSON.stringify({
+          query: payload.query,
+          categories: payload.categories,
+          engines: payload.engines,
+          max_results: payload.max_results,
+          fetch_content: payload.fetch_content,
+          inject_graph: payload.inject_graph,
+          inject_vector: payload.inject_vector,
+          language: null,
+          safe_search: null,
+        }),
+      )
+      .digest("hex");
+    expect(structured.job_id).to.equal(`search:job:${fingerprint}`);
 
     expect(knowledgeGraph.count()).to.be.greaterThan(0);
     expect(vectorMemory.size()).to.be.greaterThan(0);
@@ -227,6 +272,6 @@ describe("search.run integration", () => {
 
     expect(searxScope.isDone()).to.equal(true);
     expect(unstructuredScope.isDone()).to.equal(true);
-    sinon.assert.calledOnce(fetchStub);
+    sinon.assert.calledTwice(fetchStub);
   });
 });

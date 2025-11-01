@@ -1,6 +1,13 @@
 import { mergeProvenance, normaliseProvenanceList, type Provenance } from "../types/provenance.js";
 
 /**
+ * Fingerprint separator used when building run-scoped identifiers for
+ * knowledge triples. A private separator avoids collisions when subjects,
+ * predicates or objects embed user-controlled characters.
+ */
+const TRIPLE_FINGERPRINT_SEPARATOR = "\u001f";
+
+/**
  * Options accepted by {@link KnowledgeGraph.exportForRag}. They control the
  * filtering performed before synthesising RAG friendly documents.
  */
@@ -164,6 +171,71 @@ export interface KnowledgeTripleInput {
   source?: string | null;
   confidence?: number | null;
   provenance?: ReadonlyArray<Provenance | null | undefined>;
+}
+
+/**
+ * Runtime guard dedicated to a single ingestion run. The helper remembers the
+ * `(subject, predicate, object)` tuples that were processed so orchestrators
+ * can skip redundant writes produced by upstream heuristics.  Using the guard
+ * keeps knowledge graph updates idempotent even when retries re-emit the same
+ * triples multiple times during the run.
+ */
+export interface KnowledgeTripleRunGuard {
+  /**
+   * Records the provided triple fingerprint and returns `true` when the tuple
+   * has not been observed during the current run.  Callers can use the return
+   * value to decide whether to forward the triple to {@link upsertTriple}.
+   */
+  remember(triple: KnowledgeTripleInput): boolean;
+  /** Clears the internal state so the guard can be reused for another run. */
+  reset(): void;
+  /** Exposes the number of unique triples remembered during the run. */
+  size(): number;
+}
+
+/**
+ * Creates a guard suitable for a single ingest run.  The implementation keeps
+ * a `Set` of canonical fingerprints to guarantee O(1) membership checks and to
+ * make duplicate suppression deterministic irrespective of the triple order.
+ */
+export function createKnowledgeTripleRunGuard(): KnowledgeTripleRunGuard {
+  const seen = new Set<string>();
+
+  return {
+    remember(triple: KnowledgeTripleInput): boolean {
+      const fingerprint = fingerprintTriple(triple.subject, triple.predicate, triple.object);
+      if (!fingerprint) {
+        return false;
+      }
+      if (seen.has(fingerprint)) {
+        return false;
+      }
+      seen.add(fingerprint);
+      return true;
+    },
+    reset(): void {
+      seen.clear();
+    },
+    size(): number {
+      return seen.size;
+    },
+  };
+}
+
+/**
+ * Builds a deterministic fingerprint for the provided triple components. The
+ * helper trims the values before concatenation so callers can forward raw
+ * extractor output without worrying about stray whitespace breaking
+ * idempotence guarantees.
+ */
+export function fingerprintTriple(subject: string, predicate: string, object: string): string | null {
+  const canonicalSubject = subject.trim();
+  const canonicalPredicate = predicate.trim();
+  const canonicalObject = object.trim();
+  if (!canonicalSubject || !canonicalPredicate || !canonicalObject) {
+    return null;
+  }
+  return [canonicalSubject, canonicalPredicate, canonicalObject].join(TRIPLE_FINGERPRINT_SEPARATOR);
 }
 
 /**

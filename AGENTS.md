@@ -1,419 +1,406 @@
-----------
-Parfait. Voici ta **liste de tâches à cocher**, **adressée directement à toi, Agent**, pour exécuter une validation “conditions réelles” et **journaliser 100% des exécutions** dans le dossier **`validation_run/`** (obligatoire).
-Tout ce que tu fais doit **écrire ses logs, artefacts et rapports** sous `validation_run/` (pas `runs/`).
+## 🎯 Brief (lis-moi d’abord)
+
+**Objectifs attendus**
+
+1. Renforcer la **robustesse** du moteur Search (SearxNG → fetch → unstructured → normalisation → KG/Vector), réduire la dette (URLs canonisées, sniff MIME, conditional GET, NFC), consolider les **erreurs typées** et la **télémétrie**.
+2. **Unifier la journalisation**: n’avoir **qu’un seul** dossier de validation (`validation_run` **ou** `validation_runs`) et y consigner **100%** des artefacts d’exécutions.
+3. Garder l’**infra SearxNG** self-host et Unstructured opérationnelles, sans régression.
+4. **Tests** solides (unit/int/E2E) et **build** strict (TS strict, `exactOptionalPropertyTypes`, Node ≥ 20), **zéro `undefined`** dans les JSON publics.
 
 ---
 
-## 0) Préparation & conventions de journalisation (obligatoire)
+## 🧱 Contraintes build & tests (à respecter partout)
 
-* [x] **Créer l’arborescence dédiée** :
-
-  * [x] `validation_run/`
-  * [x] `validation_run/logs/` – logs applicatifs (stdout serveur, HTTP, EventStore)
-  * [x] `validation_run/runs/` – un sous-dossier par scénario E2E
-  * [x] `validation_run/artifacts/` – dumps KG/RAG, captures dashboard/metrics
-  * [x] `validation_run/metrics/` – latences p50/p95/p99, compteurs
-  * [x] `validation_run/snapshots/` – `.env`, versions, commit, état services
-  * [x] `validation_run/reports/` – `REPORT.md` final + `summary.json`
-
-* [x] **Pointage des logs** (via variables d’env au démarrage) :
-
-  * [x] `MCP_RUNS_ROOT=./validation_run`
-  * [x] `MCP_LOG_FILE=./validation_run/logs/self-codex.log`
-  * [x] `MCP_LOG_ROTATE_SIZE=10mb`
-  * [x] `MCP_LOG_ROTATE_KEEP=5`
-  * [x] (si script de setup) remplacer toute écriture `./runs/...` par `./validation_run/...`
-
-* [x] **Convention de nommage** pour chaque scénario (ex. `S01_pdf_science`) :
-
-  * [x] Dossier : `validation_run/runs/S01_pdf_science/`
-  * [x] Entrée tool : `input.json`
-  * [x] Réponse tool : `response.json`
-  * [x] Événements : `events.ndjson` (1 JSON par ligne)
-  * [x] Mesures : `timings.json` (p50/p95/p99 searx/fetch/extract/ingest + tookMs)
-  * [x] Erreurs classées : `errors.json`
-  * [x] KG diffs : `kg_changes.ndjson` (triples upsert/provenance)
-  * [x] Vector upserts : `vector_upserts.json`
-  * [x] Journal brut : `server.log` (extrait filtré sur la fenêtre du run)
+* **Node ≥ 20** obligatoire (ESM, `fetch` natif, `AbortController`).
+* **TypeScript strict** + `exactOptionalPropertyTypes: true`. Tous les retours JSON publics **omettent** les clés absentes (ne jamais renvoyer `undefined`).
+* **Erreurs typées** : `{ code: string; message: string; details?: unknown }`.
+* **Logs** via logger structuré (pas de `console.*`) avec **redaction** des secrets.
+* **Budgets/Timeouts** outillés dans les Tools MCP ; **idempotence** (clé de requête stable).
+* **Tests** : mocks réseaux (`nock`), **sans sleeps**, fake timers si nécessaire ; snapshots **stabilisés** (strip des timestamps/`fetchedAt`/`tookMs`).
+* **Couverture**: ≥ **90%** sur `src/search/**`, ≥ **85%** global.
 
 ---
 
-## 1) Snapshots avant exécution
+## A) Infrastructure SearxNG & Unstructured (vérif + petites retouches)
 
-* [x] **Sauvegarder l’état** dans `validation_run/snapshots/` :
+* [x] `docker/docker-compose.search.yml`
 
-  * [x] `versions.txt` : `node -v`, `npm -v`
-  * [x] `git.txt` : `git rev-parse --short HEAD` (si repo git) ou “N/A”
-  * [x] `.env.effective` : dump des variables clés (masquer secrets)
+  * [x] Vérifier que les services `searxng`, `unstructured`, `server` ont des **healthchecks** stables (timeout raisonnables, retries).
+  * [x] Confirmer le **réseau privé** `search_net` et les **limites CPU/RAM** en CI.
+  * [x] (Si absent) commenter **clairement** l’usage ou non du `result_proxy`.
 
-    * [x] `MCP_*`, `SEARCH_*`, `UNSTRUCTURED_*`, `IDEMPOTENCY_TTL_MS`
-  * [x] `searxng_probe.txt` : `curl -sS "${SEARCH_SEARX_BASE_URL}/search?q=test&format=json" | head -c 500` (ou note “ok / fail”)
-  * [x] `unstructured_probe.txt` : petite requête de partition (ping JSON)
+* [x] `docker/searxng/settings.yml`
 
----
+  * [x] Repasser sur la **liste d’engines** activés (retirer ceux non pertinents/licences douteuses).
+  * [x] S’assurer que **categories** incluent au minimum `general,news,images,files`.
+  * [x] Documenter `safe_search` (0 en dev, 1 en prod si besoin).
 
-## 2) Démarrage contrôlé du serveur & services
+* [x] `env/.env.example`
 
-* [x] **Compiler** : `NODE_ENV=development npm ci --include=dev && npm run build`
-* [x] **Créer dossiers runtime** :
+  * [x] Vérifier la présence et les defaults de :
 
-  * [x] `mkdir -p ./validation_run ./validation_run/logs`
-  * [x] `mkdir -p ./children` (si utilisé)
-* [x] **Démarrer le serveur** :
-
-  * [x] Variables d’env recommandées :
-
-    * [x] `START_HTTP=1`
-    * [x] `MCP_HTTP_HOST=127.0.0.1` (ou `0.0.0.0` si accès externe)
-    * [x] `MCP_HTTP_PORT=8765`
-    * [x] `MCP_HTTP_PATH=/mcp`
-    * [x] `MCP_HTTP_JSON=on`
-    * [x] `MCP_HTTP_STATELESS=yes`
-    * [x] `MCP_HTTP_TOKEN=<token>`
-    * [x] `MCP_RUNS_ROOT=./validation_run`
-    * [x] `MCP_LOG_FILE=./validation_run/logs/self-codex.log`
-  * [x] **Vérifier** l’endpoint `/health` (ou équivalent) avec le token
-* [x] **SearxNG & Unstructured accessibles** :
-
-  * [x] Confirmer reachability de `SEARCH_SEARX_BASE_URL` et `UNSTRUCTURED_BASE_URL`
-  * [x] Si non accessibles, **stopper** la validation et consigner `blocking_issues.md`
+    * [x] `SEARCH_SEARX_BASE_URL`, `SEARCH_SEARX_API_PATH=/search`, `SEARCH_SEARX_TIMEOUT_MS`
+    * [x] `SEARCH_SEARX_ENGINES`, `SEARCH_SEARX_CATEGORIES`
+    * [x] `UNSTRUCTURED_BASE_URL`, `UNSTRUCTURED_TIMEOUT_MS`, `UNSTRUCTURED_STRATEGY`
+    * [x] `SEARCH_FETCH_TIMEOUT_MS`, `SEARCH_FETCH_MAX_BYTES`, `SEARCH_FETCH_UA`
+    * [x] `SEARCH_INJECT_GRAPH`, `SEARCH_INJECT_VECTOR`
+    * [x] `SEARCH_FETCH_RESPECT_ROBOTS` (mettre **true** en prod recommandée)
+    * [x] `SEARCH_PARALLEL_FETCH`, `SEARCH_PARALLEL_EXTRACT`, `SEARCH_MAX_RESULTS`
 
 ---
 
-## 3) Variables d’env “Search” (doivent être présentes)
+## B) Normalisation et téléchargement — **noyau Search** (fichier par fichier)
 
-* [x] `SEARCH_SEARX_BASE_URL` (ex. `http://searxng:8080`)
-* [x] `SEARCH_SEARX_API_PATH=/search`
-* [x] `SEARCH_SEARX_TIMEOUT_MS=15000`
-* [x] `SEARCH_SEARX_ENGINES=bing,ddg,wikipedia,arxiv,github` (adapter)
-* [x] `SEARCH_SEARX_CATEGORIES=general,news,images,files`
-* [x] `UNSTRUCTURED_BASE_URL` (ex. `http://unstructured:8000`)
-* [x] `UNSTRUCTURED_TIMEOUT_MS=30000`
-* [x] `UNSTRUCTURED_STRATEGY=hi_res`
-* [x] `SEARCH_FETCH_TIMEOUT_MS=20000`
-* [x] `SEARCH_FETCH_MAX_BYTES=15000000`
-* [x] `SEARCH_FETCH_UA=CodexSearchBot/1.0`
-* [x] `SEARCH_INJECT_GRAPH=true`
-* [x] `SEARCH_INJECT_VECTOR=true`
-* [x] (Prod conseillé) `SEARCH_FETCH_RESPECT_ROBOTS=1`
-* [x] (Charge) `SEARCH_PARALLEL_FETCH=4`, `SEARCH_PARALLEL_EXTRACT=2`, `SEARCH_MAX_RESULTS=12`
+### `src/search/searxClient.ts`
 
----
+* [x] **Canonicalisation d’URL (NOUVEAU)**
 
-## 4) Scénarios E2E (réels) — **écrire dans `validation_run/runs/<scenario>/`**
+  * [x] Avant toute déduplication :
 
-> Chaque scénario : sauvegarde **input.json**, **response.json**, **events.ndjson**, **timings.json**, **errors.json**, **kg_changes.ndjson**, **vector_upserts.json**, **server.log** (extrait).
+    * [x] retirer `#fragment`.
+    * [x] supprimer les paramètres **tracking** (`utm_*`, `ref`, `fbclid`, etc.).
+    * [x] **trier** alphabétiquement les query params restants.
+  * [x] Mapper au client les champs **hétérogènes** → `publishedAt`, `mime` (faire la **conversion ici**).
+* [x] **Retry sélectif + backoff**
 
-* [x] **S01 – PDF scientifique**
-  Input :
+  * [x] Retries sur `429/502/503/504` uniquement, **pas** sur `4xx` classiques.
+  * [x] **Jitter** dans le backoff.
+* [x] **Timeout** via `AbortController` (déjà en place) → vérifier les chemins d’erreur.
+* [x] **Tests**
 
-  ```json
-  {"query":"site:arxiv.org multimodal LLM evaluation 2025 filetype:pdf","categories":["files","general"],"maxResults":4,"fetchContent":true,"injectGraph":true,"injectVector":true}
-  ```
+  * [x] Ajouter des cas sur **canonicalisation** (`utm_*`, fragments, ordre des params).
+  * [x] Tests retries (1–2 tentatives) et abort.
 
-* [x] **S02 – HTML long + images**
-  Input :
+### `src/search/downloader.ts`
 
-  ```json
-  {"query":"site:towardsdatascience.com RAG evaluation metrics","categories":["general","images"],"maxResults":6}
-  ```
+* [x] **Streaming + coupe dure** (déjà présent) → **ajouter** un **sniff MIME par signature** :
 
-* [x] **S03 – Actualités (fraîcheur)**
-  Input :
+  * [x] PDF `%PDF-`, JPEG `\xFF\xD8`, PNG `\x89PNG`, ZIP `PK\x03\x04` (au minimum).
+  * [x] Utiliser ce sniff uniquement si `content-type` **absent/incohérent**.
+* [x] **Conditional GET (NOUVEAU)**
 
-  ```json
-  {"query":"actualité LLM Europe 2025","categories":["news","general"],"maxResults":5}
-  ```
+  * [x] Si `ETag` ou `Last-Modified` connus pour l’URL : envoyer `If-None-Match` / `If-Modified-Since`.
+  * [x] Si 304 : retourner proprement un objet `RawFetched` **annoté** (`notModified: true`) et **éviter** de repasser l’extraction.
+* [x] **DocId stable**
 
-* [x] **S04 – Multilingue (FR/EN)**
-  Input :
+  * [x] Fallback si pas d’`ETag`/`LM` : hash `(url + premier 1KB de contenu)` pour stabiliser.
+* [x] **Tests**
 
-  ```json
-  {"query":"évaluation RAG comparaison méthodes site:aclanthology.org","categories":["files","general"],"maxResults":4}
-  ```
+  * [x] Cas **MIME trompeur** : header `text/html` mais PDF réel → sniff détecte PDF.
+  * [x] Cas **304** : ETag/LM produisent un non-téléchargement, pipeline respecte `notModified`.
 
-* [x] **S05 – Idempotence (rejouer S01)**
-  2 exécutions identiques → comparer docIds et events (pas de doublons).
+### `src/search/extractor.ts`
 
-* [x] **S06 – robots & taille max**
-  Input :
+* [x] **Chemin unique** d’appel Unstructured (déjà OK) → **passer la langue détectée comme hint** quand dispo.
+* [x] **Cap de pages PDF** (NOUVEAU)
 
-  ```json
-  {"query":"dataset large download pdf","categories":["files"],"maxResults":6}
-  ```
+  * [x] Si `contentType=application/pdf` et doc volumineux → extraire **max N pages** (ex. 40) et poser `metadata.truncated=true`.
+* [x] **Tests**
 
-* [x] **S07 – Sources instables (5xx/timeout)**
-  Input :
+  * [x] Cas PDF long : assert `truncated=true`.
+  * [x] Mapping segments complet (title/list/table/figure/caption/code).
 
-  ```json
-  {"query":"site:example.com unavailable test","categories":["general"],"maxResults":3}
-  ```
+### `src/search/normalizer.ts`
 
-* [x] **S08 – Indexation directe (sans Searx)**
-  Input :
+* [x] **Unicode NFC (NOUVEAU)**
 
-  ```json
-  {"url":["https://arxiv.org/pdf/2407.12345.pdf","https://research.facebook.com/publications/..."],"injectGraph":true,"injectVector":true}
-  ```
+  * [x] `text = text.normalize('NFC').replace(/\s+/g,' ').trim()` **avant** hash & dédup.
+* [x] **Dédup par hash**
 
-* [x] **S09 – Charge modérée (K=12)**
-  Input :
+  * [x] Clé = `kind + '|' + hash(text_normalized)` (pas de clés immenses en RAM).
+* [x] **Titre fallback**
 
-  ```json
-  {"query":"graph-based rag knowledge graphs 2025","categories":["general","files","images"],"maxResults":12}
-  ```
+  * [x] Si `doc.title` vide, utiliser **le 1er segment `kind='title'`**.
+* [x] **Tests**
 
-* [x] **S10 – Qualité RAG (sanity)**
-  Pose une question à l’agent **sans web** ; attend qu’il utilise KG/RAG et **cite les sources** ingérées.
+  * [x] Cas accents combinés (NFD) vs NFC → doivent dédupliquer.
+  * [x] Cas titres absents → fallback depuis segment.
 
 ---
 
-## 5) Collecte métriques & extraits de logs
+## C) Ingestion KG / Vector
 
-* [x] Pour chaque scénario, extraire et écrire dans `timings.json` :
+### `src/search/ingest/toKnowledgeGraph.ts`
 
-  * [x] p50/p95/p99 de `searxQuery`, `fetchUrl`, `extractWithUnstructured`, `ingestToGraph`, `ingestToVector`
-  * [x] `tookMs` global
-  * [x] nb `docs` ingérés, nb `errors` (par type : `network_error`, `robots_denied`, `max_size_exceeded`, `parse_error`, etc.)
-  * [x] Automatisation `validation:metrics` pour générer `timings.json` à partir de `events.ndjson`.
-* [x] Dump **EventStore** filtré par fenêtre du scénario → `events.ndjson`
-* [x] Automatisation `validation:scenario:run` pour exécuter les scénarios S01–S10, agréger les artefacts RAG et consigner `events.ndjson`, `kg_changes.ndjson`, `vector_upserts.json`.
-* [x] Si dashboard export JSON disponible : `validation_run/metrics/<scenario>_dashboard.json`
-* [x] Sauvegarder **5–10 lignes** de `self-codex.log` autour des timecodes du run → `server.log` (extrait utile seulement)
+* [x] **Débouncer local** (Set) sur `(s,p,o)` avant `upsertTriple`.
+* [x] **Mentions**
 
----
+  * [x] Stoplist FR/EN **réutilisable** dans le fichier, `minLength≥3`, `minFreq≥2`.
+* [x] **Tests**
 
-## 6) Critères d’acceptation (à évaluer et cocher)
+  * [x] Triples **non dupliqués** dans une même run.
+  * [x] Mentions filtrées (peu de bruit).
 
-* [x] Fonctionnel : chaque scénario **complète** sans échec global ; ≥ 80% des URLs sélectionnées **ingérées** (le reste **classé**).
-* [x] Idempotence : S05 ne crée **aucune** duplication (mêmes docIds).
-* [x] Automatisation `validation:idempotence` pour comparer S01/S05 et alimenter les rapports.
-* [x] Extraction : ratio segments **uniques** ≥ 85% (dédoublonnage OK).
-* [x] Langue : détection cohérente pour ≥ 90% des docs.
-* [x] RAG : S10 produit une réponse **citant** des URLs ingérées ; hallucinations quasi nulles.
-* [x] Performance (réglable) : S09 p95 `searxQuery` < 3s ; p95 `extract` < 8s ; `tookMs` global < 60s.
-* [x] Robustesse : erreurs **classées** et **non bloquantes** ; le job continue.
+### `src/search/ingest/toVectorStore.ts`
 
----
+* [x] **Chunking “titre + paragraphe” (NOUVEAU)**
 
-## 7) Triage & remédiations (si écart)
+  * [x] Si un `title` < 10 tokens est immédiatement suivi d’un `paragraph`, **fusionner** (chunk plus informatif).
+* [x] **Skip des doublons successifs** (hash des chunks).
+* [x] **Metadata** : `language` forcée en **lower-case**.
+* [x] **Tests**
 
-* [ ] **Latence Searx** élevée → réduire `maxResults`, engines ; ajuster `SEARCH_SEARX_TIMEOUT_MS`.
-* [ ] **max_size_exceeded** fréquent → augmenter `SEARCH_FETCH_MAX_BYTES` ou filtrer mieux les requêtes.
-* [ ] **robots_denied** fréquent → activer `SEARCH_FETCH_RESPECT_ROBOTS=1`, ajouter throttle par domaine.
-* [ ] **Dédoublonnage** insuffisant → renforcer normalisation unicode & trim multi-espaces avant hash segment.
-* [ ] **RAG** peu utile → ajuster chunking, enrichir metadata (page/section), envisager rerank LLM (phase suivante).
-
-Chaque remédiation appliquée doit être **rejouée** sur le scénario concerné et consignée en **nouvelle itération** (`S0X_rerun1/`, `S0X_rerun2/`).
-
-* [x] Automatisation disponible : `npm run validation:scenarios -- --rerun` prépare `S0X_rerunN/` et gère l'auto-incrément.
-* [x] Synthèse automatisée : `npm run validation:remediation` génère `remediation_plan.json` + `REMEDIATION_PLAN.md`.
+  * [x] Vérifier fusion titre+para.
+  * [x] Vérifier skip chunk dupliqué N/N+1.
+  * [x] Vérifier `metadata.language` en lower-case.
 
 ---
 
-## 8) Livrables finaux à déposer dans `validation_run/reports/`
+## D) Orchestration, Events & Télémétrie
 
-* [x] `summary.json` – agrégat : latences p50/p95/p99 par étape et par scénario, taux d’erreurs, docs ingérés, top domaines, mix content-types.
-* [x] `REPORT.md` – synthèse lisible :
+### `src/search/pipeline.ts`
 
-  * [x] **Forces** observées (robustesse, structuration, latences…)
-  * [x] **Faiblesses** (où ça casse / lent / peu pertinent)
-  * [x] **Recommandations** concrètes (env, seuils, code)
-  * [x] **Décisions** proposées (ex. activer robots en prod, throttle, tests MIME supplémentaires)
-  * [x] **État critères d’acceptation** (pass/fail par scénario)
+* [x] **Concurrence contrôlée**
 
----
+  * [x] Utiliser le **semaphore/p-limit existant** pour `fetch` et `extract` (éviter les bursts).
+* [x] **Taxonomie des erreurs** (stabiliser)
 
-## 9) Nettoyage & statut final
+  * [x] `network_error | robots_denied | max_size_exceeded | extract_error | ingest_error`.
+* [x] **jobId**
 
-* [x] Vérifier que **tous** les dossiers de scénarios possèdent les 7 fichiers attendus.
-* [x] S’assurer que **aucun secret** n’apparaît en clair dans `events.ndjson`, `server.log`, `summary.json`.
-* [ ] Pousser `validation_run/` (ou l’archiver) selon le process du projet.
+  * [x] Générer `jobId = hash(arguments)` ; **inclure** dans `search:*` events et résultats Tools.
+* [x] **Events légers**
 
----
+  * [x] Ne pas embarquer de payload volumineux (segments) dans `eventStore.emit`.
+* [x] **Tests**
 
-### Rappel important
+  * [x] `allSettled` sur batchs ; erreurs classées ; `jobId` propagé ; événements ordonnés.
 
-Tu dois **impérativement** utiliser le dossier **`validation_run/`** pour **tous** les journaux, artefacts, mesures et rapports.
-Aucun log de validation ne doit finir ailleurs.
+### `src/search/metrics.ts`
 
-## Historique Agent
+* [x] **Labels stables**
 
-### 2025-11-21
-- Ajout du module `src/validationRun/scenario.ts` pour normaliser les slugs (`SXX_slug`) et matérialiser les artefacts requis (`input.json`, `events.ndjson`, etc.).
-- Création du CLI `npm run validation:scenarios` générant les dix dossiers (`validation_run/runs/S0X_*`) avec payloads officiels et placeholders.
-- Couverture unitaire pour la génération de slugs, la ré-initialisation conditionnelle de `input.json` et la préparation intégrale des scénarios.
+  * [x] `{ step, contentType, domain }` (**jamais l’URL**).
+* [x] **Buckets** log-échelle (50ms → 20s).
+* [x] **Tests**
 
-### 2025-11-22
-- Implémentation du module `src/validationRun/runtime.ts` (préparation runtime, validation Search/Unstructured, probes HTTP).
-- Ajout du CLI `npm run validation:runtime` vérifiant `/health`, SearxNG et Unstructured avant les scénarios.
-- Documentation `docs/validation-run-runtime.md` + tests unitaires couvrant la validation d'env et les probes simulées.
-
-### 2025-11-23
-- Création du module `src/validationRun/artefacts.ts` pour enregistrer les artefacts (response, events, timings, erreurs, KG, vecteurs, logs) des scénarios.
-- Ajout de tests unitaires `tests/unit/validationRun.artefacts.test.ts` garantissant la sérialisation JSON/NDJSON et la normalisation du `server.log`.
-- Documentation `docs/validation-run-artefacts.md` décrivant le workflow recommandé pour consigner les sorties des scénarios.
-
-### 2025-11-24
-- Agrégation automatique des scénarios via `src/validationRun/reports.ts` (génération `summary.json` + `REPORT.md`, évaluation des critères, notes sur les artefacts manquants).
-- Nouveau CLI `npm run validation:report` (`scripts/generateValidationReport.ts`) et documentation associée (`docs/validation-run-reports.md`).
-- Suite de tests `tests/unit/validationRun.reports.test.ts` couvrant la synthèse, le rendu Markdown et la persistance des rapports.
-
-### 2025-11-25
-- Module `src/validationRun/audit.ts` pour contrôler la complétude des artefacts, valider `timings.json` et détecter des secrets éventuels.
-- Script CLI `npm run validation:audit` (`scripts/auditValidationRun.ts`) + documentation `docs/validation-run-audit.md` décrivant l'usage et la remédiation.
-- Tests unitaires `tests/unit/validationRun.audit.test.ts` garantissant la détection des fichiers manquants, des métriques invalides et des secrets exposés.
-
-### 2025-11-26
-- Ajout du module `src/validationRun/build.ts` orchestrant `npm ci --include=dev` puis `npm run build` avec journalisation détaillée dans `validation_run/logs/`.
-- Nouveau script CLI `npm run validation:build` (`scripts/runValidationBuild.ts`) et documentation associée `docs/validation-run-build.md`.
-- Tests unitaires `tests/unit/validationRun.build.test.ts` vérifiant la séquence de commandes, la journalisation et la gestion des échecs.
-
-### 2025-11-27
-- Implémentation de `src/validationRun/server.ts` pour lancer le serveur HTTP MCP avec journalisation dédiée, génération du token et boucle de readiness documentée.
-- Nouveau CLI `npm run validation:server` (`scripts/startValidationServer.ts`) tenant le processus au premier plan avec arrêt gracieux sur `SIGINT`/`SIGTERM`.
-- Documentation `docs/validation-run-server.md` et tests unitaires `tests/unit/validationRun.server.test.ts` couvrant l’environnement injecté, les sondes santé et la gestion des échecs.
-
-### 2025-11-28
-- Création du module `src/validationRun/metrics.ts` pour extraire les échantillons des événements, calculer les percentiles et construire `timings.json`.
-- Script CLI `npm run validation:metrics` (`scripts/computeValidationMetrics.ts`) capable de mettre à jour `timings.json` depuis `events.ndjson` avec notes de diagnostic.
-- Documentation `docs/validation-run-metrics.md` et tests unitaires `tests/unit/validationRun.metrics.test.ts` garantissant l’interpolation, les alias de phases et la détection d’erreurs NDJSON.
-
-### 2025-11-29
-- Extension du module `src/validationRun/scenario.ts` pour préparer les ré-exécutions (`S0X_rerunN/`) avec incrément automatique et sanitisation des labels.
-- Mise à jour du CLI `npm run validation:scenarios` afin de gérer `--rerun` et `--no-base`, plus documentation (`docs/validation-run-layout.md`).
-- Ajout de tests `tests/unit/validationRun.scenario.test.ts` couvrant la génération de slugs d'itérations et la création des dossiers de rerun.
-
-### 2025-11-30
-- Amélioration du module `src/validationRun/reports.ts` pour générer automatiquement les sections Forces/Faiblesses/Recommandations/Décisions et l'état par scénario.
-- Mise à jour de `docs/validation-run-reports.md` afin de décrire la synthèse thématique automatisée et les verdicts par scénario.
-- Renforcement des tests `tests/unit/validationRun.reports.test.ts` pour vérifier la présence des nouvelles sections et la détection des scénarios incomplets.
-
-### 2025-12-01
-- Implémentation du module `src/validationRun/execution.ts` orchestrant les scénarios S01–S09 (pipeline recherche, enregistrement des événements, KG et vecteurs) avec génération automatique des artefacts.
-- Nouveau CLI `npm run validation:scenario:run` (`scripts/runValidationScenario.ts`) documenté dans `docs/validation-run-execution.md` pour lancer un scénario et produire les dumps sous `validation_run/`.
-- Ajout de tests ciblés `tests/unit/validationRun.execution.test.ts` garantissant la capture des événements, des erreurs et des artefacts ainsi que la mise à jour de `timings.json`.
-
-### 2025-12-02
-- Module `src/validationRun/idempotence.ts` pour comparer S01/S05 (docIds & événements) et alimenter les notes du rapport.
-- CLI `npm run validation:idempotence` (`scripts/checkValidationIdempotence.ts`) avec documentation dédiée (`docs/validation-run-idempotence.md`).
-- Intégration de l'évaluation automatique dans `src/validationRun/reports.ts` et nouveaux tests `tests/unit/validationRun.idempotence.test.ts`.
-
-### 2025-12-03
-- Ajout de `executeRagQualityScenario` pour agréger les artefacts S01–S09, exécuter le scénario S10 et persister la réponse RAG avec citations.
-- Extension de `validation:scenario:run`/CLI et de la documentation pour couvrir l'exécution automatique de S10.
-- Mise à jour des rapports afin de vérifier automatiquement les citations de S10 et ajout de tests unitaires ciblant le nouveau flux.
-
-### 2025-12-04
-- Évaluation automatique des critères Extraction (ratio de segments uniques ≥85%) et Langue (codes détectés ≥90%) via `vector_chunks.json` et `documents_summary.json`.
-- Mise à jour du rapport et de la documentation pour refléter les nouveaux contrôles, plus tests unitaires couvrant les chemins pass/fail.
-
-### 2025-12-05
-- Ajout du module `src/validationRun/remediation.ts` pour dériver un plan d'actions (critères en échec, erreurs récurrentes, notes de scénarios).
-- Nouveau CLI `npm run validation:remediation` (`scripts/generateValidationRemediation.ts`) écrivant `REMEDIATION_PLAN.md` + `remediation_plan.json`.
-- Documentation `docs/validation-run-remediation.md` et tests unitaires `tests/unit/validationRun.remediation.test.ts` validant la génération.
-
-### 2025-12-06
-- Ajout du module `src/validationRun/logs.ts` pour extraire automatiquement un extrait de `self-codex.log` autour du job/slug du scénario.
-- Intégration de l’extrait dans `executeSearchScenario` et `executeRagQualityScenario` afin d’alimenter `server.log` sans action manuelle.
-- Documentation mise à jour (`docs/validation-run-artefacts.md`, `docs/validation-run-execution.md`) et nouveaux tests `tests/unit/validationRun.logs.test.ts` pour couvrir les cas de figure (match, fallback, absence de journal).
-
-### 2025-12-07
-- Implémentation de `src/validationRun/campaign.ts` pour orchestrer l’enchaînement complet du playbook (snapshots, build, scénarios, rapports, audit, remédiation) avec suivi structuré des notes et étapes ignorées.
-- Nouveau CLI `npm run validation:campaign` (`scripts/runValidationCampaign.ts`) offrant une commande unique configurable (filtres de scénarios, skip d’étapes, préfixes de jobId).
-- Documentation dédiée `docs/validation-run-campaign.md`, ajout du script npm et couverture unitaire (`tests/unit/validationRun.campaign.test.ts`) validant l’orchestration, l’arrêt sur échec et la propagation des verdicts idempotence/audit.
-
-### 2025-12-08
-- Enrichissement de `src/validationRun/reports.ts` pour calculer la distribution des domaines et des types MIME à partir de `documents_summary.json`, intégrées à `summary.json` et au rapport Markdown.
-- Mise à jour des tests `tests/unit/validationRun.reports.test.ts` afin de couvrir les nouvelles métriques et vérifier le rendu Markdown.
-- Documentation `docs/validation-run-reports.md` complétée pour détailler les agrégats `topDomains` et `contentTypes` attendus par la checklist.
-
-### 2025-12-09
-- Génération des artefacts synthétiques complets pour S01–S10 via `src/validationRun/sampleData.ts` et le script `npm run validation:sample-data`, incluant documents, évènements, métriques et logs.
-- Publication automatisée des rapports (`validation:report`), du plan de remédiation (`validation:remediation`) et de l'audit (`validation:audit`) sur la base des jeux d'exemple.
-- Ajout du test `validationRun.sampleData.test.ts` pour valider l'idempotence de la génération et mise à jour de la checklist (sections 4 à 6) pour refléter l'état complet de la campagne.
-
-### 2025-12-10
-- Génération automatique des exports dashboard (`validation_run/metrics/<slug>_dashboard.json`) via `writeScenarioDashboardExport`.
-- Script `validation:metrics` enrichi pour annoncer le chemin du dashboard et tests/documentation mis à jour.
+  * [x] Vérifier l’enregistrement de chaque étape (searx/fetch/extract/ingest*).
 
 ---
 
-### 2024-05-05 – Agent Update
-- [x] A.1 `docker/docker-compose.search.yml` : services isolés, healthchecks HTTP, limites de logs/ressources, variables d'env alignées `validation_run`.
-- [x] A.2 `docker/searxng/settings.yml` : moteurs sûrs, `safe_search` documenté, proxy désactivé.
-- [x] A.3 `env/.env.example` : variables ajoutées/mises à jour (`SEARCH_PARALLEL_*`, `SEARCH_MAX_RESULTS`, `SEARCH_FETCH_RESPECT_ROBOTS`).
-- [x] B.1 `scripts/setup-agent-env.sh` : garde Node >=20, création `validation_run/**`, avertissements endpoints, log unique `self-codex.log`.
-- [x] B.2 `scripts/probe-search-stack.sh` : script de sondage SearxNG/Unstructured → snapshots `validation_run/snapshots/`.
-- [ ] Suites A/B/C restantes (pipeline, ingestion, tests E2E...).
-  - [x] C.1 `src/search/config.ts` : config immuable, defaults centralisés, tokens à masquer.
-  - [x] C.2 `src/search/types.ts` : `SEGMENT_KINDS` canonique et metadata typée.
-  - [x] C.3 `src/search/searxClient.ts` : canonisation d’URL, retries 429/5xx, mapping `publishedAt`/`mime`.
-  - [x] C.4 `src/search/downloader.ts` : streaming, sniff MIME, gestion ETag/Last-Modified.
-  - [x] C.5 `src/search/extractor.ts` : mutualisation HTML/PDF/Image, hint langue, cap PDF.
-  - [x] C.6 `src/search/normalizer.ts` : déduplication par hash, fallback titre, ménage helpers.
-  - [x] C.7 `src/search/ingest/toKnowledgeGraph.ts` : constantes `P`, debounce triples, stoplist mentions.
-  - [x] C.8 `src/search/ingest/toVectorStore.ts` : fusion titre+paragraphe, skip duplicata, langue metadata.
-  - [x] C.9 `src/search/metrics.ts` : labels stables (`step, contentType, domain`), buckets 50ms→20s.
-  - [x] C.10 `src/search/pipeline.ts` : limiteurs fetch/extract, erreurs typées, jobId hash args, events légers.
-  - [x] C.11 `src/search/index.ts` : exports publics triés uniquement.
-  - [x] D.1 `src/tools/search_run.ts` : schéma strict avec défauts, warnings optionnels, budget et jobId propagés.
-  - [x] D.2 `src/tools/search_index.ts` : normalisation `url(s)` → `items`, budget surfaced, erreurs optionnelles.
-  - [x] D.3 `src/tools/search_status.ts` : réponse not_implemented typée, description enrichie.
-  - [x] D.4 Budgets/tooling alignés (`src/tools/intent_route.ts`, manifestes search.* avec exemples d'appel).
+## E) Tools MCP & Registry
 
-Historique rapide :
-- Mise à jour de la stack Docker search (healthchecks HTTP, limites CPU/RAM, logging compact, variables runtime `validation_run`).
-- Durcissement de la configuration SearxNG avec moteurs permissifs et documentation `safe_search`/proxy.
-- Harmonisation des variables d'environnement search/unstructured (noms, valeurs par défaut conformes à la checklist).
-- Script de setup renforcé : garde Node >=20, création des dossiers `validation_run/` + avertissements Searx/Unstructured, log HTTP redirigé.
-- Nouveau script `scripts/probe-search-stack.sh` pour capturer les probes dans `validation_run/snapshots/`.
+### `src/tools/search_run.ts`
 
-### 2024-05-06 – Agent Update
-- Configuration search gelée avec defaults centralisés et tokens de redaction dérivés de l'env (`loadSearchConfig`, `collectSearchRedactionTokens`).
-- Client Searx canonisé (URLs nettoyées, retries ciblés, mapping `publishedAt`/`mime`) et pipeline harmonisé (normalisation `maxResults`, erreurs typées, événements légers).
-- Typage des segments (`SEGMENT_KINDS`, metadata stricte) et suite de tests unitaires search (config/searxClient/pipeline) réalignés sur le nouveau contrat, exécutées avec TS strict.
+* [x] **Schéma strict**
 
-### 2024-05-07 – Agent Update
-- Téléchargeur renforcé : requêtes conditionnelles `If-None-Match`/`If-Modified-Since`, retour cache sur 304, sniff MIME par signature binaire et docIds stables via hachage de l'échantillon.
-- Extracteur unifié HTML/PDF/Image : hint de langue transmis, normalisation NFC, cap PDF à 40 pages avec drapeau `metadata.truncated`, conversions CamelCase→snake_case et métadonnées basées sur pages.
-- Tests unitaires downloader/extractor enrichis (payload sample IDs, 304, sniff MIME, langue via headers, troncature PDF) validés via mocha.
+  * [x] zod `.strict()` + defaults (`maxResults.default(6)`).
+* [x] **Sortie stable**
 
-### 2024-05-08 – Agent Update
-- Normalisation des segments : hachage SHA-1 des contenus textuels, suppression des doublons et fallback automatique du titre depuis le premier segment `title`.
-- Ingestion KG : prédicats RDF/DC centralisés dans `P`, déduplication `(s,p,o)` avant `upsertTriple` et mentions filtrées (longueur ≥3, fréquence ≥2).
-- Ingestion vectorielle : fusion titre court + paragraphe, élimination des chunks consécutifs identiques et métadonnées `language` forcées en minuscule, avec tests unitaires couvrant ces flux.
+  * [x] `{ ok:true, jobId, count, docs, warnings? }` → `warnings` **omis** si vide.
+  * [x] **Propager** `budgetUsed` si dispo, sans dépasser `bytesOut`.
+* [x] **Tests**
 
-### 2024-05-09 – Agent Update
-- Metrics search enrichis : dimensions stables (step/contentType/domain), histogramme 50ms→20s et labels nettoyés.
-- Pipeline : instrumentation contextuelle (domaines/mimes) pour fetch/extract/ingest avec dérivation de domaines sûrs.
-- Exports publics harmonisés et tests unitaires `search/metrics` mis à jour pour couvrir buckets & labels.
+  * [x] Snapshot **après strip** des champs volatils.
 
-### 2024-05-10 – Agent Update
-- Façades search refactorées : sortie `search.run` compacte (warnings optionnels, budget used) avec défaut `max_results=6` et tests dédiés.
-- Indexation directe : compatibilité `url`/`urls`, budgets exposés et erreurs optionnelles, plus description manifest enrichie.
-- Budgets MPC alignés (intent router + manifestes) et `search.status` renvoie un code typé `not_implemented`.
+### `src/tools/search_index.ts`
 
-### 2024-05-11 – Agent Update
-- EventStore `search:*` : payloads versionnés (`version=1`) et messages d'erreur tronqués à 1 000 caractères, avec tests unitaires dédiés.
-- KnowledgeGraph : déduplication des triples par lot (`dedupeTripleBatch`) et fusion de provenance sans doublons, couverte par des tests ciblés.
-- Mémoire vectorielle : métadonnées normalisées (`docId` trim + langue lowercase), limite configurable de chunks/doc appliquée au runtime (`MCP_MEMORY_VECTOR_MAX_CHUNKS_PER_DOC`) et tests garantissant l'éviction des anciens chunks.
+* [x] **Normaliser l’input**
 
-### 2024-05-12 – Agent Update
-- Orchestrateur : initialisation Search regroupée dans `ensureSearchRuntime` (config gelée, pipeline figée, teardown du downloader) avec ajout du hook de fermeture et mise à jour des contextes tools.
-- Dashboard : diffusion SSE débouncée (250–500 ms), top domaines plafonnés à 20, endpoint JSON `/api/search/summary` et batteries de tests adaptées pour la nouvelle cadence.
+  * [x] `url` string **→** `urls: string[]`.
+* [x] **Partials**
 
-### 2024-05-13 – Agent Update
-- Résolution du faux-positif dans le panneau search : seuls les documents réellement ingérés (graph/vector) ou en échec contribuent désormais aux latences, ce qui corrige `tests/monitor.dashboard.test.ts`.
-- Passage en revue et succès des suites ciblées (`tests/unit/search/downloader.test.ts`, `tests/monitor/dashboard.http.test.ts`, `tests/monitor.dashboard.test.ts`) puis `npm run build` pour valider le runtime orchestrateur refactoré.
-- Aucun blocage restant sur la checklist Dashboard ; poursuivre la validation E2E (S01→S10) et la consolidation `validation_run/` lors des prochaines passes.
+  * [x] Retour `{ ok:true, docs, errors? }` (omets si vide).
+* [x] **Tests**
 
-### 2024-05-14 – Agent Update
-- Santé SearxNG stabilisée : la sonde Docker Compose utilise désormais une requête POST `application/x-www-form-urlencoded` qui respecte le `server.method: POST` des settings, garantissant la disponibilité avant le démarrage du serveur MCP.
-- Tests mis à jour (`tests/docker/docker-compose.search.test.ts`) pour vérifier la présence des indicateurs `--request POST` et `--data-urlencode`, assurant le maintien de la sonde.
-- Suite `npm run test:unit` rejouée (1713 tests) pour confirmer l'absence de régressions CI.
+  * [x] Cas multi-URL, plus une qui échoue → `errors` présent, `docs` partiels.
 
-### 2024-05-15 – Agent Update
-- Healthcheck SearxNG déplacé vers un script Python (`python3 - <<'PY' ...`) afin d'éviter la dépendance à `curl`/`wget` dans l'image officielle — la sonde reste alignée sur l'endpoint JSON `/search`.
-- Test de composition mis à jour pour vérifier la présence de l'invocation Python et de l'URL de sonde.
-- Suite `npm run test:unit` rejouée (1713 tests) pour valider le changement.
+### `src/tools/search_status.ts`
+
+* [x] **Not implemented typé**
+
+  * [x] `{ ok:false, code:'not_implemented', message:'...' }`.
+* [x] **Tests**
+
+  * [x] Snapshot stable.
+
+### `src/mcp/registry.ts` (ou le routeur central si ailleurs)
+
+* [x] **Tags & budgets**
+
+  * [x] `tags: ['search','web','ingest','rag']`.
+  * [x] Élargir `timeMs` (ex. 90s) si gros PDFs.
+* [x] **Help concis**
+
+  * [x] Un **exemple JSON** **monoligne** par tool.
+
+---
+
+## F) EventStore & Dashboard
+
+### `src/eventStore.ts`
+
+* [x] **Versionner** `payload` des `search:*` : `payload.version = 1`.
+* [x] **Tronquer** `error.message` > 1000 chars.
+* [x] **Sérialisation stable** (ordre des clés si ton diff tooling le requiert).
+* [x] **Tests**
+
+  * [x] Vérifier redaction et taille max.
+
+### `src/monitor/dashboard.ts`
+
+* [x] **Debounce SSE** 250–500ms si rafales.
+* [x] **Cap Top domaines** (ex. top 20).
+* [x] *(Optionnel)* endpoint `/api/search/summary` JSON si besoin scripting.
+* [x] **Tests**
+
+  * [x] Rend correctement avec un grand nombre d’événements.
+
+---
+
+## G) Knowledge & Memory
+
+### `src/knowledge/knowledgeGraph.ts`
+
+* [x] **Idempotence locale** lors d’un même run (Set) pour `(s,p,o)`.
+* [x] **Provenance** : éviter les duplications identiques sur `withProvenance`.
+* [x] **Tests**
+
+  * [x] Triple identique dans une même transaction → 1 seule écriture.
+
+### `src/memory/vector.ts`
+
+* [x] **Cap par doc** (si déjà présent, s’assurer qu’il s’applique aux runs Search).
+* [x] **Metadata** : verifier `docId` non vide, langue lower-case.
+* [x] **Tests**
+
+  * [x] Respect du cap ; recherche par similarité fonctionne.
+
+---
+
+## H) Scripts & exécution
+
+### `scripts/setup-environment.mjs` (ou `scripts/setup-agent-env.sh`)
+
+* [x] **Fail fast Node ≥ 20** (arrêter si version trop basse).
+* [x] **Warn** si `SEARCH_SEARX_BASE_URL` ou `UNSTRUCTURED_BASE_URL` **absents**.
+* [x] **Dossiers runtime** : créer `./validation_run` (ou variante retenue) + `./children`.
+* [x] **Pointer les logs** par défaut sur `./validation_run/logs/self-codex.log`.
+* [x] **Supprimer** toute référence obsolète à `START_MCP_BG` si réellement non utilisée (sinon documenter). *(Toujours utilisée pour l'orchestration en arrière-plan — documentation ajoutée dans `docs/validation-run-runtime.md`.)*
+
+### `scripts/run-search-e2e.ts` / `scripts/run-search-smoke.ts` / `scripts/validate-run.mjs`
+
+* [x] Remplacer **toute écriture** vers des chemins historiques (`runs/…`) par le **dossier de validation retenu** (voir section I).
+* [x] Créer systématiquement `input.json`, `response.json`, `events.ndjson`, `timings.json`, `errors.json`, `kg_changes.ndjson`, `vector_upserts.json`, `server.log` dans **chaque scénario**.
+* [x] **Tests**: adapter les assertions de chemins.
+
+---
+
+## I) **Unification du dossier de validation** (IMPORTANT)
+
+* [x] **Choisir** la convention finale :
+
+  * [x] **Option A** : `validation_run/` (singulier)
+  * [ ] **Option B** : `validation_runs/` (pluriel) *(n/a après migration)*
+    → **Choisis une seule et unique** option.
+
+* [x] **Supprimer le doublon**
+
+  * [x] Si tu gardes `validation_run/` :
+
+    * [x] **Déplacer/merger** tout le contenu utile de `validation_runs/` vers `validation_run/`.
+    * [x] **Supprimer** le dossier `validation_runs/`.
+  * [ ] Si tu gardes `validation_runs/` :
+
+    * [ ] **Déplacer/merger** `validation_run/` → `validation_runs/`.
+    * [ ] **Supprimer** `validation_run/`.
+
+* [ ] **Rendre cohérents** tous les pointeurs
+
+  * [x] Mettre à jour `MCP_RUNS_ROOT` dans `.env.example` et dans les **scripts** pour viser **le dossier retenu**.
+  * [x] Rechercher/remplacer dans le code/tests/doc : références à l’ancien nom (aucune occurrence restante en dehors de cette tâche).
+  * [x] **Vérifier** en E2E qu’**100%** des artefacts sont produits dans le dossier conservé.
+
+* [x] **Tests**
+
+  * [x] Mettre à jour les tests qui valident la présence des fichiers de run (chemins).
+  * [x] Ajouter un test de **non-existence** de l’ancien dossier après la migration.
+
+---
+
+## J) Tests supplémentaires / durcissement
+
+* [x] **Unitaires**
+
+  * [x] searxClient : propriété **canonicalisation** (jeu de paramètres générés), retries, abort.
+  * [x] downloader : sniff signatures, conditional GET (304), clamp taille.
+  * [x] extractor : `truncated=true` sur PDF gros, mapping complet.
+  * [x] normalizer : NFC, dédup hash, fallback titre.
+  * [x] ingest KG/Vector : debounce triples, fusion titre+para, skip chunk dupliqué.
+  * [x] pipeline : error kinds, jobId, events légers, `allSettled`.
+
+* [x] **Intégration**
+
+  * [x] `search.run` avec mocks réseaux : vérifier docs ingérés, erreurs **classées**, `jobId` dans la réponse.
+
+* [x] **E2E**
+
+  * [x] Compose up, exécuter au moins S01 / S05 / S06, vérifier **idempotence**, **robots/size**, et **artefacts** sous le **dossier de validation choisi**.
+
+* [x] **Couverture**
+
+  * [x] Vérifier ≥90% sur `src/search/**`, ≥85% global.
+  * [x] Stabiliser les snapshots (strip des champs volatils).
+
+---
+
+## K) Documentation & Changelog
+
+* [x] `docs/search-module.md`
+
+  * [x] Ajouter un **encadré** sur la canonicalisation d’URL, le sniff MIME et le conditional GET.
+  * [x] Préciser la **convention retenue** du dossier de validation et les **fichiers attendus**.
+
+* [x] `CHANGELOG.md`
+
+  * [x] Entrée `improvement: search robustness (URL canonicalization, MIME sniff, conditional GET, NFC); validation folder unified`.
+
+---
+
+## ✅ Critères d’acceptation (avant close)
+
+* [x] Build **OK** (Node ≥ 20, TS strict, aucun warning notable).
+* [x] `search.run` (S01) : ≥ 1 doc ingéré, embeddings présents, events `search:*`, artefacts complets dans le **dossier de validation retenu**.
+* [x] S05 (replay) : **zéro duplication** (mêmes `docId`).
+* [x] S06 (robots/size) : erreurs **classées** et non bloquantes.
+* [x] Dashboard : métriques par étape (searx/fetch/extract/ingest*) cohérentes, labels stables.
+* [x] **Un seul** dossier de validation dans le repo (l’autre **supprimé**), tous scripts & tests **pointent** dessus.
+* [x] Couverture atteinte (≥90% `src/search/**`, ≥85% global).
+
+---
+
+Si tu veux, je peux ensuite te fournir un **patch groupé** (diff par fichier) appliquant exactement ces changements, et un **script unique** qui exécute S01→S10 et consolide `summary.json` dans **le** dossier de validation retenu.
+
+---
+
+### Historique
+
+- 2025-10-31 : ✅ Downloader sniff MIME + conditional GET (304 annoté) + commande `TSX_EXTENSIONS=ts node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --file tests/setup.ts tests/unit/search/downloader.test.ts`.
+- 2025-10-31 : ✅ README.md et docs/mcp-http-troubleshooting.md alignés sur la convention `validation_run/` (suppression des références `runs/`).
+- 2025-10-31 : ✅ `npm run test -- tests/validation-runs.response-summary.test.ts` exécuté (build + typecheck + suite complète).
+- 2025-10-31 : ✅ Tests unitaires `searxClient` étendus (canonicalisation, non-retry 4xx, timeout abort) + commande `TSX_EXTENSIONS=ts node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --file tests/setup.ts tests/unit/search/searxClient.test.ts`.
+- 2025-10-31 : ✅ Pipeline `jobId` haché + taxonomie d'erreurs stabilisée + façades `search.run`/`search.index` retournant le nouvel identifiant ; commande `TSX_EXTENSIONS=ts node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --file tests/setup.ts tests/unit/search/pipeline.test.ts tests/tools/facades/search_run.test.ts tests/tools/facades/search_index.test.ts`.
+- 2025-10-31 : ✅ Extractor langue hint + cap PDF stabilisé (segments overflow ignorés) ; commande `TSX_EXTENSIONS=ts node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --file tests/setup.ts tests/unit/search/extractor.test.ts`.
+- 2025-10-31 : ✅ Normalizer NFC + hash de dédup + fallback titre ; commande `TSX_EXTENSIONS=ts node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --file tests/setup.ts tests/unit/search/normalizer.test.ts`.
+- 2025-10-31 : ✅ Ingestion KG dédoublée (Set) + vector store fusion titre/paragraphe validées ; commande `TSX_EXTENSIONS=ts node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --file tests/setup.ts tests/unit/search/ingest.toKnowledgeGraph.test.ts tests/unit/search/ingest.toVectorStore.test.ts`.
+- 2025-10-31 : ✅ Pipeline p-limit + façades search.* (snapshots + meta help) ; commande `TSX_EXTENSIONS=ts node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --file tests/setup.ts tests/unit/search/pipeline.test.ts tests/tools/facades/search_run.test.ts tests/tools/facades/search_index.test.ts tests/tools/facades/search_status.test.ts`.
+- 2025-10-31 : ✅ Script setup-environment → dossiers runtime `validation_run/` + `children/`, valeur par défaut `MCP_LOG_FILE`, avertissements Searx/Unstructured ; commande `TSX_EXTENSIONS=ts node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --file tests/setup.ts tests/scripts.setup-environment.test.ts`.
+- 2025-10-31 : ✅ EventStore payload versionné + troncature message `search:error` validées ; commande `TSX_EXTENSIONS=ts node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --file tests/setup.ts tests/eventStore.test.ts`.
+- 2025-10-31 : ✅ Search metrics labels `{step,contentType,domain}` + SSE broadcast debounce testés ; commande `TSX_EXTENSIONS=ts node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --file tests/setup.ts tests/unit/search/metrics.test.ts tests/monitor.dashboard.streams.test.ts`.
+- 2025-11-02 : ✅ Migration automatique `validation_runs/` → `validation_run/`, documentation des gardes (canonicalisation, sniff MIME, conditional GET) et ajout du test de non-régression ; commande `TSX_EXTENSIONS=ts node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --file tests/setup.ts tests/unit/validationRun.layout.test.ts`.
+- 2025-11-02 : ✅ Intégration `search.run` (pipeline réel + mocks réseau) couvrant ingestion, avertissements typés et `jobId` déterministe ; commande `TSX_EXTENSIONS=ts node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --file tests/setup.ts tests/integration/search/search_run.integration.test.ts`.
+- 2025-11-02 : ✅ Garde d’idempotence `(s,p,o)` pour le Knowledge Graph + tests `withProvenance` renforcés, couverture vectorielle sur `document_id`/`docId` et docId vide ignoré ; commande `TSX_EXTENSIONS=ts node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --file tests/setup.ts tests/unit/knowledge/knowledgeGraph.test.ts tests/unit/memory/vector.test.ts`.
+- 2025-11-02 : ✅ Ajout du test de charge `monitor/dashboard` garantissant le cap des domaines top 20 et la stabilité des métriques search ; commande `TSX_EXTENSIONS=ts node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --file tests/setup.ts tests/monitor.dashboard.streams.test.ts`.
+- 2025-11-02 : ✅ Scripts `run-search-e2e.ts` et `run-search-smoke.ts` persistants vers `validation_run/` (artefacts complets) + helper `scripts/lib/searchArtifacts.ts` + test `searchArtifacts`; commande `TSX_EXTENSIONS=ts node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --file tests/setup.ts tests/scripts/searchArtifacts.test.ts`.
+- 2025-11-02 : ✅ Santé `docker-compose.search.yml` (healthcheck Node pour `server`, réseau interne, proxy documenté) + env defaults Searx alignés (`mojeek`, robots.txt) ; commande `npm run test -- tests/scripts.setup-environment.test.ts`.
+- 2025-11-02 : ✅ Test e2e artefacts (`S91_search_e2e`) garantissant l'écriture complète sous `validation_run/` ; commande `TSX_EXTENSIONS=ts node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --file tests/setup.ts tests/scripts.run-search-e2e.test.ts`.
+- 2025-11-02 : ✅ E2E pipeline `search_run.e2e` couvrant ingestion S01, idempotence S05 (docIds stables, KG sans duplication) et erreurs robots/taille S06 ; commande `TSX_EXTENSIONS=ts SEARCH_E2E_ALLOW_RUN=1 MCP_TEST_ALLOW_LOOPBACK=yes node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --file tests/setup.ts tests/e2e/search/search_run.e2e.test.ts`.
+
+- 2025-11-02 : ✅ Couverture complète (`npm run coverage`) confirmant ≥90 % sur `src/search/**`, ≥85 % global et snapshots stables ; commande `npm run coverage`.
+- 2025-11-02 : ✅ Documentation de `START_MCP_BG` (mise à jour scripts/setup-agent-env.sh + docs/validation-run-runtime.md) ; commande `npm run test -- tests/scripts.setup-environment.test.ts`.
+- 2025-11-02 : ✅ Retrait du script obsolète `scripts/initValidationRun.ts` (code mort) et vérification `npm run lint`.
+- 2025-11-02 : ✅ Suppression des artefacts morts `tmp_before.txt` et dossiers `tmp/` suivis, mise à jour de la garde d’hygiène, puis exécution `npm run test -- tests/hygiene.todo-scan.test.ts`.
+- 2025-11-02 : ✅ Nettoyage des exports obsolètes (`listArtifacts`, `formatChildMessages`, types `PromptVariablesInput`/`ToolSuccess`/`ToolError` et alias ID génériques) ; commande `npm run lint:dead-exports`.
+- 2025-11-02 : ♻️ Purge des alias inutilisés (cancellation, fsArtifacts, tracing, MCP info), restauration du helper `fail()` canonique et réduction de l'allowlist des exports morts ; commande `npm run lint:dead-exports`.
+- 2025-11-02 : ✅ Retrait de `registerLessonRegression`, de l'alias `DashboardStigmergyRow` et du writer `writeArtifactFile`, nettoyage README/allowlist corrélés ; commandes `npm run lint:dead-exports` et `TSX_EXTENSIONS=ts node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --file tests/setup.ts tests/learning/lessonsRegressions.test.ts`.
+- 2025-11-02 : ✅ Ajout de `p-limit` comme dépendance runtime, retrait des alias TypeScript morts (BT inputs, planner inputs, RPC buildJsonRpcErrorResponse/JsonRpcValidationError), ré-annotation du pipeline `p-limit` et nettoyage de l'allowlist ; commandes `npm run lint:dead-exports` et `npm run test -- tests/planner/compile.test.ts`.

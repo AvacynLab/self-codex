@@ -166,10 +166,6 @@ const TOOL_FEATURE_RULES = [
 export function bindToolIntrospectionProvider(provider) {
     toolIntrospectionProvider = provider;
 }
-/** Reset the tool provider, primarily used in tests. */
-export function resetToolIntrospectionProvider() {
-    toolIntrospectionProvider = null;
-}
 function collectToolEntries() {
     return toolIntrospectionProvider ? toolIntrospectionProvider() : [];
 }

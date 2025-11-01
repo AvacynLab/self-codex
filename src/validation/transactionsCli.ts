@@ -37,7 +37,7 @@ export interface TransactionsCliLogger {
  * during manual validation sessions.
  */
 export function parseTransactionsCliOptions(argv: readonly string[]): TransactionsCliOptions {
-  const options: TransactionsCliOptions = { baseDir: "runs" };
+  const options: TransactionsCliOptions = { baseDir: "validation_run" };
 
   for (let index = 0; index < argv.length; index += 1) {
     const token = argv[index];

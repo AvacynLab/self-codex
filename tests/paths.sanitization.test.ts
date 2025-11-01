@@ -117,9 +117,9 @@ describe("paths sanitization", () => {
   });
 
   it("resolves run directories relative to the configured root", () => {
-    process.env.MCP_RUNS_ROOT = "var/data/runs";
+    process.env.MCP_RUNS_ROOT = "var/data/validation_run";
     const dir = resolveRunDir("run:42");
-    expect(dir).to.equal(path.resolve(process.cwd(), "var/data/runs", "run_42"));
+    expect(dir).to.equal(path.resolve(process.cwd(), "var/data/validation_run", "run_42"));
   });
 
   it("resolves child directories relative to the configured root", () => {
@@ -130,7 +130,7 @@ describe("paths sanitization", () => {
 
   it("creates run and child directories when missing", async () => {
     const sandboxRoot = await mkdtemp(path.join(tmpdir(), "paths-test-"));
-    process.env.MCP_RUNS_ROOT = path.join(sandboxRoot, "runs");
+    process.env.MCP_RUNS_ROOT = path.join(sandboxRoot, "validation_run");
     process.env.MCP_CHILDREN_ROOT = path.join(sandboxRoot, "children");
 
     const runDir = resolveRunDir(`run-${randomUUID()}`);

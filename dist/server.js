@@ -1,7 +1,7 @@
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { pathToFileURL } from "node:url";
 import process from "node:process";
-import { server, eventStore, logger, graphState, childProcessSupervisor, contractNetWatcherTelemetry, orchestratorSupervisor, stigmergy, btStatusRegistry, logJournal, } from "./orchestrator/runtime.js";
+import { server, eventStore, logger, graphState, childProcessSupervisor, contractNetWatcherTelemetry, orchestratorSupervisor, stigmergy, btStatusRegistry, logJournal, runtimeReady, } from "./orchestrator/runtime.js";
 import { parseOrchestratorRuntimeOptions } from "./serverOptions.js";
 import { startHttpServer } from "./httpServer.js";
 import { startDashboardServer } from "./monitor/dashboard.js";
@@ -26,6 +26,7 @@ async function main() {
     // Apply CLI overrides to the orchestrator core so subsequent requests inherit
     // the negotiated features, timings, and guardrails.
     applyOrchestratorRuntimeOptions(options);
+    await runtimeReady;
     let enableStdio = options.enableStdio;
     const httpEnabled = options.http.enabled;
     if (!enableStdio && !httpEnabled) {

@@ -1,4 +1,4 @@
-import { GraphDescriptorSchema } from "../tools/graphTools.js";
+import { GraphDescriptorSchema } from "../tools/graph/snapshot.js";
 /**
  * Render the graph as a GraphML document compatible with common visualisation
  * tools such as yEd or Gephi. The helper keeps the XML minimal yet valid by

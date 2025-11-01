@@ -249,9 +249,9 @@ describe("server bootstrap", function () {
   it("starts via CLI, exposes healthy probes, and shuts down gracefully", async function () {
     const repoRoot = fileURLToPath(new URL("../../", import.meta.url));
     const workspaceRoot = await mkdtemp(join(tmpdir(), "self-codex-server-"));
-    const runsRoot = join(workspaceRoot, "runs");
+    const validationRoot = join(workspaceRoot, "validation_run");
     const childrenRoot = join(workspaceRoot, "children");
-    await mkdir(runsRoot, { recursive: true });
+    await mkdir(validationRoot, { recursive: true });
     await mkdir(childrenRoot, { recursive: true });
     const logFile = join(workspaceRoot, "orchestrator.log");
 
@@ -284,7 +284,7 @@ describe("server bootstrap", function () {
         env: {
           ...process.env,
           NODE_ENV: "test",
-          MCP_RUNS_ROOT: runsRoot,
+          MCP_RUNS_ROOT: validationRoot,
           MCP_CHILDREN_ROOT: childrenRoot,
           MCP_HTTP_TOKEN: token,
           MCP_LOG_FILE: logFile,
@@ -327,10 +327,10 @@ describe("server bootstrap", function () {
       const readiness = await waitForHttpReadiness(baseUrl, token, 45_000);
       assert.ok(readiness.ok, "Readiness probe should succeed once the server finishes preloading");
       assert.equal(readiness.components.graphForge.ok, true, "Graph Forge must report ready status");
-      assert.equal(readiness.components.runsDirectory.ok, true, "runs/ directory must be writable");
+      assert.equal(readiness.components.runsDirectory.ok, true, "validation_run/ directory must be writable");
       assert.ok(
-        readiness.components.runsDirectory.path.startsWith(runsRoot),
-        `Expected runs directory to live under ${runsRoot}, received ${readiness.components.runsDirectory.path}`,
+        readiness.components.runsDirectory.path.startsWith(validationRoot),
+        `Expected runs directory to live under ${validationRoot}, received ${readiness.components.runsDirectory.path}`,
       );
 
       const health = await fetchJson(baseUrl, "/healthz", token);

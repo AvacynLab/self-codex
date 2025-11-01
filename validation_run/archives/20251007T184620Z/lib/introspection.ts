@@ -5,10 +5,10 @@ import type { RunContext } from './runContext.js';
 import { ArtifactRecorder } from './artifactRecorder.js';
 import { McpSession } from './mcpSession.js';
 
-import type { McpInfo, McpCapabilities } from '../../../src/mcp/info.js';
-import type { ResourceListEntry } from '../../../src/resources/registry.js';
-import { getEventBusInstance } from '../../../src/server.js';
-import type { EventEnvelope } from '../../../src/events/bus.js';
+import type { McpInfo, McpCapabilities } from '../../../../src/mcp/info.js';
+import type { ResourceListEntry } from '../../../../src/resources/registry.js';
+import { getEventBusInstance } from '../../../../src/server.js';
+import type { EventEnvelope } from '../../../../src/events/bus.js';
 
 /**
  * Structured representation of the `events_subscribe` tool output used by the

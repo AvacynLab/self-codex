@@ -24,7 +24,7 @@ describe("http idempotency persistence", () => {
   beforeEach(async () => {
     sandboxRoot = await mkdtemp(join(tmpdir(), "http-idempotency-"));
     originalRunsRoot = process.env.MCP_RUNS_ROOT;
-    process.env.MCP_RUNS_ROOT = join(sandboxRoot, "runs");
+    process.env.MCP_RUNS_ROOT = join(sandboxRoot, "validation_run");
   });
 
   afterEach(async () => {

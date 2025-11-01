@@ -83,7 +83,7 @@ export async function appendWalEntry<TPayload>(
 /** Resolves the directory dedicated to WAL artefacts. */
 function resolveRunsRoot(override?: string): string {
   const envOverride = readOptionalString("MCP_RUNS_ROOT");
-  const base = typeof override === "string" && override.length > 0 ? override : envOverride ?? "runs";
+  const base = typeof override === "string" && override.length > 0 ? override : envOverride ?? "validation_run";
   return path.resolve(process.cwd(), base);
 }
 

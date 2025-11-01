@@ -79,5 +79,8 @@ export async function registerSearchStatusTool(
   return await registry.register(SearchStatusManifestDraft, createSearchStatusHandler(context), {
     inputSchema: SearchStatusInputSchema.shape,
     annotations: { intent: SEARCH_STATUS_TOOL_NAME },
+    meta: {
+      help: 'search.status {"job_id":"search:job:123"}',
+    },
   });
 }

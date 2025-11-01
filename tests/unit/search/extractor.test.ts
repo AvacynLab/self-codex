@@ -72,6 +72,24 @@ describe("search/extractor", () => {
         text: "",
         metadata: { page_number: 2, bbox: [0, 0, 100, 100] },
       },
+      {
+        type: "Table",
+        id: "seg-5",
+        text: "A,B\n1,2",
+        metadata: { page_number: 2 },
+      },
+      {
+        type: "Figure_Caption",
+        id: "seg-6",
+        text: "Figure illustrating ingestion.",
+        metadata: { page_number: 3 },
+      },
+      {
+        type: "Code",
+        id: "seg-7",
+        text: "console.log('search');",
+        metadata: { page_number: 3 },
+      },
     ];
 
     const extractor = new UnstructuredExtractor(
@@ -117,12 +135,15 @@ describe("search/extractor", () => {
       sourceUrl: "https://example.com/source",
     });
 
-    expect(document.segments).to.have.lengthOf(4);
+    expect(document.segments).to.have.lengthOf(7);
     const [titleSegment] = document.segments;
     expect(titleSegment.kind).to.equal("title");
     expect(titleSegment.pageNumber).to.equal(1);
     const paragraphSegment = document.segments.find((segment) => segment.kind === "paragraph");
     expect(paragraphSegment?.text).to.include("Search pipelines connect searx results");
+    expect(document.segments.some((segment) => segment.kind === "table")).to.equal(true);
+    expect(document.segments.some((segment) => segment.kind === "caption")).to.equal(true);
+    expect(document.segments.some((segment) => segment.kind === "code")).to.equal(true);
   });
 
   it("caps PDF extraction at 40 pages and flags truncation", async () => {
@@ -156,6 +177,54 @@ describe("search/extractor", () => {
     expect(document.metadata?.truncated).to.equal(true);
     expect(document.segments).to.have.lengthOf(40);
     expect(document.segments.every((segment) => (segment.pageNumber ?? 0) <= 40)).to.equal(true);
+  });
+
+  it("skips segments without page metadata once the PDF limit is reached", async () => {
+    const payload = [
+      ...Array.from({ length: 40 }, (_, index) => ({
+        type: "NarrativeText",
+        id: `seg-${index + 1}`,
+        text: `Page ${index + 1}`,
+        metadata: { page_number: index + 1 },
+      })),
+      {
+        type: "NarrativeText",
+        id: "seg-41",
+        text: "Overflow page",
+        metadata: { page_number: 41 },
+      },
+      {
+        type: "NarrativeText",
+        id: "seg-42",
+        text: "Trailing without metadata",
+        metadata: {},
+      },
+    ];
+
+    const recorder: FetchRecorder = [];
+    const extractor = new UnstructuredExtractor(
+      baseConfig,
+      createFetchStub([createJsonResponse(payload, 200, "application/json")], recorder),
+    );
+
+    const request: ExtractionRequest = {
+      docId: "doc-overflow",
+      raw: createRawFetched({ url: "https://example.com/overflow.pdf" }),
+      provenance: {
+        query: "pdf overflow",
+        engines: ["ddg"],
+        categories: ["files"],
+        position: 1,
+        sourceUrl: "https://example.com/overflow",
+      },
+    };
+
+    const document = await extractor.extract(request);
+    expect(recorder).to.have.lengthOf(1);
+    expect(document.metadata?.truncated).to.equal(true);
+    expect(document.segments).to.have.lengthOf(40);
+    expect(document.segments.at(-1)?.pageNumber).to.equal(40);
+    expect(document.segments.some((segment) => segment.text.includes("Overflow"))).to.equal(false);
   });
 
   it("derives the language hint from HTTP headers when provided", async () => {
@@ -286,6 +355,7 @@ function createRawFetched(overrides: {
     finalUrl: overrides.url,
     status: 200,
     fetchedAt: Date.now(),
+    notModified: false,
     headers: headerMap,
     contentType,
     size: 100,

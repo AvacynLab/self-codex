@@ -66,13 +66,25 @@ export class Autoscaler {
     scalingInFlight = false;
     constructor(options) {
         this.supervisor = options.supervisor;
-        this.logger = options.logger;
+        if (options.logger) {
+            // Optional logger is only persisted when explicitly provided so exact
+            // optional property typing never observes an assignment to `undefined`.
+            this.logger = options.logger;
+        }
         this.now = options.now ?? Date.now;
         this.metricsWindow = Math.max(1, options.metricsWindow ?? 20);
         this.thresholds = { ...DEFAULT_THRESHOLDS, ...(options.thresholds ?? {}) };
-        this.spawnTemplate = options.spawnTemplate;
+        if (options.spawnTemplate) {
+            // Spawn hints remain untouched when the caller omits them, preventing the
+            // class from recording an explicit `undefined` placeholder.
+            this.spawnTemplate = options.spawnTemplate;
+        }
         this.retireGracefulTimeoutMs = Math.max(100, options.retireGracefulTimeoutMs ?? 500);
-        this.emitEvent = options.emitEvent;
+        if (options.emitEvent) {
+            // Event sinks are optional; only wire them when provided to honour exact
+            // optional property typing expectations.
+            this.emitEvent = options.emitEvent;
+        }
         this.config = { ...DEFAULT_CONFIG, ...(options.config ?? {}) };
         this.config = this.normaliseConfig(this.config);
     }
@@ -141,24 +153,30 @@ export class Autoscaler {
         if (!this.emitEvent) {
             return;
         }
-        const correlation = {};
-        if (event.childId) {
-            correlation.childId = event.childId;
+        const correlation = event.correlation === null ? null : {};
+        if (correlation) {
+            if (event.childId) {
+                correlation.childId = event.childId;
+            }
+            mergeCorrelationHints(correlation, event.correlation);
+            if (event.childId && correlation.childId == null) {
+                correlation.childId = event.childId;
+            }
         }
-        mergeCorrelationHints(correlation, event.correlation);
-        if (event.childId && correlation.childId == null) {
-            correlation.childId = event.childId;
-        }
-        const payload = { ...event.payload };
-        if (event.childId && payload.child_id === undefined) {
-            payload.child_id = event.childId;
-        }
-        this.emitEvent({
+        const payload = event.childId && event.payload.child_id === undefined
+            ? { ...event.payload, child_id: event.childId }
+            : { ...event.payload };
+        const envelope = {
             level: event.level,
-            childId: event.childId,
             payload,
-            correlation,
-        });
+            ...(event.childId !== undefined ? { childId: event.childId } : {}),
+            ...(correlation === null
+                ? { correlation: null }
+                : correlation && Object.keys(correlation).length > 0
+                    ? { correlation }
+                    : {}),
+        };
+        this.emitEvent(envelope);
     }
     /** Implements the {@link LoopReconciler} contract. */
     async reconcile(context) {
@@ -256,7 +274,7 @@ export class Autoscaler {
             const childId = newChild?.childId ?? templateChildId;
             this.publishEvent({
                 level: "info",
-                childId,
+                ...(childId !== undefined ? { childId } : {}),
                 payload: {
                     msg: "scale_up",
                     reason,
@@ -274,7 +292,7 @@ export class Autoscaler {
             });
             this.publishEvent({
                 level: "error",
-                childId: templateChildId,
+                ...(templateChildId !== undefined ? { childId: templateChildId } : {}),
                 payload: {
                     msg: "scale_up_failed",
                     reason,

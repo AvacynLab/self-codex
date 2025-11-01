@@ -1,4 +1,4 @@
-import { access, mkdir } from "node:fs/promises";
+import { access, cp, mkdir, rm } from "node:fs/promises";
 import { constants as fsConstants } from "node:fs";
 import path from "node:path";
 
@@ -44,6 +44,12 @@ export const DEFAULT_VALIDATION_RUN_ROOT = path.resolve("validation_run");
  */
 export async function ensureValidationRunLayout(baseRoot?: string): Promise<ValidationRunLayout> {
   const resolvedRoot = baseRoot ? path.resolve(baseRoot) : DEFAULT_VALIDATION_RUN_ROOT;
+
+  // Align historical artefacts with the canonical `validation_run/` root before
+  // provisioning the directory tree. This guarantees a single source of truth
+  // for validation outputs even when previous runs relied on the pluralised
+  // layout.
+  await migrateLegacyValidationRuns(resolvedRoot);
   const layout: ValidationRunLayout = {
     root: resolvedRoot,
     logsDir: path.join(resolvedRoot, "logs"),
@@ -96,4 +102,38 @@ async function mkdirIfMissing(directory: string): Promise<void> {
   } catch (error) {
     await mkdir(directory, { recursive: true });
   }
+}
+
+/**
+ * Moves artefacts from the deprecated `validation_runs/` directory into the
+ * canonical `validation_run/` root. The migration executes only when the caller
+ * opts into the standard directory name so custom roots remain untouched. Files
+ * already present in the canonical directory win over their legacy counterparts
+ * to avoid clobbering freshly generated artefacts.
+ */
+async function migrateLegacyValidationRuns(resolvedRoot: string): Promise<void> {
+  if (path.basename(resolvedRoot) !== "validation_run") {
+    return;
+  }
+
+  const legacyRoot = path.join(path.dirname(resolvedRoot), "validation_runs");
+  if (legacyRoot === resolvedRoot) {
+    return;
+  }
+
+  try {
+    await access(legacyRoot, fsConstants.R_OK | fsConstants.W_OK);
+  } catch (error) {
+    return;
+  }
+
+  await mkdirIfMissing(resolvedRoot);
+
+  await cp(legacyRoot, resolvedRoot, {
+    recursive: true,
+    force: false,
+    errorOnExist: false,
+  });
+
+  await rm(legacyRoot, { recursive: true, force: true });
 }

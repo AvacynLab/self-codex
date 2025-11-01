@@ -1,7 +1,7 @@
 import { describe, it } from "mocha";
 import { expect } from "chai";
 
-import { __testing } from "../validation_runs/20251007T184620Z/lib/finalReport.js";
+import { __testing } from "../validation_run/archives/20251007T184620Z/lib/finalReport.js";
 
 /**
  * Regression coverage verifying the sample final report harness rethrows

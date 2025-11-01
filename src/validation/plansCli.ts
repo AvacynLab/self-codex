@@ -46,7 +46,7 @@ export interface PlanCliOverrides {
 
 /** Parses CLI arguments emitted by `scripts/runPlanPhase.ts`. */
 export function parsePlanCliOptions(argv: readonly string[]): PlanCliOptions {
-  const options: PlanCliOptions = { baseDir: "runs" };
+  const options: PlanCliOptions = { baseDir: "validation_run" };
 
   for (let index = 0; index < argv.length; index += 1) {
     const token = argv[index];

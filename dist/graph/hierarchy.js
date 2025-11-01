@@ -259,11 +259,15 @@ export function flatten(hier) {
                         }
                     }
                 }
+                // Recreate the task node descriptor manually so we can elide optional
+                // fields (such as `label`) when upstream definitions omit them.
                 const record = {
                     id: finalId,
-                    label: node.label,
                     attributes,
                 };
+                if (node.label !== undefined) {
+                    record.label = node.label;
+                }
                 addNode(record);
             }
             else {
@@ -316,12 +320,16 @@ export function flatten(hier) {
                 from_port: fromPort,
                 to_port: toPort,
             };
+            // Build the flattened edge lazily so the optional label is only exposed
+            // when callers actually provided one on the hierarchical edge.
             const record = {
                 from: fromId,
                 to: toId,
-                label: edge.label,
                 attributes,
             };
+            if (edge.label !== undefined) {
+                record.label = edge.label;
+            }
             edges.push(record);
         }
         return mapping;

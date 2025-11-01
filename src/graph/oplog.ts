@@ -4,9 +4,9 @@ import { resolve, join } from "node:path";
 /**
  * Root directory storing the JSONL operation logs. Tests can override the path
  * by providing the {@link append} options; production defaults to
- * `runs/oplog/<YYYYMMDD>.log` in the current working directory.
+ * `validation_run/oplog/<YYYYMMDD>.log` in the current working directory.
  */
-const DEFAULT_OPLOG_ROOT = resolve("runs", "oplog");
+const DEFAULT_OPLOG_ROOT = resolve("validation_run", "oplog");
 
 /**
  * Minimal payload captured for every graph-related state transition. The

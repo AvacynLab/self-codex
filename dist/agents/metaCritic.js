@@ -1,4 +1,22 @@
 import { createHash } from "node:crypto";
+/**
+ * Identifiers of heuristics built in the critic. The explicit union keeps the
+ * handler registry typed which avoids silent fallbacks when new identifiers are
+ * introduced without wiring a computation.
+ */
+const KNOWN_CRITERIA = [
+    "completeness",
+    "clarity",
+    "testing",
+    "risk",
+    "quality",
+    "maintainability",
+];
+const KNOWN_CRITERIA_SET = new Set(KNOWN_CRITERIA);
+/** Runtime guard verifying whether a criterion identifier is natively handled. */
+function isKnownCriterionId(value) {
+    return KNOWN_CRITERIA_SET.has(value);
+}
 /** Counts the number of non-empty lines in the evaluation context. */
 function countNonEmptyLines(ctx) {
     return ctx.lines.reduce((total, line) => (line.trim().length > 0 ? total + 1 : total), 0);
@@ -59,7 +77,7 @@ function computeCompleteness(ctx) {
         if (ctx.lower.includes(marker)) {
             score -= 0.3;
             negatives.push(`Le texte contient le marqueur '${marker}'.`);
-            suggestions.push("Remplacer les marqueurs TODO/FIXME par une implémentation concrète.");
+            suggestions.push("Remplacer les marqueurs todo ou fixme par une implémentation concrète.");
         }
     }
     if (ctx.words.length < 20 && ctx.kind !== "artifact") {
@@ -159,8 +177,8 @@ function computeCodeQuality(ctx) {
     }
     if (/\btodo\b|\btbd\b/.test(ctx.lower)) {
         score -= 0.2;
-        feedback.push("Le code contient des TODO qui doivent être résolus avant livraison.");
-        suggestions.push("Remplacer les TODO par une implémentation concrète ou supprimer les marqueurs.");
+        feedback.push("Le code contient des marqueurs todo qui doivent être résolus avant livraison.");
+        suggestions.push("Remplacer ces marqueurs par une implémentation concrète ou les supprimer.");
     }
     if (/throw\s+new\s+error/i.test(ctx.lower)) {
         score -= 0.2;
@@ -239,8 +257,8 @@ function computeRisk(ctx) {
     }
     if (/\btodo\b|\btbd\b/.test(ctx.lower)) {
         score -= 0.2;
-        feedback.push("Des sections TODO restent en suspens, ce qui augmente le risque.");
-        suggestions.push("Remplacer les TODO par des actions ou des décisions concrètes.");
+        feedback.push("Des sections todo restent en suspens, ce qui augmente le risque.");
+        suggestions.push("Remplacer ces éléments en attente par des actions ou des décisions concrètes.");
     }
     if (feedback.length === 0) {
         feedback.push("Aucun risque majeur identifié dans la sortie.");
@@ -288,6 +306,17 @@ const CRITERION_HANDLERS = {
     maintainability: computeCodeQuality,
 };
 /**
+ * Resolves the appropriate heuristic for a criterion identifier. Unknown
+ * identifiers intentionally fall back to clarity analysis to maintain backwards
+ * compatibility with older orchestrator versions that may send arbitrary ids.
+ */
+function resolveCriterionHandler(identifier) {
+    if (isKnownCriterionId(identifier)) {
+        return CRITERION_HANDLERS[identifier];
+    }
+    return computeClarity;
+}
+/**
  * Lightweight rule-based critic producing structured reviews for orchestrator
  * outputs. The implementation favours transparency: each score is traceable to
  * concrete heuristics making it suitable for CI gating.
@@ -306,7 +335,7 @@ export class MetaCritic {
         let weightedScore = 0;
         let totalWeight = 0;
         for (const criterion of selectedCriteria) {
-            const handler = CRITERION_HANDLERS[criterion.id] ?? computeClarity;
+            const handler = resolveCriterionHandler(criterion.id);
             const { score, feedback, suggestions } = handler(context);
             const weight = criterion.weight ?? 1;
             weightedScore += score * weight;

@@ -265,6 +265,7 @@ export class UnstructuredExtractor {
     let ordinal = 0;
     const pageLimit = isPdfMime(rawMimeType) ? PDF_PAGE_LIMIT : Number.POSITIVE_INFINITY;
     let truncated = false;
+    let pageLimitReached = false;
 
     for (const element of elements) {
       const kind = resolveKind(element.type);
@@ -282,9 +283,21 @@ export class UnstructuredExtractor {
       const pageNumber = extractPageNumber(element.metadata);
       const boundingBox = extractBoundingBox(element.metadata);
       const sourceId = typeof element.id === "string" && element.id.trim().length > 0 ? element.id.trim() : null;
-      if (pageNumber !== null && pageNumber > pageLimit) {
-        truncated = true;
-        continue;
+      if (pageLimit !== Number.POSITIVE_INFINITY) {
+        if (pageNumber !== null && pageNumber > pageLimit) {
+          // The extractor crossed the page limit; mark the document as truncated
+          // and skip the overflowing segments entirely.
+          truncated = true;
+          pageLimitReached = true;
+          continue;
+        }
+        if (pageLimitReached && (pageNumber === null || pageNumber > pageLimit)) {
+          // Once the extractor has confirmed that the payload contains more
+          // than the allowed number of pages, discard subsequent segments that
+          // either reference pages beyond the limit or lack page metadata.
+          truncated = true;
+          continue;
+        }
       }
       const segment: StructuredSegment = {
         id: `${docId}#raw-${++ordinal}`,
@@ -297,10 +310,6 @@ export class UnstructuredExtractor {
       };
 
       segments.push(segment);
-    }
-
-    if (!truncated && pageLimit !== Number.POSITIVE_INFINITY && elements.length > segments.length) {
-      truncated = true;
     }
 
     return { segments, truncated };

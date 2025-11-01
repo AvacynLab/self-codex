@@ -385,5 +385,3 @@ export const CompiledBehaviorTreeSchema = z.object({
   root: BehaviorNodeDefinitionSchema,
 });
 
-export type BehaviorNodeDefinitionInput = z.input<typeof BehaviorNodeDefinitionSchema>;
-export type CompiledBehaviorTreeInput = z.input<typeof CompiledBehaviorTreeSchema>;

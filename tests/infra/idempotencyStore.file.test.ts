@@ -26,7 +26,7 @@ describe("infra/file idempotency store", () => {
 
   it("replays persisted entries across restarts", async () => {
     const clock = { now: Date.now() };
-    const directory = join(sandboxRoot, "runs", "idempotency");
+    const directory = join(sandboxRoot, "validation_run", "idempotency");
     const first = await FileIdempotencyStore.create({ directory, clock: () => clock.now });
 
     const cacheKey = buildIdempotencyCacheKey("graph/mutate", "abc", { delta: 1 });

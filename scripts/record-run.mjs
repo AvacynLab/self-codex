@@ -35,7 +35,7 @@ const tsxLoaderModule = require.resolve("tsx");
 
 const TEST_MODE = process.env.CODEX_RECORD_RUN_TEST === "1";
 const workspaceRoot = resolve(process.cwd());
-const runsRoot = resolve(process.env.RECORD_RUN_ROOT ?? "runs");
+const runsRoot = resolve(process.env.RECORD_RUN_ROOT ?? "validation_run");
 const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
 const runId = `validation_${timestamp}`;
 const runRoot = resolve(runsRoot, runId);

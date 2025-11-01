@@ -1,5 +1,10 @@
 import { mergeProvenance, normaliseProvenanceList } from "../types/provenance.js";
-import { coerceNullToUndefined } from "../utils/object.js";
+/**
+ * Fingerprint separator used when building run-scoped identifiers for
+ * knowledge triples. A private separator avoids collisions when subjects,
+ * predicates or objects embed user-controlled characters.
+ */
+const TRIPLE_FINGERPRINT_SEPARATOR = "\u001f";
 /**
  * Error raised when a caller attempts to persist a triple with blank fields.
  * The orchestration server relies on the `code` and `details` payload to emit
@@ -17,6 +22,73 @@ export class KnowledgeBadTripleError extends Error {
             object: triple.object,
         };
     }
+}
+/**
+ * Creates a guard suitable for a single ingest run.  The implementation keeps
+ * a `Set` of canonical fingerprints to guarantee O(1) membership checks and to
+ * make duplicate suppression deterministic irrespective of the triple order.
+ */
+export function createKnowledgeTripleRunGuard() {
+    const seen = new Set();
+    return {
+        remember(triple) {
+            const fingerprint = fingerprintTriple(triple.subject, triple.predicate, triple.object);
+            if (!fingerprint) {
+                return false;
+            }
+            if (seen.has(fingerprint)) {
+                return false;
+            }
+            seen.add(fingerprint);
+            return true;
+        },
+        reset() {
+            seen.clear();
+        },
+        size() {
+            return seen.size;
+        },
+    };
+}
+/**
+ * Builds a deterministic fingerprint for the provided triple components. The
+ * helper trims the values before concatenation so callers can forward raw
+ * extractor output without worrying about stray whitespace breaking
+ * idempotence guarantees.
+ */
+export function fingerprintTriple(subject, predicate, object) {
+    const canonicalSubject = subject.trim();
+    const canonicalPredicate = predicate.trim();
+    const canonicalObject = object.trim();
+    if (!canonicalSubject || !canonicalPredicate || !canonicalObject) {
+        return null;
+    }
+    return [canonicalSubject, canonicalPredicate, canonicalObject].join(TRIPLE_FINGERPRINT_SEPARATOR);
+}
+/**
+ * Removes duplicate triples from a batch while preserving insertion order. The
+ * helper keeps the first occurrence of each `(subject, predicate, object)`
+ * fingerprint so ingestion pipelines can enqueue redundant entries without
+ * producing duplicate writes during the same transaction.
+ */
+export function dedupeTripleBatch(triples) {
+    const seen = new Set();
+    const unique = [];
+    for (const triple of triples) {
+        const subject = triple.subject.trim();
+        const predicate = triple.predicate.trim();
+        const object = triple.object.trim();
+        if (!subject || !predicate || !object) {
+            continue;
+        }
+        const fingerprint = `${subject}\u0000${predicate}\u0000${object}`;
+        if (seen.has(fingerprint)) {
+            continue;
+        }
+        seen.add(fingerprint);
+        unique.push(triple);
+    }
+    return unique;
 }
 /**
  * Simple, fully in-memory knowledge graph. Triples are indexed by subject,
@@ -231,16 +303,25 @@ export class KnowledgeGraph {
                 sources.add(source);
             }
             confidenceSum += confidence;
-            tasks.push({
+            // Only materialise optional task metadata when present so downstream
+            // planners never receive properties explicitly set to `undefined`.
+            const taskRecord = {
                 id: taskId,
-                label,
                 dependsOn: dedupe(dependsOn),
-                duration: coerceNullToUndefined(duration),
-                weight: coerceNullToUndefined(weight),
-                source,
+                source: source ?? null,
                 confidence,
                 provenance,
-            });
+            };
+            if (label !== undefined) {
+                taskRecord.label = label;
+            }
+            if (duration !== null) {
+                taskRecord.duration = duration;
+            }
+            if (weight !== null) {
+                taskRecord.weight = weight;
+            }
+            tasks.push(taskRecord);
         }
         const averageConfidence = tasks.length > 0 ? confidenceSum / tasks.length : null;
         return {
@@ -502,5 +583,62 @@ function appendSourceProvenance(base, source) {
 /** Formats confidence scores with a consistent precision for textual summaries. */
 function formatConfidence(value) {
     return value.toFixed(2);
+}
+/**
+ * Stores or updates a triple on the provided graph while handling optional
+ * metadata defensively.  The helper mirrors the low-level `insert` method but
+ * avoids forwarding blank sources, `null` confidence values or empty
+ * provenance arrays so that downstream dashboards keep their payloads tidy.
+ */
+export function upsertTriple(graph, triple) {
+    const payload = {
+        subject: triple.subject,
+        predicate: triple.predicate,
+        object: triple.object,
+    };
+    const source = typeof triple.source === "string" ? triple.source.trim() : "";
+    if (source) {
+        payload.source = source;
+    }
+    if (typeof triple.confidence === "number") {
+        payload.confidence = triple.confidence;
+    }
+    if (triple.provenance) {
+        const provenance = normaliseProvenanceList(triple.provenance);
+        if (provenance.length > 0) {
+            payload.provenance = provenance;
+        }
+    }
+    return graph.insert(payload);
+}
+/**
+ * Merges multiple provenance batches while deduplicating entries.  Each batch
+ * may contain `null` or `undefined` placeholders which are filtered out before
+ * the merge so callers can forward raw extractor output without additional
+ * guards.
+ */
+export function withProvenance(...batches) {
+    let merged = [];
+    for (const batch of batches) {
+        const normalised = normaliseProvenanceList(batch);
+        if (normalised.length === 0) {
+            continue;
+        }
+        merged = merged.length === 0 ? [...normalised] : mergeProvenance(merged, normalised);
+    }
+    if (merged.length === 0) {
+        return [];
+    }
+    const seen = new Set();
+    const deduped = [];
+    for (const entry of merged) {
+        const key = `${entry.type}:${entry.sourceId}:${entry.span ? `${entry.span[0]}-${entry.span[1]}` : ""}`;
+        if (seen.has(key)) {
+            continue;
+        }
+        seen.add(key);
+        deduped.push(entry);
+    }
+    return deduped;
 }
 //# sourceMappingURL=knowledgeGraph.js.map

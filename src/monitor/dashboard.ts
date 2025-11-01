@@ -30,7 +30,6 @@ import {
   normalisePheromoneBoundsForTelemetry,
   type NormalisedPheromoneBounds,
   type StigmergySummary,
-  type StigmergySummaryRow,
 } from "../coord/stigmergy.js";
 import { BehaviorTreeStatusRegistry } from "./btStatusRegistry.js";
 import type { BehaviorTreeStatusSnapshot } from "./btStatusRegistry.js";
@@ -338,9 +337,6 @@ export interface DashboardBehaviorTreeStatus {
   updatedAt: number;
   nodes: DashboardBehaviorTreeNodeStatus[];
 }
-
-/** Single row rendered in the stigmergy bounds table. */
-export type DashboardStigmergyRow = StigmergySummaryRow;
 
 /**
  * Summary block rendered in the dashboard table. The block mirrors the

@@ -63,8 +63,6 @@ export type PromptTemplateInput = z.input<typeof PromptTemplateSchema>;
 
 /** Normalised representation of the variables injected into a prompt. */
 export type PromptVariables = z.output<typeof PromptVariablesSchema>;
-/** Input accepted before validation for prompt variables. */
-export type PromptVariablesInput = z.input<typeof PromptVariablesSchema>;
 
 /** Final structure accepted by {@link renderPromptTemplate} options. */
 export type RenderPromptOptions = z.output<typeof RenderPromptOptionsSchema>;

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { omitUndefinedEntries } from "../utils/object.js";
 /** Zod schema used to validate runtime updates to the routing table. */
 const specialistConfigSchema = z.object({
     id: z.string().min(1),
@@ -33,7 +34,18 @@ export class ModelRouter {
      */
     registerSpecialist(config) {
         const parsed = specialistConfigSchema.parse(config);
-        const merged = { ...config, ...parsed, available: config.available ?? true };
+        // Operators can override the implicit availability; we preserve explicit
+        // disablement while omitting the default `true` flag from snapshots.
+        const requestedAvailability = config.available ?? parsed.available;
+        // NOTE: Optional specialist knobs (priority, languages, tags…) surface as
+        // `undefined` when omitted by callers. We strip those keys to keep the
+        // stored configuration compliant with `exactOptionalPropertyTypes` while
+        // preserving the intent of the original payload.
+        const merged = applyAvailability({
+            id: parsed.id,
+            ...omitUndefinedEntries({ ...config, id: undefined, available: undefined }),
+            ...omitUndefinedEntries({ ...parsed, id: undefined, available: undefined }),
+        }, requestedAvailability);
         this.specialists.set(merged.id, merged);
         if (!this.stats.has(merged.id)) {
             this.stats.set(merged.id, {
@@ -76,7 +88,7 @@ export class ModelRouter {
         if (!specialist) {
             throw new Error(`Unknown model '${id}'`);
         }
-        this.specialists.set(id, { ...specialist, available });
+        this.specialists.set(id, applyAvailability(specialist, available));
     }
     /**
      * Computes the best model for a given task. The method always returns a
@@ -223,6 +235,21 @@ export class ModelRouter {
         reasons.push(`reliability:${reliability.toFixed(2)}`);
         return reasons.join(", ");
     }
+}
+/**
+ * Normalises the optional availability flag so the stored configuration only
+ * materialises the property when the specialist is explicitly disabled. The
+ * helper keeps the router compatible with `exactOptionalPropertyTypes` by
+ * omitting implicit `true` defaults while preserving other attributes.
+ */
+function applyAvailability(config, availability) {
+    const sanitised = { ...config };
+    if (availability === false) {
+        sanitised.available = false;
+        return sanitised;
+    }
+    delete sanitised.available;
+    return sanitised;
 }
 function clamp01(value) {
     if (!Number.isFinite(value)) {

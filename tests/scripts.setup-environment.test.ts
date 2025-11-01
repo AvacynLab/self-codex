@@ -20,12 +20,17 @@ describe("setup environment script", () => {
     process.env.MCP_HTTP_TOKEN = "secret-token";
     process.env.START_MCP_BG = "1";
     process.env.MCP_FS_IPC_DIR = "~/.codex/ipc-tests";
+    process.env.SEARCH_SEARX_BASE_URL = "http://localhost:8888";
+    process.env.UNSTRUCTURED_BASE_URL = "http://localhost:9999";
     process.env.CODEX_NODE_VERSION_OVERRIDE = "20.10.0";
     delete globalThis.CODEX_SCRIPT_COMMANDS;
     delete globalThis.CODEX_SCRIPT_ENV;
     delete globalThis.CODEX_SCRIPT_CONFIG;
     delete globalThis.CODEX_SCRIPT_BACKGROUND;
     delete globalThis.CODEX_SCRIPT_SUMMARY;
+    delete globalThis.CODEX_SCRIPT_RUNTIME;
+    delete process.env.MCP_LOG_FILE;
+    delete process.env.MCP_RUNS_ROOT;
   });
 
   afterEach(() => {
@@ -40,12 +45,17 @@ describe("setup environment script", () => {
     delete process.env.MCP_HTTP_TOKEN;
     delete process.env.START_MCP_BG;
     delete process.env.MCP_FS_IPC_DIR;
+    delete process.env.SEARCH_SEARX_BASE_URL;
+    delete process.env.UNSTRUCTURED_BASE_URL;
     delete process.env.CODEX_NODE_VERSION_OVERRIDE;
     delete globalThis.CODEX_SCRIPT_COMMANDS;
     delete globalThis.CODEX_SCRIPT_ENV;
     delete globalThis.CODEX_SCRIPT_CONFIG;
     delete globalThis.CODEX_SCRIPT_BACKGROUND;
     delete globalThis.CODEX_SCRIPT_SUMMARY;
+    delete globalThis.CODEX_SCRIPT_RUNTIME;
+    delete process.env.MCP_LOG_FILE;
+    delete process.env.MCP_RUNS_ROOT;
   });
 
   it("produces the expected TOML configuration and background orchestration", async () => {
@@ -94,5 +104,46 @@ describe("setup environment script", () => {
     const commands = globalThis.CODEX_SCRIPT_COMMANDS ?? [];
     expect(commands.length).to.be.greaterThan(0);
     expect(commands.every((entry) => entry.nodeOptions?.includes("--enable-source-maps"))).to.equal(true);
+
+    const runtime = globalThis.CODEX_SCRIPT_RUNTIME;
+    expect(runtime, "runtime snapshot should be captured").to.not.equal(undefined);
+    if (!runtime) {
+      throw new Error("runtime snapshot missing");
+    }
+    expect(runtime.validationRunRoot).to.be.a("string").and.to.match(/validation_run$/);
+    expect(runtime.validationRunLogs).to.be.a("string").and.to.match(/validation_run[\\/]+logs$/);
+    expect(runtime.childrenRoot).to.be.a("string").and.to.match(/children$/);
+    expect(runtime.runsRoot).to.equal(runtime.validationRunRoot);
+    expect(runtime.logFile).to.equal(runtime.validationRunLogs + "/self-codex.log");
+    expect(process.env.MCP_LOG_FILE).to.equal(runtime.logFile);
+    expect(process.env.MCP_RUNS_ROOT).to.equal(runtime.runsRoot);
+
+    expect(
+      actions.some((item) => item.action === "ensure-dir" && /validation_run/.test(String(item.path))),
+    ).to.equal(true);
+    expect(actions.some((item) => item.action === "ensure-log-file")).to.equal(true);
+    expect(actions.some((item) => item.action === "set-env" && item.key === "MCP_LOG_FILE")).to.equal(true);
+    expect(actions.some((item) => item.action === "set-env" && item.key === "MCP_RUNS_ROOT")).to.equal(true);
+  });
+
+  it("warns when service endpoints are missing", async () => {
+    delete process.env.SEARCH_SEARX_BASE_URL;
+    delete process.env.UNSTRUCTURED_BASE_URL;
+    const warnings = [];
+    const originalWarn = console.warn;
+    console.warn = (message, ...args) => {
+      warnings.push([message, ...args].join(" "));
+    };
+    try {
+      const module = await import("../scripts/setup-environment.mjs");
+      await module.runSetupEnvironment();
+    } finally {
+      console.warn = originalWarn;
+    }
+    expect(warnings.length).to.be.greaterThan(0);
+    expect(warnings.some((entry) => entry.includes("SEARCH_SEARX_BASE_URL"))).to.equal(true);
+    expect(warnings.some((entry) => entry.includes("UNSTRUCTURED_BASE_URL"))).to.equal(true);
+    const actions = globalThis.CODEX_SCRIPT_BACKGROUND ?? [];
+    expect(actions.some((item) => item.action === "warn" && item.keys?.includes("SEARCH_SEARX_BASE_URL"))).to.equal(true);
   });
 });

@@ -46,17 +46,17 @@ describe("memory/vector", () => {
     await index.upsert({
       id: "chunk-1",
       text: "Doc 1 chunk",
-      metadata: { docId: "doc-1" },
+      metadata: { document_id: " doc-1 " },
     });
     await index.upsert({
       id: "chunk-2",
       text: "Doc 1 chunk again",
-      metadata: { docId: "doc-1" },
+      metadata: { document_id: "doc-1" },
     });
     await index.upsert({
       id: "chunk-3",
       text: "Doc 1 new chunk",
-      metadata: { docId: "doc-1" },
+      metadata: { document_id: "doc-1" },
     });
 
     expect(index.size()).to.equal(2);
@@ -66,6 +66,48 @@ describe("memory/vector", () => {
     const results = index.search("Doc", { minScore: 0 });
     const identifiers = results.map((hit) => hit.document.id);
     expect(identifiers).to.have.members(["chunk-2", "chunk-3"]);
+
+    await index.clear();
+    await rm(directory, { recursive: true, force: true });
+  });
+
+  it("ignores blank docId values so per-document caps stay consistent", async () => {
+    const directory = await mkdtemp(TMP_PREFIX);
+    let clock = 1;
+    const index = await VectorMemoryIndex.create({
+      directory,
+      maxDocuments: 5,
+      maxChunksPerDocument: 2,
+      now: () => clock++,
+    });
+
+    const stored = await index.upsert({
+      id: "chunk-without-doc",
+      text: "orphan chunk",
+      metadata: { docId: "   " },
+    });
+
+    expect("docId" in stored.metadata).to.equal(false);
+
+    await index.upsert({
+      id: "chunk-with-doc-1",
+      text: "first chunk",
+      metadata: { docId: "doc-2" },
+    });
+    await index.upsert({
+      id: "chunk-with-doc-2",
+      text: "second chunk",
+      metadata: { docId: "doc-2" },
+    });
+    await index.upsert({
+      id: "chunk-with-doc-3",
+      text: "third chunk",
+      metadata: { docId: "doc-2" },
+    });
+
+    const hits = index.search("chunk", { minScore: 0 });
+    const doc2Entries = hits.filter((hit) => hit.document.metadata.docId === "doc-2");
+    expect(doc2Entries).to.have.length(2);
 
     await index.clear();
     await rm(directory, { recursive: true, force: true });

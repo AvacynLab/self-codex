@@ -37,7 +37,7 @@ export interface PrepareHttpRuntimeDependencies {
    */
   readonly createIdempotencyStore?: (directory: string) => Promise<FileIdempotencyStore>;
   /**
-   * Resolver returning the absolute `runs/` root used by the orchestrator to
+   * Resolver returning the absolute `validation_run/` root used by the orchestrator to
    * persist artefacts. The default implementation honours `MCP_RUNS_ROOT`.
    */
   readonly resolveRunsRoot?: (cwd: string, override: string | undefined) => string;
@@ -60,7 +60,7 @@ function defaultResolveRunsRoot(cwd: string, override: string | undefined): stri
   if (override && override.trim().length > 0) {
     return resolvePath(cwd, override);
   }
-  return resolvePath(cwd, "runs");
+  return resolvePath(cwd, "validation_run");
 }
 
 /**

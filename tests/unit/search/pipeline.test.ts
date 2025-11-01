@@ -94,6 +94,7 @@ describe("search/pipeline", () => {
       finalUrl: "https://example.com/doc",
       status: 200,
       fetchedAt: 1_700_000_000_000,
+      notModified: false,
       headers,
       contentType: "text/html",
       size: 128,
@@ -152,6 +153,7 @@ describe("search/pipeline", () => {
 
     const result = await pipeline.runSearchJob({ query: "llm", jobId: "job-1", maxResults: 5 });
 
+    expect(result.jobId).to.equal("job-1");
     expect(result.documents).to.have.lengthOf(1);
     const expectedDocId = computeDocId(rawPayload.finalUrl, rawPayload.headers);
     expect(result.documents[0].id).to.equal(expectedDocId);
@@ -159,9 +161,12 @@ describe("search/pipeline", () => {
     sinon.assert.calledOnceWithExactly(vectorIngestStub, result.documents[0]);
 
     const events = eventStore.getSnapshot();
-    expect(events.some((entry) => entry.kind === "search:job_started")).to.equal(true);
-    expect(events.some((entry) => entry.kind === "search:doc_ingested")).to.equal(true);
-    expect(events.some((entry) => entry.kind === "search:job_completed")).to.equal(true);
+    const started = events.find((entry) => entry.kind === "search:job_started");
+    const ingested = events.find((entry) => entry.kind === "search:doc_ingested");
+    const completed = events.find((entry) => entry.kind === "search:job_completed");
+    expect(started?.jobId).to.equal("job-1");
+    expect(ingested?.jobId).to.equal("job-1");
+    expect(completed?.jobId).to.equal("job-1");
 
     expect(result.errors).to.be.empty;
     expect(result.stats).to.deep.include({ fetchedDocuments: 1, structuredDocuments: 1 } satisfies Partial<SearchJobStats>);
@@ -219,6 +224,7 @@ describe("search/pipeline", () => {
       finalUrl: "https://example.com/a",
       status: 200,
       fetchedAt: 1_700_000_000_001,
+      notModified: false,
       headers,
       contentType: "text/html",
       size: 256,
@@ -264,13 +270,16 @@ describe("search/pipeline", () => {
 
     const result = await pipeline.runSearchJob({ query: "llm" });
 
+    expect(result.jobId).to.match(/^search:job:[a-f0-9]{40}$/);
     expect(result.documents).to.have.lengthOf(1);
-    expect(result.errors.some((error) => error.stage === "fetch")).to.equal(true);
+    const fetchError = result.errors.find((error) => error.stage === "fetch");
+    expect(fetchError?.code).to.equal("network_error");
     expect(result.stats.fetchedDocuments).to.equal(1);
     expect(result.stats.receivedResults).to.equal(2);
 
     const events = eventStore.getSnapshot();
-    expect(events.filter((entry) => entry.kind === "search:error")).to.have.lengthOf(1);
+    const errorEvent = events.find((entry) => entry.kind === "search:error");
+    expect(errorEvent?.jobId).to.equal(result.jobId);
     expect(events.some((entry) => entry.kind === "search:doc_ingested")).to.equal(true);
   });
 
@@ -290,6 +299,7 @@ describe("search/pipeline", () => {
       finalUrl: "https://example.org/manual",
       status: 200,
       fetchedAt: 1_700_000_000_100,
+      notModified: false,
       headers,
       contentType: "text/html",
       size: 512,
@@ -345,14 +355,18 @@ describe("search/pipeline", () => {
       injectVector: true,
     });
 
+    expect(result.jobId).to.match(/^search:job:[a-f0-9]{40}$/);
     expect(result.documents).to.have.lengthOf(1);
     sinon.assert.notCalled(searxClient.search as sinon.SinonStub);
     sinon.assert.calledOnceWithExactly(knowledgeIngestor.ingest as sinon.SinonStub, result.documents[0]);
     sinon.assert.calledOnceWithExactly(vectorIngestor.ingest as sinon.SinonStub, result.documents[0]);
 
     const events = eventStore.getSnapshot();
-    expect(events.some((entry) => entry.kind === "search:job_started")).to.equal(true);
-    expect(events.some((entry) => entry.kind === "search:doc_ingested")).to.equal(true);
-    expect(events.some((entry) => entry.kind === "search:job_completed")).to.equal(true);
+    const started = events.find((entry) => entry.kind === "search:job_started");
+    const docIngested = events.find((entry) => entry.kind === "search:doc_ingested");
+    const completed = events.find((entry) => entry.kind === "search:job_completed");
+    expect(started?.jobId).to.equal(result.jobId);
+    expect(docIngested?.jobId).to.equal(result.jobId);
+    expect(completed?.jobId).to.equal(result.jobId);
   });
 });

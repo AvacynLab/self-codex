@@ -159,6 +159,7 @@ const SearchIndexSuccessSchema = z
     ok: z.literal(true),
     idempotency_key: z.string().min(1),
     summary: z.string().min(1),
+    job_id: z.string().min(1),
     count: z.number().int().min(0),
     docs: z.array(SearchIndexDocumentSchema),
     errors: z.array(SearchRunErrorSchema).min(1).optional(),

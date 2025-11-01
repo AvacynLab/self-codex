@@ -53,7 +53,7 @@ function createStructuredDocument(overrides: Partial<StructuredDocument> = {}): 
     checksum: "abc123",
     mimeType: "text/html",
     size: 2048,
-    fetchedAt: Date.now(),
+    fetchedAt: 1_700_000_000_000,
     segments: baseSegments,
     provenance: {
       searxQuery: "demo",
@@ -69,6 +69,7 @@ function createStructuredDocument(overrides: Partial<StructuredDocument> = {}): 
 function createSearchJobResult(overrides: Partial<SearchJobResult> = {}): SearchJobResult {
   const documents = overrides.documents ?? [createStructuredDocument()];
   return {
+    jobId: overrides.jobId ?? "search:job:test",
     query: "demo",
     results: [
       {
@@ -131,12 +132,13 @@ describe("search.run facade", () => {
   it("returns structured documents and forwards pipeline parameters", async () => {
     const logger = new StructuredLogger();
     const resultPayload = createSearchJobResult({
+      jobId: "job-search-run",
       errors: [
         {
           stage: "fetch",
           url: "https://example.org/broken",
           message: "timeout",
-          code: "DownloadTimeoutError",
+          code: "network_error",
         },
       ],
     });
@@ -182,7 +184,7 @@ describe("search.run facade", () => {
     expect(structured.stats.requested).to.equal(4);
     expect(structured.job_id).to.equal("job-search-run");
     expect(structured.budget_used?.tool_calls).to.equal(1);
-    expect(structured.budget_used?.tokens).to.be.greaterThan(0);
+    expect(structured.budget_used?.tokens).to.equal(5);
     const expectedIdempotencyKey = computeDeterministicIdempotencyKey({
       query: "benchmarks multimodaux",
       categories: ["general", "files"],
@@ -195,6 +197,53 @@ describe("search.run facade", () => {
       safe_search: null,
     });
     expect(structured.idempotency_key).to.equal(expectedIdempotencyKey);
+
+    const snapshot = {
+      ok: structured.ok,
+      idempotency_key: structured.idempotency_key,
+      summary: structured.summary,
+      job_id: structured.job_id,
+      count: structured.count,
+      docs: structured.docs,
+      warnings: structured.warnings,
+      stats: structured.stats,
+      budget_used: structured.budget_used,
+    };
+    expect(snapshot).to.deep.equal({
+      ok: true,
+      idempotency_key: expectedIdempotencyKey,
+      summary: "recherche terminée (1 document)",
+      job_id: "job-search-run",
+      count: 1,
+      docs: [
+        {
+          id: "doc-1",
+          url: "https://example.org/article",
+          title: "Article d'exemple",
+          language: "fr",
+        },
+      ],
+      warnings: [
+        {
+          stage: "fetch",
+          url: "https://example.org/broken",
+          message: "timeout",
+          code: "network_error",
+        },
+      ],
+      stats: {
+        requested: 4,
+        received: 1,
+        fetched: 1,
+        structured: 1,
+        graph_ingested: 1,
+        vector_ingested: 1,
+      },
+      budget_used: {
+        tool_calls: 1,
+        tokens: 5,
+      },
+    });
 
     expect(capturedParameters?.query).to.equal("benchmarks multimodaux");
     expect(capturedParameters?.categories).to.deep.equal(["general", "files"]);

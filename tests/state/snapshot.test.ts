@@ -9,7 +9,7 @@ import { snapshotList, snapshotLoad, snapshotTake } from "../../src/state/snapsh
 /** Creates a disposable runs directory unique to the current test. */
 async function createRunsRoot(): Promise<string> {
   const base = await mkdtemp(path.join(tmpdir(), "snapshot-test-"));
-  return path.join(base, "runs");
+  return path.join(base, "validation_run");
 }
 
 describe("state/snapshot", () => {

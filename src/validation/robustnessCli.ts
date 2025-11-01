@@ -46,7 +46,7 @@ export interface RobustnessCliOverrides {
 
 /** Parses CLI arguments emitted by `scripts/runRobustnessPhase.ts`. */
 export function parseRobustnessCliOptions(argv: readonly string[]): RobustnessCliOptions {
-  const options: RobustnessCliOptions = { baseDir: "runs" };
+  const options: RobustnessCliOptions = { baseDir: "validation_run" };
 
   for (let index = 0; index < argv.length; index += 1) {
     const token = argv[index];

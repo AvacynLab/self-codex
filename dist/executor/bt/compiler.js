@@ -79,7 +79,7 @@ export function compileHierGraphToBehaviorTree(graph) {
             id: node.id,
             node_id: node.id,
             tool,
-            input_key: inputKey,
+            ...(inputKey !== undefined ? { input_key: inputKey } : {}),
         };
     });
     let root;

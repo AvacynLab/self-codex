@@ -218,7 +218,6 @@ export function createRpcHandler(deps: RpcHandlerDependencies) {
 
 export {
   JsonRpcError,
-  JsonRpcError as JsonRpcValidationError,
   JSON_RPC_ERROR_TAXONOMY,
   createJsonRpcError,
   toJsonRpc,
