@@ -148,6 +148,38 @@ describe("scripts/lib/searchStack", () => {
     sinon.assert.calledOnce(delayStub);
   });
 
+  it("executes the Unstructured readiness probe inside the container", async () => {
+    const spawnStub = sinon.stub().returns(createFakeChild({ closeCode: 0 }));
+    const manager = createSearchStackManager({ spawn: spawnStub });
+    await manager.waitForUnstructuredReady();
+    sinon.assert.calledOnce(spawnStub);
+    const [command, args, options] = spawnStub.getCall(0).args as [string, string[], SpawnOptions];
+    expect(command).to.equal("docker");
+    expect(args.slice(0, 7)).to.deep.equal([
+      "compose",
+      "-f",
+      manager.composeFile,
+      "exec",
+      "-T",
+      "unstructured",
+      "sh",
+    ]);
+    expect(args[7]).to.equal("-c");
+    expect(args[8]).to.include("general/v0/general");
+    expect(options).to.include({ stdio: "pipe" });
+  });
+
+  it("retries the Unstructured probe until it succeeds", async () => {
+    const spawnStub = sinon.stub();
+    spawnStub.onCall(0).returns(createFakeChild({ closeCode: 1 }));
+    spawnStub.onCall(1).returns(createFakeChild({ closeCode: 0 }));
+    const delayStub = sinon.stub().resolves();
+    const manager = createSearchStackManager({ spawn: spawnStub, delay: delayStub });
+    await manager.waitForUnstructuredReady();
+    sinon.assert.calledTwice(spawnStub);
+    sinon.assert.calledOnce(delayStub);
+  });
+
   it("brings up and tears down the docker stack with the compose file", async () => {
     const spawnStub = sinon.stub().callsFake(() => createFakeChild({ closeCode: 0 }));
     const composeFile = "/tmp/compose.yml";

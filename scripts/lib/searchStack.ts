@@ -275,25 +275,86 @@ export function createSearchStackManager(deps: SearchStackDependencies = {}): Se
   }
 
   async function waitForUnstructuredReady(): Promise<void> {
-    try {
-      await waitForService("http://127.0.0.1:8000/healthcheck", {
-        timeoutMs: 90_000,
-        intervalMs: 2_000,
-      });
-      return;
-    } catch (healthError) {
-      // fall through to the legacy inference endpoint if /healthcheck is missing
-      void healthError; // suppress unused variable lint complaints
-    }
+    /**
+     * Mirror the container healthcheck by probing the API from inside the
+     * container. Some CI environments block host loopback requests which made
+     * the previous `fetch`-based implementation fail even though the service
+     * was healthy. The inline shell script selects the available Python
+     * interpreter, executes a small readiness probe that first targets the
+     * dedicated `/healthcheck` endpoint and then falls back to the legacy
+     * general inference route if needed. Any HTTP response below 500 counts as
+     * success so 4xx statuses such as the 422 validation error still pass.
+     */
+    const shellProbe = String.raw`
+if command -v python3 >/dev/null 2>&1; then
+  PYTHON=python3
+elif command -v python >/dev/null 2>&1; then
+  PYTHON=python
+else
+  PYTHON=
+fi
+if [ -z "$PYTHON" ]; then
+  exit 1
+fi
+"$PYTHON" - <<'PY'
+import sys
+from urllib import request, error
 
-    await waitForService("http://127.0.0.1:8000/general/v0/general", {
-      timeoutMs: 90_000,
-      intervalMs: 2_000,
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ text: "ping" }),
-      acceptStatus: (status) => status === 422,
-    });
+STATUS_OK_MAX = 499
+PROBES = (
+    ("http://127.0.0.1:8000/healthcheck", None, {}),
+    ("http://127.0.0.1:8000/general/v0/general", b'{"text":"ping"}', {"Content-Type": "application/json"}),
+)
+
+def probe(url, data, headers):
+    req = request.Request(url, data=data, headers=headers)
+    try:
+        response = request.urlopen(req, timeout=10)
+    except error.HTTPError as http_error:
+        return http_error.code <= STATUS_OK_MAX
+    except Exception:
+        return False
+    status = getattr(response, 'status', 500)
+    return status <= STATUS_OK_MAX
+
+if any(probe(url, data, headers) for url, data, headers in PROBES):
+    sys.exit(0)
+sys.exit(1)
+PY
+exit $?
+`;
+
+    const retryDelayMs = 2_000;
+    const maxAttempts = 30;
+    const probeArgs = [
+      "compose",
+      "-f",
+      composeFile,
+      "exec",
+      "-T",
+      "unstructured",
+      "sh",
+      "-c",
+      shellProbe,
+    ];
+
+    let lastFailure: Error | null = null;
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+      try {
+        const exitCode = await runCommand("docker", probeArgs, {
+          allowFailure: true,
+          inheritStdio: false,
+        });
+        if (exitCode === 0) {
+          return;
+        }
+        lastFailure = new Error(`probe exited with code ${exitCode}`);
+      } catch (error) {
+        lastFailure = error instanceof Error ? error : new Error(String(error));
+      }
+      await delay(retryDelayMs);
+    }
+    throw lastFailure ?? new Error("Unstructured readiness probe failed after repeated attempts");
   }
 
   async function bringUpStack(): Promise<void> {
