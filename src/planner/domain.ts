@@ -159,11 +159,15 @@ const PlannerPlanSchema = z
   })
   .strict();
 
-/** TypeScript helpers inferred from the schemas. */
-export type PlannerConditionInput = z.infer<typeof PlannerConditionSchema>;
-export type PlannerResourceRequestInput = z.infer<typeof PlannerResourceRequestSchema>;
-export type PlannerTaskInput = z.infer<typeof PlannerTaskSchema>;
-export type PlannerPlanInput = z.infer<typeof PlannerPlanSchema>;
+/**
+ * TypeScript helpers inferred from the schemas. These remain module-private so
+ * callers interact with the Zod definitions directly while internal helpers
+ * keep full static typing.
+ */
+type PlannerConditionInput = z.infer<typeof PlannerConditionSchema>;
+type PlannerResourceRequestInput = z.infer<typeof PlannerResourceRequestSchema>;
+type PlannerTaskInput = z.infer<typeof PlannerTaskSchema>;
+type PlannerPlanInput = z.infer<typeof PlannerPlanSchema>;
 
 /** Parse unknown input (JSON or YAML) into a validated {@link PlannerPlan}. */
 export function parsePlannerPlan(spec: unknown): PlannerPlan {

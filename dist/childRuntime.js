@@ -958,15 +958,6 @@ function normaliseAbortReason(reason) {
     }
     return new Error("Child process aborted");
 }
-/**
- * Pretty printer primarily used by tests for debugging purposes.
- */
-export function formatChildMessages(messages) {
-    return messages
-        .map((message) => `${new Date(message.receivedAt).toISOString()} [${message.stream}#${message.sequence}] ${message.raw} ` +
-        (message.parsed ? inspect(message.parsed, { depth: 4 }) : "<raw>"))
-        .join("\n");
-}
 /** Ensures the spawned child exposes pipe-based stdio streams. */
 function ensurePipedChildProcess(child) {
     if (!child.stdin || !child.stdout || !child.stderr) {

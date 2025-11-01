@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 
-import pLimit, { type Limit } from "p-limit";
+import pLimit from "p-limit";
 
 import { StructuredLogger } from "../logger.js";
 import { EventStore } from "../eventStore.js";
@@ -134,6 +134,9 @@ type SuccessfulExtraction = {
  * → normalisation → ingestion). Errors are surfaced as structured entries in
  * the result while the job continues processing remaining documents.
  */
+/** Convenience alias describing the limiter returned by `p-limit`. */
+type Limit = ReturnType<typeof pLimit>;
+
 export class SearchPipeline {
   private readonly config: SearchConfig;
   private readonly searxClient: SearxClient;
@@ -391,7 +394,7 @@ export class SearchPipeline {
     let vectorIngested = 0;
     const documents: StructuredDocument[] = [];
 
-    const fetchOutcomes = await Promise.all(
+    const fetchOutcomes: Array<SuccessfulFetch | null> = await Promise.all(
       results.map((result) =>
         this.fetchLimiter(async () => {
           try {
@@ -443,7 +446,7 @@ export class SearchPipeline {
       docId: computeDocId(entry.raw.finalUrl, entry.raw.headers, entry.raw.body),
     }));
 
-    const extractionOutcomes = await Promise.all(
+    const extractionOutcomes: Array<SuccessfulExtraction | null> = await Promise.all(
       extractionInputs.map((input) =>
         this.extractLimiter(async () => {
           try {

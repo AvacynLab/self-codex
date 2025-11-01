@@ -214,14 +214,6 @@ export function requestCancellation(opId, options = {}) {
     return "already_cancelled";
 }
 /**
- * Alias maintained for parity with earlier checklist wording. The
- * implementation defers to {@link requestCancellation} so callers benefit from
- * the stricter error handling.
- */
-export function requestCancel(opId, options = {}) {
-    return requestCancellation(opId, options);
-}
-/**
  * Request the cancellation of every operation associated with the provided run
  * identifier. The function returns the list of affected operations along with
  * their individual outcomes so callers can report partial failures.

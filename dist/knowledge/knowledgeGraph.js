@@ -1,5 +1,11 @@
 import { mergeProvenance, normaliseProvenanceList } from "../types/provenance.js";
 /**
+ * Fingerprint separator used when building run-scoped identifiers for
+ * knowledge triples. A private separator avoids collisions when subjects,
+ * predicates or objects embed user-controlled characters.
+ */
+const TRIPLE_FINGERPRINT_SEPARATOR = "\u001f";
+/**
  * Error raised when a caller attempts to persist a triple with blank fields.
  * The orchestration server relies on the `code` and `details` payload to emit
  * actionable MCP error responses while keeping logs informative.
@@ -16,6 +22,48 @@ export class KnowledgeBadTripleError extends Error {
             object: triple.object,
         };
     }
+}
+/**
+ * Creates a guard suitable for a single ingest run.  The implementation keeps
+ * a `Set` of canonical fingerprints to guarantee O(1) membership checks and to
+ * make duplicate suppression deterministic irrespective of the triple order.
+ */
+export function createKnowledgeTripleRunGuard() {
+    const seen = new Set();
+    return {
+        remember(triple) {
+            const fingerprint = fingerprintTriple(triple.subject, triple.predicate, triple.object);
+            if (!fingerprint) {
+                return false;
+            }
+            if (seen.has(fingerprint)) {
+                return false;
+            }
+            seen.add(fingerprint);
+            return true;
+        },
+        reset() {
+            seen.clear();
+        },
+        size() {
+            return seen.size;
+        },
+    };
+}
+/**
+ * Builds a deterministic fingerprint for the provided triple components. The
+ * helper trims the values before concatenation so callers can forward raw
+ * extractor output without worrying about stray whitespace breaking
+ * idempotence guarantees.
+ */
+export function fingerprintTriple(subject, predicate, object) {
+    const canonicalSubject = subject.trim();
+    const canonicalPredicate = predicate.trim();
+    const canonicalObject = object.trim();
+    if (!canonicalSubject || !canonicalPredicate || !canonicalObject) {
+        return null;
+    }
+    return [canonicalSubject, canonicalPredicate, canonicalObject].join(TRIPLE_FINGERPRINT_SEPARATOR);
 }
 /**
  * Removes duplicate triples from a batch while preserving insertion order. The

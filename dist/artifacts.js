@@ -143,12 +143,4 @@ export async function scanArtifacts(childrenRoot, childId) {
     await persistManifest(outboxDir, refreshed.values());
     return Array.from(refreshed.values()).sort((a, b) => a.path.localeCompare(b.path));
 }
-/**
- * Backwards compatibility alias preserved for existing imports. Upcoming
- * refactors should migrate callers to {@link scanArtifacts} which more
- * accurately communicates the side effects on the manifest.
- */
-export async function listArtifacts(childrenRoot, childId) {
-    return scanArtifacts(childrenRoot, childId);
-}
 //# sourceMappingURL=artifacts.js.map

@@ -187,5 +187,3 @@ export function toJsonRpc(
   };
 }
 
-/** Backwards-compatible alias to ease migration of existing imports. */
-export const buildJsonRpcErrorResponse = toJsonRpc;
