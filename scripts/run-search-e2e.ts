@@ -7,7 +7,10 @@
  */
 import { fileURLToPath } from "node:url";
 
-import { createSearchStackManager } from "./lib/searchStack.js";
+import {
+  createSearchStackManager,
+  resolveStackLifecyclePolicy,
+} from "./lib/searchStack.js";
 import { ensureValidationRunLayout } from "../src/validationRun/layout.js";
 import {
   formatScenarioSlug,
@@ -62,7 +65,12 @@ async function main(): Promise<void> {
     console.warn("Docker is not available on this host, skipping search e2e suite.");
     return;
   }
-  await manager.bringUpStack();
+  // Honour CI overrides that keep the dockerised stack running between suites so the
+  // containers are only primed once and reused by the smoke validations.
+  const lifecycle = resolveStackLifecyclePolicy();
+  if (lifecycle.shouldBringUp) {
+    await manager.bringUpStack();
+  }
   try {
     await manager.waitForSearxReady();
     await manager.waitForUnstructuredReady();
@@ -75,7 +83,9 @@ async function main(): Promise<void> {
       composeFile: manager.composeFile,
     });
   } finally {
-    await manager.tearDownStack({ allowFailure: true });
+    if (lifecycle.shouldTearDown) {
+      await manager.tearDownStack({ allowFailure: true });
+    }
   }
 }
 

@@ -4,7 +4,10 @@ import { describe, it } from "mocha";
 import { expect } from "chai";
 import sinon from "sinon";
 
-import { createSearchStackManager } from "../../scripts/lib/searchStack.js";
+import {
+  createSearchStackManager,
+  resolveStackLifecyclePolicy,
+} from "../../scripts/lib/searchStack.js";
 
 /** Utility creating a fake child process emitting the provided events. */
 function createFakeChild({
@@ -172,5 +175,20 @@ describe("scripts/lib/searchStack", () => {
       ["compose", "-f", composeFile, "down", "-v"],
       sinon.match.object,
     );
+  });
+
+  it("defaults to bringing the stack up and down when reuse is disabled", () => {
+    const policy = resolveStackLifecyclePolicy({});
+    expect(policy).to.deep.equal({ shouldBringUp: true, shouldTearDown: true });
+  });
+
+  it("skips bring up and tear down when SEARCH_STACK_REUSE requests reuse", () => {
+    const policy = resolveStackLifecyclePolicy({ SEARCH_STACK_REUSE: "1" });
+    expect(policy).to.deep.equal({ shouldBringUp: false, shouldTearDown: false });
+  });
+
+  it("treats textual reuse flags as valid opt-ins", () => {
+    const policy = resolveStackLifecyclePolicy({ SEARCH_STACK_REUSE: "TrUe" });
+    expect(policy).to.deep.equal({ shouldBringUp: false, shouldTearDown: false });
   });
 });

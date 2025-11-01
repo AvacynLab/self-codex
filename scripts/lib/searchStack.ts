@@ -25,6 +25,38 @@ export interface SearchStackDependencies {
   readonly composeFile?: string;
 }
 
+/**
+ * Declarative policy describing whether the orchestration helpers should
+ * actively start or stop the dockerised search stack. This allows higher-level
+ * scripts to reuse already running containers (for example when a CI job
+ * primes the stack once and runs multiple suites against it) without
+ * duplicating environment parsing in every entrypoint.
+ */
+export interface SearchStackLifecyclePolicy {
+  readonly shouldBringUp: boolean;
+  readonly shouldTearDown: boolean;
+}
+
+/**
+ * Computes the {@link SearchStackLifecyclePolicy} from process environment
+ * variables. The helper recognises `SEARCH_STACK_REUSE` so callers can opt-in
+ * to container reuse by setting it to "1", "true" or "yes" (case insensitive).
+ *
+ * @param env optional bag of environment variables, exposed for unit tests so
+ * they can provide deterministic maps without mutating `process.env`.
+ */
+export function resolveStackLifecyclePolicy(
+  env: NodeJS.ProcessEnv = process.env,
+): SearchStackLifecyclePolicy {
+  const rawReuseFlag = env.SEARCH_STACK_REUSE ?? "";
+  const normalizedFlag = rawReuseFlag.trim().toLowerCase();
+  const reuseEnabled = normalizedFlag === "1" || normalizedFlag === "true" || normalizedFlag === "yes";
+  return {
+    shouldBringUp: !reuseEnabled,
+    shouldTearDown: !reuseEnabled,
+  };
+}
+
 /** Options accepted by {@link SearchStackManager.waitForService}. */
 export interface WaitForServiceOptions {
   readonly timeoutMs?: number;

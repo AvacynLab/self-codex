@@ -10,7 +10,10 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { createSearchStackManager } from "./lib/searchStack.js";
+import {
+  createSearchStackManager,
+  resolveStackLifecyclePolicy,
+} from "./lib/searchStack.js";
 import { assessSmokeRun } from "./lib/searchSmokePlan.js";
 import { StructuredLogger } from "../src/logger.js";
 import { EventStore } from "../src/eventStore.js";
@@ -113,7 +116,12 @@ async function runSmoke(): Promise<void> {
     return;
   }
 
-  await manager.bringUpStack();
+  // Respect lifecycle overrides so the smoke validation can reuse containers
+  // provisioned by previous suites (for example the e2e flow in CI).
+  const lifecycle = resolveStackLifecyclePolicy();
+  if (lifecycle.shouldBringUp) {
+    await manager.bringUpStack();
+  }
   let workDir: string | null = null;
   const envBackup = applyEnvOverrides();
   try {
@@ -237,7 +245,9 @@ async function runSmoke(): Promise<void> {
     if (workDir) {
       await rm(workDir, { recursive: true, force: true });
     }
-    await manager.tearDownStack({ allowFailure: true });
+    if (lifecycle.shouldTearDown) {
+      await manager.tearDownStack({ allowFailure: true });
+    }
   }
 }
 

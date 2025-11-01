@@ -113,13 +113,24 @@ jobs:
       - name: Verify Docker availability
         run: docker compose version
 
+      - name: Prime search stack containers
+        run: docker compose -f docker/docker-compose.search.yml up -d --wait
+
       - name: Run search end-to-end suite
+        env:
+          SEARCH_STACK_REUSE: "1"
         run: npm run test:e2e:search
 
       - name: Run search smoke validation
+        env:
+          SEARCH_STACK_REUSE: "1"
         run: npm run smoke:search
 
       - name: Collect compose logs on failure
         if: failure()
         run: |
           docker compose -f docker/docker-compose.search.yml logs || true
+
+      - name: Tear down search stack
+        if: always()
+        run: docker compose -f docker/docker-compose.search.yml down -v
