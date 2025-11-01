@@ -155,21 +155,51 @@ export function createSearchStackManager(deps: SearchStackDependencies = {}): Se
       "X-Forwarded-For": "127.0.0.1",
       "X-Real-IP": "127.0.0.1",
     } as const;
-    try {
-      await waitForService("http://127.0.0.1:8080/healthz", {
-        timeoutMs: 90_000,
-        intervalMs: 2_000,
-        acceptStatus: acceptSearxStatus,
-        headers: forwardedHeaders,
-      });
-    } catch {
-      await waitForService("http://127.0.0.1:8080", {
-        timeoutMs: 30_000,
-        intervalMs: 2_000,
-        acceptStatus: acceptSearxStatus,
-        headers: forwardedHeaders,
-      });
+    /**
+     * Number of retries performed for each endpoint candidate. Combined with the
+     * two-second delay this gives each URL roughly forty seconds to respond
+     * before the helper falls back to the next option.
+     */
+    const maxAttemptsPerEndpoint = 20;
+    const retryDelayMs = 2_000;
+    const endpointCandidates = [
+      "http://127.0.0.1:8080/healthz",
+      "http://127.0.0.1:8080/",
+      "http://localhost:8080/healthz",
+      "http://localhost:8080/",
+    ] as const;
+
+    const attemptEndpoint = async (url: string): Promise<void> => {
+      let lastFailure: Error | null = null;
+      for (let attempt = 0; attempt < maxAttemptsPerEndpoint; attempt += 1) {
+        try {
+          const response = await fetchImpl(url, { headers: forwardedHeaders });
+          const rawStatus = (response as { status: unknown }).status;
+          const statusCode =
+            typeof rawStatus === "number" ? rawStatus : Number.parseInt(String(rawStatus), 10);
+          if (response.ok || acceptSearxStatus(statusCode)) {
+            return;
+          }
+          const statusLabel = Number.isNaN(statusCode) ? rawStatus : statusCode;
+          lastFailure = new Error(`status ${statusLabel}`);
+        } catch (error) {
+          lastFailure = error instanceof Error ? error : new Error(String(error));
+        }
+        await delay(retryDelayMs);
+      }
+      throw lastFailure ?? new Error("Searx readiness failed (unknown error)");
+    };
+
+    let finalError: Error | null = null;
+    for (const endpoint of endpointCandidates) {
+      try {
+        await attemptEndpoint(endpoint);
+        return;
+      } catch (error) {
+        finalError = error instanceof Error ? error : new Error(String(error));
+      }
     }
+    throw finalError ?? new Error("Searx readiness exhausted all endpoints");
   }
 
   async function waitForUnstructuredReady(): Promise<void> {
