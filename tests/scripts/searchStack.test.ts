@@ -128,24 +128,30 @@ describe("scripts/lib/searchStack", () => {
     });
   });
 
-  it("falls back to localhost when the loopback IP keeps failing", async () => {
+  it("probes loopback variants until one responds", async () => {
     const delayStub = sinon.stub().resolves();
-    const fetchStub = sinon.stub().callsFake(async (url: string) => {
-      if (url.startsWith("http://127.0.0.1")) {
-        throw new TypeError("fetch failed");
+    const attempts: string[] = [];
+    const fetchStub = sinon.stub().callsFake(async (url: string, init: RequestInit) => {
+      attempts.push(url);
+      expect(init?.headers).to.deep.equal({
+        "X-Forwarded-For": "127.0.0.1",
+        "X-Real-IP": "127.0.0.1",
+      });
+      if (url.startsWith("http://[::1]")) {
+        return { ok: false, status: 403 } as Response;
       }
-      return { ok: false, status: 403 } as Response;
+      throw new TypeError("fetch failed");
     });
     const manager = createSearchStackManager({ fetchImpl: fetchStub, delay: delayStub });
     await manager.waitForSearxReady();
-    expect(fetchStub.alwaysCalledWithMatch(sinon.match.string, sinon.match.has("headers"))).to.equal(true);
-    const lastCall = fetchStub.getCall(fetchStub.callCount - 1);
-    const [url, requestInit] = lastCall.args as [string, RequestInit];
-    expect(url).to.equal("http://localhost:8080/healthz");
-    expect(requestInit?.headers).to.deep.equal({
-      "X-Forwarded-For": "127.0.0.1",
-      "X-Real-IP": "127.0.0.1",
-    });
+    expect(attempts).to.deep.equal([
+      "http://127.0.0.1:8080/healthz",
+      "http://127.0.0.1:8080/",
+      "http://localhost:8080/healthz",
+      "http://localhost:8080/",
+      "http://[::1]:8080/healthz",
+    ]);
+    sinon.assert.callCount(delayStub, 4);
   });
 
   it("brings up and tears down the docker stack with the compose file", async () => {

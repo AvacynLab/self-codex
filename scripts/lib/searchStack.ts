@@ -156,50 +156,43 @@ export function createSearchStackManager(deps: SearchStackDependencies = {}): Se
       "X-Real-IP": "127.0.0.1",
     } as const;
     /**
-     * Number of retries performed for each endpoint candidate. Combined with the
-     * two-second delay this gives each URL roughly forty seconds to respond
-     * before the helper falls back to the next option.
+     * Round-robin attempts shared across all endpoint candidates. Distributing
+     * the retries avoids waiting forty seconds on an endpoint that is
+     * unreachable on the current host (for example when IPv4 loopback is
+     * disabled but IPv6 works). The two-second delay keeps the overall probing
+     * window around two minutes while still giving Searx enough time to finish
+     * booting under load.
      */
-    const maxAttemptsPerEndpoint = 20;
     const retryDelayMs = 2_000;
+    const maxAttempts = 60;
     const endpointCandidates = [
       "http://127.0.0.1:8080/healthz",
       "http://127.0.0.1:8080/",
       "http://localhost:8080/healthz",
       "http://localhost:8080/",
+      "http://[::1]:8080/healthz",
+      "http://[::1]:8080/",
     ] as const;
 
-    const attemptEndpoint = async (url: string): Promise<void> => {
-      let lastFailure: Error | null = null;
-      for (let attempt = 0; attempt < maxAttemptsPerEndpoint; attempt += 1) {
-        try {
-          const response = await fetchImpl(url, { headers: forwardedHeaders });
-          const rawStatus = (response as { status: unknown }).status;
-          const statusCode =
-            typeof rawStatus === "number" ? rawStatus : Number.parseInt(String(rawStatus), 10);
-          if (response.ok || acceptSearxStatus(statusCode)) {
-            return;
-          }
-          const statusLabel = Number.isNaN(statusCode) ? rawStatus : statusCode;
-          lastFailure = new Error(`status ${statusLabel}`);
-        } catch (error) {
-          lastFailure = error instanceof Error ? error : new Error(String(error));
-        }
-        await delay(retryDelayMs);
-      }
-      throw lastFailure ?? new Error("Searx readiness failed (unknown error)");
-    };
-
-    let finalError: Error | null = null;
-    for (const endpoint of endpointCandidates) {
+    let lastFailure: Error | null = null;
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+      const endpoint = endpointCandidates[attempt % endpointCandidates.length];
       try {
-        await attemptEndpoint(endpoint);
-        return;
+        const response = await fetchImpl(endpoint, { headers: forwardedHeaders });
+        const rawStatus = (response as { status: unknown }).status;
+        const statusCode =
+          typeof rawStatus === "number" ? rawStatus : Number.parseInt(String(rawStatus), 10);
+        if (response.ok || acceptSearxStatus(statusCode)) {
+          return;
+        }
+        const statusLabel = Number.isNaN(statusCode) ? rawStatus : statusCode;
+        lastFailure = new Error(`status ${statusLabel}`);
       } catch (error) {
-        finalError = error instanceof Error ? error : new Error(String(error));
+        lastFailure = error instanceof Error ? error : new Error(String(error));
       }
+      await delay(retryDelayMs);
     }
-    throw finalError ?? new Error("Searx readiness exhausted all endpoints");
+    throw lastFailure ?? new Error("Searx readiness failed after probing loopback endpoints");
   }
 
   async function waitForUnstructuredReady(): Promise<void> {
