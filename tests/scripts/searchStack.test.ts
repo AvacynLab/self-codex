@@ -1,10 +1,14 @@
+import { type SpawnOptions } from "node:child_process";
 import { EventEmitter } from "node:events";
 
 import { describe, it } from "mocha";
 import { expect } from "chai";
 import sinon from "sinon";
 
-import { createSearchStackManager } from "../../scripts/lib/searchStack.js";
+import {
+  createSearchStackManager,
+  resolveStackLifecyclePolicy,
+} from "../../scripts/lib/searchStack.js";
 
 /** Utility creating a fake child process emitting the provided events. */
 function createFakeChild({
@@ -112,6 +116,70 @@ describe("scripts/lib/searchStack", () => {
     sinon.assert.calledOnce(fetchStub);
   });
 
+  it("executes the Searx readiness probe inside the container", async () => {
+    const spawnStub = sinon.stub().returns(createFakeChild({ closeCode: 0 }));
+    const manager = createSearchStackManager({ spawn: spawnStub });
+    await manager.waitForSearxReady();
+    sinon.assert.calledOnce(spawnStub);
+    const [command, args, options] = spawnStub.getCall(0).args as [string, string[], SpawnOptions];
+    expect(command).to.equal("docker");
+    expect(args.slice(0, 7)).to.deep.equal([
+      "compose",
+      "-f",
+      manager.composeFile,
+      "exec",
+      "-T",
+      "searxng",
+      "python3",
+    ]);
+    expect(args[7]).to.equal("-c");
+    expect(args[8]).to.contain("X-Forwarded-For");
+    expect(options).to.include({ stdio: "pipe" });
+  });
+
+  it("retries the container probe until it succeeds", async () => {
+    const spawnStub = sinon.stub();
+    spawnStub.onCall(0).returns(createFakeChild({ closeCode: 1 }));
+    spawnStub.onCall(1).returns(createFakeChild({ closeCode: 0 }));
+    const delayStub = sinon.stub().resolves();
+    const manager = createSearchStackManager({ spawn: spawnStub, delay: delayStub });
+    await manager.waitForSearxReady();
+    sinon.assert.calledTwice(spawnStub);
+    sinon.assert.calledOnce(delayStub);
+  });
+
+  it("executes the Unstructured readiness probe inside the container", async () => {
+    const spawnStub = sinon.stub().returns(createFakeChild({ closeCode: 0 }));
+    const manager = createSearchStackManager({ spawn: spawnStub });
+    await manager.waitForUnstructuredReady();
+    sinon.assert.calledOnce(spawnStub);
+    const [command, args, options] = spawnStub.getCall(0).args as [string, string[], SpawnOptions];
+    expect(command).to.equal("docker");
+    expect(args.slice(0, 7)).to.deep.equal([
+      "compose",
+      "-f",
+      manager.composeFile,
+      "exec",
+      "-T",
+      "unstructured",
+      "sh",
+    ]);
+    expect(args[7]).to.equal("-c");
+    expect(args[8]).to.include("general/v0/general");
+    expect(options).to.include({ stdio: "pipe" });
+  });
+
+  it("retries the Unstructured probe until it succeeds", async () => {
+    const spawnStub = sinon.stub();
+    spawnStub.onCall(0).returns(createFakeChild({ closeCode: 1 }));
+    spawnStub.onCall(1).returns(createFakeChild({ closeCode: 0 }));
+    const delayStub = sinon.stub().resolves();
+    const manager = createSearchStackManager({ spawn: spawnStub, delay: delayStub });
+    await manager.waitForUnstructuredReady();
+    sinon.assert.calledTwice(spawnStub);
+    sinon.assert.calledOnce(delayStub);
+  });
+
   it("brings up and tears down the docker stack with the compose file", async () => {
     const spawnStub = sinon.stub().callsFake(() => createFakeChild({ closeCode: 0 }));
     const composeFile = "/tmp/compose.yml";
@@ -130,5 +198,30 @@ describe("scripts/lib/searchStack", () => {
       ["compose", "-f", composeFile, "down", "-v"],
       sinon.match.object,
     );
+  });
+
+  it("defaults to bringing the stack up and down when reuse is disabled", () => {
+    const policy = resolveStackLifecyclePolicy({});
+    expect(policy).to.deep.equal({ shouldBringUp: true, shouldTearDown: true });
+  });
+
+  it("brings the stack up but skips tear down when reuse retention is enabled", () => {
+    const policy = resolveStackLifecyclePolicy({ SEARCH_STACK_REUSE: "1" });
+    expect(policy).to.deep.equal({ shouldBringUp: true, shouldTearDown: false });
+  });
+
+  it("recognises textual retention flags", () => {
+    const policy = resolveStackLifecyclePolicy({ SEARCH_STACK_REUSE: "Hold" });
+    expect(policy).to.deep.equal({ shouldBringUp: true, shouldTearDown: false });
+  });
+
+  it("normalises boolean-like retention tokens", () => {
+    const policy = resolveStackLifecyclePolicy({ SEARCH_STACK_REUSE: "TrUe" });
+    expect(policy).to.deep.equal({ shouldBringUp: true, shouldTearDown: false });
+  });
+
+  it("skips orchestration entirely when SEARCH_STACK_REUSE asks for external management", () => {
+    const policy = resolveStackLifecyclePolicy({ SEARCH_STACK_REUSE: "external" });
+    expect(policy).to.deep.equal({ shouldBringUp: false, shouldTearDown: false });
   });
 });

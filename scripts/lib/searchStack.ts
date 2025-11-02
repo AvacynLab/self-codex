@@ -25,6 +25,63 @@ export interface SearchStackDependencies {
   readonly composeFile?: string;
 }
 
+/**
+ * Declarative policy describing whether the orchestration helpers should
+ * actively start or stop the dockerised search stack. This allows higher-level
+ * scripts to reuse already running containers (for example when a CI job
+ * primes the stack once and runs multiple suites against it) without
+ * duplicating environment parsing in every entrypoint.
+ */
+export interface SearchStackLifecyclePolicy {
+  readonly shouldBringUp: boolean;
+  readonly shouldTearDown: boolean;
+}
+
+/**
+ * Computes the {@link SearchStackLifecyclePolicy} from process environment
+ * variables. The helper recognises `SEARCH_STACK_REUSE` so callers can opt-in
+ * to container reuse by setting it to "1", "true", "yes", "hold", "retain" or "cache"
+ * (case insensitive). Operators that provide an externally managed stack can pass
+ * "external", "skip" or "manual" to disable both the bring-up and tear-down phases.
+ *
+ * @param env optional bag of environment variables, exposed for unit tests so
+ * they can provide deterministic maps without mutating `process.env`.
+ */
+export function resolveStackLifecyclePolicy(
+  env: NodeJS.ProcessEnv = process.env,
+): SearchStackLifecyclePolicy {
+  const rawReuseFlag = env.SEARCH_STACK_REUSE ?? "";
+  const normalizedFlag = rawReuseFlag.trim().toLowerCase();
+
+  /**
+   * Allow CI (or advanced operators) to indicate that the stack is provisioned externally.
+   * In that scenario the helper neither attempts to start the containers nor to stop them,
+   * and instead assumes some other process already manages their lifecycle.
+   */
+  const externallyManaged = normalizedFlag === "external" || normalizedFlag === "skip" || normalizedFlag === "manual";
+  if (externallyManaged) {
+    return { shouldBringUp: false, shouldTearDown: false };
+  }
+
+  /**
+   * Interpret common truthy tokens as a request to retain the stack after the suite finishes.
+   * The helper still brings the containers up so the first suite primes them, but it skips the
+   * teardown step to keep the services warm for subsequent suites (for example smoke tests).
+   */
+  const reuseEnabled =
+    normalizedFlag === "1" ||
+    normalizedFlag === "true" ||
+    normalizedFlag === "yes" ||
+    normalizedFlag === "hold" ||
+    normalizedFlag === "retain" ||
+    normalizedFlag === "cache";
+  if (reuseEnabled) {
+    return { shouldBringUp: true, shouldTearDown: false };
+  }
+
+  return { shouldBringUp: true, shouldTearDown: true };
+}
+
 /** Options accepted by {@link SearchStackManager.waitForService}. */
 export interface WaitForServiceOptions {
   readonly timeoutMs?: number;
@@ -144,33 +201,160 @@ export function createSearchStackManager(deps: SearchStackDependencies = {}): Se
   }
 
   async function waitForSearxReady(): Promise<void> {
-    try {
-      await waitForService("http://127.0.0.1:8080/healthz", { timeoutMs: 90_000, intervalMs: 2_000 });
-    } catch {
-      await waitForService("http://127.0.0.1:8080", { timeoutMs: 30_000, intervalMs: 2_000 });
+    /**
+     * Keep the python probe in sync with the container healthcheck so we reuse the same
+     * acceptance criteria (status codes below 500) and loopback forwarding headers. By
+     * executing the probe inside the container we bypass host-network restrictions that make
+     * Undici-based fetches fail in CI despite the service being healthy.
+     */
+    const readinessProbe = [
+      "import sys",
+      "from urllib import request, error",
+      "",
+      "STATUS_OK_MAX = 499",
+      "URLS = (",
+      "    'http://127.0.0.1:8080/healthz',",
+      "    'http://127.0.0.1:8080/',",
+      "    'http://localhost:8080/healthz',",
+      "    'http://localhost:8080/',",
+      "    'http://[::1]:8080/healthz',",
+      "    'http://[::1]:8080/',",
+      ")",
+      "HEADERS = {",
+      "    'X-Forwarded-For': '127.0.0.1',",
+      "    'X-Real-IP': '127.0.0.1',",
+      "}",
+      "",
+      "def probe(url):",
+      "    req = request.Request(url, headers=HEADERS)",
+      "    try:",
+      "        response = request.urlopen(req, timeout=10)",
+      "    except error.HTTPError as http_error:",
+      "        return http_error.code <= STATUS_OK_MAX",
+      "    except Exception:",
+      "        return False",
+      "    status = getattr(response, 'status', 500)",
+      "    return status <= STATUS_OK_MAX",
+      "",
+      "if any(probe(url) for url in URLS):",
+      "    sys.exit(0)",
+      "sys.exit(1)",
+    ].join("\n");
+
+    const retryDelayMs = 2_000;
+    const maxAttempts = 30;
+    const probeArgs = [
+      "compose",
+      "-f",
+      composeFile,
+      "exec",
+      "-T",
+      "searxng",
+      "python3",
+      "-c",
+      readinessProbe,
+    ];
+
+    let lastFailure: Error | null = null;
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+      try {
+        const exitCode = await runCommand("docker", probeArgs, {
+          allowFailure: true,
+          inheritStdio: false,
+        });
+        if (exitCode === 0) {
+          return;
+        }
+        lastFailure = new Error(`probe exited with code ${exitCode}`);
+      } catch (error) {
+        lastFailure = error instanceof Error ? error : new Error(String(error));
+      }
+      await delay(retryDelayMs);
     }
+    throw lastFailure ?? new Error("Searx readiness probe failed after repeated attempts");
   }
 
   async function waitForUnstructuredReady(): Promise<void> {
-    try {
-      await waitForService("http://127.0.0.1:8000/healthcheck", {
-        timeoutMs: 90_000,
-        intervalMs: 2_000,
-      });
-      return;
-    } catch (healthError) {
-      // fall through to the legacy inference endpoint if /healthcheck is missing
-      void healthError; // suppress unused variable lint complaints
-    }
+    /**
+     * Mirror the container healthcheck by probing the API from inside the
+     * container. Some CI environments block host loopback requests which made
+     * the previous `fetch`-based implementation fail even though the service
+     * was healthy. The inline shell script selects the available Python
+     * interpreter, executes a small readiness probe that first targets the
+     * dedicated `/healthcheck` endpoint and then falls back to the legacy
+     * general inference route if needed. Any HTTP response below 500 counts as
+     * success so 4xx statuses such as the 422 validation error still pass.
+     */
+    const shellProbe = String.raw`
+if command -v python3 >/dev/null 2>&1; then
+  PYTHON=python3
+elif command -v python >/dev/null 2>&1; then
+  PYTHON=python
+else
+  PYTHON=
+fi
+if [ -z "$PYTHON" ]; then
+  exit 1
+fi
+"$PYTHON" - <<'PY'
+import sys
+from urllib import request, error
 
-    await waitForService("http://127.0.0.1:8000/general/v0/general", {
-      timeoutMs: 90_000,
-      intervalMs: 2_000,
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ text: "ping" }),
-      acceptStatus: (status) => status === 422,
-    });
+STATUS_OK_MAX = 499
+PROBES = (
+    ("http://127.0.0.1:8000/healthcheck", None, {}),
+    ("http://127.0.0.1:8000/general/v0/general", b'{"text":"ping"}', {"Content-Type": "application/json"}),
+)
+
+def probe(url, data, headers):
+    req = request.Request(url, data=data, headers=headers)
+    try:
+        response = request.urlopen(req, timeout=10)
+    except error.HTTPError as http_error:
+        return http_error.code <= STATUS_OK_MAX
+    except Exception:
+        return False
+    status = getattr(response, 'status', 500)
+    return status <= STATUS_OK_MAX
+
+if any(probe(url, data, headers) for url, data, headers in PROBES):
+    sys.exit(0)
+sys.exit(1)
+PY
+exit $?
+`;
+
+    const retryDelayMs = 2_000;
+    const maxAttempts = 30;
+    const probeArgs = [
+      "compose",
+      "-f",
+      composeFile,
+      "exec",
+      "-T",
+      "unstructured",
+      "sh",
+      "-c",
+      shellProbe,
+    ];
+
+    let lastFailure: Error | null = null;
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+      try {
+        const exitCode = await runCommand("docker", probeArgs, {
+          allowFailure: true,
+          inheritStdio: false,
+        });
+        if (exitCode === 0) {
+          return;
+        }
+        lastFailure = new Error(`probe exited with code ${exitCode}`);
+      } catch (error) {
+        lastFailure = error instanceof Error ? error : new Error(String(error));
+      }
+      await delay(retryDelayMs);
+    }
+    throw lastFailure ?? new Error("Unstructured readiness probe failed after repeated attempts");
   }
 
   async function bringUpStack(): Promise<void> {
