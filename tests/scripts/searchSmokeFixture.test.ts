@@ -3,7 +3,13 @@ import { expect } from "chai";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
-import { buildFixtureSearchResponse, createSearchSmokeFixture, __testing } from "../../scripts/lib/searchSmokeFixture.js";
+import {
+  buildFixtureExtractionElements,
+  buildFixtureSearchResponse,
+  createFixtureUnstructuredFetch,
+  createSearchSmokeFixture,
+  __testing,
+} from "../../scripts/lib/searchSmokeFixture.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -80,5 +86,36 @@ describe("search smoke fixture server", () => {
       env: { ...process.env, FIXTURE_BASE_URL: fixture.baseUrl },
     });
     expect(stdout.trim()).to.equal(__testing.ROBOTS_TXT.trim());
+  });
+
+  it("returns static extraction payloads for known documents", () => {
+    for (const document of __testing.FIXTURE_DOCUMENTS) {
+      const elements = buildFixtureExtractionElements(document.slug);
+      expect(elements, `missing extraction for ${document.slug}`).to.not.be.null;
+      expect(elements).to.be.an("array").with.length.greaterThan(0);
+      for (const element of elements ?? []) {
+        expect(element).to.have.property("type").that.is.a("string");
+      }
+    }
+  });
+
+  it("serves unstructured-style responses through the custom fetch helper", async () => {
+    const fixture = await createSearchSmokeFixture();
+    fixtures.push(fixture);
+    const fetchImpl = createFixtureUnstructuredFetch(fixture.baseUrl);
+    const form = new FormData();
+    const slug = __testing.FIXTURE_DOCUMENTS[0]?.slug ?? "retrieval-augmented-generation.html";
+    form.append("files", new Blob(["<html></html>"], { type: "text/html" }), slug);
+    form.append("strategy", "fast");
+
+    const response = await fetchImpl(new URL("/general/v0/general", fixture.baseUrl), {
+      method: "POST",
+      body: form,
+    });
+
+    expect(response.ok).to.be.true;
+    const payload = (await response.json()) as Array<Record<string, unknown>>;
+    expect(payload).to.be.an("array").with.length.greaterThan(0);
+    expect(payload[0]).to.have.property("type");
   });
 });

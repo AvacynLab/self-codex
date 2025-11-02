@@ -1,5 +1,12 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
+import type { RequestInfo, RequestInit } from "undici";
+
+interface FixtureExtractionElement {
+  readonly type: string;
+  readonly text?: string;
+  readonly metadata?: Record<string, unknown>;
+}
 
 /** Description of a static document served by the smoke fixture. */
 interface FixtureDocument {
@@ -7,6 +14,7 @@ interface FixtureDocument {
   readonly title: string;
   readonly summary: string;
   readonly html: string;
+  readonly extraction: readonly FixtureExtractionElement[];
 }
 
 /** Pre-rendered HTML documents ingested during the smoke validation. */
@@ -27,9 +35,42 @@ const FIXTURE_DOCUMENTS: readonly FixtureDocument[] = [
       <p id="intro">Retrieval augmented generation (RAG) combines search with large language models.</p>
       <p>Relevant documents are fetched first so the model can ground its response on factual evidence.</p>
       <p>This smoke fixture keeps the content short so extraction completes quickly during CI runs.</p>
+      <ul>
+        <li>Plan retrieval</li>
+        <li>Query knowledge base</li>
+      </ul>
     </article>
   </body>
 </html>`,
+    extraction: [
+      {
+        type: "title",
+        text: "Retrieval augmented generation primer",
+        metadata: { page_number: 1 },
+      },
+      {
+        type: "paragraph",
+        text: "Retrieval augmented generation (RAG) combines search with large language models.",
+      },
+      {
+        type: "paragraph",
+        text: "Relevant documents are fetched first so the model can ground its response on factual evidence.",
+      },
+      {
+        type: "paragraph",
+        text: "This smoke fixture keeps the content short so extraction completes quickly during CI runs.",
+      },
+      {
+        type: "list_item",
+        text: "Plan retrieval",
+        metadata: { ordinal: 1 },
+      },
+      {
+        type: "list_item",
+        text: "Query knowledge base",
+        metadata: { ordinal: 2 },
+      },
+    ],
   },
   {
     slug: "python-dataclasses-overview.html",
@@ -46,9 +87,31 @@ const FIXTURE_DOCUMENTS: readonly FixtureDocument[] = [
       <h1>Python dataclasses tutorial excerpt</h1>
       <p>Dataclasses remove boilerplate by generating __init__ and __repr__ automatically.</p>
       <p class="tip">Default factories can be used to compute field values lazily.</p>
+      <pre><code>@dataclass
+class Config:
+    retries: int = 3</code></pre>
     </article>
   </body>
 </html>`,
+    extraction: [
+      {
+        type: "title",
+        text: "Python dataclasses tutorial excerpt",
+        metadata: { page_number: 1 },
+      },
+      {
+        type: "paragraph",
+        text: "Dataclasses remove boilerplate by generating __init__ and __repr__ automatically.",
+      },
+      {
+        type: "paragraph",
+        text: "Default factories can be used to compute field values lazily.",
+      },
+      {
+        type: "code",
+        text: "@dataclass\nclass Config:\n    retries: int = 3",
+      },
+    ],
   },
 ];
 
@@ -83,6 +146,16 @@ export function buildFixtureSearchResponse(baseUrl: string, query: string): Fixt
     mimetype: "text/html",
   }));
   return { query, results };
+}
+
+/**
+ * Returns the static extraction elements associated with the provided fixture slug.
+ * The data mirrors the payload returned by the Unstructured API so the smoke pipeline
+ * can validate ingestion without relying on external services.
+ */
+export function buildFixtureExtractionElements(slug: string): readonly FixtureExtractionElement[] | null {
+  const document = FIXTURE_DOCUMENTS.find((entry) => entry.slug === slug);
+  return document ? document.extraction : null;
 }
 
 /** Handles HTTP requests routed to the smoke fixture server. */
@@ -159,6 +232,62 @@ function handleRequest(
   response.end("not found");
 }
 
+/**
+ * Creates a `fetch` implementation that mimics the Unstructured API for the smoke fixture.
+ * Only POST requests targeting `/general/v0/general` on the fixture origin are intercepted;
+ * other requests fall back to the global fetch implementation.
+ */
+export function createFixtureUnstructuredFetch(baseUrl: string): typeof fetch {
+  const target = new URL(baseUrl);
+  const fallbackFetch = globalThis.fetch.bind(globalThis);
+
+  return async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    const requestUrl = resolveRequestUrl(input, target);
+    const method = (init?.method ?? (input instanceof Request ? input.method : "GET")).toUpperCase();
+
+    if (requestUrl.origin === target.origin && requestUrl.pathname === "/general/v0/general" && method === "POST") {
+      const body = init?.body ?? (input instanceof Request ? input.body : undefined);
+      if (!(body instanceof FormData)) {
+        throw new TypeError("search smoke fixture expected a FormData payload");
+      }
+
+      const entries = body.getAll("files");
+      const file = entries.find((entry): entry is File => entry instanceof File) ?? null;
+      if (!file) {
+        throw new TypeError("search smoke fixture is missing the uploaded document");
+      }
+
+      const elements = buildFixtureExtractionElements(file.name);
+      if (!elements) {
+        return new Response(JSON.stringify({ error: "document not found" }), {
+          status: 404,
+          headers: { "content-type": "application/json; charset=utf-8" },
+        });
+      }
+
+      return new Response(JSON.stringify(elements), {
+        status: 200,
+        headers: { "content-type": "application/json; charset=utf-8" },
+      });
+    }
+
+    return fallbackFetch(input as RequestInfo, init);
+  };
+}
+
+function resolveRequestUrl(input: RequestInfo | URL, base: URL): URL {
+  if (typeof input === "string") {
+    return new URL(input, base);
+  }
+  if (input instanceof URL) {
+    return input;
+  }
+  if (input instanceof Request) {
+    return new URL(input.url);
+  }
+  throw new TypeError("unsupported request input passed to search smoke fixture");
+}
+
 /** Spawns the HTTP fixture server bound to the loopback interface. */
 export async function createSearchSmokeFixture(): Promise<SearchSmokeFixture> {
   let baseUrl = "";
@@ -210,3 +339,4 @@ export const __testing = {
   FIXTURE_DOCUMENTS,
   ROBOTS_TXT,
 };
+

@@ -16,10 +16,14 @@ import {
   resolveStackLifecyclePolicy,
 } from "./lib/searchStack.js";
 import { assessSmokeRun } from "./lib/searchSmokePlan.js";
-import { createSearchSmokeFixture, type SearchSmokeFixture } from "./lib/searchSmokeFixture.js";
+import {
+  createFixtureUnstructuredFetch,
+  createSearchSmokeFixture,
+  type SearchSmokeFixture,
+} from "./lib/searchSmokeFixture.js";
 import { StructuredLogger } from "../src/logger.js";
 import { EventStore } from "../src/eventStore.js";
-import { loadSearchConfig } from "../src/search/config.js";
+import { type SearchConfig, loadSearchConfig } from "../src/search/config.js";
 import { SearxClient } from "../src/search/searxClient.js";
 import { SearchDownloader } from "../src/search/downloader.js";
 import { UnstructuredExtractor } from "../src/search/extractor.js";
@@ -57,7 +61,6 @@ const SMOKE_SCENARIO: ValidationScenarioDefinition = {
  * Unstructured strategy).
  */
 const BASE_ENV_OVERRIDES: Record<string, string> = {
-  UNSTRUCTURED_BASE_URL: "http://127.0.0.1:8000",
   SEARCH_INJECT_GRAPH: "1",
   SEARCH_INJECT_VECTOR: "1",
   SEARCH_PARALLEL_FETCH: "2",
@@ -94,21 +97,25 @@ function restoreEnv(backup: Map<string, string | undefined>): void {
   }
 }
 
-async function createPipeline(workDir: string): Promise<{
+async function createPipeline(
+  workDir: string,
+  config: SearchConfig,
+  overrides?: { extractor?: UnstructuredExtractor },
+): Promise<{
   pipeline: SearchPipeline;
   knowledgeGraph: KnowledgeGraph;
   vectorMemory: LocalVectorMemory;
 }> {
   const logger = new StructuredLogger();
   const eventStore = new EventStore({ maxHistory: 512, logger });
-  const config = loadSearchConfig();
   const knowledgeGraph = new KnowledgeGraph();
   const vectorMemory = await LocalVectorMemory.create({ directory: workDir });
+  const extractor = overrides?.extractor ?? new UnstructuredExtractor(config);
   const pipeline = new SearchPipeline({
     config,
     searxClient: new SearxClient(config),
     downloader: new SearchDownloader(config.fetch),
-    extractor: new UnstructuredExtractor(config),
+    extractor,
     knowledgeIngestor: new KnowledgeGraphIngestor({ graph: knowledgeGraph }),
     vectorIngestor: new VectorStoreIngestor({ memory: vectorMemory }),
     eventStore,
@@ -146,11 +153,15 @@ async function runSmoke(): Promise<void> {
       SEARCH_SEARX_API_PATH: "/search",
       SEARCH_SEARX_ENGINES: "fixture",
       SEARCH_SEARX_CATEGORIES: "general",
+      UNSTRUCTURED_BASE_URL: fixture.baseUrl,
     };
     envBackup = applyEnvOverrides(appliedOverrides);
 
     workDir = await mkdtemp(join(tmpdir(), "search-smoke-"));
-    const { pipeline, knowledgeGraph, vectorMemory } = await createPipeline(workDir);
+    const config = loadSearchConfig();
+    const unstructuredFetch = createFixtureUnstructuredFetch(fixture.baseUrl);
+    const extractor = new UnstructuredExtractor(config, unstructuredFetch);
+    const { pipeline, knowledgeGraph, vectorMemory } = await createPipeline(workDir, config, { extractor });
 
     /**
      * Reliable smoke probes prioritise lightweight HTML sources to avoid PDF
