@@ -105,6 +105,7 @@ async function createPipeline(
   pipeline: SearchPipeline;
   knowledgeGraph: KnowledgeGraph;
   vectorMemory: LocalVectorMemory;
+  eventStore: EventStore;
 }> {
   const logger = new StructuredLogger();
   const eventStore = new EventStore({ maxHistory: 512, logger });
@@ -122,7 +123,7 @@ async function createPipeline(
     logger,
     metrics: new SearchMetricsRecorder(),
   });
-  return { pipeline, knowledgeGraph, vectorMemory };
+  return { pipeline, knowledgeGraph, vectorMemory, eventStore };
 }
 
 async function runSmoke(): Promise<void> {
@@ -161,7 +162,12 @@ async function runSmoke(): Promise<void> {
     const config = loadSearchConfig();
     const unstructuredFetch = createFixtureUnstructuredFetch(fixture.baseUrl);
     const extractor = new UnstructuredExtractor(config, unstructuredFetch);
-    const { pipeline, knowledgeGraph, vectorMemory } = await createPipeline(workDir, config, { extractor });
+    const {
+      pipeline,
+      knowledgeGraph,
+      vectorMemory,
+      eventStore,
+    } = await createPipeline(workDir, config, { extractor });
 
     /**
      * Reliable smoke probes prioritise lightweight HTML sources to avoid PDF
