@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 // NOTE: Node built-in modules are imported with the explicit `node:` prefix to guarantee ESM resolution in Node.js.
+import { readOptionalEnum, readOptionalInt } from "./config/env.js";
 
 /**
  * Options describing the HTTP exposure of the orchestrator. When `enabled` is
@@ -35,6 +36,28 @@ export interface DashboardRuntimeOptions {
   /** Interval (milliseconds) used to refresh SSE clients automatically. */
   streamIntervalMs: number;
 }
+
+/** Persistence backend used for search job state tracking. */
+export type SearchJobStoreMode = "memory" | "file";
+
+/** fsync policy applied by the file-backed search job store. */
+export type SearchJobStoreFsyncMode = "always" | "interval" | "never";
+
+/**
+ * Options derived from environment variables to configure the search job
+ * persistence layer. The settings are shared between the orchestrator runtime
+ * and tool façades so a single source of truth drives instantiation.
+ */
+export interface SearchJobStoreOptions {
+  /** Backend implementation to instantiate (`memory` or `file`). */
+  readonly mode: SearchJobStoreMode;
+  /** TTL (milliseconds) applied to terminal jobs during garbage collection. */
+  readonly jobTtlMs: number;
+  /** fsync policy when the file-backed journal is active. */
+  readonly journalFsync: SearchJobStoreFsyncMode;
+}
+
+const DEFAULT_SEARCH_JOB_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 /**
  * Runtime configuration parsed from CLI arguments.
@@ -693,6 +716,19 @@ export function parseOrchestratorRuntimeOptions(argv: string[]): OrchestratorRun
     features: { ...state.featureToggles },
     timings: { ...state.timings },
     safety: { ...state.safety },
+  };
+}
+
+/** Reads the persistence configuration for the search job store from env vars. */
+export function loadSearchJobStoreOptions(): SearchJobStoreOptions {
+  const mode = readOptionalEnum("MCP_SEARCH_STATUS_PERSIST", ["memory", "file"]) ?? "file";
+  const ttlOverride = readOptionalInt("MCP_SEARCH_JOB_TTL_MS", { min: 60_000 });
+  const journalFsync =
+    readOptionalEnum("MCP_SEARCH_JOURNAL_FSYNC", ["always", "interval", "never"]) ?? "interval";
+  return {
+    mode,
+    jobTtlMs: ttlOverride ?? DEFAULT_SEARCH_JOB_TTL_MS,
+    journalFsync,
   };
 }
 

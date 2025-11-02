@@ -10,6 +10,7 @@ import {
   FEATURE_FLAG_DEFAULTS,
   parseOrchestratorRuntimeOptions,
   createHttpSessionId,
+  loadSearchJobStoreOptions,
 } from "../src/serverOptions.js";
 
 describe("parseOrchestratorRuntimeOptions", () => {
@@ -259,5 +260,53 @@ describe("parseOrchestratorRuntimeOptions", () => {
     const id = createHttpSessionId();
     const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
     expect(id).to.match(uuidPattern);
+  });
+});
+
+describe("loadSearchJobStoreOptions", () => {
+  const originalPersist = process.env.MCP_SEARCH_STATUS_PERSIST;
+  const originalTtl = process.env.MCP_SEARCH_JOB_TTL_MS;
+  const originalFsync = process.env.MCP_SEARCH_JOURNAL_FSYNC;
+
+  afterEach(() => {
+    if (originalPersist === undefined) {
+      delete process.env.MCP_SEARCH_STATUS_PERSIST;
+    } else {
+      process.env.MCP_SEARCH_STATUS_PERSIST = originalPersist;
+    }
+
+    if (originalTtl === undefined) {
+      delete process.env.MCP_SEARCH_JOB_TTL_MS;
+    } else {
+      process.env.MCP_SEARCH_JOB_TTL_MS = originalTtl;
+    }
+
+    if (originalFsync === undefined) {
+      delete process.env.MCP_SEARCH_JOURNAL_FSYNC;
+    } else {
+      process.env.MCP_SEARCH_JOURNAL_FSYNC = originalFsync;
+    }
+  });
+
+  it("retourne les valeurs par défaut lorsque les variables ne sont pas définies", () => {
+    delete process.env.MCP_SEARCH_STATUS_PERSIST;
+    delete process.env.MCP_SEARCH_JOB_TTL_MS;
+    delete process.env.MCP_SEARCH_JOURNAL_FSYNC;
+
+    const options = loadSearchJobStoreOptions();
+    expect(options.mode).to.equal("file");
+    expect(options.jobTtlMs).to.equal(7 * 24 * 60 * 60 * 1000);
+    expect(options.journalFsync).to.equal("interval");
+  });
+
+  it("honore les overrides de configuration", () => {
+    process.env.MCP_SEARCH_STATUS_PERSIST = "memory";
+    process.env.MCP_SEARCH_JOB_TTL_MS = "3600000";
+    process.env.MCP_SEARCH_JOURNAL_FSYNC = "always";
+
+    const options = loadSearchJobStoreOptions();
+    expect(options.mode).to.equal("memory");
+    expect(options.jobTtlMs).to.equal(3_600_000);
+    expect(options.journalFsync).to.equal("always");
   });
 });

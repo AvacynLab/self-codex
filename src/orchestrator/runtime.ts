@@ -62,6 +62,7 @@ import {
   FeatureToggles,
   RuntimeTimingOptions,
   ChildSafetyOptions,
+  loadSearchJobStoreOptions,
 } from "../serverOptions.js";
 import { ChildSupervisor, type ChildLogEventSnapshot } from "../children/supervisor.js";
 import { CHILD_SANDBOX_PROFILES, type ChildSandboxProfileName } from "../children/sandbox.js";
@@ -96,7 +97,10 @@ import {
   VectorStoreIngestor,
   SearchPipeline,
   SearchMetricsRecorder,
+  FileSearchJobStore,
+  InMemorySearchJobStore,
 } from "../search/index.js";
+import type { SearchJobStore } from "../search/index.js";
 import { HybridRetriever } from "../memory/retriever.js";
 import { LessonsStore, type LessonSignal } from "../learning/lessons.js";
 import {
@@ -1128,11 +1132,56 @@ interface SearchRuntimeContext {
   readonly knowledgeIngestor: KnowledgeGraphIngestor | null;
   readonly vectorIngestor: VectorStoreIngestor | null;
   readonly pipeline: SearchPipeline;
+  readonly jobStore: SearchJobStore | null;
   dispose(): void;
 }
 
 let searchRuntimeInstance: SearchRuntimeContext | null = null;
 let searchRuntimeInitialisation: Promise<SearchRuntimeContext> | null = null;
+
+async function instantiateSearchJobStore(): Promise<SearchJobStore | null> {
+  const options = loadSearchJobStoreOptions();
+  if (options.mode === "memory") {
+    logger.info("search_job_store_initialised", {
+      backend: "memory",
+      ttl_ms: options.jobTtlMs,
+    });
+    return new InMemorySearchJobStore({ ttlMs: options.jobTtlMs });
+  }
+
+  let directory: string | null = null;
+  try {
+    directory = resolveWorkspacePath("validation_run/search/jobs");
+    const store = new FileSearchJobStore({
+      directory,
+      ttlMs: options.jobTtlMs,
+      fsyncMode: options.journalFsync,
+      log: (level, message) => {
+        if (level === "warn") {
+          logger.warn("search_job_store_warning", { message });
+        } else {
+          logger.info("search_job_store_notice", { message });
+        }
+      },
+    });
+    await store.initialise();
+    logger.info("search_job_store_initialised", {
+      backend: "file",
+      directory,
+      ttl_ms: options.jobTtlMs,
+      fsync: options.journalFsync,
+    });
+    return store;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    logger.error("search_job_store_initialisation_failed", {
+      backend: options.mode,
+      directory,
+      message,
+    });
+    return null;
+  }
+}
 
 /**
  * Lazily materialises the search runtime by loading the immutable config,
@@ -1157,6 +1206,8 @@ async function buildSearchRuntime(): Promise<SearchRuntimeContext> {
     vectorIngestor = new VectorStoreIngestor({ memory: vectorMemory });
   }
 
+  const jobStore = await instantiateSearchJobStore();
+
   const pipeline = new SearchPipeline({
     config,
     searxClient,
@@ -1164,6 +1215,7 @@ async function buildSearchRuntime(): Promise<SearchRuntimeContext> {
     extractor,
     ...(knowledgeIngestor ? { knowledgeIngestor } : {}),
     ...(vectorIngestor ? { vectorIngestor } : {}),
+    ...(jobStore ? { jobStore } : {}),
     eventStore,
     logger,
     metrics,
@@ -1177,9 +1229,16 @@ async function buildSearchRuntime(): Promise<SearchRuntimeContext> {
     extractor,
     knowledgeIngestor,
     vectorIngestor,
+    jobStore,
     pipeline,
     dispose() {
       downloader.dispose();
+      if (jobStore) {
+        const disposable = jobStore as unknown as { dispose?: () => Promise<void> };
+        if (typeof disposable.dispose === "function") {
+          void disposable.dispose();
+        }
+      }
     },
   };
 }
@@ -2290,7 +2349,33 @@ function getSearchIndexToolContext(): SearchIndexToolContext {
 }
 
 function getSearchStatusToolContext(): SearchStatusToolContext {
-  return { logger };
+  return { logger, jobStore: searchRuntimeInstance?.jobStore ?? null };
+}
+
+/** Snapshot exposed to external readiness probes describing the search job store backend. */
+export interface SearchJobStoreSnapshot {
+  /** Persistence backend negotiated from environment variables. */
+  readonly mode: "memory" | "file";
+  /** Whether the orchestrator managed to initialise the backend. */
+  readonly available: boolean;
+  /** Absolute directory used by the file journal, when applicable. */
+  readonly directory: string | null;
+}
+
+/**
+ * Surfaces the last known state of the search job store so transports can report
+ * actionable diagnostics (e.g. readiness probes). The helper mirrors the
+ * initialisation logic used by {@link instantiateSearchJobStore} to avoid drift
+ * between the configured backend and the health snapshot shared externally.
+ */
+export function getSearchJobStoreSnapshot(): SearchJobStoreSnapshot {
+  const options = loadSearchJobStoreOptions();
+  const directory = options.mode === "file" ? resolveWorkspacePath("validation_run/search/jobs") : null;
+  return {
+    mode: options.mode,
+    available: searchRuntimeInstance?.jobStore != null,
+    directory,
+  } satisfies SearchJobStoreSnapshot;
 }
 
 /** @internal Expose context builders so tests can inspect optional field sanitisation. */

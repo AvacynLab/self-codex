@@ -25,6 +25,19 @@ import {
 } from "./metrics.js";
 import { computeDocId } from "./downloader.js";
 import type { SearxResult, StructuredDocument } from "./types.js";
+import type {
+  JobBudget,
+  JobFailure,
+  JobMeta,
+  JobProgress,
+  JobProvenance,
+  JobRecord,
+  JobStatePatch,
+  JobSummary,
+  JobStatus,
+  SearchJobStore,
+  JsonValue,
+} from "./jobStore.js";
 
 /** Dependencies required to orchestrate the search pipeline. */
 export interface SearchPipelineDependencies {
@@ -37,6 +50,8 @@ export interface SearchPipelineDependencies {
   readonly eventStore?: EventStore;
   readonly logger?: StructuredLogger;
   readonly metrics?: SearchMetricsRecorder;
+  readonly jobStore?: SearchJobStore | null;
+  readonly clock?: () => number;
 }
 
 /** Parameters describing a job executed by the pipeline. */
@@ -51,6 +66,8 @@ export interface SearchJobParameters {
   readonly fetchContent?: boolean;
   readonly injectGraph?: boolean;
   readonly injectVector?: boolean;
+  /** Optional orchestration metadata persisted in the job store. */
+  readonly jobContext?: SearchJobContext;
 }
 
 /** Summary statistics returned after a job completes. */
@@ -100,6 +117,8 @@ export interface DirectIngestParameters {
   readonly label?: string | null;
   readonly injectGraph?: boolean;
   readonly injectVector?: boolean;
+  /** Optional orchestration metadata persisted in the job store. */
+  readonly jobContext?: SearchJobContext;
 }
 
 /** Result returned after a direct ingestion completes. */
@@ -129,6 +148,73 @@ type SuccessfulExtraction = {
   readonly document: StructuredDocument;
 };
 
+type PipelinePhase = "fetch" | "extract" | "ingest";
+
+interface PhaseProgressPayload {
+  readonly success: number;
+  readonly total: number;
+}
+
+interface StageDurations {
+  readonly totalMs: number;
+  readonly searxMs: number;
+  readonly fetchSamples: readonly number[];
+  readonly extractSamples: readonly number[];
+  readonly graphSamples: readonly number[];
+  readonly vectorSamples: readonly number[];
+}
+
+interface FinaliseJobInput {
+  readonly status: "completed";
+  readonly query: string;
+  readonly stats: SearchJobStats;
+  readonly errors: readonly SearchJobError[];
+  readonly errorTimestamps: readonly number[];
+  readonly artifacts: ReadonlySet<string>;
+  readonly jobContext: SearchJobContext;
+  readonly durations: StageDurations;
+}
+
+interface FailJobInput {
+  readonly errors: readonly SearchJobError[];
+  readonly errorTimestamps: readonly number[];
+  readonly artifacts: ReadonlySet<string>;
+  readonly jobContext: SearchJobContext;
+  readonly durations: StageDurations;
+}
+
+/**
+ * Optional provenance hints describing how the job reached the orchestrator.
+ * Callers may omit most fields; sensible defaults keep persistence payloads
+ * consistent even when transports do not provide exhaustive metadata.
+ */
+export interface SearchJobProvenanceInput {
+  readonly trigger?: string;
+  readonly transport?: string;
+  readonly requestId?: string | null;
+  readonly requester?: string | null;
+  readonly remoteAddress?: string | null;
+  readonly extra?: Readonly<Record<string, JsonValue>>;
+}
+
+/**
+ * Context propagated alongside {@link SearchJobParameters} so the pipeline can
+ * persist durable job metadata. Keeping the structure narrow avoids leaking
+ * transport-specific objects while giving operators enough information to
+ * diagnose and replay runs.
+ */
+export interface SearchJobContext {
+  readonly createdAt?: number;
+  readonly tags?: readonly string[];
+  readonly requester?: string | null;
+  readonly budget?: Partial<JobBudget>;
+  readonly provenance?: SearchJobProvenanceInput;
+  readonly artifacts?: readonly string[];
+  readonly notes?: string | null;
+  readonly extra?: Readonly<Record<string, JsonValue>>;
+  readonly idempotencyKey?: string | null;
+}
+
 /**
  * Orchestrates the end-to-end search flow (Searx query → download → extraction
  * → normalisation → ingestion). Errors are surfaced as structured entries in
@@ -147,6 +233,8 @@ export class SearchPipeline {
   private readonly eventStore: EventStore | null;
   private readonly logger: StructuredLogger | null;
   private readonly metrics: SearchMetricsRecorder | null;
+  private readonly jobStore: SearchJobStore | null;
+  private readonly clock: () => number;
   private readonly fetchLimiter: Limit;
   private readonly extractLimiter: Limit;
 
@@ -160,12 +248,20 @@ export class SearchPipeline {
     this.eventStore = dependencies.eventStore ?? null;
     this.logger = dependencies.logger ?? null;
     this.metrics = dependencies.metrics ?? null;
+    this.jobStore = dependencies.jobStore ?? null;
+    this.clock = dependencies.clock ?? (() => Date.now());
     this.fetchLimiter = pLimit(Math.max(1, Math.floor(this.config.fetch.parallelism)));
     this.extractLimiter = pLimit(Math.max(1, Math.floor(this.config.pipeline.parallelExtract)));
   }
 
+  /** Returns the monotonic clock used for job timestamps. */
+  private now(): number {
+    return this.clock();
+  }
+
   /** Executes the full search job and returns structured results. */
   async runSearchJob(parameters: SearchJobParameters): Promise<SearchJobResult> {
+    const invocationStartedAt = this.now();
     const query = parameters.query.trim();
     const maxResults = normaliseMaxResults(parameters.maxResults, this.config.pipeline.maxResults);
     const effectiveCategories = normaliseList(parameters.categories, this.config.searx.categories);
@@ -173,10 +269,32 @@ export class SearchPipeline {
     const fetchContent = parameters.fetchContent ?? true;
     const injectGraph = parameters.injectGraph ?? this.config.pipeline.injectGraph;
     const injectVector = parameters.injectVector ?? this.config.pipeline.injectVector;
-    const jobId = resolveJobId(
-      parameters.jobId,
-      computeSearchJobFingerprint({
-        query,
+    const fingerprint = computeSearchJobFingerprint({
+      query,
+      categories: effectiveCategories,
+      engines: effectiveEngines,
+      maxResults,
+      fetchContent,
+      injectGraph,
+      injectVector,
+      language: parameters.language ?? null,
+      safeSearch: parameters.safeSearch ?? null,
+    });
+    const jobId = resolveJobId(parameters.jobId, fingerprint);
+
+    const jobContext = parameters.jobContext ?? {};
+    const jobMeta = this.buildJobMeta({
+      id: jobId,
+      query,
+      normalizedQuery: normaliseJobQuery(query),
+      createdAt: jobContext.createdAt ?? invocationStartedAt,
+      tags: jobContext.tags ?? [],
+      requester: jobContext.requester ?? null,
+      ...(jobContext.budget ? { budget: jobContext.budget } : {}),
+      ...(jobContext.provenance ? { provenance: jobContext.provenance } : {}),
+      ...(jobContext.extra ? { extra: jobContext.extra } : {}),
+      idempotencyKey: jobContext.idempotencyKey ?? null,
+      options: {
         categories: effectiveCategories,
         engines: effectiveEngines,
         maxResults,
@@ -185,10 +303,40 @@ export class SearchPipeline {
         injectVector,
         language: parameters.language ?? null,
         safeSearch: parameters.safeSearch ?? null,
-      }),
-    );
+      },
+    });
 
+    const registration = await this.registerJob(jobId, jobMeta);
+    const storeWritable = registration.canMutate;
+
+    const artifacts = new Set<string>(sanitiseArtifacts(jobContext.artifacts));
     const errors: SearchJobError[] = [];
+    const errorTimestamps: number[] = [];
+    const recordError = (failure: SearchJobError): void => {
+      errors.push(failure);
+      errorTimestamps.push(this.now());
+    };
+
+    const fetchDurations: number[] = [];
+    const extractDurations: number[] = [];
+    const graphDurations: number[] = [];
+    const vectorDurations: number[] = [];
+    let searxDuration = 0;
+
+    if (storeWritable) {
+      const progress = this.buildProgress("initialising", "initialising search pipeline", 0);
+      await this.safeUpdateJob(
+        jobId,
+        {
+          status: "running",
+          startedAt: progress.updatedAt,
+          updatedAt: progress.updatedAt,
+          progress,
+        },
+        "initialising",
+      );
+      this.emitJobProgress(jobId, progress);
+    }
 
     this.emitJobStarted(jobId, {
       query,
@@ -208,98 +356,215 @@ export class SearchPipeline {
       ...(parameters.safeSearch !== undefined ? { safeSearch: parameters.safeSearch } : {}),
     };
 
-    const searchResponse = await this.executeWithMetrics(
-      "searxQuery",
-      () => this.searxClient.search(query, queryOptions),
-      (error) => (error instanceof SearxClientError ? error.code : null),
-      { domain: deriveDomain(this.config.searx.baseUrl), contentType: "application/json" },
-    ).catch((error) => {
-      const failure = buildError("search", null, error);
-      errors.push(failure);
-      this.emitError(jobId, failure);
-      this.logger?.error("search_query_failed", {
-        job_id: jobId,
-        message: failure.message,
-        code: failure.code,
+    let uniqueResults: SearxResult[] = [];
+    let processingOutcome: ProcessedResultSet = {
+      documents: [],
+      fetchedDocuments: 0,
+      structuredDocuments: 0,
+      graphIngested: 0,
+      vectorIngested: 0,
+    };
+    let rawSearxResponse: SearxQueryResponse["raw"] | null = null;
+
+    try {
+      const searxStartedAt = this.now();
+      const searchResponse = await this.executeWithMetrics(
+        "searxQuery",
+        () => this.searxClient.search(query, queryOptions),
+        (error) => (error instanceof SearxClientError ? error.code : null),
+        { domain: deriveDomain(this.config.searx.baseUrl), contentType: "application/json" },
+      ).catch((error) => {
+        const failure = buildError("search", null, error);
+        recordError(failure);
+        this.emitError(jobId, failure);
+        this.logger?.error("search_query_failed", {
+          job_id: jobId,
+          message: failure.message,
+          code: failure.code,
+        });
+        return null;
       });
-      return null;
-    });
+      searxDuration = this.now() - searxStartedAt;
 
-    if (!searchResponse) {
-      const stats: SearchJobStats = {
-        requestedResults: maxResults,
-        receivedResults: 0,
-        fetchedDocuments: 0,
-        structuredDocuments: 0,
-        graphIngested: 0,
-        vectorIngested: 0,
-      };
-      this.emitJobCompleted(jobId, query, stats, errors.length);
-      return {
-        jobId,
-        query,
-        results: [],
-        documents: [],
-        errors,
-        stats,
-        rawSearxResponse: null,
-        metrics: this.metrics ? this.metrics.snapshot() : null,
-      };
-    }
+      if (!searchResponse) {
+        const stats: SearchJobStats = {
+          requestedResults: maxResults,
+          receivedResults: 0,
+          fetchedDocuments: 0,
+          structuredDocuments: 0,
+          graphIngested: 0,
+          vectorIngested: 0,
+        };
+        if (storeWritable) {
+          await this.finaliseJob(jobId, {
+            status: "completed",
+            query,
+            stats,
+            errors,
+            errorTimestamps,
+            artifacts,
+            jobContext,
+            durations: this.collectDurations(
+              invocationStartedAt,
+              searxDuration,
+              fetchDurations,
+              extractDurations,
+              graphDurations,
+              vectorDurations,
+            ),
+          });
+        }
+        this.emitJobCompleted(jobId, query, stats, errors.length);
+        return {
+          jobId,
+          query,
+          results: [],
+          documents: [],
+          errors,
+          stats,
+          rawSearxResponse: null,
+          metrics: this.metrics ? this.metrics.snapshot() : null,
+        };
+      }
 
-    const uniqueResults = deduplicateByUrl(searchResponse.results).slice(0, maxResults);
+      rawSearxResponse = searchResponse.raw;
+      uniqueResults = deduplicateByUrl(searchResponse.results).slice(0, maxResults);
 
-    if (!fetchContent || uniqueResults.length === 0) {
+      if (storeWritable) {
+        const progress = this.buildProgress(
+          "search",
+          uniqueResults.length > 0
+            ? `received ${uniqueResults.length} candidates`
+            : "no results received",
+          uniqueResults.length > 0 ? 0.25 : 0.5,
+        );
+        await this.safeUpdateJob(jobId, { updatedAt: progress.updatedAt, progress }, "after-search");
+        this.emitJobProgress(jobId, progress);
+      }
+
+      if (!fetchContent || uniqueResults.length === 0) {
+        const stats: SearchJobStats = {
+          requestedResults: maxResults,
+          receivedResults: uniqueResults.length,
+          fetchedDocuments: 0,
+          structuredDocuments: 0,
+          graphIngested: 0,
+          vectorIngested: 0,
+        };
+        if (storeWritable) {
+          await this.finaliseJob(jobId, {
+            status: "completed",
+            query,
+            stats,
+            errors,
+            errorTimestamps,
+            artifacts,
+            jobContext,
+            durations: this.collectDurations(
+              invocationStartedAt,
+              searxDuration,
+              fetchDurations,
+              extractDurations,
+              graphDurations,
+              vectorDurations,
+            ),
+          });
+        }
+        this.emitJobCompleted(jobId, query, stats, errors.length);
+        return {
+          jobId,
+          query,
+          results: uniqueResults,
+          documents: [],
+          errors,
+          stats,
+          rawSearxResponse,
+          metrics: this.metrics ? this.metrics.snapshot() : null,
+        };
+      }
+
+      processingOutcome = await this.processResultSet(jobId, query, uniqueResults, {
+        injectGraph,
+        injectVector,
+        recordError,
+        recordFetchDuration: (duration) => fetchDurations.push(duration),
+        recordExtractDuration: (duration) => extractDurations.push(duration),
+        recordGraphDuration: (duration) => graphDurations.push(duration),
+        recordVectorDuration: (duration) => vectorDurations.push(duration),
+        onPhaseCompleted: async (phase, payload) => {
+          if (!storeWritable) {
+            return;
+          }
+          const progress = this.progressForPhase(phase, payload);
+          if (!progress) {
+            return;
+          }
+          await this.safeUpdateJob(jobId, { updatedAt: progress.updatedAt, progress }, `phase-${phase}`);
+          this.emitJobProgress(jobId, progress);
+        },
+      });
+
       const stats: SearchJobStats = {
         requestedResults: maxResults,
         receivedResults: uniqueResults.length,
-        fetchedDocuments: 0,
-        structuredDocuments: 0,
-        graphIngested: 0,
-        vectorIngested: 0,
+        fetchedDocuments: processingOutcome.fetchedDocuments,
+        structuredDocuments: processingOutcome.structuredDocuments,
+        graphIngested: processingOutcome.graphIngested,
+        vectorIngested: processingOutcome.vectorIngested,
       };
+
+      if (storeWritable) {
+        await this.finaliseJob(jobId, {
+          status: "completed",
+          query,
+          stats,
+          errors,
+          errorTimestamps,
+          artifacts,
+          jobContext,
+          durations: this.collectDurations(
+            invocationStartedAt,
+            searxDuration,
+            fetchDurations,
+            extractDurations,
+            graphDurations,
+            vectorDurations,
+          ),
+        });
+      }
+
       this.emitJobCompleted(jobId, query, stats, errors.length);
+
       return {
         jobId,
         query,
         results: uniqueResults,
-        documents: [],
+        documents: processingOutcome.documents,
         errors,
         stats,
-        rawSearxResponse: searchResponse.raw,
+        rawSearxResponse,
         metrics: this.metrics ? this.metrics.snapshot() : null,
       };
+    } catch (error) {
+      if (storeWritable) {
+        await this.failJob(jobId, {
+          errors,
+          errorTimestamps,
+          artifacts,
+          jobContext,
+          durations: this.collectDurations(
+            invocationStartedAt,
+            searxDuration,
+            fetchDurations,
+            extractDurations,
+            graphDurations,
+            vectorDurations,
+          ),
+        });
+      }
+      throw error;
     }
-
-    const processingOutcome = await this.processResultSet(jobId, query, uniqueResults, {
-      injectGraph,
-      injectVector,
-      errors,
-    });
-
-    const stats: SearchJobStats = {
-      requestedResults: maxResults,
-      receivedResults: uniqueResults.length,
-      fetchedDocuments: processingOutcome.fetchedDocuments,
-      structuredDocuments: processingOutcome.structuredDocuments,
-      graphIngested: processingOutcome.graphIngested,
-      vectorIngested: processingOutcome.vectorIngested,
-    };
-
-    this.emitJobCompleted(jobId, query, stats, errors.length);
-
-    return {
-      jobId,
-      query,
-      results: uniqueResults,
-      documents: processingOutcome.documents,
-      errors,
-      stats,
-      rawSearxResponse: searchResponse.raw,
-      metrics: this.metrics ? this.metrics.snapshot() : null,
-    };
   }
-
   /**
    * Performs a direct ingestion of explicit URLs without relying on SearxNG.
    * The method reuses the same fetching/extraction/ingestion pipeline to
@@ -351,7 +616,7 @@ export class SearchPipeline {
       processingOutcome = await this.processResultSet(jobId, label, syntheticResults, {
         injectGraph,
         injectVector,
-        errors,
+        recordError: (failure) => errors.push(failure),
       });
     }
 
@@ -382,7 +647,12 @@ export class SearchPipeline {
     options: {
       injectGraph: boolean;
       injectVector: boolean;
-      errors: SearchJobError[];
+      recordError: (failure: SearchJobError) => void;
+      recordFetchDuration?: (duration: number) => void;
+      recordExtractDuration?: (duration: number) => void;
+      recordGraphDuration?: (duration: number) => void;
+      recordVectorDuration?: (duration: number) => void;
+      onPhaseCompleted?: (phase: PipelinePhase, payload: PhaseProgressPayload) => Promise<void> | void;
     },
   ): Promise<ProcessedResultSet> {
     if (results.length === 0) {
@@ -397,6 +667,7 @@ export class SearchPipeline {
     const fetchOutcomes: Array<SuccessfulFetch | null> = await Promise.all(
       results.map((result) =>
         this.fetchLimiter(async () => {
+          const startedAt = this.now();
           try {
             const raw = await this.executeWithMetrics(
               "fetchUrl",
@@ -420,10 +691,12 @@ export class SearchPipeline {
                 };
               },
             );
+            options.recordFetchDuration?.(this.now() - startedAt);
             return { result, raw } as const;
           } catch (error) {
             const failure = buildError("fetch", result.url, error);
-            options.errors.push(failure);
+            options.recordError(failure);
+            options.recordFetchDuration?.(this.now() - startedAt);
             this.emitError(jobId, failure);
             this.logger?.warn("search_fetch_failed", {
               job_id: jobId,
@@ -440,6 +713,10 @@ export class SearchPipeline {
     const successfulFetches = fetchOutcomes.filter((entry): entry is SuccessfulFetch => entry !== null);
     const fetchedDocuments = successfulFetches.length;
 
+    if (options.onPhaseCompleted) {
+      await Promise.resolve(options.onPhaseCompleted("fetch", { success: fetchedDocuments, total: results.length }));
+    }
+
     const extractionInputs = successfulFetches.map((entry) => ({
       result: entry.result,
       raw: entry.raw,
@@ -449,6 +726,7 @@ export class SearchPipeline {
     const extractionOutcomes: Array<SuccessfulExtraction | null> = await Promise.all(
       extractionInputs.map((input) =>
         this.extractLimiter(async () => {
+          const startedAt = this.now();
           try {
             const structured = await this.executeWithMetrics(
               "extractWithUnstructured",
@@ -483,10 +761,12 @@ export class SearchPipeline {
             );
             const deduped = deduplicateSegments(structured);
             const finalDocument = finalizeDocId(deduped, input.docId);
+            options.recordExtractDuration?.(this.now() - startedAt);
             return { result: input.result, document: finalDocument } as const;
           } catch (error) {
             const failure = buildError("extract", input.raw.finalUrl, error);
-            options.errors.push(failure);
+            options.recordError(failure);
+            options.recordExtractDuration?.(this.now() - startedAt);
             this.emitError(jobId, failure);
             this.logger?.error("search_extract_failed", {
               job_id: jobId,
@@ -503,6 +783,15 @@ export class SearchPipeline {
     const successfulExtractions = extractionOutcomes.filter((entry): entry is SuccessfulExtraction => entry !== null);
     structuredDocuments = successfulExtractions.length;
 
+    if (options.onPhaseCompleted) {
+      await Promise.resolve(
+        options.onPhaseCompleted("extract", {
+          success: structuredDocuments,
+          total: successfulFetches.length,
+        }),
+      );
+    }
+
     for (const outcome of successfulExtractions) {
       const { document, result } = outcome;
       const docErrors: SearchJobError[] = [];
@@ -510,6 +799,7 @@ export class SearchPipeline {
       let graphResult: KnowledgeGraphIngestResult | null = null;
       if (options.injectGraph) {
         if (this.knowledgeIngestor) {
+          const startedAt = this.now();
           try {
             graphResult = await this.executeWithMetrics(
               "ingestGraph",
@@ -518,9 +808,11 @@ export class SearchPipeline {
               { domain: deriveDomain(document.url), contentType: document.mimeType },
             );
             graphIngested += 1;
+            options.recordGraphDuration?.(this.now() - startedAt);
           } catch (error) {
             const failure = buildError("ingest_graph", document.url, error);
-            options.errors.push(failure);
+            options.recordError(failure);
+            options.recordGraphDuration?.(this.now() - startedAt);
             docErrors.push(failure);
             this.emitError(jobId, failure);
             this.logger?.error("search_graph_ingest_failed", {
@@ -542,6 +834,7 @@ export class SearchPipeline {
       let vectorResult: VectorStoreIngestResult | null = null;
       if (options.injectVector) {
         if (this.vectorIngestor) {
+          const startedAt = this.now();
           try {
             vectorResult = await this.executeWithMetrics(
               "ingestVector",
@@ -550,9 +843,11 @@ export class SearchPipeline {
               { domain: deriveDomain(document.url), contentType: document.mimeType },
             );
             vectorIngested += 1;
+            options.recordVectorDuration?.(this.now() - startedAt);
           } catch (error) {
             const failure = buildError("ingest_vector", document.url, error);
-            options.errors.push(failure);
+            options.recordError(failure);
+            options.recordVectorDuration?.(this.now() - startedAt);
             docErrors.push(failure);
             this.emitError(jobId, failure);
             this.logger?.error("search_vector_ingest_failed", {
@@ -581,6 +876,15 @@ export class SearchPipeline {
       });
     }
 
+    if (options.onPhaseCompleted) {
+      await Promise.resolve(
+        options.onPhaseCompleted("ingest", {
+          success: documents.length,
+          total: successfulExtractions.length,
+        }),
+      );
+    }
+
     return { documents, fetchedDocuments, structuredDocuments, graphIngested, vectorIngested };
   }
 
@@ -594,6 +898,57 @@ export class SearchPipeline {
       return this.metrics.measure(operation, callback, errorCodeResolver, context);
     }
     return callback();
+  }
+
+  private emitJobCreated(jobId: string, meta: JobMeta): void {
+    this.eventStore?.emit({
+      kind: "search:job_created",
+      jobId,
+      payload: {
+        query: meta.query,
+        created_at: meta.createdAt,
+        tags: [...meta.tags],
+        requester: meta.requester,
+      },
+    });
+    this.logger?.info("search_job_created", {
+      job_id: jobId,
+      requester: meta.requester,
+      tags: meta.tags.length,
+    });
+  }
+
+  private emitJobProgress(jobId: string, progress: JobProgress): void {
+    this.eventStore?.emit({
+      kind: "search:job_progress",
+      jobId,
+      payload: {
+        step: progress.step,
+        message: progress.message,
+        ratio: progress.ratio,
+        updated_at: progress.updatedAt,
+      },
+    });
+    this.logger?.info("search_job_progress", {
+      job_id: jobId,
+      step: progress.step,
+      ratio: progress.ratio,
+      message: progress.message,
+    });
+  }
+
+  private emitJobFailed(jobId: string, failureCount: number): void {
+    this.eventStore?.emit({
+      kind: "search:job_failed",
+      jobId,
+      payload: {
+        failures: failureCount,
+      },
+    });
+    this.logger?.error("search_job_failed", {
+      job_id: jobId,
+      failures: failureCount,
+    });
   }
 
   private emitJobStarted(
@@ -706,6 +1061,396 @@ export class SearchPipeline {
       },
     });
   }
+
+  private buildJobMeta(input: {
+    readonly id: string;
+    readonly query: string;
+    readonly normalizedQuery: string;
+    readonly createdAt: number;
+    readonly tags: readonly string[];
+    readonly requester: string | null;
+    readonly budget?: Partial<JobBudget> | undefined;
+    readonly provenance?: SearchJobProvenanceInput;
+    readonly extra?: Readonly<Record<string, JsonValue>>;
+    readonly idempotencyKey: string | null;
+    readonly options: {
+      readonly categories: readonly string[];
+      readonly engines: readonly string[];
+      readonly maxResults: number;
+      readonly fetchContent: boolean;
+      readonly injectGraph: boolean;
+      readonly injectVector: boolean;
+      readonly language: string | null;
+      readonly safeSearch: number | null;
+    };
+  }): JobMeta {
+    const tags = normaliseJobTags(input.tags);
+    const budget = normaliseJobBudget(input.budget);
+    const provenance = this.normaliseJobProvenance(
+      input.provenance,
+      input.requester,
+      input.extra,
+      input.idempotencyKey,
+      input.options,
+    );
+    return {
+      id: input.id,
+      query: input.query,
+      normalizedQuery: input.normalizedQuery,
+      createdAt: input.createdAt,
+      tags,
+      requester: input.requester,
+      budget,
+      provenance,
+    };
+  }
+
+  private async registerJob(jobId: string, meta: JobMeta): Promise<{ status: "skipped" | "created" | "duplicate"; canMutate: boolean; record: JobRecord | null }> {
+    if (!this.jobStore) {
+      return { status: "skipped", canMutate: false, record: null };
+    }
+    try {
+      await this.jobStore.create(meta);
+      this.emitJobCreated(jobId, meta);
+      return { status: "created", canMutate: true, record: null };
+    } catch (error) {
+      if (isDuplicateJobError(error)) {
+        const existing = await this.jobStore.get(jobId);
+        if (existing) {
+          const mutable = !isTerminalStatus(existing.state.status);
+          this.logger?.info("search_job_duplicate", {
+            job_id: jobId,
+            status: existing.state.status,
+            mutable,
+          });
+          return { status: "duplicate", canMutate: mutable, record: existing };
+        }
+        this.logger?.warn("search_job_duplicate_missing_record", { job_id: jobId });
+        return { status: "duplicate", canMutate: false, record: null };
+      }
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger?.warn("search_job_store_create_failed", { job_id: jobId, message });
+      return { status: "skipped", canMutate: false, record: null };
+    }
+  }
+
+  private async safeUpdateJob(jobId: string, patch: JobStatePatch, reason: string): Promise<void> {
+    if (!this.jobStore) {
+      return;
+    }
+    try {
+      await this.jobStore.update(jobId, patch);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger?.warn("search_job_store_update_failed", { job_id: jobId, reason, message });
+    }
+  }
+
+  private collectDurations(
+    startedAt: number,
+    searxDuration: number,
+    fetchSamples: readonly number[],
+    extractSamples: readonly number[],
+    graphSamples: readonly number[],
+    vectorSamples: readonly number[],
+  ): StageDurations {
+    const totalMs = clampDuration(this.now() - startedAt);
+    return {
+      totalMs,
+      searxMs: clampDuration(searxDuration),
+      fetchSamples: [...fetchSamples],
+      extractSamples: [...extractSamples],
+      graphSamples: [...graphSamples],
+      vectorSamples: [...vectorSamples],
+    };
+  }
+
+  private buildSummary(stats: SearchJobStats, artifacts: ReadonlySet<string>, notes: string | null, durations: StageDurations): JobSummary {
+    const skippedDocuments = Math.max(0, stats.receivedResults - stats.structuredDocuments);
+    const metrics: Record<string, number> = {
+      total_duration_ms: durations.totalMs,
+      searx_duration_ms: durations.searxMs,
+      graph_ingested_documents: stats.graphIngested,
+      vector_ingested_documents: stats.vectorIngested,
+    };
+
+    appendPercentiles(metrics, "fetch", durations.fetchSamples);
+    appendPercentiles(metrics, "extract", durations.extractSamples);
+    appendPercentiles(metrics, "ingest_graph", durations.graphSamples);
+    appendPercentiles(metrics, "ingest_vector", durations.vectorSamples);
+
+    return {
+      consideredResults: stats.receivedResults,
+      fetchedDocuments: stats.fetchedDocuments,
+      ingestedDocuments: stats.structuredDocuments,
+      skippedDocuments,
+      artifacts: [...artifacts].sort(),
+      metrics,
+      notes: normaliseNote(notes),
+    };
+  }
+
+  private convertErrorsToFailures(errors: readonly SearchJobError[], timestamps: readonly number[]): JobFailure[] {
+    const failures: JobFailure[] = [];
+    for (let index = 0; index < errors.length; index += 1) {
+      const error = errors[index];
+      const timestamp = timestamps[index];
+      const occurredAt = Number.isFinite(timestamp) ? Math.round(Number(timestamp)) : this.now();
+      const details: Record<string, JsonValue> | null = error.url ? { url: error.url } : null;
+      failures.push({
+        code: error.code ?? "unknown_error",
+        message: error.message,
+        stage: error.stage,
+        occurredAt,
+        details,
+      });
+    }
+    return failures;
+  }
+
+  private progressForPhase(phase: PipelinePhase, payload: PhaseProgressPayload): JobProgress | null {
+    const total = payload.total > 0 ? payload.total : 0;
+    const success = Math.max(0, payload.success);
+    switch (phase) {
+      case "fetch":
+        return this.buildProgress(
+          phase,
+          total > 0 ? `downloaded ${success}/${total} documents` : "download phase completed",
+          0.5,
+        );
+      case "extract":
+        return this.buildProgress(
+          phase,
+          total > 0 ? `extracted ${success}/${total} documents` : "extraction phase completed",
+          0.7,
+        );
+      case "ingest":
+        return this.buildProgress(
+          phase,
+          total > 0 ? `ingested ${success}/${total} documents` : "ingestion phase completed",
+          0.9,
+        );
+      default:
+        return null;
+    }
+  }
+
+  private buildProgress(step: string, message: string | null, ratio: number | null): JobProgress {
+    const trimmedMessage = message && message.trim().length > 0 ? message.trim() : null;
+    const normalisedRatio = ratio === null || ratio === undefined || !Number.isFinite(ratio)
+      ? null
+      : Math.min(1, Math.max(0, Number(ratio)));
+    return {
+      step,
+      message: trimmedMessage,
+      ratio: normalisedRatio,
+      updatedAt: this.now(),
+    };
+  }
+
+  private async finaliseJob(jobId: string, input: FinaliseJobInput): Promise<void> {
+    if (!this.jobStore) {
+      return;
+    }
+    const progress = this.buildProgress("completed", "search job completed", 1);
+    const summary = this.buildSummary(input.stats, input.artifacts, input.jobContext.notes ?? null, input.durations);
+    const failures = this.convertErrorsToFailures(input.errors, input.errorTimestamps);
+    await this.safeUpdateJob(
+      jobId,
+      {
+        status: input.status,
+        completedAt: progress.updatedAt,
+        updatedAt: progress.updatedAt,
+        progress,
+        summary,
+        errors: failures,
+      },
+      input.status,
+    );
+    this.emitJobProgress(jobId, progress);
+  }
+
+  private async failJob(jobId: string, input: FailJobInput): Promise<void> {
+    if (!this.jobStore) {
+      return;
+    }
+    const progress = this.buildProgress("failed", "search job failed", 1);
+    const summary = this.buildSummary(
+      {
+        requestedResults: 0,
+        receivedResults: 0,
+        fetchedDocuments: 0,
+        structuredDocuments: 0,
+        graphIngested: 0,
+        vectorIngested: 0,
+      },
+      input.artifacts,
+      input.jobContext.notes ?? null,
+      input.durations,
+    );
+    const failures = this.convertErrorsToFailures(input.errors, input.errorTimestamps);
+    await this.safeUpdateJob(
+      jobId,
+      {
+        status: "failed",
+        failedAt: progress.updatedAt,
+        updatedAt: progress.updatedAt,
+        progress,
+        summary,
+        errors: failures,
+      },
+      "failed",
+    );
+    this.emitJobProgress(jobId, progress);
+    this.emitJobFailed(jobId, failures.length);
+  }
+
+  private normaliseJobProvenance(
+    provenance: SearchJobProvenanceInput | undefined,
+    fallbackRequester: string | null,
+    extra: Readonly<Record<string, JsonValue>> | undefined,
+    idempotencyKey: string | null,
+    options: {
+      readonly categories: readonly string[];
+      readonly engines: readonly string[];
+      readonly maxResults: number;
+      readonly fetchContent: boolean;
+      readonly injectGraph: boolean;
+      readonly injectVector: boolean;
+      readonly language: string | null;
+      readonly safeSearch: number | null;
+    },
+  ): JobProvenance {
+    const trigger = provenance?.trigger?.trim() || "search.run";
+    const transport = provenance?.transport?.trim() || "unknown";
+    const requestId = provenance?.requestId ?? null;
+    const requester = provenance?.requester ?? fallbackRequester ?? null;
+    const remoteAddress = provenance?.remoteAddress ?? null;
+    const extraPayload: Record<string, JsonValue> = {};
+    if (extra) {
+      for (const [key, value] of Object.entries(extra)) {
+        extraPayload[key] = value;
+      }
+    }
+    extraPayload.job_options = {
+      categories: [...options.categories],
+      engines: [...options.engines],
+      max_results: options.maxResults,
+      fetch_content: options.fetchContent,
+      inject_graph: options.injectGraph,
+      inject_vector: options.injectVector,
+      language: options.language,
+      safe_search: options.safeSearch,
+    };
+    if (idempotencyKey) {
+      extraPayload.idempotency_key = idempotencyKey;
+    }
+    return {
+      trigger,
+      transport,
+      requestId,
+      requester,
+      remoteAddress,
+      extra: extraPayload,
+    };
+  }
+}
+
+function normaliseJobBudget(budget: Partial<JobBudget> | undefined): JobBudget {
+  return {
+    maxDurationMs: budget?.maxDurationMs ?? null,
+    maxToolCalls: budget?.maxToolCalls ?? null,
+    maxBytesOut: budget?.maxBytesOut ?? null,
+  };
+}
+
+function normaliseJobTags(tags: readonly string[]): readonly string[] {
+  const seen = new Set<string>();
+  const cleaned: string[] = [];
+  for (const tag of tags) {
+    if (typeof tag !== "string") {
+      continue;
+    }
+    const trimmed = tag.trim();
+    if (trimmed.length === 0 || seen.has(trimmed)) {
+      continue;
+    }
+    seen.add(trimmed);
+    cleaned.push(trimmed);
+  }
+  return cleaned;
+}
+
+function sanitiseArtifacts(artifacts?: readonly string[] | null): string[] {
+  if (!artifacts) {
+    return [];
+  }
+  const set = new Set<string>();
+  for (const entry of artifacts) {
+    if (typeof entry !== "string") {
+      continue;
+    }
+    const trimmed = entry.trim();
+    if (trimmed.length === 0) {
+      continue;
+    }
+    set.add(trimmed);
+  }
+  return [...set];
+}
+
+function normaliseJobQuery(query: string): string {
+  return query.replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+function clampDuration(value: number): number {
+  if (!Number.isFinite(value)) {
+    return 0;
+  }
+  return value < 0 ? 0 : Math.round(value);
+}
+
+function appendPercentiles(target: Record<string, number>, prefix: string, samples: readonly number[]): void {
+  if (!samples || samples.length === 0) {
+    return;
+  }
+  const sorted = [...samples].filter((sample) => Number.isFinite(sample) && sample >= 0).sort((a, b) => a - b);
+  if (sorted.length === 0) {
+    return;
+  }
+  const p50 = percentile(sorted, 0.5);
+  const p95 = percentile(sorted, 0.95);
+  const p99 = percentile(sorted, 0.99);
+  target[`${prefix}_duration_p50_ms`] = clampDuration(p50);
+  target[`${prefix}_duration_p95_ms`] = clampDuration(p95);
+  target[`${prefix}_duration_p99_ms`] = clampDuration(p99);
+}
+
+function percentile(sortedSamples: readonly number[], fraction: number): number {
+  if (sortedSamples.length === 0) {
+    return 0;
+  }
+  const index = Math.min(sortedSamples.length - 1, Math.max(0, Math.floor(fraction * (sortedSamples.length - 1))));
+  return sortedSamples[index];
+}
+
+function normaliseNote(note: string | null | undefined): string | null {
+  if (typeof note !== "string") {
+    return null;
+  }
+  const trimmed = note.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function isDuplicateJobError(error: unknown): boolean {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+  return /already exists/i.test(error.message);
+}
+
+function isTerminalStatus(status: JobStatus): boolean {
+  return status === "completed" || status === "failed";
 }
 
 function resolveJobId(jobId: string | null | undefined, fingerprint: string): string {

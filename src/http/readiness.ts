@@ -32,7 +32,16 @@ export interface HttpReadinessReport {
     runsDirectory: HttpRunsDirectoryStatus;
     idempotency: HttpComponentStatus;
     eventQueue: HttpComponentStatus & { usage: number; capacity: number };
+    searchJobStore: HttpSearchJobStoreStatus;
   };
+}
+
+/** Status surfaced for the search job journal backend. */
+export interface HttpSearchJobStoreStatus extends HttpComponentStatus {
+  /** Persistence backend currently in use. */
+  mode: "memory" | "file";
+  /** Directory probed for writability when the backend uses the filesystem. */
+  directory?: string | null;
 }
 
 /**
@@ -49,6 +58,12 @@ export interface HttpReadinessCheckDependencies {
   eventStore: { getEventCount(): number; getMaxHistory(): number };
   /** Optional persistent idempotency store backing stateless HTTP flows. */
   idempotencyStore?: { checkHealth?: () => Promise<void> } | null;
+  /** Snapshot describing the search job store backend. */
+  searchJobStore?: {
+    mode: "memory" | "file";
+    available: boolean;
+    directory?: string | null;
+  } | null;
 }
 
 /**
@@ -71,6 +86,7 @@ export async function evaluateHttpReadiness(
       capacity: Math.max(1, deps.eventStore.getMaxHistory()),
       message: "queue within capacity",
     },
+    searchJobStore: { ok: true, mode: "memory", message: "not configured" },
   };
 
   let ok = true;
@@ -117,6 +133,41 @@ export async function evaluateHttpReadiness(
     ok = false;
   }
 
+  const jobStoreInput = deps.searchJobStore;
+  if (!jobStoreInput) {
+    components.searchJobStore = { ok: true, mode: "memory", message: "job store probe not configured" };
+  } else if (jobStoreInput.mode === "memory") {
+    const message = jobStoreInput.available ? "in-memory backend" : "job store unavailable";
+    components.searchJobStore = { ok: jobStoreInput.available, mode: "memory", message };
+    if (!jobStoreInput.available) {
+      ok = false;
+    }
+  } else {
+    if (!jobStoreInput.available) {
+      components.searchJobStore = {
+        ok: false,
+        mode: "file",
+        directory: jobStoreInput.directory ?? null,
+        message: "persistence backend unavailable",
+      };
+      ok = false;
+    } else if (!jobStoreInput.directory) {
+      components.searchJobStore = {
+        ok: false,
+        mode: "file",
+        directory: null,
+        message: "jobs directory unknown",
+      };
+      ok = false;
+    } else {
+      const status = await verifySearchJobsDirectory(jobStoreInput.directory);
+      components.searchJobStore = status;
+      if (!status.ok) {
+        ok = false;
+      }
+    }
+  }
+
   return { ok, components };
 }
 
@@ -152,4 +203,36 @@ async function verifyRunsDirectory(root: string): Promise<HttpRunsDirectoryStatu
 
   await rm(sentinelPath, { force: true }).catch(() => undefined);
   return { ok: true, path: resolvedRoot, message: "read/write verified" };
+}
+
+/** Ensures the filesystem-backed search job store can journal new entries safely. */
+async function verifySearchJobsDirectory(directory: string): Promise<HttpSearchJobStoreStatus> {
+  const resolvedRoot = resolvePath(directory);
+  try {
+    await mkdir(resolvedRoot, { recursive: true });
+  } catch (error) {
+    return {
+      ok: false,
+      mode: "file",
+      directory: resolvedRoot,
+      message: error instanceof Error ? error.message : String(error),
+    } satisfies HttpSearchJobStoreStatus;
+  }
+
+  const sentinelPath = resolvePath(resolvedRoot, ".readyz.jobstore");
+  try {
+    await writeFile(sentinelPath, "ready\n", { flag: "w" });
+    await access(sentinelPath, fsConstants.R_OK | fsConstants.W_OK);
+  } catch (error) {
+    await rm(sentinelPath, { force: true }).catch(() => undefined);
+    return {
+      ok: false,
+      mode: "file",
+      directory: resolvedRoot,
+      message: error instanceof Error ? error.message : String(error),
+    } satisfies HttpSearchJobStoreStatus;
+  }
+
+  await rm(sentinelPath, { force: true }).catch(() => undefined);
+  return { ok: true, mode: "file", directory: resolvedRoot, message: "journal writable" };
 }

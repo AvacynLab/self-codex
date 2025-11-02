@@ -63,6 +63,24 @@ export {
   type SearchJobResult,
   type SearchJobStats,
 } from "./pipeline.js";
+export {
+  type JobBudget,
+  type JobFailure,
+  type JobMeta,
+  type JobProgress,
+  type JobProvenance,
+  type JobRecord,
+  type JobState,
+  type JobStatePatch,
+  type JobStatus,
+  type JobSummary,
+  type ListFilter,
+  type SearchJobStore,
+  type StoredJobMeta,
+  type JsonValue,
+} from "./jobStore.js";
+export { FileSearchJobStore } from "./jobStoreFile.js";
+export { InMemorySearchJobStore } from "./jobStoreMemory.js";
 export { SearxClient, SearxClientError } from "./searxClient.js";
 export type { SearxQueryOptions, SearxQueryResponse } from "./searxClient.js";
 export {

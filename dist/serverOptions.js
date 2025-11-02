@@ -1,4 +1,7 @@
 import { randomUUID } from "node:crypto";
+// NOTE: Node built-in modules are imported with the explicit `node:` prefix to guarantee ESM resolution in Node.js.
+import { readOptionalEnum, readOptionalInt } from "./config/env.js";
+const DEFAULT_SEARCH_JOB_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 /**
  * Immutable defaults applied to every feature flag. Exported so tests and
  * introspection helpers can share a single source of truth when reporting the
@@ -484,6 +487,17 @@ export function parseOrchestratorRuntimeOptions(argv) {
         features: { ...state.featureToggles },
         timings: { ...state.timings },
         safety: { ...state.safety },
+    };
+}
+/** Reads the persistence configuration for the search job store from env vars. */
+export function loadSearchJobStoreOptions() {
+    const mode = readOptionalEnum("MCP_SEARCH_STATUS_PERSIST", ["memory", "file"]) ?? "file";
+    const ttlOverride = readOptionalInt("MCP_SEARCH_JOB_TTL_MS", { min: 60_000 });
+    const journalFsync = readOptionalEnum("MCP_SEARCH_JOURNAL_FSYNC", ["always", "interval", "never"]) ?? "interval";
+    return {
+        mode,
+        jobTtlMs: ttlOverride ?? DEFAULT_SEARCH_JOB_TTL_MS,
+        journalFsync,
     };
 }
 /**

@@ -1,406 +1,327 @@
-## 🎯 Brief (lis-moi d’abord)
+----------
+Voici un plan d’action exhaustif, adressé à un agent IA, basé sur les analyses précédentes et sur la structure du dépôt. Il liste précisément ce qu’il faut **corriger / ajouter / supprimer / modifier**, avec des **sous-étapes hiérarchisées** et des **objectifs clairs**. Les chemins et fichiers mentionnés suivent la cartographie que tu as sous les yeux.
 
-**Objectifs attendus**
+# Brief à l’agent (objectifs et contraintes)
 
-1. Renforcer la **robustesse** du moteur Search (SearxNG → fetch → unstructured → normalisation → KG/Vector), réduire la dette (URLs canonisées, sniff MIME, conditional GET, NFC), consolider les **erreurs typées** et la **télémétrie**.
-2. **Unifier la journalisation**: n’avoir **qu’un seul** dossier de validation (`validation_run` **ou** `validation_runs`) et y consigner **100%** des artefacts d’exécutions.
-3. Garder l’**infra SearxNG** self-host et Unstructured opérationnelles, sans régression.
-4. **Tests** solides (unit/int/E2E) et **build** strict (TS strict, `exactOptionalPropertyTypes`, Node ≥ 20), **zéro `undefined`** dans les JSON publics.
+**Objectif principal**
+Mettre l’orchestrateur au “niveau prod” en complétant le **statut des jobs de recherche** (`search.status`) avec persistance durable et instrumentation, sans régression sur : transports, outils MCP, idempotence, budgets, mémoire, graphes, observabilité.
 
----
+**Objectifs secondaires (robustesse & DX)**
 
-## 🧱 Contraintes build & tests (à respecter partout)
+* Verrouiller la **reproductibilité** (idempotence + `validation_run/`) et la **sécurité par défaut** (auth, redaction, rate-limits).
+* Couvrir les bords opérationnels via des **tests unitaires**, **property-based** et **E2E** (HTTP + STDIO).
+* S’assurer que le **build** produit les artefacts `graph-forge/dist/*` et n’importe **pas** de `.ts` en runtime prod.
 
-* **Node ≥ 20** obligatoire (ESM, `fetch` natif, `AbortController`).
-* **TypeScript strict** + `exactOptionalPropertyTypes: true`. Tous les retours JSON publics **omettent** les clés absentes (ne jamais renvoyer `undefined`).
-* **Erreurs typées** : `{ code: string; message: string; details?: unknown }`.
-* **Logs** via logger structuré (pas de `console.*`) avec **redaction** des secrets.
-* **Budgets/Timeouts** outillés dans les Tools MCP ; **idempotence** (clé de requête stable).
-* **Tests** : mocks réseaux (`nock`), **sans sleeps**, fake timers si nécessaire ; snapshots **stabilisés** (strip des timestamps/`fetchedAt`/`tookMs`).
-* **Couverture**: ≥ **90%** sur `src/search/**`, ≥ **85%** global.
+**Contraintes tests & build (à respecter strictement)**
 
----
-
-## A) Infrastructure SearxNG & Unstructured (vérif + petites retouches)
-
-* [x] `docker/docker-compose.search.yml`
-
-  * [x] Vérifier que les services `searxng`, `unstructured`, `server` ont des **healthchecks** stables (timeout raisonnables, retries).
-  * [x] Confirmer le **réseau privé** `search_net` et les **limites CPU/RAM** en CI.
-  * [x] (Si absent) commenter **clairement** l’usage ou non du `result_proxy`.
-
-* [x] `docker/searxng/settings.yml`
-
-  * [x] Repasser sur la **liste d’engines** activés (retirer ceux non pertinents/licences douteuses).
-  * [x] S’assurer que **categories** incluent au minimum `general,news,images,files`.
-  * [x] Documenter `safe_search` (0 en dev, 1 en prod si besoin).
-
-* [x] `env/.env.example`
-
-  * [x] Vérifier la présence et les defaults de :
-
-    * [x] `SEARCH_SEARX_BASE_URL`, `SEARCH_SEARX_API_PATH=/search`, `SEARCH_SEARX_TIMEOUT_MS`
-    * [x] `SEARCH_SEARX_ENGINES`, `SEARCH_SEARX_CATEGORIES`
-    * [x] `UNSTRUCTURED_BASE_URL`, `UNSTRUCTURED_TIMEOUT_MS`, `UNSTRUCTURED_STRATEGY`
-    * [x] `SEARCH_FETCH_TIMEOUT_MS`, `SEARCH_FETCH_MAX_BYTES`, `SEARCH_FETCH_UA`
-    * [x] `SEARCH_INJECT_GRAPH`, `SEARCH_INJECT_VECTOR`
-    * [x] `SEARCH_FETCH_RESPECT_ROBOTS` (mettre **true** en prod recommandée)
-    * [x] `SEARCH_PARALLEL_FETCH`, `SEARCH_PARALLEL_EXTRACT`, `SEARCH_MAX_RESULTS`
+* **TypeScript strict** avec `exactOptionalPropertyTypes`; **aucune** clé `undefined` en JSON (omission > `undefined`).
+* **Node** : `>= 20 < 21`, **npm >= 9`.
+* Runner tests : **mocha/chai** + **fast-check** (pour propriétés).
+* Lint : **ESLint (flat)** + **Prettier** + **commitlint** (CI doit échouer si non conforme).
+* Build : `npm run build` compile `src/` **et** `graph-forge/` ; aucune importation de `.ts` en prod hors bundler/loader dédié.
+* Dossier d’artefacts : **`validation_run/`** — création contrôlée, quotas et redaction actifs dans les tests E2E.
+* **Sécurité** : HTTP off par défaut, Bearer requis si on l’active, rate-limits actifs (généraux + spé “search”).
+* **Idempotence** : clés stables, TTL configurable, tests de concurrence.
 
 ---
 
-## B) Normalisation et téléchargement — **noyau Search** (fichier par fichier)
+# Checklist à cocher — par fichiers (avec sous-étapes)
 
-### `src/search/searxClient.ts`
+## 1) Module Search — statut des jobs & persistance
 
-* [x] **Canonicalisation d’URL (NOUVEAU)**
+### 1.1 `src/search/jobStore.ts` — **Nouveau**
 
-  * [x] Avant toute déduplication :
+* [x] Définir l’**interface** `SearchJobStore` :
 
-    * [x] retirer `#fragment`.
-    * [x] supprimer les paramètres **tracking** (`utm_*`, `ref`, `fbclid`, etc.).
-    * [x] **trier** alphabétiquement les query params restants.
-  * [x] Mapper au client les champs **hétérogènes** → `publishedAt`, `mime` (faire la **conversion ici**).
-* [x] **Retry sélectif + backoff**
+  * [x] `create(job: JobMeta): Promise<void>`
+  * [x] `update(jobId: string, patch: Partial<JobState>): Promise<void>`
+  * [x] `get(jobId: string): Promise<JobRecord | null>`
+  * [x] `list(filter?: ListFilter): Promise<JobRecord[]>` (par statut/âge/tag)
+  * [x] `gc(now: number): Promise<number>` (retourne nb d’entrées purgées)
+* [x] Types : `JobMeta` (id déterministe, query normalisée, budget), `JobState` (`pending|running|completed|failed`, timestamps, résumé, erreurs), `JobRecord` (meta + state + provenance).
+* [x] Invariants : id non-vide, horodatages croissants, état terminal immuable.
 
-  * [x] Retries sur `429/502/503/504` uniquement, **pas** sur `4xx` classiques.
-  * [x] **Jitter** dans le backoff.
-* [x] **Timeout** via `AbortController` (déjà en place) → vérifier les chemins d’erreur.
-* [x] **Tests**
+### 1.2 `src/search/jobStoreMemory.ts` — **Nouveau**
 
-  * [x] Ajouter des cas sur **canonicalisation** (`utm_*`, fragments, ordre des params).
-  * [x] Tests retries (1–2 tentatives) et abort.
+* [x] Implémentation **in-memory** (Map) conforme à l’interface.
+* [x] **RW-lock** ou section critique (Node single-thread, mais anticiper worker threads).
+* [x] `gc` par TTL (env, défaut 7j).
 
-### `src/search/downloader.ts`
+### 1.3 `src/search/jobStoreFile.ts` — **Nouveau**
 
-* [x] **Streaming + coupe dure** (déjà présent) → **ajouter** un **sniff MIME par signature** :
+* [x] Persistance **JSONL** sous `validation_run/search/jobs/`.
+* [x] Écriture **append-only** + **index en mémoire** pour lecture rapide.
+* [x] **fsync** optionnel derrière un batcher (env) pour amortir IO.
+* [x] **Lock de fichier** best-effort (advisory lock) pour éviter corruption concurrente.
+* [x] `gc` : création d’un **segment** compacté (nouveau fichier) puis **swap atomique**.
 
-  * [x] PDF `%PDF-`, JPEG `\xFF\xD8`, PNG `\x89PNG`, ZIP `PK\x03\x04` (au minimum).
-  * [x] Utiliser ce sniff uniquement si `content-type` **absent/incohérent**.
-* [x] **Conditional GET (NOUVEAU)**
+### 1.4 `src/search/index.ts` — **Modifier**
 
-  * [x] Si `ETag` ou `Last-Modified` connus pour l’URL : envoyer `If-None-Match` / `If-Modified-Since`.
-  * [x] Si 304 : retourner proprement un objet `RawFetched` **annoté** (`notModified: true`) et **éviter** de repasser l’extraction.
-* [x] **DocId stable**
+* [ ] **Injection** du `SearchJobStore` (via `serverOptions`/DI).
+* [ ] Émission d’événements `search:job_created`, `search:job_started`, `search:job_progress`, `search:job_completed|failed`.
+* [ ] Si idempotence “hit”, **ne pas recréer** le job, mais renvoyer le `job_id` existant.
 
-  * [x] Fallback si pas d’`ETag`/`LM` : hash `(url + premier 1KB de contenu)` pour stabiliser.
-* [x] **Tests**
+### 1.5 `src/search/pipeline.ts` — **Modifier**
 
-  * [x] Cas **MIME trompeur** : header `text/html` mais PDF réel → sniff détecte PDF.
-  * [x] Cas **304** : ETag/LM produisent un non-téléchargement, pipeline respecte `notModified`.
+* [ ] **Hook** en début : `create(job)` + état `pending → running`.
+* [ ] **Étapes** : Searx → download → extract → ingest → synthèse (résumé, métriques p50/p95/p99).
+* [ ] **Mises à jour partielles** (`update`) après chaque phase avec timestamps.
+* [ ] **Finalisation** : `completed` (résumé + artefacts) ou `failed` (pile d’erreurs redacted).
+* [ ] **Idempotence** : si doc déjà ingéré, marquer `skipped: true` dans le résumé.
 
-### `src/search/extractor.ts`
+### 1.6 `src/tools/search_status.ts` — **Créer ou compléter**
 
-* [x] **Chemin unique** d’appel Unstructured (déjà OK) → **passer la langue détectée comme hint** quand dispo.
-* [x] **Cap de pages PDF** (NOUVEAU)
+* [ ] Exposer MCP `search.status`:
 
-  * [x] Si `contentType=application/pdf` et doc volumineux → extraire **max N pages** (ex. 40) et poser `metadata.truncated=true`.
-* [x] **Tests**
+  * [x] Entrées : `job_id` **ou** filtres (`status`, `tag`, `since`, `limit`).
+  * [x] Sorties : `JobRecord | JobRecord[]`, sans `undefined`.
+  * [x] Validation **zod** stricte, messages d’erreur JSON-RPC normalisés.
 
-  * [x] Cas PDF long : assert `truncated=true`.
-  * [x] Mapping segments complet (title/list/table/figure/caption/code).
+### 1.7 `src/serverOptions.ts` — **Modifier**
 
-### `src/search/normalizer.ts`
+* [ ] Ajouter variables :
 
-* [x] **Unicode NFC (NOUVEAU)**
+  * [x] `MCP_SEARCH_STATUS_PERSIST` (`memory|file`, défaut `file`).
+  * [x] `MCP_SEARCH_JOB_TTL_MS` (défaut 7 jours).
+  * [x] `MCP_SEARCH_JOURNAL_FSYNC` (`always|interval|never`, défaut `interval`).
+* [x] Charger/valider ces options et **instancier** le `JobStore` correspondant.
 
-  * [x] `text = text.normalize('NFC').replace(/\s+/g,' ').trim()` **avant** hash & dédup.
-* [x] **Dédup par hash**
+### 1.8 `src/http/readiness.ts` — **Modifier**
 
-  * [x] Clé = `kind + '|' + hash(text_normalized)` (pas de clés immenses en RAM).
-* [x] **Titre fallback**
+* [x] Vérifier **writability** du dossier `validation_run/search/jobs/` **si** store fichier actif.
+* [x] Renvoyer `reason` explicite si échec.
 
-  * [x] Si `doc.title` vide, utiliser **le 1er segment `kind='title'`**.
-* [x] **Tests**
+### 1.9 `src/monitor/dashboard.ts` — **Modifier**
 
-  * [x] Cas accents combinés (NFD) vs NFC → doivent dédupliquer.
-  * [x] Cas titres absents → fallback depuis segment.
+* [ ] Ajouter un **pane “Search Jobs”** : top N récents, filtres par statut, SSE en direct.
+* [ ] Lier aux artefacts sous `validation_run/`.
 
----
+### 1.10 Tests search/status
 
-## C) Ingestion KG / Vector
+* [x] `tests/search/jobStore.memory.spec.ts` — unitaire
 
-### `src/search/ingest/toKnowledgeGraph.ts`
+  * [ ] CRUD, transitions valides/invalides, TTL/GC, concurrence simulée.
+* [x] `tests/search/jobStore.file.spec.ts` — unitaire
 
-* [x] **Débouncer local** (Set) sur `(s,p,o)` avant `upsertTriple`.
-* [x] **Mentions**
+  * [x] Append-only, recovery après crash (relecture JSONL), compaction, lock.
+* [x] `tests/search/status.tool.spec.ts` — unitaire (zod + shapes)
+* [ ] `tests/search/run-status.e2e.spec.ts` — E2E
 
-  * [x] Stoplist FR/EN **réutilisable** dans le fichier, `minLength≥3`, `minFreq≥2`.
-* [x] **Tests**
-
-  * [x] Triples **non dupliqués** dans une même run.
-  * [x] Mentions filtrées (peu de bruit).
-
-### `src/search/ingest/toVectorStore.ts`
-
-* [x] **Chunking “titre + paragraphe” (NOUVEAU)**
-
-  * [x] Si un `title` < 10 tokens est immédiatement suivi d’un `paragraph`, **fusionner** (chunk plus informatif).
-* [x] **Skip des doublons successifs** (hash des chunks).
-* [x] **Metadata** : `language` forcée en **lower-case**.
-* [x] **Tests**
-
-  * [x] Vérifier fusion titre+para.
-  * [x] Vérifier skip chunk dupliqué N/N+1.
-  * [x] Vérifier `metadata.language` en lower-case.
+  * [ ] `search.run` → `search.status(job_id)` jusqu’à `completed`.
+  * [ ] Cas idempotence (deuxième `run` retourne le même `job_id`).
+  * [ ] Mode HTTP (auth Bearer) **et** STDIO.
 
 ---
 
-## D) Orchestration, Events & Télémétrie
+## 2) Transports HTTP, Auth & Rate-limit
 
-### `src/search/pipeline.ts`
+### 2.1 `src/http/rateLimit.ts` — **Modifier**
 
-* [x] **Concurrence contrôlée**
+* [ ] **Seau dédié** “search” distinct du global (RPS + burst séparés).
+* [ ] En-tête de réponse `X-RateLimit-*` (global & search si pertinent).
+* [ ] Tests : `tests/http/rateLimit.search.spec.ts` (E2E burst → 429 contrôlé).
 
-  * [x] Utiliser le **semaphore/p-limit existant** pour `fetch` et `extract` (éviter les bursts).
-* [x] **Taxonomie des erreurs** (stabiliser)
+### 2.2 `src/http/auth.ts` — **Revue**
 
-  * [x] `network_error | robots_denied | max_size_exceeded | extract_error | ingest_error`.
-* [x] **jobId**
+* [ ] Comparaison **constant-time** (déjà présente) + tests sur cas bizarres (espaces, casing).
+* [ ] `tests/http/auth.bearer.spec.ts`.
 
-  * [x] Générer `jobId = hash(arguments)` ; **inclure** dans `search:*` events et résultats Tools.
-* [x] **Events légers**
+### 2.3 `src/http/readiness.ts` — **Compléments**
 
-  * [x] Ne pas embarquer de payload volumineux (segments) dans `eventStore.emit`.
-* [x] **Tests**
-
-  * [x] `allSettled` sur batchs ; erreurs classées ; `jobId` propagé ; événements ordonnés.
-
-### `src/search/metrics.ts`
-
-* [x] **Labels stables**
-
-  * [x] `{ step, contentType, domain }` (**jamais l’URL**).
-* [x] **Buckets** log-échelle (50ms → 20s).
-* [x] **Tests**
-
-  * [x] Vérifier l’enregistrement de chaque étape (searx/fetch/extract/ingest*).
+* [ ] Inclure dans `/readyz` : état JobStore, état `graph-forge` chargé, permission d’écriture artefacts.
+* [ ] `tests/http/readyz.spec.ts`.
 
 ---
 
-## E) Tools MCP & Registry
+## 3) Idempotence, budgets & concurrence
 
-### `src/tools/search_run.ts`
+### 3.1 `src/infra/idempotency*.ts` — **Revue/Compléments**
 
-* [x] **Schéma strict**
+* [ ] Tests de **collision** volontaire d’ID (normalisation d’URL stricte).
+* [ ] TTL expiré → suppression contrôlée (logs + artefacts conservés).
+* [ ] `tests/infra/idempotency.cases.spec.ts`.
 
-  * [x] zod `.strict()` + defaults (`maxResults.default(6)`).
-* [x] **Sortie stable**
+### 3.2 `src/search/downloader.ts` — **Tests supplémentaires**
 
-  * [x] `{ ok:true, jobId, count, docs, warnings? }` → `warnings` **omis** si vide.
-  * [x] **Propager** `budgetUsed` si dispo, sans dépasser `bytesOut`.
-* [x] **Tests**
+* [ ] Canonicalisation d’URL : suppression `utm_*`, `fbclid`, tri des query params.
+* [ ] **MIME-sniff** par signature binaire (PDF/JPEG/PNG/ZIP) — tests sur fixtures.
+* [ ] Respect **robots.txt** si activé : `tests/search/robots.spec.ts`.
 
-  * [x] Snapshot **après strip** des champs volatils.
+### 3.3 `src/infra/budget.ts` — **Revue**
 
-### `src/tools/search_index.ts`
-
-* [x] **Normaliser l’input**
-
-  * [x] `url` string **→** `urls: string[]`.
-* [x] **Partials**
-
-  * [x] Retour `{ ok:true, docs, errors? }` (omets si vide).
-* [x] **Tests**
-
-  * [x] Cas multi-URL, plus une qui échoue → `errors` présent, `docs` partiels.
-
-### `src/tools/search_status.ts`
-
-* [x] **Not implemented typé**
-
-  * [x] `{ ok:false, code:'not_implemented', message:'...' }`.
-* [x] **Tests**
-
-  * [x] Snapshot stable.
-
-### `src/mcp/registry.ts` (ou le routeur central si ailleurs)
-
-* [x] **Tags & budgets**
-
-  * [x] `tags: ['search','web','ingest','rag']`.
-  * [x] Élargir `timeMs` (ex. 90s) si gros PDFs.
-* [x] **Help concis**
-
-  * [x] Un **exemple JSON** **monoligne** par tool.
+* [ ] Budgets temps / tool_calls / bytes_out appliqués à `search.run`.
+* [ ] Tests property-based : ne jamais dépasser **bytes_out** en cas d’erreur multiligne.
 
 ---
 
-## F) EventStore & Dashboard
+## 4) Mémoire (vecteur + KG) & RAG
 
-### `src/eventStore.ts`
+### 4.1 `src/memory/vectorMemory.ts` — **Modifier**
 
-* [x] **Versionner** `payload` des `search:*` : `payload.version = 1`.
-* [x] **Tronquer** `error.message` > 1000 chars.
-* [x] **Sérialisation stable** (ordre des clés si ton diff tooling le requiert).
-* [x] **Tests**
+* [ ] Paramétrer capacité via `MCP_MEMORY_VECTOR_MAX_DOCS` (défaut 4096).
+* [ ] Politique d’éviction **documentée** (LRU/Size), logs d’éviction.
+* [ ] `tests/memory/vector.capacity.spec.ts` (saturation contrôlée).
 
-  * [x] Vérifier redaction et taille max.
+### 4.2 `src/memory/retriever.ts` — **Revue**
 
-### `src/monitor/dashboard.ts`
+* [ ] Retrievers hybrides (cosinus + lexical/BM25 si activé) — tests de **rangs** stables.
+* [ ] `tests/memory/retriever.hybrid.spec.ts`.
 
-* [x] **Debounce SSE** 250–500ms si rafales.
-* [x] **Cap Top domaines** (ex. top 20).
-* [x] *(Optionnel)* endpoint `/api/search/summary` JSON si besoin scripting.
-* [x] **Tests**
+### 4.3 Outils RAG : `src/tools/ragTools.ts` — **Tests**
 
-  * [x] Rend correctement avec un grand nombre d’événements.
+* [ ] `rag_ingest`/`rag_query` conservent **provenance** et **tags**.
+* [ ] Aucune fuite d’`undefined` ; `tests/tools/rag.tools.spec.ts`.
 
 ---
 
-## G) Knowledge & Memory
+## 5) Graphes & Graph-Forge
 
-### `src/knowledge/knowledgeGraph.ts`
+### 5.1 `graph-forge/` — **Build & loader**
 
-* [x] **Idempotence locale** lors d’un même run (Set) pour `(s,p,o)`.
-* [x] **Provenance** : éviter les duplications identiques sur `withProvenance`.
-* [x] **Tests**
+* [ ] Vérifier que `npm run build` produit **`graph-forge/dist/index.js`** + maps.
+* [ ] **Interdire** l’import direct de `graph-forge/src/*.ts` en prod (fallback testé seulement en dev).
+* [ ] `tests/graph/loader.spec.ts` : échoue si `dist/` absent en prod.
 
-  * [x] Triple identique dans une même transaction → 1 seule écriture.
+### 5.2 `src/graph/validate.ts`, `src/graph/state.ts`, `src/graph/tx.ts` — **Tests**
 
-### `src/memory/vector.ts`
+* [ ] Invariants (acyclicité si requise, contraintes métier), **WAL/Tx** atomicité.
+* [ ] Snapshots périodiques : respect `MCP_GRAPH_SNAPSHOT_*`.
+* [ ] `tests/graph/invariants.spec.ts`, `tests/graph/tx.atomicity.spec.ts`.
 
-* [x] **Cap par doc** (si déjà présent, s’assurer qu’il s’applique aux runs Search).
-* [x] **Metadata** : verifier `docId` non vide, langue lower-case.
-* [x] **Tests**
+### 5.3 Outils graph : `src/tools/graph_*` — **Tests**
 
-  * [x] Respect du cap ; recherche par similarité fonctionne.
-
----
-
-## H) Scripts & exécution
-
-### `scripts/setup-environment.mjs` (ou `scripts/setup-agent-env.sh`)
-
-* [x] **Fail fast Node ≥ 20** (arrêter si version trop basse).
-* [x] **Warn** si `SEARCH_SEARX_BASE_URL` ou `UNSTRUCTURED_BASE_URL` **absents**.
-* [x] **Dossiers runtime** : créer `./validation_run` (ou variante retenue) + `./children`.
-* [x] **Pointer les logs** par défaut sur `./validation_run/logs/self-codex.log`.
-* [x] **Supprimer** toute référence obsolète à `START_MCP_BG` si réellement non utilisée (sinon documenter). *(Toujours utilisée pour l'orchestration en arrière-plan — documentation ajoutée dans `docs/validation-run-runtime.md`.)*
-
-### `scripts/run-search-e2e.ts` / `scripts/run-search-smoke.ts` / `scripts/validate-run.mjs`
-
-* [x] Remplacer **toute écriture** vers des chemins historiques (`runs/…`) par le **dossier de validation retenu** (voir section I).
-* [x] Créer systématiquement `input.json`, `response.json`, `events.ndjson`, `timings.json`, `errors.json`, `kg_changes.ndjson`, `vector_upserts.json`, `server.log` dans **chaque scénario**.
-* [x] **Tests**: adapter les assertions de chemins.
+* [ ] `graph_apply_change_set`, `graph_snapshot_time_travel`, `graphDiffTools` — E2E sur petit graphe.
+* [ ] Export **Mermaid/DOT/GraphML** valide (fichiers sous `validation_run/graphs/*`).
 
 ---
 
-## I) **Unification du dossier de validation** (IMPORTANT)
+## 6) Outils MCP & Router
 
-* [x] **Choisir** la convention finale :
+### 6.1 `src/tools/tools_help.ts` — **Modifier**
 
-  * [x] **Option A** : `validation_run/` (singulier)
-  * [ ] **Option B** : `validation_runs/` (pluriel) *(n/a après migration)*
-    → **Choisis une seule et unique** option.
+* [ ] Afficher `search.status` (nouveau) dans la liste d’aide.
+* [ ] Tests : `tests/tools/help.spec.ts` (contient le nouvel outil).
 
-* [x] **Supprimer le doublon**
+### 6.2 `src/tools/toolRouter.ts` — **Revue**
 
-  * [x] Si tu gardes `validation_run/` :
-
-    * [x] **Déplacer/merger** tout le contenu utile de `validation_runs/` vers `validation_run/`.
-    * [x] **Supprimer** le dossier `validation_runs/`.
-  * [ ] Si tu gardes `validation_runs/` :
-
-    * [ ] **Déplacer/merger** `validation_run/` → `validation_runs/`.
-    * [ ] **Supprimer** `validation_run/`.
-
-* [ ] **Rendre cohérents** tous les pointeurs
-
-  * [x] Mettre à jour `MCP_RUNS_ROOT` dans `.env.example` et dans les **scripts** pour viser **le dossier retenu**.
-  * [x] Rechercher/remplacer dans le code/tests/doc : références à l’ancien nom (aucune occurrence restante en dehors de cette tâche).
-  * [x] **Vérifier** en E2E qu’**100%** des artefacts sont produits dans le dossier conservé.
-
-* [x] **Tests**
-
-  * [x] Mettre à jour les tests qui valident la présence des fichiers de run (chemins).
-  * [x] Ajouter un test de **non-existence** de l’ancien dossier après la migration.
+* [ ] Router top-k : priorité aux outils `search.*` pour requêtes web ; tests de **routing**.
 
 ---
 
-## J) Tests supplémentaires / durcissement
+## 7) Enfants/Agents & Autoscaler
 
-* [x] **Unitaires**
+### 7.1 `src/agents/autoscaler.ts` — **Tests**
 
-  * [x] searxClient : propriété **canonicalisation** (jeu de paramètres générés), retries, abort.
-  * [x] downloader : sniff signatures, conditional GET (304), clamp taille.
-  * [x] extractor : `truncated=true` sur PDF gros, mapping complet.
-  * [x] normalizer : NFC, dédup hash, fallback titre.
-  * [x] ingest KG/Vector : debounce triples, fusion titre+para, skip chunk dupliqué.
-  * [x] pipeline : error kinds, jobId, events légers, `allSettled`.
+* [ ] Seuils de latence/backlog -> variations de taille de pool bornées.
+* [ ] Hystérésis pour éviter oscillations ; `tests/agents/autoscaler.spec.ts`.
 
-* [x] **Intégration**
+### 7.2 `src/guard/loopDetector.ts` — **Tests**
 
-  * [x] `search.run` avec mocks réseaux : vérifier docs ingérés, erreurs **classées**, `jobId` dans la réponse.
-
-* [x] **E2E**
-
-  * [x] Compose up, exécuter au moins S01 / S05 / S06, vérifier **idempotence**, **robots/size**, et **artefacts** sous le **dossier de validation choisi**.
-
-* [x] **Couverture**
-
-  * [x] Vérifier ≥90% sur `src/search/**`, ≥85% global.
-  * [x] Stabiliser les snapshots (strip des champs volatils).
+* [ ] Détection faux positifs/faux négatifs sur chaînes d’événements contrôlées.
 
 ---
 
-## K) Documentation & Changelog
+## 8) Observabilité & Redaction
 
-* [x] `docs/search-module.md`
+### 8.1 `src/logger.ts` — **Tests**
 
-  * [x] Ajouter un **encadré** sur la canonicalisation d’URL, le sniff MIME et le conditional GET.
-  * [x] Préciser la **convention retenue** du dossier de validation et les **fichiers attendus**.
+* [ ] Redaction de secrets (Authorization, Cookie, tokens) + **motifs custom** via `MCP_LOG_REDACT`.
+* [ ] `tests/infra/logger.redaction.spec.ts`.
 
-* [x] `CHANGELOG.md`
+### 8.2 `src/eventStore.ts`, `src/monitor/*` — **Tests**
 
-  * [x] Entrée `improvement: search robustness (URL canonicalization, MIME sniff, conditional GET, NFC); validation folder unified`.
-
----
-
-## ✅ Critères d’acceptation (avant close)
-
-* [x] Build **OK** (Node ≥ 20, TS strict, aucun warning notable).
-* [x] `search.run` (S01) : ≥ 1 doc ingéré, embeddings présents, events `search:*`, artefacts complets dans le **dossier de validation retenu**.
-* [x] S05 (replay) : **zéro duplication** (mêmes `docId`).
-* [x] S06 (robots/size) : erreurs **classées** et non bloquantes.
-* [x] Dashboard : métriques par étape (searx/fetch/extract/ingest*) cohérentes, labels stables.
-* [x] **Un seul** dossier de validation dans le repo (l’autre **supprimé**), tous scripts & tests **pointent** dessus.
-* [x] Couverture atteinte (≥90% `src/search/**`, ≥85% global).
+* [ ] SSE buffer circulaire, reprise en **replay** depuis offset.
+* [ ] `tests/monitor/sse.replay.spec.ts`.
 
 ---
 
-Si tu veux, je peux ensuite te fournir un **patch groupé** (diff par fichier) appliquant exactement ces changements, et un **script unique** qui exécute S01→S10 et consolide `summary.json` dans **le** dossier de validation retenu.
+## 9) Artefacts & Validation-run
+
+### 9.1 `src/tools/artifact_*` — **Revue/Tests**
+
+* [ ] `artifact_write` respecte `MCP_MAX_ARTIFACT_BYTES` (erreur cohérente si dépassement).
+* [ ] Parcours `artifact_paths` ne fuit pas en dehors de `validation_run/`.
+* [ ] `tests/tools/artifact.safety.spec.ts`.
+
+### 9.2 `docs/validation-run-*.md` — **Doc**
+
+* [ ] Ajouter section **“search jobs journal”** (layout JSONL, compaction, TTL).
+* [ ] Lien croisé avec `/readyz`.
+
+---
+
+## 10) Configuration & DX
+
+### 10.1 `.env.example` — **Modifier**
+
+* [x] Ajouter : `MCP_SEARCH_STATUS_PERSIST`, `MCP_SEARCH_JOB_TTL_MS`, `MCP_SEARCH_JOURNAL_FSYNC`.
+* [x] Ajouter commentaires clairs (valeurs par défaut, implications).
+
+### 10.2 `package.json` — **Vérifier/Modifier**
+
+* [ ] `build` compile **`graph-forge/`** (tsc séparé ou references).
+* [ ] Scripts utiles : `start:stdio`, `start:http`, `start:dashboard`, `test`, `lint`, `format`.
+* [ ] Champs `engines` : Node 20.x, npm 9+ (déjà présents ; réaffirmer).
+
+### 10.3 CI (workflow) — **Créer/Modifier**
+
+* [ ] Jobs : **lint → build → test** (unit + e2e), cache npm.
+* [ ] Matrice : Linux Node 20.x.
+* [ ] Échec si : imports `.ts` en prod, `undefined` détecté dans JSON serialisé (test script dédié).
+
+---
+
+## 11) Sécurité HTTP (exposition optionnelle)
+
+### 11.1 `src/http/bootstrap.ts` — **Revue**
+
+* [ ] **Stateless** option gérée ; en-têtes de sécurité (no-sniff, frame-ancestors, etc.).
+* [ ] `tests/http/headers.spec.ts`.
+
+---
+
+## 12) Scénarios de bout en bout (régression)
+
+### 12.1 `scenarios/search_rag_baseline.yaml` — **Nouveau**
+
+* [ ] Pipeline : `search.run` → ingestion → `rag_query` → assertions (top-k non vide, provenance).
+* [ ] Générer rapport sous `validation_run/scenarios/search_rag_baseline/`.
+
+### 12.2 `tests/e2e/scenarios.search_rag.spec.ts` — **E2E**
+
+* [ ] Exécuter la campagne, vérifier artefacts & métriques (p50/p95/p99 présents).
+
+---
+
+# Définition de la “done-ness” (acceptation)
+
+* [ ] `search.status` disponible et documenté ; **JobStore** mémoire + fichier opérationnels.
+* [ ] `/readyz` échoue proprement si le journal de jobs n’est pas inscriptible.
+* [ ] **Aucune** importation `.ts` de `graph-forge` en prod ; `dist/` requis par tests.
+* [ ] Tous les nouveaux tests passent (unit, property-based, E2E HTTP & STDIO).
+* [ ] **Aucune** fuite de secrets en logs ; **aucun** `undefined` dans les JSON émis.
+* [ ] Build reproductible ; artefacts dans `validation_run/` conformes (chemins, tailles, redaction).
+* [ ] L’outil `tools_help` affiche `search.status`.
+* [ ] CI verte sur lint/build/tests ; rate-limits “search” en vigueur (tests 429).
+
+---
+
+# Notes d’implémentation (raccourcis utiles)
+
+* **ID de job** : dériver d’une concaténation stable `(normalizedQuery + options + searxCategory + timestampFloor)` → hash (ex. xxhash/sha256) **après** canonicalisation des URLs cibles si incluse.
+* **Journal JSONL** : lignes immuables, `update` = append d’un patch horodaté ; **compaction** recrée le dernier état par job.
+* **Redaction** : appliquer aux messages d’erreur de `downloader`/`extractor` (en-têtes HTTP, URLs avec tokens).
+* **Tests E2E** : préférer entrées “no-network” en mock/sandbox lorsque possible ; si SearxNG local, fixer une fixture d’index.
+
+---
+
+Ce plan te donne le périmètre, les fichiers exacts à toucher, et l’ordre logique pour livrer sans régression : **Search Job Status d’abord**, puis **tests & readiness**, ensuite **robustesse & DX**. Une fois le lot 1 validé, on verrouille les lots 2–4 en itérant sur la CI.
 
 ---
 
 ### Historique
 
-- 2025-10-31 : ✅ Downloader sniff MIME + conditional GET (304 annoté) + commande `TSX_EXTENSIONS=ts node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --file tests/setup.ts tests/unit/search/downloader.test.ts`.
-- 2025-10-31 : ✅ README.md et docs/mcp-http-troubleshooting.md alignés sur la convention `validation_run/` (suppression des références `runs/`).
-- 2025-10-31 : ✅ `npm run test -- tests/validation-runs.response-summary.test.ts` exécuté (build + typecheck + suite complète).
-- 2025-10-31 : ✅ Tests unitaires `searxClient` étendus (canonicalisation, non-retry 4xx, timeout abort) + commande `TSX_EXTENSIONS=ts node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --file tests/setup.ts tests/unit/search/searxClient.test.ts`.
-- 2025-10-31 : ✅ Pipeline `jobId` haché + taxonomie d'erreurs stabilisée + façades `search.run`/`search.index` retournant le nouvel identifiant ; commande `TSX_EXTENSIONS=ts node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --file tests/setup.ts tests/unit/search/pipeline.test.ts tests/tools/facades/search_run.test.ts tests/tools/facades/search_index.test.ts`.
-- 2025-10-31 : ✅ Extractor langue hint + cap PDF stabilisé (segments overflow ignorés) ; commande `TSX_EXTENSIONS=ts node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --file tests/setup.ts tests/unit/search/extractor.test.ts`.
-- 2025-10-31 : ✅ Normalizer NFC + hash de dédup + fallback titre ; commande `TSX_EXTENSIONS=ts node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --file tests/setup.ts tests/unit/search/normalizer.test.ts`.
-- 2025-10-31 : ✅ Ingestion KG dédoublée (Set) + vector store fusion titre/paragraphe validées ; commande `TSX_EXTENSIONS=ts node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --file tests/setup.ts tests/unit/search/ingest.toKnowledgeGraph.test.ts tests/unit/search/ingest.toVectorStore.test.ts`.
-- 2025-10-31 : ✅ Pipeline p-limit + façades search.* (snapshots + meta help) ; commande `TSX_EXTENSIONS=ts node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --file tests/setup.ts tests/unit/search/pipeline.test.ts tests/tools/facades/search_run.test.ts tests/tools/facades/search_index.test.ts tests/tools/facades/search_status.test.ts`.
-- 2025-10-31 : ✅ Script setup-environment → dossiers runtime `validation_run/` + `children/`, valeur par défaut `MCP_LOG_FILE`, avertissements Searx/Unstructured ; commande `TSX_EXTENSIONS=ts node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --file tests/setup.ts tests/scripts.setup-environment.test.ts`.
-- 2025-10-31 : ✅ EventStore payload versionné + troncature message `search:error` validées ; commande `TSX_EXTENSIONS=ts node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --file tests/setup.ts tests/eventStore.test.ts`.
-- 2025-10-31 : ✅ Search metrics labels `{step,contentType,domain}` + SSE broadcast debounce testés ; commande `TSX_EXTENSIONS=ts node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --file tests/setup.ts tests/unit/search/metrics.test.ts tests/monitor.dashboard.streams.test.ts`.
-- 2025-11-02 : ✅ Migration automatique `validation_runs/` → `validation_run/`, documentation des gardes (canonicalisation, sniff MIME, conditional GET) et ajout du test de non-régression ; commande `TSX_EXTENSIONS=ts node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --file tests/setup.ts tests/unit/validationRun.layout.test.ts`.
-- 2025-11-02 : ✅ Intégration `search.run` (pipeline réel + mocks réseau) couvrant ingestion, avertissements typés et `jobId` déterministe ; commande `TSX_EXTENSIONS=ts node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --file tests/setup.ts tests/integration/search/search_run.integration.test.ts`.
-- 2025-11-02 : ✅ Garde d’idempotence `(s,p,o)` pour le Knowledge Graph + tests `withProvenance` renforcés, couverture vectorielle sur `document_id`/`docId` et docId vide ignoré ; commande `TSX_EXTENSIONS=ts node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --file tests/setup.ts tests/unit/knowledge/knowledgeGraph.test.ts tests/unit/memory/vector.test.ts`.
-- 2025-11-02 : ✅ Ajout du test de charge `monitor/dashboard` garantissant le cap des domaines top 20 et la stabilité des métriques search ; commande `TSX_EXTENSIONS=ts node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --file tests/setup.ts tests/monitor.dashboard.streams.test.ts`.
-- 2025-11-02 : ✅ Scripts `run-search-e2e.ts` et `run-search-smoke.ts` persistants vers `validation_run/` (artefacts complets) + helper `scripts/lib/searchArtifacts.ts` + test `searchArtifacts`; commande `TSX_EXTENSIONS=ts node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --file tests/setup.ts tests/scripts/searchArtifacts.test.ts`.
-- 2025-11-02 : ✅ Santé `docker-compose.search.yml` (healthcheck Node pour `server`, réseau interne, proxy documenté) + env defaults Searx alignés (`mojeek`, robots.txt) ; commande `npm run test -- tests/scripts.setup-environment.test.ts`.
-- 2025-11-02 : ✅ Test e2e artefacts (`S91_search_e2e`) garantissant l'écriture complète sous `validation_run/` ; commande `TSX_EXTENSIONS=ts node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --file tests/setup.ts tests/scripts.run-search-e2e.test.ts`.
-- 2025-11-02 : ✅ E2E pipeline `search_run.e2e` couvrant ingestion S01, idempotence S05 (docIds stables, KG sans duplication) et erreurs robots/taille S06 ; commande `TSX_EXTENSIONS=ts SEARCH_E2E_ALLOW_RUN=1 MCP_TEST_ALLOW_LOOPBACK=yes node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --file tests/setup.ts tests/e2e/search/search_run.e2e.test.ts`.
-
-- 2025-11-02 : ✅ Couverture complète (`npm run coverage`) confirmant ≥90 % sur `src/search/**`, ≥85 % global et snapshots stables ; commande `npm run coverage`.
-- 2025-11-02 : ✅ Documentation de `START_MCP_BG` (mise à jour scripts/setup-agent-env.sh + docs/validation-run-runtime.md) ; commande `npm run test -- tests/scripts.setup-environment.test.ts`.
-- 2025-11-02 : ✅ Retrait du script obsolète `scripts/initValidationRun.ts` (code mort) et vérification `npm run lint`.
-- 2025-11-02 : ✅ Suppression des artefacts morts `tmp_before.txt` et dossiers `tmp/` suivis, mise à jour de la garde d’hygiène, puis exécution `npm run test -- tests/hygiene.todo-scan.test.ts`.
-- 2025-11-02 : ✅ Nettoyage des exports obsolètes (`listArtifacts`, `formatChildMessages`, types `PromptVariablesInput`/`ToolSuccess`/`ToolError` et alias ID génériques) ; commande `npm run lint:dead-exports`.
-- 2025-11-02 : ♻️ Purge des alias inutilisés (cancellation, fsArtifacts, tracing, MCP info), restauration du helper `fail()` canonique et réduction de l'allowlist des exports morts ; commande `npm run lint:dead-exports`.
-- 2025-11-02 : ✅ Retrait de `registerLessonRegression`, de l'alias `DashboardStigmergyRow` et du writer `writeArtifactFile`, nettoyage README/allowlist corrélés ; commandes `npm run lint:dead-exports` et `TSX_EXTENSIONS=ts node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --file tests/setup.ts tests/learning/lessonsRegressions.test.ts`.
-- 2025-11-02 : ✅ Ajout de `p-limit` comme dépendance runtime, retrait des alias TypeScript morts (BT inputs, planner inputs, RPC buildJsonRpcErrorResponse/JsonRpcValidationError), ré-annotation du pipeline `p-limit` et nettoyage de l'allowlist ; commandes `npm run lint:dead-exports` et `npm run test -- tests/planner/compile.test.ts`.
+- 2025-11-02 : ✅ Interface `SearchJobStore` + implémentation mémoire (mutex, TTL) + tests unitaires (`tests/unit/search/jobStore.memory.test.ts`) ; commandes `npm run build` puis `TSX_EXTENSIONS=ts node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --file tests/setup.ts tests/unit/search/jobStore.memory.test.ts`.
+- 2025-11-02 : ✅ Implémentation `FileSearchJobStore` (journal JSONL, fsync batch, lock best-effort, compaction TTL) + export public + tests unitaires (`tests/unit/search/jobStore.file.test.ts`).
+- 2025-11-02 : ✅ Façade `search.status` (filtres, sérialisation des JobRecord, erreurs persistences) + options `MCP_SEARCH_*` et DI runtime (`loadSearchJobStoreOptions`, `instantiateSearchJobStore`) + tests (`tests/serverOptions.parse.test.ts`, `tests/search/status.tool.test.ts`) ; commandes `npm run build` puis `TSX_EXTENSIONS=ts node --import tsx ./node_modules/mocha/bin/mocha.js --reporter tap --file tests/setup.ts tests/serverOptions.parse.test.ts tests/search/status.tool.test.ts`.
+- 2025-11-02 : ✅ Readiness HTTP enrichi (vérification du journal search, snapshot runtime) + variables `.env.example` documentées ; tests `tests/http/readyz.test.ts`, `tests/http/bootstrap.runtime.test.ts`, build `npm run build`.
