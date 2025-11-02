@@ -55,6 +55,7 @@ describe("http readyz", () => {
             runsDirectory: { ok: true, path: "/tmp/runs", message: "read/write verified" },
             idempotency: { ok: true, message: "store" },
             eventQueue: { ok: true, usage: 5, capacity: 5_000, message: "queue within capacity" },
+            searchJobStore: { ok: true, mode: "memory", message: "in-memory backend" },
           },
         };
       },
@@ -109,6 +110,7 @@ describe("http readyz", () => {
             getEventCount: () => 0,
             getMaxHistory: () => 100,
           },
+          searchJobStore: { mode: "memory", available: true },
         }),
     };
 
@@ -152,6 +154,7 @@ describe("http readyz", () => {
           getEventCount: () => 0,
           getMaxHistory: () => 10,
         },
+        searchJobStore: { mode: "memory", available: true },
       });
 
       expect(loadAttempts).to.equal(1);
@@ -181,6 +184,7 @@ describe("http readyz", () => {
           getEventCount: () => 0,
           getMaxHistory: () => 50,
         },
+        searchJobStore: { mode: "memory", available: true },
       });
 
       expect(report.ok).to.equal(false);
@@ -201,6 +205,7 @@ describe("http readyz", () => {
             runsDirectory: { ok: true, path: "/tmp/runs", message: "read/write verified" },
             idempotency: { ok: true, message: "store" },
             eventQueue: { ok: false, usage: 4_999, capacity: 5_000, message: "event history near capacity" },
+            searchJobStore: { ok: true, mode: "memory", message: "in-memory backend" },
           },
         };
       },
@@ -221,5 +226,81 @@ describe("http readyz", () => {
     const payload = JSON.parse(response.body) as HttpReadinessReport;
     expect(payload.ok).to.equal(false);
     expect(payload.components.graphForge.ok).to.equal(false);
+  }).timeout(10_000);
+
+  it("flags a missing file-backed search job store", async () => {
+    const tempRoot = await mkdtemp(join(tmpdir(), "readyz-jobstore-missing-"));
+    const directory = join(tempRoot, "search", "jobs");
+
+    try {
+      const report = await evaluateHttpReadiness({
+        loadGraphForge: async () => {},
+        runsRoot: tempRoot,
+        idempotencyStore: { checkHealth: async () => {} },
+        eventStore: {
+          getEventCount: () => 1,
+          getMaxHistory: () => 100,
+        },
+        searchJobStore: { mode: "file", available: false, directory },
+      });
+
+      expect(report.ok).to.equal(false);
+      expect(report.components.searchJobStore.ok).to.equal(false);
+      expect(report.components.searchJobStore.mode).to.equal("file");
+      expect(report.components.searchJobStore.message).to.equal("persistence backend unavailable");
+    } finally {
+      await rm(tempRoot, { recursive: true, force: true });
+    }
+  }).timeout(10_000);
+
+  it("validates writability of the search jobs directory", async () => {
+    const tempRoot = await mkdtemp(join(tmpdir(), "readyz-jobstore-dir-"));
+    const filePath = join(tempRoot, "search-jobs");
+    await writeFile(filePath, "nope");
+
+    try {
+      const report = await evaluateHttpReadiness({
+        loadGraphForge: async () => {},
+        runsRoot: tempRoot,
+        idempotencyStore: { checkHealth: async () => {} },
+        eventStore: {
+          getEventCount: () => 2,
+          getMaxHistory: () => 200,
+        },
+        searchJobStore: { mode: "file", available: true, directory: filePath },
+      });
+
+      expect(report.ok).to.equal(false);
+      expect(report.components.searchJobStore.ok).to.equal(false);
+      expect(report.components.searchJobStore.directory).to.be.a("string");
+      expect(report.components.searchJobStore.message).to.be.a("string");
+    } finally {
+      await rm(tempRoot, { recursive: true, force: true });
+    }
+  }).timeout(10_000);
+
+  it("confirms readiness when the search jobs directory is writable", async () => {
+    const tempRoot = await mkdtemp(join(tmpdir(), "readyz-jobstore-ok-"));
+    const directory = join(tempRoot, "search", "jobs");
+
+    try {
+      const report = await evaluateHttpReadiness({
+        loadGraphForge: async () => {},
+        runsRoot: tempRoot,
+        idempotencyStore: { checkHealth: async () => {} },
+        eventStore: {
+          getEventCount: () => 0,
+          getMaxHistory: () => 10,
+        },
+        searchJobStore: { mode: "file", available: true, directory },
+      });
+
+      expect(report.ok).to.equal(true);
+      expect(report.components.searchJobStore.ok).to.equal(true);
+      expect(report.components.searchJobStore.directory).to.include("search");
+      expect(report.components.searchJobStore.message).to.equal("journal writable");
+    } finally {
+      await rm(tempRoot, { recursive: true, force: true });
+    }
   }).timeout(10_000);
 });

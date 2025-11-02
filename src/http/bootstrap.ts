@@ -6,7 +6,7 @@ import type { StructuredLogger } from "../logger.js";
 import type { EventStore } from "../eventStore.js";
 import type { HttpRuntimeOptions } from "../serverOptions.js";
 import { evaluateHttpReadiness } from "./readiness.js";
-import { IDEMPOTENCY_TTL_OVERRIDE } from "../orchestrator/runtime.js";
+import { IDEMPOTENCY_TTL_OVERRIDE, getSearchJobStoreSnapshot } from "../orchestrator/runtime.js";
 import { FileIdempotencyStore } from "../infra/idempotencyStore.file.js";
 import { loadGraphForge } from "../graph/forgeLoader.js";
 import { readOptionalString } from "../config/env.js";
@@ -108,6 +108,7 @@ export async function prepareHttpRuntime(
         runsRoot,
         eventStore: context.eventStore,
         idempotencyStore,
+        searchJobStore: getSearchJobStoreSnapshot(),
       }),
   };
 

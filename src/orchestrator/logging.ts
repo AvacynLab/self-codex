@@ -35,8 +35,11 @@ const EVENT_KIND_TO_CATEGORY: Record<EventKind, EventCategory> = {
   COGNITIVE: "child",
   HTTP_ACCESS: "graph",
   "search:job_started": "graph",
+  "search:job_created": "graph",
   "search:doc_ingested": "graph",
   "search:error": "graph",
+  "search:job_progress": "graph",
+  "search:job_failed": "graph",
   "search:job_completed": "graph",
 };
 

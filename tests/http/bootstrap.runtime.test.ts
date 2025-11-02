@@ -41,6 +41,21 @@ async function createPersistentIdempotencyStore(): Promise<FileIdempotencyStore>
 }
 
 describe("http/bootstrap", () => {
+  let originalSearchPersist: string | undefined;
+
+  beforeEach(() => {
+    originalSearchPersist = process.env.MCP_SEARCH_STATUS_PERSIST;
+    process.env.MCP_SEARCH_STATUS_PERSIST = "memory";
+  });
+
+  afterEach(() => {
+    if (originalSearchPersist === undefined) {
+      delete process.env.MCP_SEARCH_STATUS_PERSIST;
+    } else {
+      process.env.MCP_SEARCH_STATUS_PERSIST = originalSearchPersist;
+    }
+  });
+
   it("prepares idempotency and readiness wiring for stateless HTTP", async () => {
     const entries: LogEntry[] = [];
     const logger = new StructuredLogger({ onEntry: (entry) => entries.push(entry) });

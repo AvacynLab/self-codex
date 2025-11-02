@@ -1,5 +1,9 @@
 import { z } from "zod";
 
+import type { JobStatus, JsonValue } from "../search/jobStore.js";
+
+const SEARCH_JOB_STATUS_VALUES = ["pending", "running", "completed", "failed"] as const satisfies readonly JobStatus[];
+
 /**
  * Schema guarding the payload accepted by the `search.run` façade.
  * The structure mirrors the `SearchJobParameters` contract while
@@ -216,34 +220,155 @@ export type SearchIndexOutput = z.infer<typeof SearchIndexOutputSchema>;
 export type SearchIndexDocument = z.infer<typeof SearchIndexDocumentSchema>;
 
 /** Input accepted by the `search.status` façade. */
-export const SearchStatusInputSchema = z
+const SearchStatusJobStatusSchema = z.enum(SEARCH_JOB_STATUS_VALUES);
+
+const JsonValueSchema: z.ZodType<JsonValue> = z.lazy(() =>
+  z.union([z.string(), z.number(), z.boolean(), z.null(), z.array(JsonValueSchema), z.record(JsonValueSchema)]),
+);
+
+const SearchStatusJobBudgetSchema = z
   .object({
-    job_id: z.string().trim().min(1).optional(),
+    max_duration_ms: z.number().int().min(0).nullable(),
+    max_tool_calls: z.number().int().min(0).nullable(),
+    max_bytes_out: z.number().int().min(0).nullable(),
   })
   .strict();
 
-const SearchStatusNotImplementedSchema = z
+const SearchStatusJobProgressSchema = z
+  .object({
+    step: z.string().min(1),
+    message: z.string().nullable(),
+    ratio: z.number().min(0).max(1).nullable(),
+    updated_at: z.number().int().min(0),
+  })
+  .strict();
+
+const SearchStatusJobSummarySchema = z
+  .object({
+    considered_results: z.number().int().min(0),
+    fetched_documents: z.number().int().min(0),
+    ingested_documents: z.number().int().min(0),
+    skipped_documents: z.number().int().min(0),
+    artifacts: z.array(z.string().min(1)),
+    metrics: z.record(z.string(), z.number()),
+    notes: z.string().nullable(),
+  })
+  .strict();
+
+const SearchStatusJobFailureSchema = z
+  .object({
+    code: z.string().min(1),
+    message: z.string().min(1),
+    stage: z.string().min(1).nullable(),
+    occurred_at: z.number().int().min(0),
+    details: JsonValueSchema.nullable(),
+  })
+  .strict();
+
+const SearchStatusJobStateSchema = z
+  .object({
+    status: SearchStatusJobStatusSchema,
+    created_at: z.number().int().min(0),
+    updated_at: z.number().int().min(0),
+    started_at: z.number().int().min(0).nullable(),
+    completed_at: z.number().int().min(0).nullable(),
+    failed_at: z.number().int().min(0).nullable(),
+    progress: SearchStatusJobProgressSchema.nullable(),
+    summary: SearchStatusJobSummarySchema.nullable(),
+    errors: z.array(SearchStatusJobFailureSchema),
+  })
+  .strict();
+
+const SearchStatusJobProvenanceSchema = z
+  .object({
+    trigger: z.string().min(1),
+    transport: z.string().min(1),
+    request_id: z.string().min(1).nullable(),
+    requester: z.string().min(1).nullable(),
+    remote_address: z.string().min(1).nullable(),
+    extra: z.record(JsonValueSchema),
+  })
+  .strict();
+
+const SearchStatusJobMetaSchema = z
+  .object({
+    id: z.string().min(1),
+    created_at: z.number().int().min(0),
+    query: z.string().min(1),
+    normalized_query: z.string().min(1),
+    tags: z.array(z.string().min(1)),
+    requester: z.string().nullable(),
+    budget: SearchStatusJobBudgetSchema,
+  })
+  .strict();
+
+const SearchStatusJobRecordSchema = z
+  .object({
+    job_id: z.string().min(1),
+    meta: SearchStatusJobMetaSchema,
+    state: SearchStatusJobStateSchema,
+    provenance: SearchStatusJobProvenanceSchema,
+  })
+  .strict();
+
+const SearchStatusInputObject = z
+  .object({
+    job_id: z.string().trim().min(1).optional(),
+    status: z.union([SearchStatusJobStatusSchema, z.array(SearchStatusJobStatusSchema)]).optional(),
+    tag: z.string().trim().min(1).optional(),
+    tags: z.array(z.string().trim().min(1)).min(1).max(8).optional(),
+    since: z.number().int().min(0).optional(),
+    until: z.number().int().min(0).optional(),
+    limit: z.number().int().min(1).max(200).optional(),
+  })
+  .strict();
+
+export const SearchStatusInputSchema = SearchStatusInputObject.refine((value) => {
+    const hasJobId = typeof value.job_id === "string";
+    const hasFilters =
+      value.status !== undefined ||
+      value.tag !== undefined ||
+      value.tags !== undefined ||
+      value.since !== undefined ||
+      value.until !== undefined ||
+      value.limit !== undefined;
+    return hasJobId !== hasFilters;
+  }, {
+    message: "fournir soit job_id, soit des filtres (status/tag/since/until/limit)",
+    path: ["job_id"],
+  });
+
+export const SearchStatusInputShape = SearchStatusInputObject.shape;
+
+const SearchStatusErrorSchema = z
   .object({
     ok: z.literal(false),
-    code: z.literal("not_implemented"),
+    code: z.enum(["persistence_unavailable", "not_found"]),
     message: z.string().min(1),
   })
   .strict();
 
-const SearchStatusSuccessSchema = z
+const SearchStatusSingleSuccessSchema = z
   .object({
     ok: z.literal(true),
-    job_id: z.string().min(1),
-    status: z.enum(["pending", "running", "completed", "failed"]),
-    summary: z.string().min(1),
+    result: SearchStatusJobRecordSchema,
+  })
+  .strict();
+
+const SearchStatusListSuccessSchema = z
+  .object({
+    ok: z.literal(true),
+    result: z.array(SearchStatusJobRecordSchema),
   })
   .strict();
 
 /** Output returned by the `search.status` façade. */
 export const SearchStatusOutputSchema = z.union([
-  SearchStatusSuccessSchema,
-  SearchStatusNotImplementedSchema,
+  SearchStatusSingleSuccessSchema,
+  SearchStatusListSuccessSchema,
+  SearchStatusErrorSchema,
 ]);
 
 export type SearchStatusInput = z.infer<typeof SearchStatusInputSchema>;
 export type SearchStatusOutput = z.infer<typeof SearchStatusOutputSchema>;
+export type SearchStatusJobRecord = z.infer<typeof SearchStatusJobRecordSchema>;
